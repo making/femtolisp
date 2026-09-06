@@ -15700,6 +15700,33 @@ class JvmLispCompilerTest {
 	}
 
 	@Test
+	void compileMakeArrayDoesNotSignalOnAnUnknownElementType() throws Exception {
+		// Same contract as the interpreter's makeArrayDoesNotSignalOnAnUnknownElementType
+		// (.kb/array-literals.md, "An UNKNOWN :element-type upgrades to t"): a designator
+		// naming no type at all upgrades to t rather than signalling, through BOTH
+		// spellings. This backend is one of the three that CAN see the divergence the
+		// interpreter cannot -- it picks the representation at compile time.
+		assertThat(compileAndRun("""
+				(let ((a (make-array 3 :element-type 'single-flaot)))
+				  (print (list (array-element-type a) (aref a 0))))
+				""")).isEqualTo("(T NIL)");
+		assertThat(compileAndRun("""
+				(defun mk-unknown-et (et) (make-array 3 :element-type et))
+				(let ((a (mk-unknown-et 'single-flaot)))
+				  (print (list (array-element-type a) (aref a 0))))
+				""")).isEqualTo("(T NIL)");
+		// The LEGAL CLHS upgrades the shipped corpus passes -- refusing an unrecognized
+		// element type would refuse alexandria's and cl-ppcre's 'bit, ironclad's and
+		// chipz's 'fixnum, jzon's '(unsigned-byte 64) and cl-ppcre's '(or null fixnum).
+		assertThat(compileAndRun("""
+				(print (list (array-element-type (make-array 2 :element-type 'bit))
+				             (array-element-type (make-array 2 :element-type 'fixnum))
+				             (array-element-type (make-array 2 :element-type '(unsigned-byte 64)))
+				             (array-element-type (make-array 2 :element-type '(or null fixnum)))))
+				""")).isEqualTo("(T T T T)");
+	}
+
+	@Test
 	void compilePackedIntVectorSubseqCopySeqReplacePreserveThePackedType() throws Exception {
 		assertThat(compileAndRun("""
 				(let* ((a (make-array 4 :element-type '(unsigned-byte 8) :initial-contents '(9 8 7 6)))

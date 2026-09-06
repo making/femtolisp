@@ -18088,6 +18088,34 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void makeArrayDoesNotSignalOnAnUnknownElementType() {
+		// The decision recorded in .kb/array-literals.md ("An UNKNOWN :element-type
+		// upgrades to t"): a designator naming no type at all upgrades to t rather than
+		// signalling. SBCL answers the same -- its only diagnostic is a compile-time
+		// style warning -- and a deftype may be registered AFTER the reference, so where
+		// make-array is compiled "this names no type" is not yet a fact. Both spellings
+		// are pinned, because the runtime designator is the half that had no coverage
+		// when the bfloat16 arm went missing from the dispatch.
+		assertThat(
+				eval("(let ((a (make-array 3 :element-type 'single-flaot))) (list (array-element-type a) (aref a 0)))")
+					.print())
+			.isEqualTo("(T NIL)");
+		assertThat(evalMulti("""
+				(defun mk-unknown-et (et) (make-array 3 :element-type et))
+				(let ((a (mk-unknown-et 'single-flaot))) (list (array-element-type a) (aref a 0)))
+				""").print()).isEqualTo("(T NIL)");
+		// The LEGAL CLHS upgrades the shipped corpus passes -- refusing an unrecognized
+		// element type would refuse alexandria's and cl-ppcre's 'bit, ironclad's and
+		// chipz's 'fixnum, jzon's '(unsigned-byte 64) and cl-ppcre's '(or null fixnum).
+		assertThat(eval("""
+				(list (array-element-type (make-array 2 :element-type 'bit))
+				      (array-element-type (make-array 2 :element-type 'fixnum))
+				      (array-element-type (make-array 2 :element-type '(unsigned-byte 64)))
+				      (array-element-type (make-array 2 :element-type '(or null fixnum))))
+				""").print()).isEqualTo("(T T T T)");
+	}
+
+	@Test
 	void packedIntVectorSubseqCopySeqReplacePreserveThePackedType() {
 		assertThat(eval("""
 				(let* ((a (make-array 4 :element-type '(unsigned-byte 8) :initial-contents '(9 8 7 6)))

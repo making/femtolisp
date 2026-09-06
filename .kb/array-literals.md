@@ -86,9 +86,13 @@ backends. `array-element-type` answers it, `type-of` builds `(SIMPLE-ARRAY et di
 `(VECTOR et size)` from it, `typep` takes the same specifier back, and an unsupplied element
 takes that type's own zero. The representation degrades; the declared type does not.**
 
-**The type space is CLOSED**, so it is a code, not a value: seven answers — `t`, `character`,
-`(unsigned-byte 8|16|32)`, `single-float`, `double-float`; everything else upgrades to `t`
-and is remembered as nothing. `am.ik.rontolisp.ArrayElementTypes` is that space (`codeOf` the
+**The type space is CLOSED**, so it is a code, not a value: `t` plus the widths
+`ArrayElementTypes.specializedCodes()` enumerates — `character`, `(unsigned-byte 8|16|32)`,
+`single-float`, `double-float`, `bfloat16`; everything else upgrades to `t`
+and is remembered as nothing. **Count them against the class, not against this sentence** —
+which said "seven answers" and spelled the pre-`bfloat16` six until 2026-09-06, the same drift
+the runtime-designator section below is entirely about.
+`am.ik.rontolisp.ArrayElementTypes` is that space (`codeOf` the
 one recognizer, `valueOf`, `defaultElement`), in the ROOT package so `LispArray`,
 `Environment`, `LispMacroExpander` and both codegen packages share it. Each backend spends a
 slot it already had, so no array grew:
@@ -167,6 +171,46 @@ type and zero fill.**
   PROGRAM SPELLS can reach a runtime `typep` (+1.9%); the make-array narrowing does not carry
   over. Full story: `.kb/declarations-type-checks.md`.
 
+## An UNKNOWN `:element-type` upgrades to `t`, and `make-array` does NOT signal
+**Invariant: `make-array` never signals on the element type. A designator naming no type this
+implementation knows — a typo (`'single-flaot`), a width that does not exist, a `deftype` the
+program never registered — builds the general boxed array; `array-element-type` answers `t` and
+an unsupplied element is `nil`, identically on all four backends and through BOTH spellings
+(literal and runtime designator).**
+
+Decided 2026-09-06 (`.todo/703`) AGAINST the opposite proposal — signal on an element type the
+dispatch does not recognise, so that a typo cannot masquerade as a working array. Three
+measurements overturned it:
+
+- **The upstream oracle does not signal.** SBCL answers a `t` array at run time for
+  `'single-flaot`, `'not-a-type` and `'loopy` alike; its only diagnostic is a compile-time
+  STYLE-WARNING `undefined type: SINGLE-FLAOT`, and `'fixnum` / `'bit` / `'(integer -1 1)` are
+  upgraded with no diagnostic at all. An error here would be a divergence FROM the oracle, not
+  conformance to it.
+- **A `deftype` may be registered after the reference**, which is why the oracle's diagnostic is
+  a style-warning and never a signal: where `make-array` is compiled, "this names no type" is not
+  yet a fact. rontolisp has the same ordering — `%make-array-et-alias` resolves aliases the
+  program registers, and a program may register one in a `(load ...)`ed file.
+- **Refusing "not a packed width" would break most of the shipped corpus.** Census of every
+  `:element-type` in the tree (2026-09-06): `'fixnum` at 12 sites, `'bit` 5, `'(unsigned-byte 64)`
+  5, plus `'integer`, `'(signed-byte 8|64)`, `'(or null fixnum)`, `'(integer -1 1)` — alexandria,
+  cl-ppcre, ironclad, jzon, chipz, md5, cl-base64, fast-io. Every one is a LEGAL upgrade to `t`
+  under CLHS, which lets `make-array` upgrade any element type.
+
+**And the weaker form, a warning, has no oracle to key on either.** "Names no type at all" needs
+the set of type names that EXIST, which this project does not have. The nearest thing is
+`LispMacroExpander.makeTypeTest`'s switch — what `typecase` can test, and it already refuses an
+unknown specifier at expansion time — and that set does not contain `BIT`, so a diagnostic wired
+to it would cry wolf on `(make-array n :element-type 'bit)`, which alexandria and cl-ppcre both
+allocate. Manufacturing a SECOND set beside it is precisely the transcription the sections above
+are about, with a green tick on it.
+
+**So the diagnosis stays with the CALLER, and that is a decision rather than an oversight.**
+`checkpoint:make-tensor` is the checkpoint readers' one allocation path and asserts
+`array-element-type` after allocating (`.kb/checkpoint-readers.md`); that assertion stays. Any
+other code that DEPENDS on getting a packed representation asserts the same way — the width it
+asked for is the postcondition to check, not something `make-array` will refuse for it.
+
 ## What a wasm `make-array` site costs
 Three quarters of a site was the DIMENSION parse, now three shared callees in
 `WasmArrayRuntimeBuilder` at fixed indices after `FUNC_TO_MUT_STR`, reusing existing callable
@@ -187,7 +231,8 @@ where the JVM's is an `invokestatic` on a body emitted once.
 ## Tests
 ci-spec `array-literal-freshness-cross-backend`, `rank-zero-arrays-cross-backend`,
 `character-element-type-above-rank-one`, `general-array-remembers-its-element-type`,
-`runtime-element-type-make-array`, `runtime-element-type-deftype-alias`, `packed-float-*`,
+`runtime-element-type-make-array`, `runtime-element-type-deftype-alias`,
+`make-array-unknown-element-type`, `packed-float-*`,
 `packed-single-float-*`, `setf-elt-cross-backend`.
 **The runtime-vs-literal pins are keyed to `ArrayElementTypes.specializedCodes()`, never to a
 list of widths** — a hand-written list of seven would be a fifth transcription with a green tick
@@ -198,6 +243,9 @@ reference engine), `JvmLispCompilerTest#compileAndRunMakeArrayWithARuntimeElemen
 (both lowerings: through the helper and with the arms inline),
 `WasmLispCompilerIntegrationTest#aRuntimeElementTypeDesignatorAnswersWhatTheLiteralSpellingAnswers`
 (where a width the backend refuses must be refused through BOTH spellings, not answered by one).
+The "does not signal" decision is pinned per engine by the
+`*MakeArrayDoesNotSignalOnAnUnknownElementType` trio (the unknown designator through both
+spellings, plus the legal CLHS upgrades an error would have refused).
 `LispEvaluatorTest`
 (`everyArrayLiteralSyntaxIsFreshAtEveryEvaluation`,
 `writingThroughAnArrayLiteralDoesNotReachTheNextEvaluation`,

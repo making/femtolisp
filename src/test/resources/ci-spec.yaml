@@ -417,6 +417,32 @@ cases:
       ((UNSIGNED-BYTE 8) 0 #(1 44))
       (DOUBLE-FLOAT 0.0 T "xxx")
       T
+  - name: make-array-unknown-element-type
+    source: |
+      ;; An :element-type naming no type at all does NOT signal: it upgrades to t and
+      ;; fills with nil, through BOTH spellings and on every backend
+      ;; (.kb/array-literals.md, "An UNKNOWN :element-type upgrades to t"). The VARIABLE
+      ;; spelling is the half that had no coverage when the bfloat16 arm went missing
+      ;; from the runtime dispatch, so it is pinned here beside the literal one.
+      (let ((maut-a (make-array 3 :element-type 'single-flaot)))
+        (print (list (array-element-type maut-a) (aref maut-a 0))))
+      (let* ((maut-et 'single-flaot) (maut-b (make-array 3 :element-type maut-et)))
+        (print (list (array-element-type maut-b) (aref maut-b 0))))
+      ;; The LEGAL CLHS upgrades the shipped corpus passes: alexandria and cl-ppcre
+      ;; allocate 'bit, ironclad and chipz 'fixnum, jzon '(unsigned-byte 64), cl-ppcre
+      ;; '(or null fixnum). Refusing an unrecognized element type would refuse these.
+      (print (list (array-element-type (make-array 2 :element-type 'bit))
+                   (array-element-type (make-array 2 :element-type 'fixnum))
+                   (array-element-type (make-array 2 :element-type '(unsigned-byte 64)))
+                   (array-element-type (make-array 2 :element-type '(or null fixnum)))))
+      (let* ((maut-et2 '(signed-byte 8))
+             (maut-c (make-array 2 :element-type maut-et2 :initial-element 5)))
+        (print (list (array-element-type maut-c) (aref maut-c 0))))
+    expected: |
+      (T NIL)
+      (T NIL)
+      (T T T T)
+      (T 5)
   - name: make-array-rank2-initial-contents
     source: |
       ;; A literal rank >= 2 :initial-contents used to be silently zero-filled
