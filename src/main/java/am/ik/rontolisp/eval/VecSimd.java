@@ -116,7 +116,7 @@ public final class VecSimd {
 						yield null;
 					}
 					if (!(b instanceof LispDoubleFloatArray y)) {
-						throw mixedWidth(name);
+						yield null;
 					}
 					yield new LispDouble(VecSimdKernels.dot(x.data(), y.data()));
 				}
@@ -125,7 +125,7 @@ public final class VecSimd {
 						yield null;
 					}
 					if (!(b instanceof LispSingleFloatArray y)) {
-						throw mixedWidth(name);
+						yield null;
 					}
 					yield new LispDouble(VecSimdKernels.dotF(x.data(), y.data()));
 				}
@@ -157,7 +157,7 @@ public final class VecSimd {
 						yield null;
 					}
 					if (!(x instanceof LispDoubleFloatArray vx)) {
-						throw mixedWidth(name);
+						yield null;
 					}
 					yield vector(VecSimdKernels.matvec(mw.data(), rows, cols, vx.data(), parallel));
 				}
@@ -166,7 +166,7 @@ public final class VecSimd {
 						yield null;
 					}
 					if (!(x instanceof LispSingleFloatArray vx)) {
-						throw mixedWidth(name);
+						yield null;
 					}
 					yield vector(VecSimdKernels.matvecF(mw.data(), rows, cols, vx.data(), parallel));
 				}
@@ -233,14 +233,14 @@ public final class VecSimd {
 			switch (out) {
 				case LispDoubleFloatArray r -> {
 					if (!(v instanceof LispDoubleFloatArray x)) {
-						throw mixedWidth(name);
+						return null;
 					}
 					VecSimdKernels.clipInto(r.data(), x.data(), lo, hi);
 					FloatArrayAccessHook.written(r.storage());
 				}
 				case LispSingleFloatArray r -> {
 					if (!(v instanceof LispSingleFloatArray x)) {
-						throw mixedWidth(name);
+						return null;
 					}
 					VecSimdKernels.clipIntoF(r.data(), x.data(), lo, hi);
 					FloatArrayAccessHook.written(r.storage());
@@ -344,14 +344,14 @@ public final class VecSimd {
 			switch (out) {
 				case LispDoubleFloatArray r -> {
 					if (!(v instanceof LispDoubleFloatArray x)) {
-						throw mixedWidth(name);
+						return null;
 					}
 					VecSimdKernels.scaleInto(r.data(), x.data(), s);
 					FloatArrayAccessHook.written(r.storage());
 				}
 				case LispSingleFloatArray r -> {
 					if (!(v instanceof LispSingleFloatArray x)) {
-						throw mixedWidth(name);
+						return null;
 					}
 					VecSimdKernels.scaleIntoF(r.data(), x.data(), s);
 					FloatArrayAccessHook.written(r.storage());
@@ -390,7 +390,7 @@ public final class VecSimd {
 			switch (out) {
 				case LispDoubleFloatArray r -> {
 					if (!(w instanceof LispDoubleFloatArray mw) || !(x instanceof LispDoubleFloatArray vx)) {
-						throw mixedWidth(name);
+						return null;
 					}
 					requireDisjoint(name, r.data() == mw.data() || r.data() == vx.data());
 					VecSimdKernels.matvecInto(r.data(), mw.data(), rows, cols, vx.data(), parallel);
@@ -398,7 +398,7 @@ public final class VecSimd {
 				}
 				case LispSingleFloatArray r -> {
 					if (!(w instanceof LispSingleFloatArray mw) || !(x instanceof LispSingleFloatArray vx)) {
-						throw mixedWidth(name);
+						return null;
 					}
 					requireDisjoint(name, r.data() == mw.data() || r.data() == vx.data());
 					VecSimdKernels.matvecIntoF(r.data(), mw.data(), rows, cols, vx.data(), parallel);
@@ -455,14 +455,14 @@ public final class VecSimd {
 			switch (out) {
 				case LispDoubleFloatArray r -> {
 					if (!(v instanceof LispDoubleFloatArray x)) {
-						throw mixedWidth(fnName);
+						return null;
 					}
 					f64.apply(r.data(), x.data());
 					FloatArrayAccessHook.written(r.storage());
 				}
 				case LispSingleFloatArray r -> {
 					if (!(v instanceof LispSingleFloatArray x)) {
-						throw mixedWidth(fnName);
+						return null;
 					}
 					f32.apply(r.data(), x.data());
 					FloatArrayAccessHook.written(r.storage());
@@ -491,14 +491,14 @@ public final class VecSimd {
 			switch (out) {
 				case LispDoubleFloatArray r -> {
 					if (!(a instanceof LispDoubleFloatArray x) || !(b instanceof LispDoubleFloatArray y)) {
-						throw mixedWidth(fnName);
+						return null;
 					}
 					f64.apply(r.data(), x.data(), y.data());
 					FloatArrayAccessHook.written(r.storage());
 				}
 				case LispSingleFloatArray r -> {
 					if (!(a instanceof LispSingleFloatArray x) || !(b instanceof LispSingleFloatArray y)) {
-						throw mixedWidth(fnName);
+						return null;
 					}
 					f32.apply(r.data(), x.data(), y.data());
 					FloatArrayAccessHook.written(r.storage());
@@ -524,13 +524,13 @@ public final class VecSimd {
 			return switch (a) {
 				case LispDoubleFloatArray x -> {
 					if (!(b instanceof LispDoubleFloatArray y)) {
-						throw mixedWidth(fnName);
+						yield null;
 					}
 					yield vector(f64.apply(x.data(), y.data()));
 				}
 				case LispSingleFloatArray x -> {
 					if (!(b instanceof LispSingleFloatArray y)) {
-						throw mixedWidth(fnName);
+						yield null;
 					}
 					yield vector(f32.apply(x.data(), y.data()));
 				}
@@ -631,11 +631,12 @@ public final class VecSimd {
 	 * Whether any operand is a packed bfloat16 array. The element-wise members have no
 	 * fused bf16 kernel -- an intermediate at 8 mantissa bits compounds fast, so this
 	 * width is for STORAGE, and the element-wise route would be widen, compute in f32 and
-	 * narrow on store ({@code .todo}'s follow-up) -- so they DECLINE the width rather
-	 * than signal the mixed-width error, and the scalar {@code vec.lisp} defun answers.
-	 * Asked before the width switch because the mismatch arms below signal: a bf16
-	 * operand beside an f32 one is a shape the oracle computes happily, and
-	 * {@code --simd} may not turn it into an error.
+	 * narrow on store ({@code .todo}'s follow-up) -- so they DECLINE the width, and the
+	 * scalar {@code vec.lisp} defun answers. Checked as its own early-out purely to keep
+	 * the width switch below free of a bf16 arm; the mismatch arms below decline the very
+	 * same way (a {@code null} kernel answer), since a bf16 operand beside an f32 one is
+	 * a shape the oracle computes happily and {@code --simd} may not turn it into an
+	 * error -- nor may any other mixed-width pairing it happily computes.
 	 * @param arrays the member's array operands
 	 * @return {@code true} when at least one is a bfloat16 array
 	 */
@@ -678,11 +679,6 @@ public final class VecSimd {
 			throw new LispEvalException(qualified(name)
 					+ ": out must not be the same array as w or x (each out element folds over all of x)");
 		}
-	}
-
-	private static LispEvalException mixedWidth(String name) {
-		return new LispEvalException(
-				qualified(name) + ": operands must share an element type (mixed single-float and double-float)");
 	}
 
 	private static LispVal vector(double[] data) {

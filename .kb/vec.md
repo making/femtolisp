@@ -182,8 +182,21 @@ acos = `2*atan(sqrt((1-x)/(1+x)))` NOT `pi/2 - asin`, so `(acos 1)` is exactly 0
 
 ## The four acceleration layers
 
-Layers 0-3 are `--simd` and TOTAL -- one lane kernel per member, so the JVM call site is a bare
-`INVOKESTATIC` and the interpreter native never declines. Layer 4 is PARTIAL, over the GEMV pair only.
+Layers 0-3 are `--simd` and TOTAL -- one lane kernel per member. Layer 4 is PARTIAL, over the GEMV
+pair only.
+
+**A width mismatch DECLINES at layer 0, the interpreter, and signals everywhere else** (.todo/686):
+`vec.lisp`'s `%map2` reads every operand through `aref`, which widens whatever the packed storage
+width is, so the scalar defun computes a mixed `#f`/`#d` (or bf16-beside-either, outside the one
+fused pairing below) pair happily -- `--simd` may not turn that answer into an error. `VecSimd`'s
+`defineFn` protocol (below) makes this cheap: every width-mismatch arm across the sixteen
+element-wise/reduction/GEMV members answers `null` instead of throwing, so the captured scalar
+binding runs. Layer 1's JVM call site is a bare `INVOKESTATIC` into the embedded
+`RontoLispSimdBridge` with no decline path back to the defun's bytecode, so a compiled `--simd`
+program still signals `JvmSimdVectorTemplate.mixedWidth()` on that same shape, and wasm-GC's layer 3
+traps the same way (`requireSameKind`, below) -- both a divergence from the interpreter this item
+did not close, being materially larger (handing a runtime type failure back to already-emitted
+bytecode/wasm rather than a captured closure); tracked separately (`.todo/720`).
 
 **Layer 0, interpreter `--simd`** (jdk.incubator.vector): the eight vectorizable kernels run on
 `eval.VecSimdKernels`. The DEFAULT interpreter is unchanged -- it is the cross-backend oracle, and

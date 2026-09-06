@@ -387,13 +387,13 @@ class VecSimdTest {
 	}
 
 	@Test
-	void mixingWidthsInAnIntoKernelIsAnError() {
-		assertThatThrownBy(() -> eval("(vec:add-into (vec:zeros 1) #d(1.0) #f(1.0))", true))
-			.isInstanceOf(LispEvalException.class)
-			.hasMessageContaining("must share an element type");
-		assertThatThrownBy(() -> eval("(vec:add-into (vec:zeros 1 :element-type 'single-float) #d(1.0) #d(1.0))", true))
-			.isInstanceOf(LispEvalException.class)
-			.hasMessageContaining("must share an element type");
+	void mixingWidthsInAnIntoKernelComputesRatherThanSignalling() {
+		// A BEHAVIOUR CHANGE (.todo/686): see
+		// mixingSingleAndDoubleFloatOperandsComputesRatherThanSignalling above. Both a
+		// mismatch between the two operands and a mismatch between the destination and
+		// its operands decline to the scalar defun rather than raising.
+		assertMatchesScalarOracle("(vec:add-into (vec:zeros 1) #d(1.0) #f(1.0))");
+		assertMatchesScalarOracle("(vec:add-into (vec:zeros 1 :element-type 'single-float) #d(1.0) #d(1.0))");
 	}
 
 	/** Asserts an -into call (accelerated) equals its allocating sibling (scalar). */
@@ -544,10 +544,10 @@ class VecSimdTest {
 	}
 
 	@Test
-	void mixingWidthsInAUnaryIntoKernelIsAnError() {
-		assertThatThrownBy(() -> eval("(vec:sqrt-into (vec:zeros 1) #f(1.0))", true))
-			.isInstanceOf(LispEvalException.class)
-			.hasMessageContaining("must share an element type");
+	void mixingWidthsInAUnaryIntoKernelComputesRatherThanSignalling() {
+		// A BEHAVIOUR CHANGE (.todo/686): see
+		// mixingSingleAndDoubleFloatOperandsComputesRatherThanSignalling above.
+		assertMatchesScalarOracle("(vec:sqrt-into (vec:zeros 1) #f(1.0))");
 	}
 
 	// --- comparison-select ufuncs --------------------------------------------------
@@ -794,9 +794,9 @@ class VecSimdTest {
 		assertThat(eval("(let ((o (vec:zeros 2 :element-type 'single-float)))"
 				+ " (vec:add-into o #f(1.0 2.0) #bf16(0.5 0.25)))", true)
 			.print()).isEqualTo("#f(1.5 2.25)");
-		// The two CL float widths still signal against each other: that contract is
-		// unchanged, and only the width with no kernel of its own declines.
-		assertThatThrownBy(() -> eval("(vec:add #d(1.0) #f(1.0))", true)).isInstanceOf(LispEvalException.class);
+		// A mixed #d/#f pair also declines rather than signals (.todo/686) -- see
+		// mixingSingleAndDoubleFloatOperandsComputesRatherThanSignalling for the value
+		// pins; every mismatch a lane kernel meets hands the call back to the defun.
 		// A bf16 second operand where the FIRST has a fused kernel is still a decline,
 		// not a signal: only bf16-weights-by-f32-activations is fused.
 		assertThat(eval("(vec:dot #f(1.0 2.0) #bf16(3.0 4.0))", true).print()).isEqualTo("11.0");
@@ -807,11 +807,32 @@ class VecSimdTest {
 	// --- fixed-width contract ----------------------------------------------------
 
 	@Test
-	void mixingSingleAndDoubleFloatOperandsIsAnError() {
-		assertThatThrownBy(() -> eval("(vec:add #d(1.0) #f(1.0))", true)).isInstanceOf(LispEvalException.class)
-			.hasMessageContaining("must share an element type");
-		assertThatThrownBy(() -> eval("(vec:dot #f(1.0) #d(1.0))", true)).isInstanceOf(LispEvalException.class)
-			.hasMessageContaining("must share an element type");
+	void mixingSingleAndDoubleFloatOperandsComputesRatherThanSignalling() {
+		// A BEHAVIOUR CHANGE (.todo/686): --simd used to raise a fixed-width error here
+		// while the scalar vec.lisp defun (aref on a packed float array widens to
+		// double regardless of storage width) computed it happily -- a speed flag was
+		// deciding whether the program ran. Every member with a fixed-width lane
+		// kernel now DECLINES a mixed #f/#d pair, like every other shape it has no
+		// kernel for, and the scalar defun answers -- pinned by value, not merely by
+		// "does not throw".
+		assertMatchesScalarOracle("(vec:add #d(1.0 2.0) #f(3.0 4.0))");
+		assertMatchesScalarOracle("(vec:add #f(1.0 2.0) #d(3.0 4.0))");
+		assertMatchesScalarOracle("(vec:sub #d(1.0) #f(3.0))");
+		assertMatchesScalarOracle("(vec:mul #f(2.0) #d(3.0))");
+		assertMatchesScalarOracle("(vec:div #d(6.0) #f(3.0))");
+		assertMatchesScalarOracle("(vec:maximum #f(1.0) #d(2.0))");
+		assertMatchesScalarOracle("(vec:minimum #d(1.0) #f(2.0))");
+		assertMatchesScalarOracle("(vec:dot #f(1.0 2.0) #d(3.0 4.0))");
+		assertMatchesScalarOracle("(vec:dot #d(1.0 2.0) #f(3.0 4.0))");
+		assertMatchesScalarOracle("(vec:matvec #f((1.0 2.0) (3.0 4.0)) #d(1.0 1.0))");
+		assertMatchesScalarOracle("(vec:matvec #d((1.0 2.0) (3.0 4.0)) #f(1.0 1.0))");
+		assertMatchesScalarOracle("(vec:clip #f(1.0 -2.0) -0.5 0.5)");
+		assertMatchesScalarOracle("(vec:add-into (vec:zeros 2 :element-type 'double-float) #d(1.0 2.0) #f(3.0 4.0))");
+		assertMatchesScalarOracle("(vec:scale-into (vec:zeros 2 :element-type 'single-float) #d(1.0 2.0) 2.0)");
+		assertMatchesScalarOracle("(vec:clip-into (vec:zeros 2 :element-type 'double-float) #f(1.0 -2.0) -0.5 0.5)");
+		assertMatchesScalarOracle("(vec:exp-into (vec:zeros 2 :element-type 'double-float) #f(1.0 2.0))");
+		assertMatchesScalarOracle(
+				"(vec:matvec-into (vec:zeros 2 :element-type 'double-float) #f((1.0 2.0) (3.0 4.0)) #d(1.0 1.0))");
 	}
 
 	@Test
