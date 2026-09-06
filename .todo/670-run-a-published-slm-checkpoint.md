@@ -250,12 +250,12 @@ of them is an ASYMMETRY rather than a fresh defect. That is rule 6's shape, and 
 - `721` (`704`'s residue: character `read-sequence` costs ~1.2 us/char) is a kernel-cost
   item wanting a quiet box, and it does not decay.
 - `722` (High -- the WASM component backend traps on a `ref.cast` that a one-line source
-  edit MOVES; passing and trapping adapters are byte-identical. **Its prediction came true
-  the same day**: the FIRST case added to `ci-spec.yaml` after it was filed -- eleven lines
-  of `723`'s, ~500 characters, touching nothing the component path is suspected of --
-  trapped the whole corpus, and `723` dropped its case rather than ship red. The corpus is
-  not one case FROM the cliff, it is AT it, and **it cannot grow until 722 closes**, which
-  promotes the item from a curiosity to the thing blocking every future cross-backend pin)
+  edit MOVES; passing and trapping adapters are byte-identical. **Its prediction came
+  true the same day, twice**: eleven lines of `723`'s, ~500 characters, touching nothing
+  the component path is suspected of, trapped the whole corpus -- before AND after
+  `693`'s adapter fix landed with 30 corpus lines of its OWN that passed. So it is a coin
+  flip per case; `723` dropped its case rather than ship red, and the corpus is not one
+  case FROM the cliff, it is AT it. **Every future cross-backend pin is behind it**)
   and `724` (every `tok/s` row in
   `examples/llm/README.md` was taken with a harness that divides sampled tokens by the
   prompt's clock and counts the JIT warm-up, so the rows read 1.7-2x low). Both filed by

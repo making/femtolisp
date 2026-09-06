@@ -106,15 +106,26 @@ cd /tmp/cirun && wasmtime run -W gc=y -W exceptions=y --dir . --dir /tmp p.compo
 
 Then reorder `linalg::%la-make`'s `cond` arms (`single-float` first) and repeat.
 
-## It fired again, on the FIRST case added after it was filed (2026-09-06)
+## It fired the same day it was filed, and TWICE (2026-09-06)
 
 `.todo/723` added eleven lines to `jvm-typed-numeric-loops` -- about 500 characters, a
 `(dotimes (c (length v)) ...)` and two `print`s, touching neither `linalg:` nor `gguf:` nor
 the component path -- and the whole corpus trapped at the same `ref.cast` with the same
-backtrace (`wasmtime 47.0.3`, native binary, `CiSpecE2eTest`: 3569 run / 2 failed with the
-case, 4052 run / 0 failed with the eleven lines removed and nothing else changed). So the
-prediction below is now a measurement, and the corpus is not one case away from the cliff --
-**it is AT it**: the next case anyone adds, of any subject, is a coin flip.
+backtrace. `wasmtime 47.0.3`, native binary, `CiSpecE2eTest`, everything else unchanged:
+
+| corpus | run / failed |
+| --- | --- |
+| `2a5d9742` | 4052 / 0 |
+| `2a5d9742` + the eleven lines | 3569 / **2** |
+| `b1f38d72` (`.todo/693`'s adapter fix, and its OWN 30 new ci-spec lines) | 4060 / 0 |
+| `b1f38d72` + the same eleven lines | 3576 / **2** |
+
+Read the last two rows together with the third: **another lane added 30 lines to the same
+corpus that day and they passed, and the WASI 0.3 adapter changed by 58 bytes in between,
+and this case still traps.** So it is a coin flip per case, not a size threshold and not
+something the adapter's own bytes decide -- which the table above already said, and this is
+the first time it has been paid for. The corpus is not one case away from the cliff, it is
+AT it.
 
 `723` chose not to ship a red corpus and DROPPED its case, so **a `(length a)` typed-loop
 case is queued behind this item** -- the form is otherwise pinned by
