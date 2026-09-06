@@ -131,10 +131,26 @@ artefacts out -- see rule 12.
 
 ## The certification record
 
-**Head certified: `ff903aa8`.** dorian full suite green there: 10077 / 0 / 0 / 276 skipped
-with **234** reports. The report count moved from `0e65326b`'s 232 by exactly the two test
-classes A's lane added -- `cli/LlmChatModeWithoutTemplateTest` (A-2) and
-`cli/SafetensorsBfloat16CompilePathTest` (A-3).
+**Head certified: `a92e205f`.** dorian full suite green there at the close of A's whole
+six-item lane: 10104 / 0 / 0 / 283 skipped with **235** reports, taken by the ORCHESTRATOR
+on `develop` rather than from any worktree (rule 4) -- the six items' combination exists
+nowhere else. **235 matches GB10's count at `97e3b9ba`**, so nothing A's lane did dropped a
+class: every test it wrote went into an existing class or into `ci-spec.yaml`. The previous
+dorian certification was `ff903aa8` (10077 / 0 / 0 / 276 skipped, **234** reports), whose
+count had moved from `0e65326b`'s 232 by exactly the two classes the prior A lane added --
+`cli/LlmChatModeWithoutTemplateTest` and `cli/SafetensorsBfloat16CompilePathTest`.
+
+**The 276 -> 283 skip delta is NOT attributed here**, and that is deliberate: a skip count
+is a signal only against a census of the SAME slice (rule 3 below), and the two runs are
+seven items apart across both lanes. `CiSpecE2eTest` contributes 0 to it -- the `--simd`
+axis `694` added doubles the legs of a class that reports zero tests when
+`-Drontolisp.binary` is unset, so the axis is invisible to a skip count and shows up only
+in the native run (2008 -> 4020 cases). Anyone who needs the delta explained diffs the two
+complete censuses; nobody has.
+
+**`a92e205f` is already behind `develop`** and the drift is B's, in `am.ik.gpu` /
+`eval/LinalgGpu*` / `codegen/jvm/JvmGpuTemplate` -- dorian cannot verify that arm at all,
+so rule 8 does not carry this certification across it. GB10 takes that head.
 
 **GB10 certifies `97e3b9ba`**, at the close of B's whole lane: 10094 / 0 / 0 / **189**
 skipped with **235** reports, exit 0, `GpuTest` included. Taken by the ORCHESTRATOR on
@@ -218,32 +234,56 @@ Sonnet.** A dead worker is RESUMED, never respawned.
 
 **Orchestrator A -- dorian, the model side, no GPU.**
 
-The previous A lane closed all five of its items -- `489`, `712`, `675`, `677`, `711` -- one
-at a time, and certified the suite at `ff903aa8` above. Two of the five had nothing left to
-BUILD: `675`'s remainder was landed by `487` and `677`'s by `489` and `678`, and rule 3's
-sort into blocked / not-done / done-elsewhere is what established that rather than a count.
-What it left behind: `cli/LlmChatModeWithoutTemplateTest`, `cli/SafetensorsBfloat16CompilePathTest`
-(the first pin of the bf16 reader across two ENGINES, where every part had been pinned on
-one engine each), and `.kb/directory-rename.md`.
+The previous A lane closed all six of its items -- `697`, `700`, `698`, `686`, `694`, `704`
+-- one at a time, and certified the suite at `a92e205f` above. It was drawn GPU-free by
+construction and held no High item.
 
-The current lane is drawn from the unassigned pool and is **GPU-free by construction** --
-dorian has no device, so every item in it must be verifiable without one. There is no High
-item: the GPU-free pool holds only Low and Medium, so nothing here is Fable's.
+**Three of the six had their premise moved by their own measurement**, which is the lane's
+main result and is why none of them is recorded as its plan:
 
-| # | item | difficulty | why here, why now |
-| --- | --- | --- | --- |
-| A-1 | `697` `--parallel`'s default thread count is a trap on a shared box | Medium | FIRST, because it is the one item that invalidates the others' evidence rather than adding to it. Its measurement is dorian's own: the default 64 threads against 32 is **16x slower** with one other build on the box, and 4x slower than ONE thread, because a worker preempted while holding a leaf costs the whole GEMV a scheduler quantum. A takes every future rung on this box and every `--parallel` row in `examples/llm/README.md` was taken at the default, so until this is fixed the lane cannot separate a codegen change from a descheduled worker |
-| A-2 | `700` `--simd` without the incubator module is a 100x cliff that reads as a hang | Low | The same failure shape as A-1 -- a run that is neither broken nor working -- on the same flag surface (`RontoLispCli`, beside `requireSimdForParallel`), so one worker holds both while the context is warm. The mechanics are correct and documented; what is wrong is the SEVERITY of a one-line warning in front of a 100x degrade. Check the item's second option before proposing it: `Add-Modules` is not a manifest attribute the launcher honours for `-jar` |
-| A-3 | `698` `subseq` of an adjustable packed vector is a `simple-vector` | Low | A live correctness defect that kills the INTERPRETER leg on a real checkpoint's `tokenizer.json`, which is why the Qwen3.5 rows in the README are JVM-only and nobody saw it. Rule 6's shape exactly: two defects, and the second -- three backends tolerating a general-vector `subseq` -- is what hides the first everywhere but the one place it bites |
-| A-4 | `686` `--simd` turns a mixed-width `vec:` call into an error the scalar path answers | Low | Unblocked: `484` landed the `defineFn` hand-back this needs, so the work is turning 16 `throw mixedWidth(...)` into `return null`. Here because it is A-3's invariant from the other side -- **a speed flag must not decide whether a program runs**, which is what every cross-backend bit-identity pin in `.kb/vec.md` exists to protect |
-| A-5 | `694` the cross-backend E2E corpus has no `--simd` axis | Medium | After the three above, deliberately: it is the AXIS each of them sits on one side of, so the cases this lane has just written are what the new axis first crosses. It is also the item rule 6 was written from -- `671` closed green on four backends with a native run, and every test it wrote sat on the non-`--simd` side of the condition that broke it on two of them |
-| A-6 | `704` accumulating a file into a string is quadratic in the file | Medium | On A's own path -- 12.8 MB of `tokenizer.json` never returns, sampled at 200 s still inside the accumulate -- and independent of everything above it, which is why it is last: its value does not decay. Both call sites and the already-linear path (`read-file-bytes` + `rontolisp:octets-to-string`) are written down in the item |
+- `697` -- the trap is real but it is a TAIL, not a floor. "One other build on the box
+  costs 10x" did not reproduce (4 runs, one hit); busy cores at 6 / 16 / 64 cost nothing
+  measurable. What reproduces is TWO 64-thread decode loops at once. The default is now
+  `min(cpus, max(2, cpus/2))` because the idle-box curve itself bends DOWN past half the
+  box (16 threads 9.55 tok/s, 32 9.45, 64 8.70), not because of contention. The rescue
+  design the item proposed -- the caller re-running a leaf whose worker was descheduled --
+  was BUILT and measured 0.041 -> 0.061 ms/call at every budget, so the cost is the flag's
+  cache line, not the rescue; it was dropped.
+- `694` -- the item predicted the second corpus pass would be nearly free because the cost
+  is fixed. It is marginal-dominated: 746 ms fixed against 479 x 74.8 ms, so the `--simd`
+  axis costs a whole pass (65.5 -> 111.9 s, 2008 -> 4020 cases). Taken anyway, with the
+  reason written down, because the axis is what `692` proved a backend count cannot see.
+- `704` -- both quadratic sites are linear now (JVM `read-file-string` 18,164 -> 537 ms on
+  2.7 M chars, n-ary `concatenate` 54,197 -> 357), and `examples/llm`'s `read-file-bytes`
+  detour still STAYS: the byte path is 2x (JVM) to 23x (interpreter, wasm) faster even
+  after the fix, because what remains is character `read-sequence` itself. That residue is
+  `.todo/721`.
 
-**Not in this lane, and why.** `687` (`linalg:` carries its element width as a boolean) is
-GPU-free to WRITE and not to VERIFY: it changes `LinalgGpu.gatherStrided`, and only GB10
-can run that arm. `684` and `696` each hold an **x64 half that is A's** whenever they are
-picked up, since every `.todo/488` number behind them is aarch64 -- but neither is on the
-width chain's critical path, so they stay in the pool.
+`700` also killed its own item's second option empirically -- a jar with an `Add-Modules`
+manifest attribute still throws `ClassNotFoundException` under `java -jar` -- and `698`
+found a wider defect than the one filed: a SIMPLE packed float vector's `subseq` threw
+outright on the interpreter, so the reported adjustable case was the narrow half.
+
+What the lane left behind: `--simd --parallel` is a hard error rather than a silent 100x
+degrade on the interpreter path (the compiled `.class` still degrades, deliberately);
+`vec:`'s sixteen mixed-width `throw` sites now decline to the scalar defun, so a speed flag
+no longer decides whether a program runs; `CiSpecE2eTest` has an `Accel` axis whose
+"did `--simd` actually take effect" assertion was verified by breaking it three ways;
+`.kb/simd-parallel.md`, `.kb/string-accumulate-cost.md`, and `.kb/vec.md`'s
+"The E2E `--simd` axis". It filed three items and worked none of them recursively:
+`719` (JVM/wasm `subseq` still loses the packed width -- `698`'s other half, High),
+`720` (the same mixed-width shape still signals in COMPILED `--simd` output, where there is
+no closure to hand back -- `686`'s other half), and `721` (character `read-sequence`'s own
+per-character cost -- `704`'s residue).
+
+**Not in a GPU-free lane, and why.** `687` (`linalg:` carries its element width as a
+boolean) is GPU-free to WRITE and not to VERIFY: it changes `LinalgGpu.gatherStrided`, and
+only GB10 can run that arm. `684` and `696` each hold an **x64 half that is A's** whenever
+they are picked up, since every `.todo/488` number behind them is aarch64 -- but neither is
+on the width chain's critical path, so they stay in the pool.
+
+**A's next lane is not drawn.** Pick it at the next planning, with `719` / `720` / `721` in
+the pool -- `720` is the one that pairs with a `694` axis that now exists to catch it.
 
 **Orchestrator B -- GB10, the device.**
 
@@ -288,7 +328,8 @@ The two other standing decisions are discharged: the one-thread bf16 ratio went 
 `489` before it closed, and `711` is closed.
 
 **Unassigned pool, neither side's yet:** `597`, `684`, `689`, `693`, `695`, `696`, `699`,
-`701`, `703`, `705`, `714`, `715`. `683` left it by closing. `687` left it to B, which is
+`701`, `703`, `705`, `714`, `715`, `719`, `720`, `721`. `683` left it by closing; the last
+three A's lane filed and did not work recursively, and all three are GPU-free. `687` left it to B, which is
 the only side that can verify it. `713`, `716`, `717` and `718` never really entered it --
 B filed the last three and inherited the first, and all four need this box.
 
