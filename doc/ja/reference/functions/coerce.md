@@ -6,6 +6,8 @@
 
 ベクタの `result-type` が `(unsigned-byte 8)`、`(unsigned-byte 16)`、`(unsigned-byte 32)` の要素型を綴っている場合 — `'(vector (unsigned-byte 8))`、`'(simple-array (unsigned-byte 32) (*))` — [`make-array`](make-array.md) や [`concatenate`](concatenate.md) と同じ特殊化ベクタを構築します。`array-element-type` はその要素型を返し、対応する `simple-array` 指定子に対する `typep` は真になります。要素は要素幅にマスクされて格納されます。それ以外の要素型では要素型 `t` の一般ベクタになります。ルックアップテーブルは通常この綴りで書かれますが、要素がすべてリテラルのテーブルはコンパイル系のバックエンドではコンパイル時に構築されます。
 
+ベクタの `result-type` がパックされた浮動小数点要素型を綴っている場合 — `'(vector single-float)`、`'(simple-array double-float (*))`、`'(array bfloat16)` — その幅のパック浮動小数点配列を構築します。これは [`make-array`](make-array.md) が作るものと同じ表現で、`array-element-type` はその要素型を返します。要素は配列自身の幅で格納されるため、整数の要素は浮動小数点数になり、より広い幅のものは丸められます。実数でない要素はエラーです。`bfloat16` の配列はインタプリタと JVM バックエンドにのみ存在します。
+
 ```lisp
 (coerce '(1 2 3) 'vector) ; => #(1 2 3)
 (coerce (vector 1 2 3) 'list) ; => (1 2 3)
@@ -16,6 +18,11 @@
 ```lisp
 (coerce '(1 2 260) '(vector (unsigned-byte 8))) ; => #(1 2 4)
 (array-element-type (coerce '(1) '(simple-array (unsigned-byte 32) (*)))) ; => (UNSIGNED-BYTE 32)
+```
+
+```lisp
+(coerce '(1 2) '(vector single-float)) ; => #f(1.0 2.0)
+(array-element-type (coerce '(1.0) '(simple-array double-float (*)))) ; => DOUBLE-FLOAT
 ```
 
 ```lisp

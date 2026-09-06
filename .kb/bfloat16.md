@@ -117,6 +117,12 @@ it BY NAME at `compiler/UnsupportedFloatWidth`. `vec:` carries the width; `linal
   `1 + rank`). Measured 2026-09-05: 2^21 elements round-trip with zero mismatches, 5 ms on the
   JVM and 10 ms on the interpreter. The bulk `widen-float-bits` / `narrow-float-bits` pair
   still declines a bf16 source or destination (`.todo/487` step 2).
+- **`coerce` / `concatenate` reach the width too** (2026-09-06, `.todo/707`):
+  `(coerce v '(array bfloat16))` narrows into it on the two backends that carry it, and the
+  refusal on the others sits where the representation is chosen -- the shared
+  `%seq-float-vector` helper's own `make-array` arm, which wasm-GC already lowers to the
+  call-time signal. A guard on `make-array` alone would not have covered it
+  ([concatenate-result-families.md](concatenate-result-families.md)).
 - **A runtime `:element-type` reaches the width now too.** `(make-array n :element-type et)`
   with `et` a VALUE -- which is what `checkpoint:make-tensor` does, so it is the only way a
   checkpoint reader allocates -- built a boxed general array for `bfloat16` on every backend

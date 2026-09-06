@@ -1673,6 +1673,63 @@ public final class Environment implements Scope {
 		return new LispIntVector(width, data);
 	}
 
+	/**
+	 * Builds a packed FLOAT array from already-collected elements: the shared tail of
+	 * {@code concatenate}'s packed vector family and of {@code %seq-float-vector}, the
+	 * float twin of {@link #packedIntVector}. Each element coerces to a {@code double}
+	 * and is narrowed to the width by the array's own storage (a non-real is the same
+	 * type error {@code make-array :initial-contents} signals).
+	 *
+	 * <p>
+	 * The switch is over the PERMITS with no default arm, like the allocation in
+	 * {@code makeArrayBuiltin}: the width -&gt; allocation direction is a compile error
+	 * for the next permit rather than a silent fall into whichever arm came last
+	 * ({@code .kb/vec.md}).
+	 * @param fn the operator name, for the type error's message
+	 * @param proto the zero-length prototype naming the width
+	 * @param elements the elements, in order
+	 * @return the packed float array
+	 */
+	private static LispVal packedFloatVector(String fn, LispFloatArray proto, List<LispVal> elements) {
+		int n = elements.size();
+		int[] dims = { n };
+		switch (proto) {
+			case LispBFloat16Array ignored -> {
+				short[] data = new short[n];
+				for (int i = 0; i < n; i++) {
+					data[i] = (short) BFloat16.bits(realElement(fn, elements.get(i)));
+				}
+				return new LispBFloat16Array(data, dims);
+			}
+			case LispSingleFloatArray ignored -> {
+				float[] data = new float[n];
+				for (int i = 0; i < n; i++) {
+					data[i] = (float) realElement(fn, elements.get(i));
+				}
+				return new LispSingleFloatArray(data, dims);
+			}
+			case LispDoubleFloatArray ignored -> {
+				double[] data = new double[n];
+				for (int i = 0; i < n; i++) {
+					data[i] = realElement(fn, elements.get(i));
+				}
+				return new LispDoubleFloatArray(data, dims);
+			}
+		}
+	}
+
+	// A packed float element: any real, widened to a double. Anything else (a character,
+	// a string, nil, ...) is a type error -- there is no degrade path, matching the
+	// packed integer vectors.
+	private static double realElement(String fn, @Nullable LispVal val) {
+		if (val instanceof LispInteger || val instanceof LispBigInteger || val instanceof LispDouble
+				|| val instanceof LispRatio) {
+			return asDouble(val);
+		}
+		throw new LispEvalException(
+				fn + ": a packed float array stores reals, got " + (val == null ? "nil" : val.print()));
+	}
+
 	private static int packedIntElementWidth(@Nullable LispVal elementType) {
 		return LispNames.unsignedByteWidth(elementType);
 	}
@@ -4729,6 +4786,21 @@ public final class Environment implements Scope {
 			appendSequenceElements(args.get(0), elements);
 			return packedIntVector(LispNames.SEQ_INT_VECTOR, width, elements);
 		}));
+		// %seq-float-vector: one sequence of reals as a packed float array of the width
+		// an ArrayElementTypes code names -- the float twin of %seq-int-vector, called
+		// from the same two lowerings (concatenate's vector family and coerce) and
+		// answering here for the same reason: the name is a cl internal.
+		env.defineFunction(LispNames.SEQ_FLOAT_VECTOR, new LispFunction(LispNames.SEQ_FLOAT_VECTOR, args -> {
+			requireArgCount(LispNames.SEQ_FLOAT_VECTOR, args, 2);
+			int code = (int) asLong(args.get(1));
+			LispFloatArray proto = LispFloatArray.prototypeFor(ArrayElementTypes.valueOf(code));
+			if (proto == null) {
+				throw new LispEvalException(LispNames.SEQ_FLOAT_VECTOR + ": unsupported element type code " + code);
+			}
+			List<LispVal> elements = new ArrayList<>();
+			appendSequenceElements(args.get(0), elements);
+			return packedFloatVector(LispNames.SEQ_FLOAT_VECTOR, proto, elements);
+		}));
 		// %error: internal single-argument primitive that signals an error with a
 		// pre-built message string. Produced by the error macro expansion.
 		env.defineFunction(LispNames.ERROR_INTERNAL, new LispFunction(LispNames.ERROR_INTERNAL, args -> {
@@ -5970,11 +6042,15 @@ public final class Environment implements Scope {
 				appendSequenceElements(arg, elements);
 			}
 			if (family == ConcatenateForms.ResultFamily.VECTOR) {
-				// An (unsigned-byte 8|16|32) element type asks for the PACKED
-				// representation make-array already builds; the compile paths reach the
-				// same result through %seq-int-vector.
+				// An (unsigned-byte 8|16|32) or packed float element type asks for the
+				// PACKED representation make-array already builds; the compile paths
+				// reach the same results through %seq-int-vector / %seq-float-vector.
 				if (spec.intWidth() != 0) {
 					return packedIntVector(LispNames.CONCATENATE, spec.intWidth(), elements);
+				}
+				LispFloatArray proto = LispFloatArray.prototypeFor(ArrayElementTypes.valueOf(spec.elementType()));
+				if (proto != null) {
+					return packedFloatVector(LispNames.CONCATENATE, proto, elements);
 				}
 				return new LispArray(new int[] { elements.size() }, elements.toArray(new LispVal[0]));
 			}

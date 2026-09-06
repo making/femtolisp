@@ -1493,6 +1493,50 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void evalCoerceAndConcatenateKeepThePackedFloatElementType() {
+		// The packed families are a CLOSED code space, and the float widths are members
+		// of it: (coerce seq '(vector single-float)) is the packed float array
+		// make-array builds, not a general vector -- and (coerce packed '(array
+		// bfloat16)) converts rather than answering its ARGUMENT unchanged, which is what
+		// dropping the element type looked like when the source was already packed
+		// (.todo/707).
+		assertThat(eval("""
+				(let ((v (coerce '(1 2) '(vector single-float))))
+				  (list (array-element-type v) (typep v '(simple-array single-float (*))) v))""").print())
+			.isEqualTo("(SINGLE-FLOAT T #f(1.0 2.0))");
+		assertThat(eval("(coerce '(1.0 2.5) '(simple-array double-float (*)))").print()).isEqualTo("#d(1.0 2.5)");
+		assertThat(eval("(coerce #f(1.0 -2.0 0.5) '(array bfloat16))").print()).isEqualTo("#bf16(1.0 -2.0 0.5)");
+		assertThat(eval("(coerce #bf16(1.0 2.0) '(vector single-float))").print()).isEqualTo("#f(1.0 2.0)");
+		// concatenate reads the same designator, and its arguments may be any sequences.
+		assertThat(eval("(concatenate '(vector single-float) '(1.0 2.0) #(3.0))").print()).isEqualTo("#f(1.0 2.0 3.0)");
+		assertThat(eval("(array-element-type (concatenate '(simple-array double-float (*)) #d(1.0)))").print())
+			.isEqualTo("DOUBLE-FLOAT");
+		// The first-class value re-does the dispatch at run time and must answer the
+		// same: a designator does not mean two things depending on the call form.
+		assertThat(eval("(funcall #'concatenate '(vector single-float) '(1.0) '(2.0))").print())
+			.isEqualTo("#f(1.0 2.0)");
+		assertThat(eval("(array-element-type (apply #'concatenate '(array bfloat16) (list '(1.0))))").print())
+			.isEqualTo("BFLOAT16");
+		// A non-real element is a type error, like the packed integer vectors' -- there
+		// is no degrade path to a general vector.
+		assertThatThrownBy(() -> eval("(coerce '(#\\a) '(vector single-float))")).isInstanceOf(LispEvalException.class)
+			.hasMessageContaining("stores reals");
+	}
+
+	@Test
+	void evalSeqFloatVectorHelper() {
+		// The internal helper the compile paths call, keyed on the ArrayElementTypes
+		// code rather than on a width: any sequence of reals, one packed float array.
+		assertThat(eval("(%seq-float-vector '(1 2) " + ArrayElementTypes.SINGLE_FLOAT + ")").print())
+			.isEqualTo("#f(1.0 2.0)");
+		assertThat(eval("(array-element-type (%seq-float-vector #(1.0) " + ArrayElementTypes.BFLOAT16 + "))").print())
+			.isEqualTo("BFLOAT16");
+		assertThatThrownBy(() -> eval("(%seq-float-vector '(1) " + ArrayElementTypes.UNSIGNED_BYTE_8 + ")"))
+			.isInstanceOf(LispEvalException.class)
+			.hasMessageContaining("unsupported element type code");
+	}
+
+	@Test
 	void evalConcatenateAliasResultTypeKeepsThePackedElementType() {
 		// The deftype chain carries the element type too, so fast-http's
 		// 'simple-byte-vector is a packed result and not merely a vector one.

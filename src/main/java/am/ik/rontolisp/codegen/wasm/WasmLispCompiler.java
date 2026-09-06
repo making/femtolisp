@@ -2656,8 +2656,18 @@ public final class WasmLispCompiler implements LispCompiler {
 		// it, and so does the #'concatenate wrapper's own vector arm (its designator is a
 		// runtime value, so it re-does the width dispatch there). No array gate to force
 		// here -- the packed array types and _iv_set are unconditional on wasm-GC.
-		boolean usesSeqIntVector = ConcatenateForms.needsSeqIntVector(program, closRegistry) || program.stream()
+		boolean referencesConcatenateValue = program.stream()
 			.anyMatch(expr -> BuiltinFunctionWrappers.referencesFunctionValue(expr, LispNames.CONCATENATE));
+		boolean usesSeqIntVector = ConcatenateForms.needsSeqIntVector(program, closRegistry)
+				|| referencesConcatenateValue;
+		// The same for the packed FLOAT builder, on its own gate so a program that asks
+		// only for packed integer vectors carries none of the float allocations. No array
+		// gate to force here either -- the packed float array types are unconditional on
+		// wasm-GC -- and the helper's bfloat16 arm compiles to the call-time signal
+		// WasmArrayCompiler emits for the width, provably dead in a program that never
+		// names it (.kb/bfloat16.md).
+		boolean usesSeqFloatVector = ConcatenateForms.needsSeqFloatVector(program, closRegistry)
+				|| referencesConcatenateValue;
 		// A generic function whose name is a compiler-lowered built-in (fast-io's close
 		// methods): rename its dispatcher, keep the built-in as the default method, and
 		// route the program's call sites through it. No-op without such a generic.
@@ -2778,6 +2788,7 @@ public final class WasmLispCompiler implements LispCompiler {
 		applyGateWrappers.remove(LispNames.INTERN);
 		applyGateWrappers.remove(LispNames.SEQ_STRING);
 		applyGateWrappers.remove(LispNames.SEQ_INT_VECTOR);
+		applyGateWrappers.remove(LispNames.SEQ_FLOAT_VECTOR);
 		boolean usesApplyRuntime = usesEval || LispMacroExpander.needsApplyRuntime(program, applyGateWrappers)
 		// An INJECTED wrapper whose body calls apply -- the map* family,
 		// every/some, funcall -- is reachable as soon as the program takes that
@@ -3099,9 +3110,13 @@ public final class WasmLispCompiler implements LispCompiler {
 		if (!usesSeqString) {
 			wrapperExcludes.add(LispNames.SEQ_STRING);
 		}
-		// %seq-int-vector is the concatenate packed-vector builder, gated the same way.
+		// %seq-int-vector is the concatenate packed-vector builder, gated the same way,
+		// and %seq-float-vector is its float twin on its own gate.
 		if (!usesSeqIntVector) {
 			wrapperExcludes.add(LispNames.SEQ_INT_VECTOR);
+		}
+		if (!usesSeqFloatVector) {
+			wrapperExcludes.add(LispNames.SEQ_FLOAT_VECTOR);
 		}
 		// #'error/#'cerror/#'signal/#'warn wrappers forward the datum only (lite), and
 		// #'format renders via the runtime control renderer; inject each only when the

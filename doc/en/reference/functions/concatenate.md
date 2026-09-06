@@ -6,6 +6,8 @@ Joins its sequence arguments into one new sequence of `result-type`. Three resul
 
 A vector `result-type` spelling an `(unsigned-byte 8)`, `(unsigned-byte 16)` or `(unsigned-byte 32)` element type -- `'(vector (unsigned-byte 8))`, `'(simple-array (unsigned-byte 8) (*))` -- builds a specialized vector of that element type, the same representation [`make-array`](make-array.md) produces, so `array-element-type` reports it and `typep` against the matching `simple-array` specifier answers true. Elements are stored masked to the element width. Any other element type builds a general vector, whose element type is `t`.
 
+A vector `result-type` spelling one of the packed float element types -- `'(vector single-float)`, `'(simple-array double-float (*))`, `'(array bfloat16)` -- builds a packed float array of that width, the same representation [`make-array`](make-array.md) produces, so `array-element-type` reports it back. Elements are stored at the array's own width, so an integer element becomes a float and a wider one is narrowed; a non-real element is an error. `bfloat16` arrays exist on the interpreter and the JVM backend only.
+
 ```lisp
 (concatenate 'string "foo" "bar") ; => "foobar"
 (concatenate 'string "a" '(#\b #\c) nil "d") ; => "abcd"
@@ -14,6 +16,8 @@ A vector `result-type` spelling an `(unsigned-byte 8)`, `(unsigned-byte 16)` or 
 (concatenate '(vector (unsigned-byte 8)) #(1) #(2 3)) ; => #(1 2 3)
 (array-element-type (concatenate '(vector (unsigned-byte 8)) #(1))) ; => (UNSIGNED-BYTE 8)
 (array-element-type (concatenate 'vector #(1))) ; => T
+(concatenate '(vector single-float) '(1 2) #(3)) ; => #f(1.0 2.0 3.0)
+(array-element-type (concatenate '(simple-array double-float (*)) #d(1.0))) ; => DOUBLE-FLOAT
 (progn (deftype octet-vector () '(simple-array (unsigned-byte 8) (*)))
        (concatenate 'octet-vector #(1) #(2 3))) ; => #(1 2 3)
 ```

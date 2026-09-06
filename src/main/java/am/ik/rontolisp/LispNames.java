@@ -2713,6 +2713,18 @@ public final class LispNames {
 	 */
 	public static final String SEQ_INT_VECTOR = "%SEQ-INT-VECTOR";
 
+	/**
+	 * The {@code %seq-float-vector} internal helper: one sequence of reals as a PACKED
+	 * FLOAT array of a given element type, named by its {@code ArrayElementTypes} code
+	 * ({@code (%seq-float-vector seq 5)} for {@code single-float}). The float twin of
+	 * {@link #SEQ_INT_VECTOR}, and it exists for the same two reasons: the
+	 * {@code concatenate} vector family and {@code coerce} must honour a
+	 * {@code single-float} / {@code double-float} / {@code bfloat16} element type, and
+	 * neither may plant an allocate-and-fill loop at every call site (see
+	 * {@code compiler/ConcatenateForms} and {@code .kb/vec.md}).
+	 */
+	public static final String SEQ_FLOAT_VECTOR = "%SEQ-FLOAT-VECTOR";
+
 	/** The {@code read-line} built-in function. */
 	public static final String READ_LINE = "READ-LINE";
 
@@ -9305,16 +9317,36 @@ public final class LispNames {
 	 * @return 8, 16, 32, or 0
 	 */
 	public static int packedVectorWidth(@org.jspecify.annotations.Nullable LispVal designator) {
+		return unsignedByteWidth(packedVectorElementType(designator));
+	}
+
+	/**
+	 * The ELEMENT TYPE a sequence result-type designator spells, or null when it spells
+	 * none -- the shape rule {@link #packedVectorWidth} rests on, lifted out so a caller
+	 * that asks about a FLOAT element type reads the same rule rather than a second copy
+	 * of it.
+	 *
+	 * <p>
+	 * Which spellings carry an element type is a SHAPE rule, not a position rule: only
+	 * {@code (vector T ...)}, {@code (array T ...)} and {@code (simple-array T ...)} lead
+	 * with one, while {@code (simple-vector SIZE)} and the bit-vector spellings carry a
+	 * SIZE in that slot, so reading position 1 unconditionally would turn esrap's
+	 * {@code (simple-vector 41)} into a specialized request.
+	 * @param designator the result-type designator, already unquoted
+	 * @return the element-type specifier, or null when the designator carries none
+	 */
+	public static @org.jspecify.annotations.Nullable LispVal packedVectorElementType(
+			@org.jspecify.annotations.Nullable LispVal designator) {
 		if (!(designator instanceof LispCons spec) || !(spec.car() instanceof LispSymbol head)
 				|| !(spec.cdr() instanceof LispCons rest)) {
-			return 0;
+			return null;
 		}
 		PackageRegistry.QualifiedName qn = PackageRegistry.splitQualified(head.name());
 		boolean carriesElementType = switch (qn == null ? head.name() : qn.member()) {
 			case "VECTOR", "ARRAY", "SIMPLE-ARRAY" -> true;
 			default -> false;
 		};
-		return carriesElementType ? unsignedByteWidth(rest.car()) : 0;
+		return carriesElementType ? rest.car() : null;
 	}
 
 	private LispNames() {

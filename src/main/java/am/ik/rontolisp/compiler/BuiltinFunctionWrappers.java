@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
+import am.ik.rontolisp.ArrayElementTypes;
 import am.ik.rontolisp.LispCons;
 import am.ik.rontolisp.LispInteger;
 import am.ik.rontolisp.LispNames;
@@ -1028,17 +1029,20 @@ public final class BuiltinFunctionWrappers {
 		LispVal strings = listToCons(
 				List.of(new LispSymbol(LispNames.STR_FRESH), listToCons(List.of(new LispSymbol(LispNames.REDUCE), step,
 						new LispSymbol("seqs"), new LispSymbol(LispNames.INITIAL_VALUE_KEYWORD), new LispString("")))));
-		// The vector arm honours an (unsigned-byte 8|16|32) element type, exactly like
-		// the
-		// call-position lowering: (apply #'concatenate '(simple-array (unsigned-byte 8)
-		// (*)) ...) is http-body's own spelling and ironclad's HKDF, and a designator
-		// must not mean two different things depending on the call form. The element type
-		// sits in position 1 of (vector T ...) / (array T ...) / (simple-array T ...);
-		// (simple-vector SIZE) carries a SIZE there, which no (unsigned-byte N) list can
-		// be equal to, so one test per width covers every head without reading the shape.
+		// The vector arm honours an (unsigned-byte 8|16|32) element type and a packed
+		// FLOAT one, exactly like the call-position lowering: (apply #'concatenate
+		// '(simple-array (unsigned-byte 8) (*)) ...) is http-body's own spelling and
+		// ironclad's HKDF, and a designator must not mean two different things depending
+		// on the call form. The element type sits in position 1 of (vector T ...) /
+		// (array T ...) / (simple-array T ...); (simple-vector SIZE) carries a SIZE
+		// there, which no (unsigned-byte N) list and no width NAME can be equal to, so
+		// one test per member covers every head without reading the shape. The float
+		// tests are DERIVED from the closed code space (packedFloatElementTypeCodes), so
+		// this dispatch and %seq-float-vector's allocations cannot name different sets.
 		LispSymbol elements = new LispSymbol("__cc_elts");
 		LispSymbol elementType = new LispSymbol("__cc_elt");
 		LispSymbol width = new LispSymbol("__cc_w");
+		LispSymbol floatCode = new LispSymbol("__cc_f");
 		LispVal widthOfElementType = new LispInteger(0);
 		for (int bits : new int[] { 32, 16, 8 }) {
 			LispVal unsignedByte = listToCons(List.of(new LispSymbol(LispNames.QUOTE),
@@ -1046,16 +1050,26 @@ public final class BuiltinFunctionWrappers {
 			widthOfElementType = listToCons(List.of(new LispSymbol(LispNames.IF),
 					callV(LispNames.EQUAL, elementType, unsignedByte), new LispInteger(bits), widthOfElementType));
 		}
+		LispVal floatCodeOfElementType = new LispInteger(0);
+		for (int code : packedFloatElementTypeCodes()) {
+			LispVal name = listToCons(List.of(new LispSymbol(LispNames.QUOTE), ArrayElementTypes.valueOf(code)));
+			floatCodeOfElementType = listToCons(List.of(new LispSymbol(LispNames.IF),
+					callV(LispNames.EQUAL, elementType, name), new LispInteger(code), floatCodeOfElementType));
+		}
 		LispVal vectorBindings = listToCons(List.of(listToCons(List.of(elements, concatenatedElements())),
 				listToCons(List.of(elementType,
 						listToCons(List.of(new LispSymbol(LispNames.IF), call(LispNames.CONSP, "type"),
 								callV(LispNames.CAR, call(LispNames.CDR, "type")), LispNil.INSTANCE)))),
-				listToCons(List.of(width, widthOfElementType))));
-		LispVal vector = listToCons(List.of(new LispSymbol(LispNames.LET_STAR), vectorBindings,
-				listToCons(List.of(new LispSymbol(LispNames.IF), callV(LispNames.EQ, width, new LispInteger(0)),
+				listToCons(List.of(width, widthOfElementType)),
+				listToCons(List.of(floatCode, floatCodeOfElementType))));
+		LispVal generalOrFloat = listToCons(
+				List.of(new LispSymbol(LispNames.IF), callV(LispNames.EQ, floatCode, new LispInteger(0)),
 						listToCons(List.of(new LispSymbol(LispNames.COERCE), elements,
 								listToCons(List.of(new LispSymbol(LispNames.QUOTE), new LispSymbol("VECTOR"))))),
-						callV(LispNames.SEQ_INT_VECTOR, elements, width)))));
+						callV(LispNames.SEQ_FLOAT_VECTOR, elements, floatCode)));
+		LispVal vector = listToCons(List.of(new LispSymbol(LispNames.LET_STAR), vectorBindings,
+				listToCons(List.of(new LispSymbol(LispNames.IF), callV(LispNames.EQ, width, new LispInteger(0)),
+						generalOrFloat, callV(LispNames.SEQ_INT_VECTOR, elements, width)))));
 		LispVal unsupported = listToCons(
 				List.of(new LispSymbol(LispNames.ERROR), new LispString("concatenate: unsupported result type")));
 		LispVal dispatch = listToCons(
@@ -1138,6 +1152,81 @@ public final class BuiltinFunctionWrappers {
 		return listToCons(List.of(new LispSymbol(LispNames.MAKE_ARRAY), callV(LispNames.LENGTH, list),
 				new LispSymbol(LispNames.ELEMENT_TYPE_KEYWORD), listToCons(List.of(new LispSymbol(LispNames.QUOTE),
 						listToCons(List.of(new LispSymbol(LispNames.UNSIGNED_BYTE), new LispInteger(bits)))))));
+	}
+
+	// %seq-float-vector (gated by ConcatenateForms.needsSeqFloatVector, plus a
+	// #'concatenate reference -- the wrapper above calls it): one sequence of reals as a
+	// PACKED FLOAT array of the width an ArrayElementTypes code names. The exact shape of
+	// %seq-int-vector above, for the exact same reasons (one call site's worth of body,
+	// and a LINEAR walk of the element list), with the code standing in for the width:
+	//
+	// (lambda (seq c)
+	// (let* ((l (coerce seq 'list))
+	// (v (if (= c 5) (make-array (length l) :element-type 'single-float)
+	// (if (= c 7) (make-array (length l) :element-type 'bfloat16)
+	// (make-array (length l) :element-type 'double-float)))))
+	// (do ((tail l (cdr tail)) (i 0 (+ i 1))) ((null tail) v)
+	// (%aset v i (car tail)))))
+	//
+	// The arms are DERIVED, one per packed float code of ArrayElementTypes, and each
+	// spells the element type that code answers -- so a fourth width is reachable here
+	// the moment it is reachable from make-array, with nothing to add. The allocations
+	// have to be LITERAL for every backend's recognizer to pick the packed representation
+	// (the make-array element type is read statically), which is why the runtime code
+	// dispatches onto one allocation per width rather than passing the designator along.
+	//
+	// The bfloat16 arm is compiled on every backend and is DEAD on the ones that do not
+	// carry the width: wasm-GC lowers its make-array to the call-time signal
+	// UnsupportedFloatWidth names (WasmArrayCompiler), so a program that never asks for
+	// bfloat16 builds and runs exactly as before while one that does gets that sentence
+	// at the call -- the same shape vec.lisp's width-dispatching cond already has
+	// (.kb/bfloat16.md).
+	private static WrapperDef seqFloatVectorWrapper() {
+		LispSymbol list = new LispSymbol("__fv_l");
+		LispSymbol vec = new LispSymbol("__fv_v");
+		LispSymbol tail = new LispSymbol("__fv_tail");
+		LispSymbol index = new LispSymbol("__fv_i");
+		int[] codes = packedFloatElementTypeCodes();
+		LispVal alloc = makeFloatVectorAlloc(list, codes[codes.length - 1]);
+		for (int i = codes.length - 2; i >= 0; i--) {
+			alloc = listToCons(List.of(new LispSymbol(LispNames.IF),
+					callV(LispNames.EQ, new LispSymbol("c"), new LispInteger(codes[i])),
+					makeFloatVectorAlloc(list, codes[i]), alloc));
+		}
+		LispVal fill = listToCons(List.of(new LispSymbol(LispNames.DO),
+				listToCons(List.of(listToCons(List.of(tail, list, callV(LispNames.CDR, tail))),
+						listToCons(
+								List.of(index, new LispInteger(0), callV(LispNames.ADD, index, new LispInteger(1)))))),
+				listToCons(List.of(callV(LispNames.NULL, tail), vec)),
+				callV(LispNames.ASET, vec, index, callV(LispNames.CAR, tail))));
+		LispVal bindings = listToCons(
+				List.of(listToCons(List.of(list, coerceTo("seq", "LIST"))), listToCons(List.of(vec, alloc))));
+		LispVal body = listToCons(List.of(new LispSymbol(LispNames.LET_STAR), bindings, fill));
+		return new WrapperDef(LispNames.SEQ_FLOAT_VECTOR, List.of("seq", "c"), List.of(body));
+	}
+
+	// (make-array (length l) :element-type '<the name the code answers>)
+	private static LispVal makeFloatVectorAlloc(LispSymbol list, int elementTypeCode) {
+		return listToCons(List.of(new LispSymbol(LispNames.MAKE_ARRAY), callV(LispNames.LENGTH, list),
+				new LispSymbol(LispNames.ELEMENT_TYPE_KEYWORD),
+				listToCons(List.of(new LispSymbol(LispNames.QUOTE), ArrayElementTypes.valueOf(elementTypeCode)))));
+	}
+
+	// The packed FLOAT members of the closed element-type code space, in the order a
+	// generated dispatch reads them. Filtered out of ArrayElementTypes.specializedCodes()
+	// by asking the representation itself (ConcatenateForms.isPackedFloat), never by a
+	// list written here -- a second list of the float widths is exactly what .todo/707
+	// found missing from this file.
+	private static int[] packedFloatElementTypeCodes() {
+		int[] all = ArrayElementTypes.specializedCodes();
+		int[] floats = new int[all.length];
+		int n = 0;
+		for (int code : all) {
+			if (ConcatenateForms.isPackedFloat(code)) {
+				floats[n++] = code;
+			}
+		}
+		return java.util.Arrays.copyOf(floats, n);
 	}
 
 	// Every argument's elements, in order, in a FRESH list:
@@ -1225,6 +1314,11 @@ public final class BuiltinFunctionWrappers {
 			// ConcatenateForms.needsSeqIntVector OR a #'concatenate reference, since the
 			// wrapper above calls it too).
 			seqIntVectorWrapper(),
+			// %seq-float-vector: the same for the packed float widths, on its own gate
+			// (ConcatenateForms.needsSeqFloatVector OR a #'concatenate reference), so a
+			// program that asks for one packed family never carries the other's
+			// allocations.
+			seqFloatVectorWrapper(),
 			// #'open (reference-gated): dispatches an option plist onto the four literal
 			// direction/element-type shapes the compiled open needs.
 			openWrapper(),
