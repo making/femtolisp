@@ -52,4 +52,7 @@ prompt's 21, so its rows sit 0.94 of their forward rate where the Qwen rows sit 
 
 ## Not in scope
 
-The forward rate itself (`.todo/723`, `.todo/725`).
+The forward rate itself (`.todo/723` and `.todo/725`, both closed 2026-09-06; the record is
+`.kb/gpu.md`, "The GEMV, and the matrix that stays"). **Note that both moved the printed rows this
+item is about**: `examples/llm/README.md`'s Qwen table now carries a before/after pair per
+configuration, so step 3 below is re-stated against the "after" row.

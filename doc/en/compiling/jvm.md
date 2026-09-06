@@ -112,7 +112,8 @@ default emitted. `--optimize=size` asks for the smallest output a backend can
 give. On this backend it declines the two emissions that spend bytes on speed.
 One is the typed numeric loop: a `dotimes` whose body reads and writes packed
 single/double-float arrays through fixnum index math, `let` temporaries,
-`+ - * /`, the unary math functions and `if`/`when`/`unless` tests compiles by
+`+ - * /`, `(length a)` of such an array, the unary math functions and
+`if`/`when`/`unless` tests compiles by
 default to a primitive `long`/`double` loop over raw `float[]`/`double[]`
 accesses, behind a check at the loop's entry that falls back to the ordinary
 emission whenever the variables are not what the typing assumed -- the same

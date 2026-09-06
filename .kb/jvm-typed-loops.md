@@ -16,10 +16,19 @@ outside the subset rejects the WHOLE loop rather than boxing one node.
 was emitted and `expandDotimes` runs as before. Body forms admitted: `let`/`let*`/`progn`/`declare`;
 `setq`/`setf`, `(setf (aref a i [j]) e)`/`%aset`; `if`/`when`/`unless` on ONE binary `< > <= >= =`
 (an `if` in value position needs both branches of one type); a nested `dotimes` with no result form;
-literals, symbols, `(aref a i [j])` with `a` a FREE symbol, `+ - * /`, and the twelve unary `Math`
-functions `JvmMathFnCompiler` lowers (`sqrt exp log sin cos tan asin acos atan sinh cosh tanh`).
+literals, symbols, `(aref a i [j])` with `a` a FREE symbol, `(length a)` of a rank-1 array of the
+SAME loop, `+ - * /` (unary `-` and `/` included), and the twelve unary `Math` functions
+`JvmMathFnCompiler` lowers (`sqrt exp log sin cos tan asin acos atan sinh cosh tanh`).
 Anything else -- a call, `return`, `floor`, `incf`, `and`/`or`, a string, `nil` in value position, a
 general array -- disqualifies it; an outer result form may only be a symbol or a number.
+
+`(length a)` is the one call-SHAPED form admitted, and it is admitted because
+`(dotimes (i (length a)) ...)` is the idiom: it reads header dimension 0 exactly as `_fvLength`
+does -- from the HEADER, never `arraylength`, since a lazy result stub is the header alone
+(`.kb/gpu.md`) -- and it is emitted after `hoistArrays`, so the array is already guarded and
+materialized. The pre-scan gives it its own case: a name that is only ever a `(length x)` argument
+gets no `Spec` and keeps the loop boxed, and `(length a)` must NOT mark `a` index-shaped or the
+count of the canonical loop would type its own array as a fixnum.
 
 Two static types, `LONG` and `DOUBLE`. The counter is `LONG` in `[0, count)`; an `aref` is `DOUBLE`
 (single-float reads widen, as `_fvAref*` does); `+ - *` over two `LONG`s stays `LONG` only under a
@@ -58,8 +67,16 @@ indexes exactly as `_fvAref1`/`_fvAref2` do -- `base + (int) i * cols + (int) j`
 with the same truncation (`Long.intValue()` = `L2I`) and the same association -- so the
 subscript-count quirk reproduces bit for bit and an out-of-range index throws the same
 `ArrayIndexOutOfBoundsException` from the same array. A store narrows with `D2F` for `float[]` and in
-value position answers the value AS STORED; under `--gpu` every typed store calls `_gpuWritten`, as
-`_fvAset*` does (`.kb/gpu.md`). A loop with no array and no assigned free variable is left alone
+value position answers the value AS STORED. Under `--gpu` each array the body STORES into is
+reported `_gpuWritten` ONCE, at `hoistArrays` and after every array's `_gpuMaterialize` -- not per
+store, as `_fvAset*` must (`.kb/gpu.md`). Two things make the hoist the same contract: nothing
+inside a typed loop can put an array back on the device (the subset has no calls), and reporting
+every materialize before any written keeps a loop whose two array variables are ONE object at run
+time correct. The cost of the hoist is that a loop of zero trips drops a device copy it did not
+need to -- speed only, and the next two sights re-upload it. Measured on GB10 (2026-09-06,
+`.todo/723`, Qwen3.5-0.8B from the BF16 GGUF at `-w bf16`, JVM class output): the per-store guard
+was **half of the whole `--gpu --simd` decode step** -- 51 ms a forward against 25 with the hoist,
+and stories15M 449 tok/s against 555. A loop with no array and no assigned free variable is left alone
 (byte-identical). Typed locals are `allocTemp` pairs (long/double take two slots) released at the
 join; a loop pushing `nextLocal` past 250 stays boxed (one-byte slot operands), and
 `StackMapAugmenter` merges the slot kinds to TOP at the join.
@@ -69,19 +86,33 @@ join; a loop pushing `nextLocal` past 250 stays boxed (one-byte slot operands), 
 `Ctx.typedLoops` = `!optimize.prefersSizeOverSpeed()`, so **`--optimize=size` declines typed loops**
 -- the JVM's first speed-for-size trade, a typed loop emitting the body up to three times
 (`.kb/optimize-dead-code-elimination.md`). Off under `--dynamic`;
-`-Drontolisp.debug.notypedloops=true` at COMPILE time force-disables them for A/B profiling. Arrays
+`-Drontolisp.debug.notypedloops=true` at COMPILE time force-disables them for A/B profiling, and
+`-Drontolisp.debug.typedlooptrace=true` prints every loop the analyzer DECLINED, with the form and
+the frames that threw -- the A/B says a loop is boxed, the trace says which form did it. Arrays
 require `Ctx.usesFloatArray`. Interpreter and both wasm backends are untouched. Pins:
 `JvmLispCompilerTest.typedLoopsMatchTheBoxedPathAndTheSizeLevelDeclinesThem`,
 `theSizeLevelChangesNothingWithoutATypedLoop`, ci-spec `jvm-typed-numeric-loops`, `ExamplesE2eTest`'s
-llm `equals` stories.
+llm `equals` stories, and -- for the `--gpu` hoist -- the two `typed-loop-aset` lines of
+`JvmLinalgGpuAccelCompilerTest.everyEnumeratedWriterInvalidatesTheResidentCopy`, which go red when
+the hoist is removed. **`(length a)` has NO ci-spec case**: the one written for it tipped the corpus
+over `.todo/722`'s component-backend `ref.cast` cliff, so it is parked in that item with its
+expected output and re-added when 722 closes. It was hand-checked identical on all four backends. **`(length a)` has NO ci-spec case**: the one written for it tipped the corpus
+over `.todo/722`'s component-backend `ref.cast` cliff, so it is parked in that item with its
+expected output and re-added when 722 closes. It was hand-checked identical on all four backends.
 
 ## Not done
 
+- **An array of the loop must be `float[]` or `double[]`, so ONE bfloat16 operand keeps the whole
+  loop boxed** -- and under `--gpu` the boxed path then pays a residency guard per ELEMENT. This is
+  how the depthwise convolution of `examples/llm` came to cost 8.5 ms of a 45 ms forward: its
+  kernel is F32 in the checkpoint and was being narrowed to the `-w bf16` weight width for no
+  reason, which `.todo/723` fixed at the reader rather than here (a read-only bf16 array variant is
+  a third array kind, and nothing measured wants one yet).
 - A loop-carried fixnum accumulator on a let local or free variable (`(setq n (+ n 1))`) is rejected
   by the bound rule; a range analysis over the trip count admits it.
 - Only `dotimes` is recognized; `do`/`loop ... below`/`while` could share the IR (`loop` expands to
   `tagbody`, not in the subset).
 - `incf`/`decf`, `floor`/`mod`, `min`/`max`, `abs`, `and`/`or`/`not` tests, `the`, a let-bound ARRAY,
-  comparisons of more than two operands -- each a small exact addition.
+  `array-dimension`, comparisons of more than two operands -- each a small exact addition.
 - **If the boxed helpers change semantics (`_fvAref*` bounds checks, the rank check, a `Float` box),
   the typed emission must change with them** -- the pinning test says so.

@@ -448,7 +448,10 @@ derived, and the surface exists so that a user can see the shortfall before anyo
 
 `written` and `materialize` are residency's CONTRACT on the caller. **Every in-place write to a packed
 array's storage must come through `written` BEFORE it lands**, or the next call answers for bytes the
-array no longer holds. **Every host READ of packed storage must come through `materialize` first**, or
+array no longer holds. BEFORE, not once per write: a writer that can prove nothing re-uploads the
+array between its first store and its last may report once and cover them all -- the JVM typed loop
+is the one place that proves it (`.kb/jvm-typed-loops.md`), and doing it per store instead cost half
+of a `--gpu` decode step. **Every host READ of packed storage must come through `materialize` first**, or
 it reads the zeros of an array nobody filled. Both are cheap when they do not matter (a volatile read,
 then an identity compare) and never run the probe.
 
@@ -470,7 +473,9 @@ One case looks like a writer and is not: `torch:set-data` REBINDS a tensor's dat
 (guarded by `if (_gpuInited != 0)`, which lets `_fvAset1` be emitted before the bridge class is
 defined): `_fvAref1/2/N`, `_fvAset1/2/N`, `_fvToGeneral`/`_fvToGeneralPrint`; every argument of every
 accelerated `linalg:` call site, right after the device attempt and before any host rung; every
-argument of every `vec:` call site; the typed loops at `hoistArrays`;
+argument of every `vec:` call site; a typed loop's `hoistArrays`, which materializes EVERY array of
+the loop and then reports written each array the body STORES into -- once for the loop, and in that
+order, since two of its array variables can be one object at run time;
 `_readSeqPacked`/`_writeSeqPacked`; and every argument of a Java interop call.
 `_fvDims`/`_fvLength`/`_fvElementType` read the header only.
 
@@ -640,14 +645,87 @@ every one on the critical path, since the next host form reads the result and `m
 it. **The driver API on the calling thread is 11.9 ms**: 7.9 in `cuMemcpyDtoH` (229 downloads, the
 kernel waits inside them), 2.4 in `cuMemcpyHtoD` (193 uploads, 102 MB -- the 24 KV-cache matrices at
 4 MB each, written every token and read by four heads, so first sight, upload, hit, hit, every token;
-`.todo/725`), 0.65 in launches, 0.4 in 422 pool allocations. **And the host's own Lisp loops are
+closed by `.todo/725`, below), 0.65 in launches, 0.4 in 422 pool allocations. **And the host's own Lisp loops were
 ~30 ms, against 6.8 for the same three functions without the flag**: `gated-delta-rule` 20 ms,
-`causal-conv` 8.5, `silu-in-place` 2.2. The 23 ms are the residency guards -- 40% of the arm's
-samples sit in `materialize` / `written`, called ONCE PER STORE by the typed loop over the 128x128
-state (`.kb/jvm-typed-loops.md`; `CudaGemm.written` materializes first, so a store is two lookups) and
-once per element by the boxed `_fvAref2` / `_fvAset1` of the two loops that are not typed on any arm
-(`.todo/723`). **A narrower weight width can only shrink the 6.8 ms**, which is why the Q4 width was
-refused on this profile ("What is deliberately NOT here").
+`causal-conv` 8.5, `silu-in-place` 2.2. The 23 ms were the residency guards -- 40% of the arm's
+samples sat in `materialize` / `written`, called ONCE PER STORE by the typed loop over the 128x128
+state (`CudaGemm.written` materializes first, so a store was two lookups) and once per element by the
+boxed `_fvAref2` / `_fvAset1` of the two loops that were typed on neither arm.
+
+**`.todo/723` took that 23 ms out, and it was HALF the arm** (2026-09-06, same box, same checkpoint,
+same 128-minus-64 method, medians of two 256-minus-64 rounds on a quiet box, the 64 and the 256
+tokens byte-identical across every configuration measured):
+
+| ms per forward | `--simd`, 1 | `--simd --parallel`, 16 | `--gpu --simd`, 1 |
+| --- | --- | --- | --- |
+| before | 90.6 | 27.6 / 31.7 | 50.7 / 51.8 |
+| after | 88.7 | 26.2 / 27.2 | **25.0 / 25.1** |
+
+Two mechanisms, and the profile named the first correctly and the second wrongly. (1) A typed loop
+called `_gpuWritten` on EVERY store; it now reports each stored array ONCE at loop entry
+(`.kb/jvm-typed-loops.md`), which is 23 of the 26 ms. (2) `causal-conv` and `silu-in-place` were
+boxed -- but NOT, as `718` guessed, because unary `-` is outside the typed subset (it is inside) or
+because the loops are shaped oddly. `silu-in-place` was declined for its COUNT, `(length v)`, the
+one call in it, now an admitted form; and `causal-conv`'s loops were in the subset all along and
+failed their ARRAY GUARD, because the depthwise conv kernel -- F32 in the GGUF, 98304 bytes a layer
+-- was being narrowed to the `-w bf16` weight width, and one bf16 operand puts a whole typed loop on
+the boxed path. Reading it at f32 (`examples/llm/llm.lisp`, `as-f32-matrix`) is the other 3.4 ms.
+**The device arm now edges past `--simd --parallel` on this model** (25.0 against 26.7 ms;
+printed 25.8 against 25.2 tok/s), and stories15M's `--gpu` legs rise 1.2x (449 -> 555 tok/s at
+`--gpu --simd`, 425 -> 551 at `--gpu --simd --parallel`) while still trailing its 655.
+**A narrower weight width can still only shrink the 6.8 ms** -- now 27% of the forward rather than
+15% -- which is the arithmetic the Q4 refusal is re-opened against ("What is deliberately NOT here").
+
+**`.todo/725` then took the KV cache out of the picture, and it was the other quarter** (2026-09-06,
+same box, same checkpoint, same method, medians of two 256-minus-64 rounds, the 64, 256 and 1024
+tokens byte-identical across `-w f32` and `-w bf16` and across the CPU and device arms). The model,
+not the library, was the wrong shape: `examples/llm`'s `attention` scored the WHOLE 4096-position
+cache every token when `pos` of the rows are non-zero. The cache now starts at 32 positions and
+DOUBLES with the position reached (`grow-kv-cache`), so both attention GEMVs cost O(`pos`):
+
+| ms per forward | `--simd`, 1 | `--simd --parallel`, 16 | `--gpu --simd`, 1 |
+| --- | --- | --- | --- |
+| before | 90.6 / 86.3 | 26.8 / 25.9 | 24.3 / 26.2 |
+| after | 78.4 / 75.0 | 20.5 / 22.8 | **18.3 / 18.6** |
+
+**The 100 MB stopped moving**: HtoD a forward went 193 copies / 102.0 MB / 2.3 ms of `cuMemcpyHtoD`
+to **97 copies / 0.74 MB / 0.26 ms** -- the 24 four-megabyte matrices were 100 of the 102 -- and with
+them went every `gemv_f32` launch (72 a forward, 0.73 ms) and the first sights the CPU lane kernel
+used to compute, because a bounded cache matrix is under the member's 2^17-element threshold and the
+whole product declines to the CPU, where it costs 1.4 ms. Kernels a forward 7.48 -> 6.74 ms
+(229 -> 157 launches), CUDA API on the calling thread 10.55 -> 8.15 ms. On the `--simd` arm the JFR
+share of `matvecRowsF` -- the f32 GEMV, which on this model is the attention pair and nothing else --
+went from **13.9% (10.4 ms a forward) to 2.2% (1.4 ms)**.
+
+**The route not taken is the finding.** `.todo/725` proposed a row-count argument on `vec:matvec`
+itself, "that every backend implements". The value cache is TRANSPOSED, so its half of the pair wants
+a COLUMN bound and not a row bound: one member, two kinds of bound, on four backends times `--simd`,
+`--blas`, `--gpu`, `--parallel`, bf16 and Q8_0, plus a two-language reference page -- for a caller
+that can express the same bound by allocating what it uses. **A bound that one operand of the pair
+cannot spell is a bound in the wrong place.** The `vec:` surface is unchanged.
+
+**A `--gpu` step is mostly NATIVE time, so a percentage taken off JFR's execution samples is a
+percentage of the wrong denominator** (2026-09-06, `.todo/476`; GB10, `gpt-book-shapes-fast.lisp`
+compiled `--gpu --simd`, 0.69 s a step, `settings=profile`). `jdk.ExecutionSample` sees only threads
+in the JAVA state; a thread inside a downcall is seen by `jdk.NativeMethodSample` instead. Here that
+is **217 execution samples against 1471 native ones** -- 2.2 s of Java in 31.6 s of sampled thread
+time, **7%** -- with 1127 of the native ones in `cuCtxSynchronize`, 197 in `cuMemAllocAsync` and 114
+in `cuLaunchKernel`. So an "8% of the step" read off the execution samples alone is half a percent of
+the step, and `.todo/476` was filed on exactly that error. **Quote the two sample sets together or
+neither.** Same run, C2 (`-XX:-UseJVMCICompiler`): 279 and 1463, the same shape.
+
+**The downcall handles stay INSTANCE fields, measured** (2026-09-06, `.todo/476`, refused; the
+five-arm probe is `.todo/artefacts/476-ffm-downcalls-through-a-non-constant-method-handle/`). Two
+million calls of `cuDriverGetVersion`, steady state: a `static final` handle is 8.9-9.1 ns on Graal,
+9.44 on C2 and 2082 in a native image; `CudaDriver`'s own shape -- a `final` INSTANCE field whose
+receiver is reachable from a `static final` -- is **8.3-8.9 / 10.13 / 2083**. Graal constant-folds
+the chain (`Gpu.Probe.DEVICE` -> `CudaGemm.driver` -> the handle), so the item's premise is false on
+this box's default JIT; C2 pays 0.7 ns a call, which is 0.07 ms of a 690 ms step even at 10^5 driver
+calls; and in a native image no arm can be a constant, because the handle is created at run time and
+AOT code was compiled before it existed. `Invokers.checkCustomized` is now **1 sample of 1688** on
+Graal (inside warm-up) and **0** on C2, against the 79 of ~1000 the item was filed on.
+`eval/LinalgBlasKernels`, which the item said held its CBLAS handles "the same way", has held them
+`static final` all along.
 
 **The seam is a CHAIN on both backends.** Interpreter: `LinalgGpu.installVec`, called from the VEC
 library's lazy-load hook after `VecSimd.install`, and it installs the write hook itself since a
@@ -1238,8 +1316,15 @@ Each is a measured decline, and each needs this file's numbers before it is revi
   to the lane kernel at every size. The first sight of a big matrix used ONCE is left on the table
   deliberately.
 - **No zero-copy route, and no staged UPLOAD.** Measure with FRESH arrays before touching either half.
-- **The per-call cost of an FFM downcall inside a native image is still unexplained**; the generic
-  `MethodHandle` invoker under every downcall is the suspect.
+- **No `static final` downcall handles** (2026-09-06, `.todo/476`, refused on the numbers in
+  "The downcall handles stay INSTANCE fields, measured" above). Revisit only with a profile that
+  quotes BOTH JFR sample sets.
+- **The per-call cost of an FFM downcall inside a native image is MEASURED and unattributed**: 2.08
+  us against the JVM's 8.9, 230x, on the same binary whose downcall-free control loop is only 9x
+  the JVM's (2026-09-06, `.todo/476`'s probe). It is not the handle's constancy (all four holdings
+  agree to 2%) and it is not the thread transition (`critical(true)`, the fastest arm on both JITs,
+  is the SLOWEST here). What it is, and which per-call threshold calibrated on the JVM's 9 ns is
+  wrong in the binary because of it, is `.todo/727`.
 - **No per-device collection policy.** It becomes a `GpuDevice` question only if the two backends'
   collection requests ever want different answers.
 - **No Q4_0 / Q4_K weight width** (`.todo/718`, 2026-09-06 -- a refusal, recorded as one). The
@@ -1251,8 +1336,13 @@ Each is a measured decline, and each needs this file's numbers before it is revi
   24. Against that ceiling: a fifth packed type on every backend with its scalar oracle, GGUF
   readers for the Q4_0 block AND the K-quant super-blocks (a Q4_K_M file also carries Q5_K and Q6_K
   tensors), the CPU fallback the flag needs (`--gpu` may not turn an answer into an error) which is
-  the 1.1x-f32 kernel the width was refused on, and `.todo/483`'s switches. Re-measure when (a)
-  `.todo/723` and `.todo/725` have taken the host floor down enough for the GEMV to be a first-order
-  term of the device forward again, or (b) a discrete card with its own memory joins the two
-  calibration machines -- there the upload IS the cost and residency the win, and this paragraph is
-  unified-memory arithmetic. The CPU half stays where `.todo/670` left it.
+  the 1.1x-f32 kernel the width was refused on, and `.todo/483`'s switches. **Trigger (a) has now
+  FULLY fired** (2026-09-06): `.todo/723` took the forward from 45-51 ms to 25 and `.todo/725` took
+  it to **18.5**, while the bf16 GEMV barely moved (6.73 ms a forward), so the same kernel time is
+  **36%** of the arm and a Q4 ceiling is **~26%** -- 4.8 ms of 18.5 -- against the same cost list,
+  on an arm that now LEADS `--simd --parallel` (18.5 against 21.6 ms a forward). That is the
+  condition this paragraph was written to be re-measured under, and the re-measurement is
+  `.todo/726`; the refusal STANDS until it is taken, because a ceiling is not a measurement.
+  Trigger (b) -- a discrete card with its own memory joining the two calibration machines, where
+  the upload IS the cost and residency the win, and this paragraph is unified-memory arithmetic --
+  is unchanged. The CPU half stays where `.todo/670` left it.
