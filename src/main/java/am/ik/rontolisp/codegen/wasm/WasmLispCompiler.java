@@ -6661,8 +6661,12 @@ public final class WasmLispCompiler implements LispCompiler {
 				code.addFunction(WasmFloatFdivRuntimeBuilder.buildBody());
 				// vec: SIMD block bodies (--simd only), in FUNC_VEC_BASE index order.
 				if (this.simd) {
+					// Each helper is handed the function index of the scalar vec.lisp
+					// defun it replaced, which a width-mismatched call inside it declines
+					// to rather than trapping (.kb/vec.md).
+					int[] vecScalarFuncs = WasmVecSimdCompiler.scalarFallbacks(functions);
 					for (int i = 0; i < WasmVecSimdRuntimeBuilder.FUNC_COUNT; i++) {
-						code.addFunction(WasmVecSimdRuntimeBuilder.build(i, FUNC_VEC_BASE));
+						code.addFunction(WasmVecSimdRuntimeBuilder.build(i, FUNC_VEC_BASE, vecScalarFuncs));
 					}
 					// linalg: SIMD block bodies, in linalgFuncBase() index order.
 					for (int i = 0; i < WasmLinalgSimdRuntimeBuilder.FUNC_COUNT; i++) {

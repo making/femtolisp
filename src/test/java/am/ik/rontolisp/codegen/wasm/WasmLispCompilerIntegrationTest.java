@@ -18099,6 +18099,47 @@ class WasmLispCompilerIntegrationTest {
 		assertThat(compileAndRunVec(VEC_SURFACE, true)).isEqualTo(compileAndRunVec(VEC_SURFACE, false));
 	}
 
+	/**
+	 * Every accelerated shape with a width MISMATCH in it: a mixed {@code #d}/{@code #f}
+	 * operand pair, and an {@code -into} destination of the other width than its
+	 * operands. Values are f32-exact so the two runs' printed text can be compared
+	 * directly.
+	 */
+	private static final String MIXED_WIDTHS = """
+			(let ((d #d(1.0 2.0 4.0 8.0))
+			      (f #f(4.0 16.0 1.0 0.25)))
+			  (print (vec:add d f))
+			  (print (vec:sub f d))
+			  (print (vec:mul d f))
+			  (print (vec:div f d))
+			  (print (vec:+ f d))
+			  (print (vec:maximum d f))
+			  (print (vec:minimum f d))
+			  (print (vec:dot d f))
+			  (print (vec:matvec #d((1 2 3 4) (5 6 7 8)) f))
+			  (print (vec:add-into (vec:zeros 4 :element-type 'single-float) d d))
+			  (print (vec:scale-into (vec:zeros 4 :element-type 'single-float) d 2))
+			  (print (vec:sqrt-into (vec:zeros 4) f))
+			  (print (vec:relu-into (vec:zeros 4) f))
+			  (print (vec:maximum-into (vec:zeros 4 :element-type 'single-float) d f))
+			  (print (vec:clip-into (vec:zeros 4) f 1.0 8.0))
+			  (print (vec:matvec-into (vec:zeros 2 :element-type 'single-float)
+			                          #d((1 2 3 4) (5 6 7 8)) f)))
+			""";
+
+	@Test
+	void wasmGcSimdDeclinesAMixedWidthCallToTheScalarPath() throws Exception {
+		// A mixed #d/#f call is not an error: vec.lisp reads every operand through aref,
+		// which widens, so the scalar defun computes it and --simd may not turn that
+		// answer into an error (.kb/vec.md, "The four acceleration layers"). One `kind`
+		// picks the lane loop for a whole helper, so there is no mixed-width lane form:
+		// requireSameKind's arm forwards the call to the defun the helper replaced
+		// instead of trapping, which is what this compares against. Before .todo/720 the
+		// --simd run trapped on `unreachable` here, and the assertion below was an exit
+		// code of 134.
+		assertThat(compileAndRunVec(MIXED_WIDTHS, true)).isEqualTo(compileAndRunVec(MIXED_WIDTHS, false));
+	}
+
 	@Test
 	void wasmGcSimdMatvecMatchesTheScalarPathAtEveryRowLaneOffset() throws Exception {
 		// The shuffle window: a row that starts mid-group is read as two array.gets and

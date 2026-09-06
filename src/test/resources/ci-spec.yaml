@@ -5917,6 +5917,60 @@ cases:
       #d(4.0 3.0 4.0)
       #d(4.0 3.0 4.0)
       (4.0 3.0 4.0)
+  # Mixed-width vec: calls (see .kb/vec.md, "The four acceleration layers"). A #d operand
+  # beside a #f one is NOT an error: vec.lisp reads every operand through aref, which
+  # widens whatever the storage width is, so the scalar defun computes the call happily and
+  # the result follows the FIRST operand's width (vec::%make-like) -- an -into form's
+  # destination keeps its own. --simd may not turn that answer into an error, so every lane
+  # kernel DECLINES a width mismatch to the defun instead: the interpreter hands back the
+  # captured closure, the JVM call site's lane-width guard takes the fallback branch, and a
+  # wasm-GC helper forwards the call to the defun it replaced. This case is the pin, and it
+  # matters most on the --simd leg (see "The E2E --simd axis"): both legs check these same
+  # lines, and before .todo/720 the two compiled --simd backends raised
+  # IllegalArgumentException / trapped on nearly every line below. Values are f32-exact
+  # (integers, halves, quarters) so all four backends print them identically.
+  - name: vec-mixed-width-declines-cross-backend
+    source: |
+      (defun ci-vec-mixed ()
+        (let ((d #d(1.0 2.0 4.0 8.0))
+              (f #f(4.0 16.0 1.0 0.25)))
+          (print (vec:add d f))
+          (print (vec:sub f d))
+          (print (vec:mul d f))
+          (print (vec:div f d))
+          (print (vec:+ f d))
+          (print (vec:maximum d f))
+          (print (vec:minimum f d))
+          (print (vec:dot d f))
+          (print (vec:matvec #d((1 2 3 4) (5 6 7 8)) f))
+          ;; -into destinations of the other width: the operands agree with each other and
+          ;; only the destination differs, the one mismatch a unary kernel can have.
+          (print (vec:add-into (vec:zeros 4 :element-type 'single-float) d d))
+          (print (vec:scale-into (vec:zeros 4 :element-type 'single-float) d 2))
+          (print (vec:sqrt-into (vec:zeros 4) f))
+          (print (vec:relu-into (vec:zeros 4) f))
+          (print (vec:maximum-into (vec:zeros 4 :element-type 'single-float) d f))
+          (print (vec:clip-into (vec:zeros 4) f 1.0 8.0))
+          (print (vec:matvec-into (vec:zeros 2 :element-type 'single-float)
+                                  #d((1 2 3 4) (5 6 7 8)) f))))
+      (ci-vec-mixed)
+    expected: |
+      #d(5.0 18.0 5.0 8.25)
+      #f(3.0 14.0 -3.0 -7.75)
+      #d(4.0 32.0 4.0 2.0)
+      #f(4.0 8.0 0.25 0.03125)
+      #f(5.0 18.0 5.0 8.25)
+      #d(4.0 16.0 4.0 8.0)
+      #f(1.0 2.0 1.0 0.25)
+      42.0
+      #f(40.0 125.0)
+      #f(2.0 4.0 8.0 16.0)
+      #f(2.0 4.0 8.0 16.0)
+      #d(2.0 4.0 1.0 0.5)
+      #d(4.0 16.0 1.0 0.25)
+      #f(4.0 16.0 4.0 8.0)
+      #d(4.0 8.0 1.0 1.0)
+      #f(40.0 125.0)
   # Packed single-float arrays (see .kb/vec.md): the #f(...) / :element-type 'single-float
   # counterpart of packed-float-arrays-cross-backend, storing elements unboxed as f32
   # (half the memory, 2x the SIMD lanes) on every backend (interpreter float[]/int[];
@@ -5979,8 +6033,9 @@ cases:
   # linalg single-float (see .kb/linalg.md): linalg is width-polymorphic -- a constructor opts
   # into packed single-float (#f) with an :element-type keyword (double stays the default
   # for precision), and every transform PRESERVES the input width, so a #f value flowing
-  # in (e.g. from vec:) is never silently widened back to double (which would force a
-  # mixed-width --simd error on the next vec:matvec). Unlike the earlier vec::%make-like
+  # in (e.g. from vec:) is never silently widened back to double (which would cost the next
+  # vec:matvec its acceleration -- a mixed-width pair declines to the scalar defun on every
+  # layer, see vec-mixed-width-declines-cross-backend). Unlike the earlier vec::%make-like
   # assumption, wasm-GC produces #f directly -- both linalg::%la-make branches take a
   # literal :element-type, so the compiled backend picks the TYPE_F32ARR/F64ARR repr
   # statically -- and the output is byte-identical on all four backends, using only

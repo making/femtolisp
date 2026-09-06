@@ -319,8 +319,9 @@ class LinalgSimdTest {
 
 	@Test
 	void mixedWidthOperandsFallBackToTheScalarDefun() {
-		// Unlike vec:, a mixed-width linalg call is NOT an error: the defun widens both
-		// operands and keeps the first one's width. The kernels decline so it still does.
+		// A mixed-width linalg call is not an error: the defun widens both operands and
+		// keeps the first one's width. The kernels decline so it still does -- the same
+		// answer vec: gives a mixed pair, and for the same reason.
 		assertThat(eval("(linalg:add #d(1.0 2.0) #f(10.0 20.0))", true).print()).isEqualTo("#d(11.0 22.0)");
 		assertThat(eval("(linalg:add #f(1.0 2.0) #d(10.0 20.0))", true).print()).isEqualTo("#f(11.0 22.0)");
 		assertThat(eval("(linalg:dot #d(1.0 2.0) #f(3.0 4.0))", true).print()).isEqualTo("11.0");

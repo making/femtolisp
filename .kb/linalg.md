@@ -128,8 +128,8 @@ hence `choice`/`permutation`) keep using directly. `mode` picks the element rule
 
 ## Single-float / width polymorphism
 Double by default but accepts and preserves packed single-float, so a `#f` value flowing in from
-`vec:` is never silently widened (the widening would force a mixed-width `--simd` error on the
-next `vec:matvec`). Two orthogonal mechanisms:
+`vec:` is never silently widened (the widening would cost the next `vec:matvec` its acceleration:
+a mixed-width pair declines to the scalar defun on every layer, `.kb/vec.md`). Two orthogonal mechanisms:
 - Constructor opt-in via `:element-type` on every constructor. `arange` is the one signature whose
   POSITIONAL count varies and CL's `&optional` greedily eats a following keyword, so it is
   `(&rest args)` split by `%la-split-element-type`.

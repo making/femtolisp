@@ -185,18 +185,32 @@ acos = `2*atan(sqrt((1-x)/(1+x)))` NOT `pi/2 - asin`, so `(acos 1)` is exactly 0
 Layers 0-3 are `--simd` and TOTAL -- one lane kernel per member. Layer 4 is PARTIAL, over the GEMV
 pair only.
 
-**A width mismatch DECLINES at layer 0, the interpreter, and signals everywhere else** (.todo/686):
-`vec.lisp`'s `%map2` reads every operand through `aref`, which widens whatever the packed storage
-width is, so the scalar defun computes a mixed `#f`/`#d` (or bf16-beside-either, outside the one
-fused pairing below) pair happily -- `--simd` may not turn that answer into an error. `VecSimd`'s
-`defineFn` protocol (below) makes this cheap: every width-mismatch arm across the sixteen
-element-wise/reduction/GEMV members answers `null` instead of throwing, so the captured scalar
-binding runs. Layer 1's JVM call site is a bare `INVOKESTATIC` into the embedded
-`RontoLispSimdBridge` with no decline path back to the defun's bytecode, so a compiled `--simd`
-program still signals `JvmSimdVectorTemplate.mixedWidth()` on that same shape, and wasm-GC's layer 3
-traps the same way (`requireSameKind`, below) -- both a divergence from the interpreter this item
-did not close, being materially larger (handing a runtime type failure back to already-emitted
-bytecode/wasm rather than a captured closure); tracked separately (`.todo/720`).
+**A width mismatch DECLINES at every layer, and signals at none** (.todo/686 for layer 0, .todo/720
+for layers 1 and 3): `vec.lisp`'s `%map2` reads every operand through `aref`, which widens whatever
+the packed storage width is, so the scalar defun computes a mixed `#f`/`#d` (or bf16-beside-either,
+outside the one fused pairing below) pair happily -- `--simd` may not turn that answer into an
+error. Each layer declines in the shape its own call site allows, and all three are pinned together
+by `ci-spec.yaml`'s `vec-mixed-width-declines-cross-backend` over the `--simd` axis (below), which
+is what makes them one rule rather than three:
+
+- **Layer 0** rides `VecSimd`'s `defineFn` protocol (below): every width-mismatch arm across the
+  sixteen element-wise/reduction/GEMV members answers `null` instead of throwing, so the captured
+  scalar binding runs.
+- **Layer 1** decides BEFORE the call. `JvmSimdCompiler.emitLaneWidthGuard` already asked each array
+  operand whether it was a `double[]` or a `float[]`; it now asks them as one -- the first operand
+  picks the width and every other must match -- and a failing test takes the same fallback branch
+  the `_simdReady()` degrade uses, into the spliced defun. The bridge is TOTAL over what the guard
+  admits, so `JvmSimdVectorTemplate.mixedWidth()` survives only as its own defensive contract and
+  is unreachable from a compiled call site.
+- **Layer 3** decides INSIDE the helper, because its call site is a bare `call` with no fallback
+  arm: `requireSameKind`'s mismatch arm forwards to the scalar defun (`declineToScalar`: a null env
+  then the helper's own params, which ARE the defun's) and returns its answer, instead of
+  `unreachable`. `WasmVecSimdCompiler.scalarFallbacks` hands `build` the defun's function index per
+  helper; `-1` (no such defun in the program) keeps the trap, which no call site can reach, since a
+  call site is what keeps the defun reachable.
+
+Layer 2 (`--no-gc`) never had the hole: it types the packed widths apart, so a mixed call is the
+COMPILE error `incompatible types F32VEC and F64VEC` -- a diagnostic, not a surprise at runtime.
 
 **Layer 0, interpreter `--simd`** (jdk.incubator.vector): the eight vectorizable kernels run on
 `eval.VecSimdKernels`. The DEFAULT interpreter is unchanged -- it is the cross-backend oracle, and
@@ -280,7 +294,9 @@ apparent blocker -- "`v128.load`/`store` address LINEAR memory" -- is FALSE: GC
 - **The kernels are standalone runtime functions**, not inline code: a compiled defun body's extra
   locals are all `(ref null eq)`, so it cannot hold a v128 local. `WasmVecSimdRuntimeBuilder`
   hand-writes `withLocals(i32, f64, f32, v128, eq, v128arr)` per kernel -- that fixed ORDER is what
-  all the index arithmetic assumes. A mixed-width call traps (`requireSameKind`).
+  all the index arithmetic assumes. A mixed-width call forwards to the scalar defun
+  (`requireSameKind` -> `declineToScalar`, above): a helper's params are the defun's, one null env
+  short, which is what makes the hand-back a plain forwarding `call`.
   `_v_new`/`_v_get`/`_v_set` (the first three emitted functions) own the width branch AND the
   immediate-lane branch; `_v_set` returns the value AS STORED (an f32 round-trip at single width).
 - **`matvec`'s shuffle window**: a row starting mid-group reads

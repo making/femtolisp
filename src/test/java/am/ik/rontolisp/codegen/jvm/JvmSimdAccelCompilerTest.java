@@ -349,16 +349,20 @@ class JvmSimdAccelCompilerTest {
 	}
 
 	@Test
-	void mixedWidthOperandsAreAHardErrorUnderTheSimdFlag() {
-		// simd is the fixed-contract, no-fallback package: mixing #d and #f operands in
-		// one
-		// accelerated kernel is a hard error. (The scalar reference would silently
-		// promote
-		// to double, so this divergence is by design and is not compared against scalar.)
-		assertThatThrownBy(() -> accel("(print (vec:add #d(1.0 2.0) #f(3.0 4.0)))"))
-			.hasStackTraceContaining("share an element type");
-		assertThatThrownBy(() -> accel("(print (vec:dot #f(1.0 2.0) #d(3.0 4.0)))"))
-			.hasStackTraceContaining("share an element type");
+	void mixedWidthOperandsDeclineToTheScalarReferenceUnderTheSimdFlag() throws Exception {
+		// A mixed #d/#f pair is NOT an error: vec.lisp's %map2 reads every operand
+		// through aref, which widens whatever the storage width is, so the scalar defun
+		// computes it happily -- and --simd is a speed flag, never a correctness one
+		// (.kb/vec.md, "The four acceleration layers"). The lane kernels carry no
+		// mixed-width form, so the call site's lane-width guard declines to the spliced
+		// defun instead of reaching the bridge's fixed-width cast, which used to raise
+		// "share an element type" on both of these.
+		assertMatchesScalarReference("(print (vec:add #d(1.0 2.0) #f(3.0 4.0)))");
+		assertMatchesScalarReference("(print (vec:dot #f(1.0 2.0) #d(3.0 4.0)))");
+		// The answer itself, not just the parity: the result width follows the FIRST
+		// operand (vec::%make-like), exactly as with the flag off.
+		assertThat(accel("(print (vec:add #d(1.0 2.0) #f(3.0 4.0)))")).isEqualTo("#d(4.0 6.0)");
+		assertThat(accel("(print (vec:add #f(1.0 2.0) #d(3.0 4.0)))")).isEqualTo("#f(4.0 6.0)");
 	}
 
 	@Test
@@ -445,13 +449,12 @@ class JvmSimdAccelCompilerTest {
 	}
 
 	@Test
-	void mixedWidthMatvecOperandsAreAHardErrorUnderTheSimdFlag() {
-		// Mixing a #d matrix with a #f vector (or vice versa) is a hard error, like the
-		// other kernels -- the fixed-contract package never silently promotes.
-		assertThatThrownBy(() -> accel("(print (vec:matvec #d((1 2) (3 4)) #f(5 6)))"))
-			.hasStackTraceContaining("share an element type");
-		assertThatThrownBy(() -> accel("(print (vec:matvec #f((1 2) (3 4)) #d(5 6)))"))
-			.hasStackTraceContaining("share an element type");
+	void mixedWidthMatvecOperandsDeclineToTheScalarReferenceUnderTheSimdFlag() throws Exception {
+		// A #d matrix against a #f vector (or the reverse) declines like every other
+		// kernel: the GEMV defun folds each row through aref, so the flag may not turn
+		// its answer into an error.
+		assertMatchesScalarReference("(print (vec:matvec #d((1 2) (3 4)) #f(5 6)))");
+		assertMatchesScalarReference("(print (vec:matvec #f((1 2) (3 4)) #d(5 6)))");
 	}
 
 	@Test
@@ -538,15 +541,13 @@ class JvmSimdAccelCompilerTest {
 	}
 
 	@Test
-	void mixedWidthIntoOperandsAreAHardErrorUnderTheSimdFlag() {
-		assertThatThrownBy(() -> accel("(print (vec:add-into (vec:zeros 1) #d(1.0) #f(1.0)))"))
-			.hasStackTraceContaining("share an element type");
-		assertThatThrownBy(
-				() -> accel("(print (vec:add-into (vec:zeros 1 :element-type 'single-float) #d(1.0) #d(1.0)))"))
-			.hasStackTraceContaining("share an element type");
-		assertThatThrownBy(
-				() -> accel("(print (vec:scale-into (vec:zeros 1 :element-type 'single-float) #d(1.0) 2.0))"))
-			.hasStackTraceContaining("share an element type");
+	void mixedWidthIntoOperandsDeclineToTheScalarReferenceUnderTheSimdFlag() throws Exception {
+		// The destination is an operand of the guard like any other, so a destination of
+		// the other width declines even when the two inputs agree with each other.
+		assertMatchesScalarReference("(print (vec:add-into (vec:zeros 1) #d(1.0) #f(1.0)))");
+		assertMatchesScalarReference(
+				"(print (vec:add-into (vec:zeros 1 :element-type 'single-float) #d(1.0) #d(1.0)))");
+		assertMatchesScalarReference("(print (vec:scale-into (vec:zeros 1 :element-type 'single-float) #d(1.0) 2.0))");
 	}
 
 	// --- element-wise unary ufuncs ----------------------------------------------------
@@ -636,11 +637,9 @@ class JvmSimdAccelCompilerTest {
 	}
 
 	@Test
-	void mixedWidthUnaryIntoOperandsAreAHardErrorUnderTheSimdFlag() {
-		assertThatThrownBy(() -> accel("(print (vec:sqrt-into (vec:zeros 1) #f(1.0)))"))
-			.hasStackTraceContaining("share an element type");
-		assertThatThrownBy(() -> accel("(print (vec:abs-into (vec:zeros 1 :element-type 'single-float) #d(1.0)))"))
-			.hasStackTraceContaining("share an element type");
+	void mixedWidthUnaryIntoOperandsDeclineToTheScalarReferenceUnderTheSimdFlag() throws Exception {
+		assertMatchesScalarReference("(print (vec:sqrt-into (vec:zeros 1) #f(1.0)))");
+		assertMatchesScalarReference("(print (vec:abs-into (vec:zeros 1 :element-type 'single-float) #d(1.0)))");
 	}
 
 	// --- comparison-select ufuncs -----------------------------------------------------

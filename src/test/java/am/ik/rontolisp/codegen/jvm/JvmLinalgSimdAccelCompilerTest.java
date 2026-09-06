@@ -218,8 +218,9 @@ class JvmLinalgSimdAccelCompilerTest {
 	void generalArraysMixedWidthsAndPlainNumbersFallBackToTheScalarDefun() throws Exception {
 		assertThat(accel("(print (linalg:add #(1 2 3) #(10 20 30)))")).isEqualTo("#d(11.0 22.0 33.0)");
 		assertThat(accel("(print (linalg:sum #(1 2 3)))")).isEqualTo("6");
-		// A mixed-width linalg call is NOT an error (unlike vec:): the defun widens both
-		// operands and keeps the first one's width.
+		// A mixed-width linalg call is not an error: the defun widens both operands and
+		// keeps the first one's width, and the kernels decline so it still does -- the
+		// same answer vec: gives a mixed pair.
 		assertThat(accel("(print (linalg:add #d(1.0 2.0) #f(10.0 20.0)))")).isEqualTo("#d(11.0 22.0)");
 		assertThat(accel("(print (linalg:add #f(1.0 2.0) #d(10.0 20.0)))")).isEqualTo("#f(11.0 22.0)");
 		assertThat(accel("(print (linalg:add 2 3))")).isEqualTo("5");
