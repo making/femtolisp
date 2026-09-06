@@ -485,10 +485,30 @@ under 2.3 for the one-thread rows and under 1.5 for the re-check; three runs eac
 | `-w bf16` | 7.7 / 7.7 / 7.8 | 11.3 / 11.6 / 11.9 | 18.3 / 18.5 / 19.1 | 11.2 / 11.3 / 11.4 |
 
 Three readings. **The device leg is not GEMV-bound**: bf16 and f32 land on the same 11.5
-tok/s with the flag, though the device streams half the bytes -- the whole model's GEMVs
-are ~7 ms of an 86 ms token there (1.5 GB at 229 GB/s), and what remains is this
-model's Gated DeltaNet recurrence, the norms, the 248k-way argmax and ~170 device round
-trips a token. **`--simd --parallel` still wins on this box** (18.5 against 11.6), for the
+tok/s with the flag, though the device streams half the bytes. Profiled a forward pass at
+a time (`.todo/718`, 2026-09-06: `nsys` per forward, JFR per function; the probes
+`decode-per-token.py` / `decode-jfr-agg.py` in `.todo/artefacts/123-gpu-acceleration/`),
+a steady forward is **45-46 ms under the flag, at one thread or sixteen, against 24 under
+`--simd --parallel` and 81 under `--simd`** -- each the difference of a 128- and a 64-token
+run, which drops the JIT warm-up and the prompt. Of the 45: the device kernels are 7.5 ms
+(229 launches; 6.8 of bf16 GEMV, the head 2.2 of it; 0.7 of f32 GEMV over the KV cache),
+each waited for by the host form that reads its result; the driver calls on the calling
+thread 11.9 ms (7.9 in 229 downloads with the kernel waits inside them, 2.4 in 193 uploads
+-- 102 MB, the 24 KV-cache matrices at 4 MB each going up every token because they are
+written every token and read by four heads, `.todo/725` -- and 1.1 in launches and
+allocations); and this model's Gated DeltaNet loops on the host ~30 ms, where the same
+three functions cost 6.8 ms without the flag -- the residency guards the flag puts in
+front of every store of the 128x128 state and every element of the boxed convolution loop
+are 40% of the arm's samples (`.kb/gpu.md`, "The GEMV, and the matrix that stays";
+`.todo/723`). **Any narrower weight width could only shrink the 6.8 ms, so Q4 on the
+device was refused on this profile** (`.kb/gpu.md`, "What is deliberately NOT here").
+**The printed rate understates the forward rate**: `achieved tok/s` divides the 64
+sampled tokens by the clock of 84 forward passes -- the 21-id chat prompt runs through the
+same loop, in the clock and not in the count -- and the first ten of them are 1.5-2x slow
+while the JIT warms, so 19.3 printed is 41 forwards a second steady and 11.0 is 22
+(`.todo/724`); the rows on this page are the printed figure and compare with each other,
+not with a forward rate. **`--simd --parallel` still wins on this box** (18.5 against
+11.6, printed; 24 against 45 ms a forward), for the
 reason the stories15M table below gives: the parallel workers and the driver compete for
 the cores, and under the flag the sixteen threads bought nothing. The width's own lever is
 intact on the CPU legs (1.2x on one thread, 1.1x on sixteen), as the table above found on
