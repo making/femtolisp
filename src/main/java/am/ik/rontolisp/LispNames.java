@@ -5527,9 +5527,9 @@ public final class LispNames {
 	 * {@code linalg::%la-gather-strided} (INTERNAL): the one strided read every
 	 * {@code linalg:slice} and every {@code %la-broadcast-to} is -- a fresh array filled
 	 * by walking the source's flat index from a base through per-axis strides, the width
-	 * riding as a flag. Intercepted because the boxed odometer walk was a fifth of a
-	 * {@code --gpu --simd} training step through {@code torch:masked-fill} and the
-	 * {@code torch:cat} adjoint.
+	 * riding as {@link am.ik.rontolisp.FloatWidth#code()}. Intercepted because the boxed
+	 * odometer walk was a fifth of a {@code --gpu --simd} training step through
+	 * {@code torch:masked-fill} and the {@code torch:cat} adjoint.
 	 */
 	public static final String LINALG_GATHER_STRIDED = "%LA-GATHER-STRIDED";
 
@@ -5634,12 +5634,12 @@ public final class LispNames {
 	public static final String LINALG_LAYER_NORM_AFFINE_GRAD = "%LA-LAYER-NORM-AFFINE-GRAD";
 
 	/**
-	 * {@code linalg::%la-dropout-mask} (INTERNAL): {@code (shape p st single)}, the
+	 * {@code linalg::%la-dropout-mask} (INTERNAL): {@code (shape p st width)}, the
 	 * inverted-dropout mask {@code (rand > p) / (1 - p)} drawn from the state vector
 	 * {@code st}, which is advanced IN PLACE to the generator's end state -- the three
 	 * members {@code torch:dropout} composed, as one, so a device can draw and scale the
-	 * mask in one pass (todo-499). The width rides as a flag, like
-	 * {@link #LINALG_GATHER_STRIDED}'s.
+	 * mask in one pass (todo-499). The width rides as a CODE, like
+	 * {@link #LINALG_GATHER_STRIDED}'s -- {@link am.ik.rontolisp.FloatWidth#code()}.
 	 */
 	public static final String LINALG_DROPOUT_MASK = "%LA-DROPOUT-MASK";
 

@@ -212,6 +212,27 @@ class JvmLinalgGpuAccelCompilerTest {
 		assertThat(accel(lispCode)).as(lispCode).isEqualTo(scalar(lispCode));
 	}
 
+	@Test
+	void everyDeviceKernelDeclinesABfloat16OperandWithoutMovingABit() throws Exception {
+		// The third packed float width reaches this seam at run time now that linalg:
+		// CARRIES it; until 2026-09-06 the library refused it upstream, and
+		// that refusal -- not anything in JvmGpuTemplate -- was what kept a short[] out.
+		// gpuDropoutMask is the reason this belongs here rather than only on the --simd
+		// sibling: it is a device-only member, and its width argument was the last
+		// boolean in linalg.lisp, read by a NULL test that a boxed 0 passes.
+		//
+		// Every entry guards with packed(), a POSITIVE test, so a short[] declines to the
+		// scalar defun. True with or without a device: what a reader would break is the
+		// shape, not the hardware.
+		StringBuilder program = new StringBuilder(am.ik.rontolisp.LinalgBfloat16Corpus.PREAMBLE);
+		for (String form : am.ik.rontolisp.LinalgBfloat16Corpus.FORMS) {
+			program.append("(print ").append(form).append(")\n");
+		}
+		String source = program.toString();
+		assertThat(run(compile(source, true, true, true))).as("--gpu --blas --simd over the bfloat16 corpus")
+			.isEqualTo(scalar(source));
+	}
+
 	private static boolean embedsGpuBridge(byte[] classBytes) {
 		return new String(classBytes, StandardCharsets.ISO_8859_1).contains(JvmGpuRuntimeBuilder.BRIDGE_NAME);
 	}
@@ -1304,7 +1325,7 @@ class JvmLinalgGpuAccelCompilerTest {
 				"(linalg::%la-layer-norm-grad #d((1.0 2.0)) #d((3.0 4.0)) 1.0e-5 nil)",
 				"(linalg::%la-layer-norm-affine #d((1.0 2.0)) #d(1.0 1.0) #d(0.0 0.0) 1.0e-5)",
 				"(linalg::%la-layer-norm-affine-grad #d((1.0 2.0)) #d((3.0 4.0)) #d(1.0 1.0) 1.0e-5 nil)",
-				"(linalg::%la-dropout-mask '(2) 0.5 (linalg::%la-rng-state) nil)",
+				"(linalg::%la-dropout-mask '(2) 0.5 (linalg::%la-rng-state) 1)",
 				"(linalg::%la-scaled-masked-softmax #d((1.0 2.0)) 8.0 #d((0.0 1.0)) -1.0 1)",
 				"(linalg::%la-scaled-masked-softmax-grad #d((1.0 2.0)) #d((0.5 0.5)) 1 8.0 nil)" }) {
 			assertThat(embedsGpuBridge(compile("(print " + call + ")", true))).as(call).isTrue();
@@ -1391,7 +1412,7 @@ class JvmLinalgGpuAccelCompilerTest {
 				(print (linalg:sum (linalg::%%la-dropout-mask '(%d 384) 0.25 *st* %s)))
 				(print *st*)
 				"""
-			.formatted(n, TYPE, rows, n, TYPE, rows, TYPE, TYPE, rows, DOUBLES ? "nil" : "t");
+			.formatted(n, TYPE, rows, n, TYPE, rows, TYPE, TYPE, rows, DOUBLES ? "1" : "0");
 		String oracle = scalar(program);
 		assertThat(oracle).startsWith("T\nT\nT\nT\nT\nT\nT\nT\n");
 		assertThat(accel(program)).as("--gpu").isEqualTo(oracle);

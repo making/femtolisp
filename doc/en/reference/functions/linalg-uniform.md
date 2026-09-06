@@ -2,7 +2,7 @@
 
 `(linalg:uniform lo hi shape &key element-type)`
 
-Returns an array of uniform draws in `[lo, hi)` (numpy's `np.random.uniform`, but with a required shape designator like [`linalg:zeros`](linalg-zeros.md); double by default, `:element-type 'single-float` for `#f`). Each element is `lo + (hi - lo) * u` for a `[0, 1)` draw `u` from the shared generator, so a sequence seeded with [`linalg:seed`](linalg-seed.md) is the same on every backend.
+Returns an array of uniform draws in `[lo, hi)` (numpy's `np.random.uniform`, but with a required shape designator like [`linalg:zeros`](linalg-zeros.md); double by default, `:element-type 'single-float` for `#f`) `:element-type 'bfloat16` builds a packed bfloat16 (`#bf16`) array instead, on the interpreter and the JVM only ([Single-float precision](../../guides/linear-algebra.md#single-float-precision)).. Each element is `lo + (hi - lo) * u` for a `[0, 1)` draw `u` from the shared generator, so a sequence seeded with [`linalg:seed`](linalg-seed.md) is the same on every backend.
 
 ```lisp
 (linalg:seed 7) ; => 7

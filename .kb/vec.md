@@ -61,6 +61,9 @@ count (add a throwaway third permit, `./mvnw compile`), never count by hand.
 - Deliberately still `instanceof`: a same-width guard inside an arm; the must-be-double requirements
   (`%la-adam-step`, `%la-rng-fill`, `%la-dropout-mask`); `floats`/`doubles` in
   `LinalgBlas`/`LinalgSimd`/`LinalgGpu`; `eval/PackedBuffer.of`, `eval/GeomKernels`.
+- The `%la-gather-strided` wire carries `%la-dropout-mask` too, since 2026-09-06 (`.todo/687`): both
+  travel as `FloatWidth.code()` and BOTH readers of the mask's argument tested it for NULLNESS, which
+  a boxed `Long 0` passes. Grep the ARITY of a member on this wire, never its name.
 - **The one width test that cannot be a compile error** is the NAME -> width direction: a new
   width's name is new source text, and no switch can demand it. It is now DERIVED, not
   transcribed: `LispFloatArray.WIDTHS` holds one zero-length prototype per permit and

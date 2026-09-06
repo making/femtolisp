@@ -64,7 +64,8 @@ class FloatWidthTest {
 	 * <p>
 	 * Three templates that TRAVEL with a compiled program hardcode these numbers --
 	 * {@code codegen/jvm/JvmSimdVectorTemplate.laGatherStrided},
-	 * {@code codegen/jvm/JvmGpuTemplate.gpuGatherStrided} and the emitted body
+	 * {@code codegen/jvm/JvmGpuTemplate.gpuGatherStrided} (and {@code gpuDropoutMask},
+	 * which joined the same wire on 2026-09-06) and the emitted body
 	 * {@code codegen/wasm/WasmLinalgSimdRuntimeBuilder.buildGatherStrided} writes. They
 	 * cannot import {@link FloatWidth}: the root package does not travel, so the width
 	 * they read off {@code %la-gather-strided}'s wire is compared against a bare

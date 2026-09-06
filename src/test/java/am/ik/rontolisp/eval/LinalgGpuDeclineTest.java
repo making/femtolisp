@@ -258,7 +258,7 @@ class LinalgGpuDeclineTest {
 				"(linalg::%la-layer-norm-affine-grad *g* *x* *w* 1.0e-5 nil)",
 				"(linalg::%la-layer-norm-affine-grad *g* *x* *w* 1.0e-5 *g*)",
 				"(linalg::%la-scaled-masked-softmax-grad *g* *x* -1 8.0 (linalg:greater (linalg:arange 384) 200.0))",
-				"(linalg:seed 9) (linalg::%la-dropout-mask '(384 384) 0.25 (linalg::%la-rng-state) nil)" }) {
+				"(linalg:seed 9) (linalg::%la-dropout-mask '(384 384) 0.25 (linalg::%la-rng-state) 1)" }) {
 			assertThat(eval(operands + call, true)).as(call).isEqualTo(eval(operands + call, false));
 		}
 	}

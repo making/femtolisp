@@ -128,12 +128,17 @@ rontolisp には `x[:, :n]` という構文がないため、`slice` は軸ご�
 
 linalg はデフォルトで `double-float` で計算しますが、**幅多相 (width-polymorphic)** です。メモリが半分で SIMD レーン数が倍になる packed **単精度浮動小数点** (`#f`) 配列を受け付け、その幅を保持します。すべてのコンストラクタは `:element-type` キーワードを取り（デフォルトは `'double-float`。`#f` の結果が欲しければ `:element-type 'single-float` を渡します）、すべての変換 -- `add`/`sub`/`mul`/`div`/`emap`、`transpose`/`reshape`、`dot`/`matmul`/`outer`、`inv`/`solve` -- は入力の幅を保持します。したがって単精度の値は最後まで単精度のまま流れます。関数的な重み更新 `(linalg:sub W grad)` は `W` の幅を保持し、暗黙に double へ戻す（JVM の [`--simd`](simd-acceleration.md) パスでは、続く `vec:matvec` で幅不一致エラーを強制する）ことはありません。`f32` の速度とメモリが欲しく精度の低下を許容できるときは単精度を使い、`det`/`inv`/`solve` のような精度が重要な処理にはデフォルトの倍精度を使ってください。
 
+3 つ目の幅も同じ仕組みに乗ります。**bfloat16** (`#bf16`) は IEEE binary32 の上位 16 ビットで、公開されている ML チェックポイントが採用している格納形式です。`:element-type 'bfloat16` で構築でき、すべての変換は単精度と同じようにこの幅を保持します。したがってこの幅で読み込んだチェックポイントのテンソルは、最初の `linalg:add` でメモリが 4 倍になることなく、そのまま計算を流れます。有効桁数は約 3 桁で、これは計算用ではなく**格納用**の幅です。重みを `#d` の 1/4 で保持するためのものであり、`det` を計算するためのものではありません。他の 2 つの幅と異なる点が 2 つあります。この幅は**インタプリタと JVM のみ**に存在します。WASM バックエンドには bfloat16 配列がなく、要求した呼び出しの時点で `bfloat16 arrays are supported on the interpreter and the JVM only` をシグナルします。そして、どの加速フラグもこの幅を受け取りません。`--simd`・`--blas`・`--gpu` はいずれも bfloat16 のオペランドを移植可能な `linalg.lisp` の定義へ委ね (decline) るため、どの形状でもどのフラグの下でも結果は移植可能な定義とビット単位で一致します。
+
 ```lisp
 (linalg:zeros 3 :element-type 'single-float)                   ; => #f(0.0 0.0 0.0)
 (linalg:from-list '((1 2) (3 4)) :element-type 'single-float)  ; => #f((1.0 2.0) (3.0 4.0))
 (linalg:add (linalg:from-list '(1 2 3) :element-type 'single-float) 10) ; => #f(11.0 12.0 13.0)
 (array-element-type
   (linalg:transpose (linalg:eye 2 :element-type 'single-float)))        ; => SINGLE-FLOAT
+(linalg:zeros 3 :element-type 'bfloat16)                       ; => #bf16(0.0 0.0 0.0)
+(array-element-type
+  (linalg:add (linalg:ones 2 :element-type 'bfloat16) 0.5))            ; => BFLOAT16
 ```
 
 ## SIMD アクセラレーション

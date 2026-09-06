@@ -128,12 +128,17 @@ The gradient of `#(0 1 4 9 16)` -- the parabola `y = x^2` sampled at `x = 0..4` 
 
 linalg computes in `double-float` by default, but it is **width-polymorphic**: it accepts and preserves packed **single-float** (`#f`) arrays, which use half the memory and twice the SIMD lane count. Every constructor takes an `:element-type` keyword (the default is `'double-float`; pass `:element-type 'single-float` for a `#f` result), and every transform -- `add`/`sub`/`mul`/`div`/`emap`, `transpose`/`reshape`, `dot`/`matmul`/`outer`, `inv`/`solve` -- preserves its input's width. A single-float value therefore stays single-float all the way through: a functional weight update `(linalg:sub W grad)` keeps `W`'s width rather than silently widening it back to double (which, on the JVM [`--simd`](simd-acceleration.md) path, would force a mixed-width error on the following `vec:matvec`). Reach for single-float when you want the speed and memory of `f32` and can accept its lower precision, and keep the double-float default for precision-critical work such as `det`/`inv`/`solve`.
 
+A third width rides the same mechanism: **bfloat16** (`#bf16`), the top sixteen bits of an IEEE binary32 and the storage format published ML checkpoints use. `:element-type 'bfloat16` builds one, and every transform preserves it exactly as it preserves single-float -- so a checkpoint tensor loaded at that width stays there through the arithmetic instead of quadrupling in memory on the first `linalg:add`. It keeps about three decimal digits: it is a STORAGE width rather than a compute one, meant for holding weights at a quarter of `#d`, not for taking a `det` in. Two things set it apart from the other two widths. It exists on the **interpreter and the JVM only** -- the WASM backends have no bfloat16 array and signal `bfloat16 arrays are supported on the interpreter and the JVM only` at the call that asks for one. And no acceleration flag takes it: `--simd`, `--blas` and `--gpu` all decline a bfloat16 operand to the portable `linalg.lisp` definition, so its results are the portable ones bit for bit, at every shape and under every flag.
+
 ```lisp
 (linalg:zeros 3 :element-type 'single-float)                   ; => #f(0.0 0.0 0.0)
 (linalg:from-list '((1 2) (3 4)) :element-type 'single-float)  ; => #f((1.0 2.0) (3.0 4.0))
 (linalg:add (linalg:from-list '(1 2 3) :element-type 'single-float) 10) ; => #f(11.0 12.0 13.0)
 (array-element-type
   (linalg:transpose (linalg:eye 2 :element-type 'single-float)))        ; => SINGLE-FLOAT
+(linalg:zeros 3 :element-type 'bfloat16)                       ; => #bf16(0.0 0.0 0.0)
+(array-element-type
+  (linalg:add (linalg:ones 2 :element-type 'bfloat16) 0.5))            ; => BFLOAT16
 ```
 
 ## SIMD acceleration

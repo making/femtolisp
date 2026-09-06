@@ -18,6 +18,24 @@ blobs (`import-block.bin`, `mem.wasm`, `adapter.wasm`) load from classpath resou
 `.../codegen/wasm/component/`, registered in `resource-config.json`. **The blobs are
 generated** from `src/wasm-component/` -- follow its `README.md`.
 
+## A layout-sensitive `ref.cast` trap at `ci-spec` size (2026-09-06, unfixed)
+**This backend, and only this backend, traps on the whole `ci-spec` corpus for some byte
+layouts of the program's own core module.** The trap is `wasm trap: cast failure` inside a
+`gguf:read` call 3587 lines into a 3590-line run; Preview 1, the interpreter, the JVM and the
+native binary all run the same corpus to completion, and `--optimize` changes nothing. What
+decides it is the shape of an UNRELATED function: reordering two arms of
+`linalg::%la-make`'s `cond` -- same code, same size -- flips it either way, and so does
+deleting one case from the corpus. The adapter core modules are byte-identical between a
+passing and a trapping build, so the narrowing and `WasmBodyFolder` are ruled out; only the
+program's own core module differs, and the trapping one is the SMALLER of the two.
+
+Two consequences for anyone editing a spliced library:
+- **A `cast failure` from a case you did not touch is probably this**, not your change.
+  `.todo/722` carries the full measurement table, what is ruled out, and the reproducer.
+- **Reproduce it in a FRESH directory.** The identical module passes in a directory left over
+  from an earlier run, because a corpus case counts directory entries. `CiSpecE2eTest` uses a
+  temp dir, so CI sees it and a careless manual re-run does not.
+
 ## The fixed surface is fixed only WITHOUT `--optimize`
 With `--optimize` the adapter is narrowed to the preview1 entry points the core still imports
 and re-shaken, its surviving `"w"` imports select the lowerings the wrapper emits, and
