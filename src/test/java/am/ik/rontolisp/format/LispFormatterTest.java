@@ -693,10 +693,46 @@ class LispFormatterTest {
 				// a developer who ran ansi-test/fetch.sh must not get a different verdict
 				// from `./mvnw test` than one who did not.
 				.filter(path -> !path.toString().contains("/ansi-test/suite/"))
+				// A `.claude/` directory (agent worktrees, or anything else the harness
+				// puts there) is foreign for the same reason: a developer who has stale
+				// agent worktrees on disk must not get a different verdict -- or a
+				// different TEST COUNT -- from `./mvnw test` than one who does not, and a
+				// worktree mid-edit must never make the MAIN tree's suite fail on a file
+				// the main tree does not contain. See .todo/708.
+				.filter(path -> !path.toString().contains("/.claude/"))
 				.sorted(Comparator.comparing(Path::toString))
 				.toList()
 				.stream();
 		}
+	}
+
+	// Pins the corpus boundary above: without this, a new foreign directory the walk
+	// does not know about (a third stale-worktree-shaped mechanism, after /target/ and
+	// /ansi-test/suite/) inflates the parameterized test count silently, exactly as
+	// .claude/worktrees/ did (.todo/708). `git ls-files` is the ground truth for what
+	// the repository itself tracks; the corpus also includes untracked fixtures (e.g.
+	// a fresh ansi-test checkout before it is git-ignored away above), so the bound is
+	// a small factor rather than equality.
+	@Test
+	void repositoryCorpusStaysWithinASmallFactorOfTrackedSources() throws IOException, InterruptedException {
+		List<Path> corpus = repositoryLispSources().toList();
+		assertThat(corpus).as("no corpus path may come from a foreign .claude/ directory")
+			.noneMatch(path -> path.toString().contains("/.claude/"));
+
+		Process git = new ProcessBuilder("git", "ls-files", "*.lisp", "*.asd").redirectErrorStream(true).start();
+		String output;
+		try (var reader = git.inputReader()) {
+			output = reader.lines().filter(line -> !line.isBlank()).reduce("", (a, b) -> a + b + "\n");
+		}
+		int exit = git.waitFor();
+		// git is not available in every sandbox this test may run in; the boundary
+		// filter above is still checked unconditionally.
+		if (exit != 0) {
+			return;
+		}
+		long tracked = output.lines().filter(line -> !line.isBlank()).count();
+		assertThat(corpus.size()).as("corpus size %s vs. %s tracked .lisp/.asd files", corpus.size(), tracked)
+			.isLessThan((int) (tracked * 3));
 	}
 
 	@ParameterizedTest
