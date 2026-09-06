@@ -53,6 +53,20 @@ wrapper retains the narrow pair when the core imports no `path_open`.
 - `read-directory` returns `stream<directory-entry>`, structurally distinct from `stream<u8>`:
   own read/drop built-ins, read carries realloc, cookie-as-entry-index, and "a short round is
   NOT the end" (`.kb/directory-listing.md`).
+- **EOF must be LATCHED per readable stream.** Preview 1 lets a reader keep calling
+  `fd_read` after the end and answers 0 bytes forever; WASI 0.3 delivers the writable end's
+  drop ONCE and the host TRAPS on the next `stream.read` (`wasm trap: cannot read after
+  being notified that the writable end dropped`). So `adapter.wat`'s `$read_iov` takes the
+  address of a per-stream latch cell -- the fd table's slot+8 for a file, `0x50088` for
+  stdin -- sets it when a read's status field is non-zero, and answers every later read
+  nread=0 from the latch without touching the stream. Without it a THIRD `read-line` at
+  EOF, or any reader that re-probes after the end, killed the program on this backend
+  alone: `safetensors:read` over a sharded index did, and the example carrying it
+  (`examples/llm/safetensors-check.lisp`) had a compile-only `wasm-component` leg, so
+  nothing ran it for months. Pinned by ci-spec
+  `reading-past-end-of-file-answers-eof-every-time` and by the example's
+  `wasm-component-run` leg (that RUN token exists because of this bug -- see
+  `examples/examples.yaml`'s header).
 - **No preopened directory is an ERRNO, not a trap**: `$ensure_preopens` caches `-1` for an
   empty preopens list and `$path_open` returns errno 76, so `probe-file` can answer nil. The
   adapter is compensating for the host; a host making an empty preopen list impossible retires

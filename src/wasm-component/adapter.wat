@@ -31,12 +31,13 @@
 ;;   0x50050 open-at result {disc@0x50050 byte, descriptor-or-errcode i32@0x50054}
 ;;   0x50060 file read-via-stream tuple {stream@0x50060, future@0x50064}
 ;;   0x50070 stdin read-via-stream tuple {stream@0x50070, future@0x50074}
-;;   0x50080 stdin cache {flag@0x50080, stream@0x50084}
+;;   0x50080 stdin cache {flag@0x50080, stream@0x50084, eof-latch@0x50088}
 ;;   0x50090 waitable-set event scratch {waitable@0x50090, payload@0x50094}
 ;;   0x5009c cached waitable-set handle (0 = not yet created)
 ;;   0x500a0 read-directory result tuple {stream@0x500a0, future@0x500a4}
 ;;   0x500b0 one lowered directory-entry (24 bytes: type variant @0, name ptr@16 len@20)
-;;   0x50100 fd table: 64 slots x 16 bytes {descriptor@0, read-stream@4, valid@12}
+;;   0x50100 fd table: 64 slots x 16 bytes {descriptor@0, read-stream@4, eof-latch@8,
+;;           valid@12}
 ;;   0x50500 preopen table: 16 slots x 264 bytes {descriptor@0, name-len@4, name@8..}
 ;;   0x51600 descriptor.stat result scratch: result<descriptor-stat, error-code>, 112
 ;;           bytes -- disc byte @0, descriptor-stat @8 (type @8, link-count @24, size @32)
@@ -50,8 +51,9 @@
 ;; Writes use append-via-stream (each fd_write is a full append cycle, so no per-fd write
 ;; offset needs tracking) and await the write future; reads cache the readable stream per fd
 ;; and let it advance, dropping the read future immediately (EOF is signalled by the stream
-;; status, not the future). wasi:cli and wasi:filesystem expose DISTINCT error-code enums,
-;; so their future<result<_, error-code>> are distinct types needing separate built-ins
+;; status, not the future, and is LATCHED per stream -- see $read_iov). wasi:cli and
+;; wasi:filesystem expose DISTINCT error-code enums, so their
+;; future<result<_, error-code>> are distinct types needing separate built-ins
 ;; (suffix -cli vs -fs); stream<u8> is structural and shared.
 ;;
 ;; SINGLE-TASK BY DESIGN: this adapter keeps ONE cached waitable-set and fixed per-call
@@ -334,11 +336,23 @@
   ;; Read one iovec out of a readable stream. stream.read writes straight into the
   ;; shared-memory destination; the return value is (count << 4) | status, with status
   ;; 0 = completed, 1 = dropped (EOF). count 0 = EOF.
-  (func $read_iov (param $ins i32) (param $iov i32) (param $nread i32) (result i32)
-    (i32.store (local.get $nread)
-      (i32.shr_u
-        (call $stream_read (local.get $ins) (i32.load (local.get $iov)) (i32.load offset=4 (local.get $iov)))
-        (i32.const 4)))
+  ;;
+  ;; $fin is the address of this stream's "already notified that the writable end
+  ;; dropped" latch. Preview 1 lets a reader keep calling fd_read at EOF and answers
+  ;; nread=0 every time; WASI 0.3 delivers the drop ONCE and TRAPS on the next
+  ;; stream.read ("cannot read after being notified that the writable end dropped").
+  ;; So the drop is latched here and every later read is answered from the latch
+  ;; without touching the stream. A drop can arrive together with a non-zero count, so
+  ;; the count is still stored on the call that latches it.
+  (func $read_iov (param $ins i32) (param $iov i32) (param $nread i32) (param $fin i32) (result i32)
+    (local $ret i32)
+    (if (i32.load (local.get $fin))
+      (then (i32.store (local.get $nread) (i32.const 0)) (return (i32.const 0))))
+    (local.set $ret
+      (call $stream_read (local.get $ins) (i32.load (local.get $iov)) (i32.load offset=4 (local.get $iov))))
+    (if (i32.and (local.get $ret) (i32.const 0xf))
+      (then (i32.store (local.get $fin) (i32.const 1))))
+    (i32.store (local.get $nread) (i32.shr_u (local.get $ret) (i32.const 4)))
     (i32.const 0))
 
   ;; The stdin half of fd_read: a cached wasi:cli/stdin readable stream. Exported as an
@@ -353,7 +367,8 @@
         (i32.store (i32.const 0x50084) (i32.load (i32.const 0x50070)))
         (call $future_drop_cli (i32.load (i32.const 0x50074)))
         (i32.store (i32.const 0x50080) (i32.const 1))))
-    (call $read_iov (i32.load (i32.const 0x50084)) (local.get $iov) (local.get $nread)))
+    (call $read_iov (i32.load (i32.const 0x50084)) (local.get $iov) (local.get $nread)
+      (i32.const 0x50088)))
 
   ;; The file half of fd_read: the slot's readable stream, opened on first use and left to
   ;; advance across calls.
@@ -367,7 +382,8 @@
         (local.set $ins (i32.load (i32.const 0x50060)))
         (i32.store offset=4 (local.get $sl) (local.get $ins))
         (call $future_drop_fs (i32.load (i32.const 0x50064)))))
-    (call $read_iov (local.get $ins) (local.get $iov) (local.get $nread)))
+    (call $read_iov (local.get $ins) (local.get $iov) (local.get $nread)
+      (i32.add (local.get $sl) (i32.const 8))))
 
   ;; fd_read(fd, iov, cnt, nread) -> errno. Single-iovec; nread==0 signals EOF. fd==0 is
   ;; stdin; otherwise a file fd.
@@ -409,7 +425,7 @@
     (i32.store offset=12 (local.get $sl) (i32.const 1))
     (i32.store (local.get $sl) (i32.load offset=4 (i32.const 0x50050)))
     (i32.store offset=4 (local.get $sl) (i32.const -1))
-    (i32.store offset=8 (local.get $sl) (i32.const -1))
+    (i32.store offset=8 (local.get $sl) (i32.const 0))
     (i32.store (local.get $fdout) (i32.add (i32.const 100) (local.get $idx)))
     (i32.const 0))
 

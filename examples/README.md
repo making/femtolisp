@@ -134,9 +134,17 @@ java -jar $JAR examples/console/roman.lisp --system-path $SP
 [`examples.yaml`](examples.yaml) lists each non-GUI example and the backends it
 can be verified on; [`ExamplesE2eTest`](../src/test/java/am/ik/rontolisp/e2e/ExamplesE2eTest.java)
 turns every *(example × backend)* pair into one dynamic test. `interpreter` /
-`jvm` / `wasm` run the program and check its output; `jvm-compile` /
-`wasm-component` / `no-gc` only build it, because blocking servers and
-host-invoked modules never return on their own.
+`jvm` / `wasm` / `wasm-component-run` run the program and check its output;
+`jvm-compile` / `wasm-component` / `no-gc` only build it, because blocking
+servers and host-invoked modules never return on their own.
+
+`wasm-component` and `wasm-component-run` build the same artifact and differ
+only in whether it is then run. The component path has its own I/O adapter —
+files, stdin and directories over WASI 0.3 streams rather than the Preview 1
+syscalls the `wasm` leg drives — so an ordinary program that only *compiles*
+here is not verified on that backend at all. Use `wasm-component-run` unless
+the example genuinely cannot run (a server, a `--invoke`d world, a component
+whose host is not on this machine).
 
 Each entry declares its `args` / `stdin` and one `expect`: `equals` (stdout
 matches this text), `file` (matches a file under `examples/`), `contains`

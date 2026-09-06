@@ -14,6 +14,14 @@
 #                     reaches a runtime support class -- an HTTP server, a socket,
 #                     a Gray stream -- needs it; most are self-contained and do not)
 #     wasm            <driver> FILE -o prog.wasm --optimize   then  wasmtime run --dir . prog.wasm [args]
+#     wasm-component-run
+#                     <driver> FILE -o prog.wasm --component --optimize
+#                     then  wasmtime run --dir . prog.wasm [args]
+#                     (the component path has its OWN I/O adapter -- files, stdin
+#                     and directories over WASI 0.3 streams instead of the Preview 1
+#                     syscalls the `wasm` leg drives -- so an ordinary I/O-bearing
+#                     program needs THIS token, not the compile-only one below, to be
+#                     verified on that backend at all)
 #   COMPILE (blocking servers / host-invoked modules never return on their own --
 #   or are never run as a program at all: a war is deployed into a container and a
 #   reactor is called by its host -- so we only build them and assert the compile
@@ -21,6 +29,9 @@
 #     jvm-compile     <driver> FILE -o Prog.class
 #     war-compile     <driver> FILE -o app.war
 #     wasm-component  <driver> FILE -o prog.wasm --component --optimize
+#                     (compile only -- for the shapes that genuinely cannot run here:
+#                     a server, a --invoke'd world, a component whose host is not on
+#                     this machine. Anything else belongs on wasm-component-run.)
 #     wasm-reactor    <driver> FILE -o prog.wasm --no-wasi --optimize
 #     no-gc           <driver> FILE -o prog.wasm --no-gc --optimize
 #     no-gc-simd      <driver> FILE -o prog.wasm --no-gc --simd --optimize
@@ -286,7 +297,7 @@ examples:
   # Greedy decoding, so the story is byte-identical on every backend AND to the C
   # program's -- the whole point of an `equals`.
   - path: llm/llm.lisp
-    backends: [interpreter, jvm, wasm, wasm-component]
+    backends: [interpreter, jvm, wasm, wasm-component-run]
     workDir: llm
     workFiles: [stories260K.bin, tok512.bin]
     simd: true
@@ -302,12 +313,12 @@ examples:
   # decimals with a 2e-5 margin from every rounding boundary, so the text is
   # the same with single-float arithmetic and the WASM exp approximation.
   - path: llm/deltanet-check.lisp
-    backends: [interpreter, jvm, wasm, wasm-component]
+    backends: [interpreter, jvm, wasm, wasm-component-run]
     note: deltanet.lisp's arithmetic pinned against deltanet-ref.py -- torch_recurrent_gated_delta_rule at heads 2 / dim 4 over three tokens plus the final states, then Qwen3_5GatedDeltaNet.forward (conv, SiLU, l2norm, the gates, the recurrence, the gated RMSNorm, out_proj) over five tokens of a dim-8 two-head kernel-4 layer. The scalar vec.lisp kernels on every backend
     expect:
       file: .expected/deltanet-check.txt
   - path: llm/deltanet-check.lisp
-    backends: [interpreter, jvm, wasm, wasm-component]
+    backends: [interpreter, jvm, wasm, wasm-component-run]
     simd: true
     note: the same check under --simd on every leg -- the lane kernels' single-precision reductions land on the same text
     expect:
@@ -319,14 +330,14 @@ examples:
   # chunked staging path (the chunk forced to five elements) and the sharded index.
   # The values are exact in every width, so the text is the same on every backend.
   - path: llm/safetensors-check.lisp
-    backends: [interpreter, jvm, wasm, wasm-component]
+    backends: [interpreter, jvm, wasm, wasm-component-run]
     workDir: llm
     workFiles: [safetensors-check.safetensors, safetensors-check-00001-of-00002.safetensors, safetensors-check-00002-of-00002.safetensors, safetensors-check.index.json]
     note: safetensors:read / safetensors:header / safetensors:entries over the checked-in fixture -- F32, F16 and BF16 tensors of rank 1, 2 and 3 and one of a single element, single and double destinations, the dtype refusal, :only skipping a tensor through checkpoint:skip-bytes, the staging chunk forced down to five elements, and the two-shard index
     expect:
       file: .expected/safetensors-check.txt
   - path: llm/safetensors-check.lisp
-    backends: [interpreter, jvm, wasm, wasm-component]
+    backends: [interpreter, jvm, wasm, wasm-component-run]
     workDir: llm
     workFiles: [safetensors-check.safetensors, safetensors-check-00001-of-00002.safetensors, safetensors-check-00002-of-00002.safetensors, safetensors-check.index.json]
     simd: true
@@ -338,7 +349,7 @@ examples:
   # added tokens flagged special (<|im_start|>, <|im_end|>) and not (<think>,
   # </think>); the ids are the Python `tokenizers` library's.
   - path: llm/checkpoint-tokenizer-check.lisp
-    backends: [interpreter, jvm, wasm, wasm-component]
+    backends: [interpreter, jvm, wasm, wasm-component-run]
     workDir: llm
     workFiles: [tokenizer-check/tokenizer.json, tokenizer-check/tokenizer_config.json, tokenizer-check.gguf]
     note: load-hf-tokenizer and load-gguf-tokenizer (the readers llm.lisp uses for a published checkpoint's tokenizer) over the checked-in fixture, encoding a plain text, a chat turn with a think block, and a word glued to an added token -- every added token is one id whether or not it is flagged special, on both readers, the same ids the reference implementation gives
@@ -348,12 +359,12 @@ examples:
   # against a float64 transcription of Lfm2ShortConv (shortconv-ref.py), four
   # tokens of a dim-8 kernel-3 layer, the same 3-decimal / 2e-5-margin rule.
   - path: llm/shortconv-check.lisp
-    backends: [interpreter, jvm, wasm, wasm-component]
+    backends: [interpreter, jvm, wasm, wasm-component-run]
     note: shortconv.lisp's arithmetic pinned against shortconv-ref.py -- in_proj, the B | C | x split, the gated causal conv of kernel 3 (causal-conv.lisp, shared with deltanet.lisp) with no activation, out_proj -- over four tokens, so the two-row window fills and wraps. The scalar vec.lisp kernels on every backend
     expect:
       file: .expected/shortconv-check.txt
   - path: llm/shortconv-check.lisp
-    backends: [interpreter, jvm, wasm, wasm-component]
+    backends: [interpreter, jvm, wasm, wasm-component-run]
     simd: true
     note: the same check under --simd on every leg
     expect:
@@ -408,14 +419,14 @@ examples:
     expect:
       file: .expected/dlfs-activation-functions.txt
   - path: deep-learning-from-scratch/ch03/mnist-show.lisp
-    backends: [interpreter, jvm, wasm, wasm-component]
+    backends: [interpreter, jvm, wasm, wasm-component, wasm-component-run]
     workDir: deep-learning-from-scratch
     workFiles: [dataset/train-images-idx3-ubyte, dataset/train-labels-idx1-ubyte]
     note: reads dataset/train-*-ubyte (gitignored -- ./download-mnist.sh); RUN legs skip themselves when the dumps are absent
     expect:
       file: .expected/dlfs-mnist-show.txt
   - path: deep-learning-from-scratch/ch03/neuralnet-mnist.lisp
-    backends: [interpreter, jvm, wasm, wasm-component]
+    backends: [interpreter, jvm, wasm, wasm-component, wasm-component-run]
     workDir: deep-learning-from-scratch
     workFiles: [ch03/sample-weight.bin, dataset/t10k-images-idx3-ubyte, dataset/t10k-labels-idx1-ubyte]
     note: reads dataset/t10k-*-ubyte (gitignored -- ./download-mnist.sh) + ch03/sample-weight.bin (committed); RUN legs skip themselves when the idx dumps are absent; softmax + argmax over 1000 images -> the same class per image on every backend
@@ -423,7 +434,7 @@ examples:
       equals: |
         Accuracy: 932/1000
   - path: deep-learning-from-scratch/ch03/neuralnet-mnist-batch.lisp
-    backends: [interpreter, jvm, wasm, wasm-component]
+    backends: [interpreter, jvm, wasm, wasm-component, wasm-component-run]
     workDir: deep-learning-from-scratch
     workFiles: [ch03/sample-weight.bin, dataset/t10k-images-idx3-ubyte, dataset/t10k-labels-idx1-ubyte]
     note: reads dataset/t10k-*-ubyte (gitignored -- ./download-mnist.sh) + ch03/sample-weight.bin (committed); RUN legs skip themselves when the idx dumps are absent
@@ -507,7 +518,7 @@ examples:
     backends: [jvm-compile, wasm-component]
     note: reads dataset/*-ubyte (./download-mnist.sh)
   - path: deep-learning-from-scratch/ch07/visualize-filter.lisp
-    backends: [interpreter, jvm, wasm, wasm-component]
+    backends: [interpreter, jvm, wasm, wasm-component-run]
     workDir: deep-learning-from-scratch
     workFiles: [ch07/params.bin]
     note: reads ch07/params.bin (committed) -- staged into the workspace via workFiles; output byte-identical across all four backends
@@ -532,12 +543,12 @@ examples:
   # shapes are the shrunken ones its README documents next to the book's, and
   # why it is one of the two entries here that run under --simd.
   - path: llm-from-scratch/transformer/shapes.lisp
-    backends: [interpreter, jvm, wasm, wasm-component]
+    backends: [interpreter, jvm, wasm, wasm-component-run]
     note: attention.py's __main__ plus the same shape check for the whole model -- shapes and counts only, so nothing float-sensitive is printed
     expect:
       file: .expected/llm-shapes.txt
   - path: llm-from-scratch/chapter02/section2.lisp
-    backends: [interpreter, jvm, wasm, wasm-component]
+    backends: [interpreter, jvm, wasm, wasm-component-run]
     note: notebook 2.2 -- attention as pure linalg, no autograd and no modules
     expect:
       file: .expected/llm-section2.txt
@@ -547,7 +558,7 @@ examples:
     expect:
       file: .expected/llm-section3.txt
   - path: llm-from-scratch/chapter02/section4.lisp
-    backends: [interpreter, jvm, wasm, wasm-component]
+    backends: [interpreter, jvm, wasm, wasm-component-run]
     note: notebook 2.4 -- cross entropy between discretised Gaussians, against a uniform, the one-hot case and a probability target
     expect:
       file: .expected/llm-section4.txt
@@ -567,17 +578,17 @@ examples:
   # two llm-from-scratch entries under --simd; the six shape/notebook entries
   # around them stay scalar, so both paths keep their coverage.
   - path: llm-from-scratch/gpt/shapes.lisp
-    backends: [interpreter, jvm, wasm, wasm-component]
+    backends: [interpreter, jvm, wasm, wasm-component-run]
     note: the gpt package's own shape check -- shapes, counts and two exact predicates (the causal mask really blinds a position to its future; :top-k 1 makes sampling deterministic), so nothing float-sensitive is printed
     expect:
       file: .expected/llm-gpt-shapes.txt
   - path: llm-from-scratch/chapter03/section2.lisp
-    backends: [interpreter, jvm, wasm, wasm-component]
+    backends: [interpreter, jvm, wasm, wasm-component-run]
     note: section 3.2 -- word-level tokenization and its normalizer, the special tokens, the two embedding tables, and a BPE learner whose 100 merges come out in the book's exact order
     expect:
       file: .expected/llm-section3-2.txt
   - path: llm-from-scratch/chapter03/train-gpt-soseki.lisp
-    backends: [interpreter, jvm, wasm, wasm-component]
+    backends: [interpreter, jvm, wasm, wasm-component-run]
     simd: true
     note: the train_gpt_soseki notebook -- a character-level GPT trained by AdamW over two parameter groups on the inlined 漱石 corpus, then sampled with temperature and top-k. Under --simd for the margin - the interpreter leg is 52.4 s scalar against the 240 s cap and 6.5 s with the flag, and every leg prints the same bytes either way (verified on all four). The rank-3 matmul an attention layer almost entirely is joined the accelerated set later, which is where most of that margin came from
     expect:
@@ -1123,7 +1134,7 @@ examples:
   # read; size-report/measure.sh reports them and this manifest pins that they
   # still compute the right thing on every backend.
   - path: ../size-report/programs/hello_world/hello_world.lisp
-    backends: [interpreter, jvm, wasm, wasm-component]
+    backends: [interpreter, jvm, wasm, wasm-component-run]
     note: >-
       the size-comparison floor. What matters about it is the size of the compiled
       module, but the number only means something if the module still prints, so
@@ -1133,7 +1144,7 @@ examples:
       equals: |
         Hello, World!
   - path: ../size-report/programs/pi_approx/pi_approx.lisp
-    backends: [interpreter, jvm, wasm, wasm-component]
+    backends: [interpreter, jvm, wasm, wasm-component-run]
     note: >-
       a million Leibniz terms in f64 and one ~,15F. The equals check is the point:
       the 15 decimal places must be identical on every backend, or the size table

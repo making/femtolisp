@@ -38,9 +38,9 @@ import static org.junit.jupiter.api.DynamicTest.dynamicTest;
  * <p>
  * Two kinds of check, chosen per backend token in the manifest:
  * <ul>
- * <li><b>RUN</b> ({@code interpreter}/{@code jvm}/{@code wasm}) -- the program runs to
- * completion; we assert it exits 0 and (optionally) that its stdout matches the declared
- * {@code expect}.</li>
+ * <li><b>RUN</b> ({@code interpreter}/{@code jvm}/{@code wasm}/
+ * {@code wasm-component-run}) -- the program runs to completion; we assert it exits 0 and
+ * (optionally) that its stdout matches the declared {@code expect}.</li>
  * <li><b>COMPILE</b> ({@code jvm-compile}/{@code war-compile}/{@code wasm-component}/
  * {@code wasm-reactor}/{@code no-gc}/{@code no-gc-simd}) -- for the blocking servers and
  * the host-invoked modules, which never return on their own (or are never run as a
@@ -48,6 +48,14 @@ import static org.junit.jupiter.api.DynamicTest.dynamicTest;
  * assert the compile succeeds. This still catches broken {@code (load ...)} paths,
  * missing symbols and package errors.</li>
  * </ul>
+ * {@code wasm-component} and {@code wasm-component-run} build the SAME artifact and
+ * differ only in whether it is then run. The component path has its own I/O adapter (WASI
+ * 0.3 streams, not the Preview 1 syscalls the {@code wasm} leg drives), so an ordinary
+ * I/O-bearing program that only compiles here is not verified on that backend at all:
+ * prefer {@code wasm-component-run} and keep the compile-only token for the shapes that
+ * genuinely cannot run (a server, a {@code --invoke}d world, a component whose host is
+ * not on this machine).
+ * <p>
  * Per-example manifest fields (all optional except {@code path}/{@code backends}):
  * <ul>
  * <li>{@code args} -- the program's OWN command-line arguments, what
@@ -160,7 +168,8 @@ class ExamplesE2eTest {
 	enum Backend {
 
 		// RUN backends run the program; COMPILE backends only build it (see verify()).
-		INTERPRETER, JVM, WASM, JVM_COMPILE, WAR_COMPILE, WASM_COMPONENT, WASM_REACTOR, NO_GC, NO_GC_SIMD;
+		INTERPRETER, JVM, WASM, WASM_COMPONENT_RUN, JVM_COMPILE, WAR_COMPILE, WASM_COMPONENT, WASM_REACTOR, NO_GC,
+		NO_GC_SIMD;
 
 		/**
 		 * The manifest spelling: lower-case with hyphens (e.g. {@code wasm-component}).
@@ -175,7 +184,7 @@ class ExamplesE2eTest {
 		 * whether {@code workFiles} must actually exist ahead of the leg.
 		 */
 		boolean runsProgram() {
-			return this == INTERPRETER || this == JVM || this == WASM;
+			return this == INTERPRETER || this == JVM || this == WASM || this == WASM_COMPONENT_RUN;
 		}
 
 	}
@@ -463,7 +472,7 @@ class ExamplesE2eTest {
 				if (skippedForLibrary(backend, example)) {
 					abort(example.path() + " needs one of " + example.library() + "; this machine has none");
 				}
-				if (backend == Backend.WASM && !onPath("wasmtime")) {
+				if ((backend == Backend.WASM || backend == Backend.WASM_COMPONENT_RUN) && !onPath("wasmtime")) {
 					abort("wasmtime not on PATH");
 				}
 				assertThat(Files.isRegularFile(source)).as("example source is missing: %s", source).isTrue();
@@ -525,6 +534,22 @@ class ExamplesE2eTest {
 								concat(wasmtimeEnvFlags(env), List.of("prog.wasm"))), args),
 						stdin, Map.of());
 				assertRan(run, example, "wasm (run)");
+			}
+			case WASM_COMPONENT_RUN -> {
+				// The component output actually RUN. The plain `wasm-component` token
+				// only compiles, which is the right check for a blocking server or a
+				// host-invoked module -- and the wrong one for an ordinary program,
+				// because the component path has its OWN I/O adapter: a file, stdin
+				// and directory surface built on WASI 0.3 streams rather than the
+				// Preview 1 syscalls the `wasm` leg exercises. An example that only
+				// compiled here could (and did) trap on that adapter for years.
+				Result compile = exec(runDir,
+						concat(driver, concat(List.of(src, "-o", "prog.wasm", "--component", "--optimize"), flags)),
+						null, Map.of());
+				assertCompiled(compile, example, "wasm-component-run (compile)");
+				Result run = exec(runDir, concat(concat(List.of("wasmtime", "run", "--dir", "."),
+						concat(wasmtimeEnvFlags(env), List.of("prog.wasm"))), args), stdin, Map.of());
+				assertRan(run, example, "wasm-component-run (run)");
 			}
 			case JVM_COMPILE -> {
 				Result compile = exec(runDir, concat(driver, concat(List.of(src, "-o", "Prog.class"), flags)), null,
