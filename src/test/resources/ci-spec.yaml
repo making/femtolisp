@@ -6148,6 +6148,251 @@ cases:
       DOUBLE-FLOAT
       10.0
       14.0
+  # A greedy DECODE, pinned on the text it produces: a moved argmax is a different
+  # sentence, and nothing else in this corpus would notice. Every other check over the
+  # float kernels here compares a value, a shape or a length -- all of which agree
+  # happily while a reduction order, an accumulator boundary or a routing decision moves
+  # one token underneath them (.todo/705, filed after a lane spent a build-and-bisect
+  # cycle deciding whether a src/main change had altered a model's output and could not
+  # answer it from the repo).
+  #
+  # WHY THE MODEL IS SYNTHETIC. The repo's real-checkpoint decode IS pinned on its text:
+  # examples/llm/llm.lisp over the checked-in 1 MB stories260K, `equals` against
+  # run.c's own 40 tokens, on all four backends. But ExamplesE2eTest runs after
+  # `release` and never on a pull request, and `./mvnw test` skips it -- so on the lane
+  # that runs on every push and every PR (this file) there was no decode at all. Putting
+  # stories260K here instead was priced and rejected: 40 greedy tokens is 39 s on the
+  # scalar interpreter leg, and the corpus would have to carry llm.lisp's engine and
+  # stage a 1 MB checkpoint, which this driver has no mechanism for. A seeded toy model
+  # needs neither and fails on the same event; the two cases together cost 4.3 s of the
+  # scalar interpreter leg and under a second on every other (2026-09-06, this box).
+  #
+  # DETERMINISM. Weights come from the Lehmer generator every other cross-backend
+  # numeric case here uses (integer, below 2^23, so the stream is identical everywhere);
+  # only integers and words are printed. `margin` is the winning logit's gap to the
+  # runner-up in THOUSANDTHS, so a value change too small to move an argmax still shows.
+  # Measured 2026-09-06 over all eight legs (four backends x scalar/--simd): every id,
+  # every word and every margin identical, and at 1e-6 resolution the legs spread by one
+  # unit on ONE of the ten margins -- against a smallest margin of 0.091, which is
+  # 91000x that, and a printed unit 1000x it.
+  #
+  # THE SIZES ARE THE POINT, not decoration. `vec:` rows of 128 and 64 clear
+  # VecSimdKernels' MATVEC_ROW_THRESHOLD (16) and MATVEC_ACC_THRESHOLD (32, the
+  # four-accumulator GEMV), and the element-wise vectors of 128 clear THRESHOLD (128):
+  # every OTHER vec:/linalg: case in this file is 2 to 6 elements long, so on the
+  # JVM and interpreter --simd legs they never leave the scalar fallback and the
+  # accelerated kernels this case runs were, until it existed, untested by the whole
+  # --simd axis (.kb/vec.md).
+  #
+  # WHAT IT DOES NOT COVER, stated because a fixture described as covering "decoded
+  # text" invites the assumption that it covers a real one: the model is untrained and
+  # tiny, so the words are garbage (garbage that changes when a reduction order moves is
+  # the same alarm a trained model would give), and no published checkpoint's decode is
+  # pinned anywhere that CI can run -- the ones this project has read are gigabytes and
+  # outside the repo (.kb/test-execution.md, "Decoded text and the argmax alarm").
+  - name: transformer-greedy-decode-text-cross-backend
+    source: |
+      (defparameter *ci-dec-vocab* 32)
+      (defparameter *ci-dec-dim* 128)
+      (defparameter *ci-dec-hidden* 128)
+      (defparameter *ci-dec-ctx* 6)
+      (defparameter *ci-dec-prompt* '(0 4))
+      (defvar *ci-dec-seed* 127)
+      (defparameter *ci-dec-words*
+        '("the" "cat" "sat" "on" "a" "mat" "and" "then" "it" "ran"
+          "past" "two" "red" "doors" "into" "rain" "where" "wind" "hums" "low"
+          "over" "old" "stone" "walls" "near" "cold" "grey" "sea" "birds" "call"
+          "at" "dawn"))
+
+      (defun ci-dec-next ()
+        (setq *ci-dec-seed* (mod (+ (* *ci-dec-seed* 75) 74) 65537)))
+
+      (defun ci-dec-uniform (scale)
+        (* scale (- (/ (mod (ci-dec-next) 2048) 1024.0) 1.0)))
+
+      (defun ci-dec-matrix (rows cols scale)
+        (let ((m (linalg:zeros (list rows cols) :element-type 'single-float)))
+          (dotimes (i rows m)
+            (dotimes (j cols) (setf (aref m i j) (ci-dec-uniform scale))))))
+
+      (defun ci-dec-rmsnorm (x g)
+        (vec:mul (vec:scale x (/ 1.0 (sqrt (+ (/ (vec:dot x x) *ci-dec-dim*) 0.00001)))) g))
+
+      (defun ci-dec-silu (x) (/ x (+ 1.0 (exp (- 0.0 x)))))
+
+      (defun ci-dec-make-layer ()
+        (list :wq (ci-dec-matrix *ci-dec-dim* *ci-dec-dim* 0.08)
+              :wk (ci-dec-matrix *ci-dec-dim* *ci-dec-dim* 0.08)
+              :wv (ci-dec-matrix *ci-dec-dim* *ci-dec-dim* 0.08)
+              :wo (ci-dec-matrix *ci-dec-dim* *ci-dec-dim* 0.08)
+              :w1 (ci-dec-matrix *ci-dec-hidden* *ci-dec-dim* 0.06)
+              :w3 (ci-dec-matrix *ci-dec-hidden* *ci-dec-dim* 0.06)
+              :w2 (ci-dec-matrix *ci-dec-dim* *ci-dec-hidden* 0.06)
+              :ng1 (vec:ones *ci-dec-dim* :element-type 'single-float)
+              :ng2 (vec:ones *ci-dec-dim* :element-type 'single-float)
+              :kc (linalg:zeros (list *ci-dec-ctx* *ci-dec-dim*) :element-type 'single-float)
+              :vt (linalg:zeros (list *ci-dec-dim* *ci-dec-ctx*) :element-type 'single-float)))
+
+      (defun ci-dec-attention (l x pos)
+        (let ((q (vec:matvec (getf l :wq) x))
+              (k (vec:matvec (getf l :wk) x))
+              (v (vec:matvec (getf l :wv) x))
+              (kc (getf l :kc))
+              (vt (getf l :vt)))
+          (dotimes (j *ci-dec-dim*)
+            (setf (aref kc pos j) (aref k j))
+            (setf (aref vt j pos) (aref v j)))
+          (let ((scores (vec:scale (vec:matvec kc q) (/ 1.0 (sqrt *ci-dec-dim*))))
+                (w (vec:zeros *ci-dec-ctx* :element-type 'single-float))
+                (top -1000000.0)
+                (z 0.0))
+            (dotimes (u (+ pos 1))
+              (when (> (aref scores u) top) (setq top (aref scores u))))
+            (dotimes (u (+ pos 1))
+              (let ((e (exp (- (aref scores u) top))))
+                (setf (aref w u) e)
+                (setq z (+ z e))))
+            (vec:matvec (getf l :wo) (vec:matvec vt (vec:scale w (/ 1.0 z)))))))
+
+      (defun ci-dec-ffn (l h)
+        (vec:matvec (getf l :w2)
+                    (vec:mul (linalg:emap #'ci-dec-silu (vec:matvec (getf l :w1) h))
+                             (vec:matvec (getf l :w3) h))))
+
+      (defun ci-dec-layer (l x pos)
+        (let ((h (vec:add x (ci-dec-attention l (ci-dec-rmsnorm x (getf l :ng1)) pos))))
+          (vec:add h (ci-dec-ffn l (ci-dec-rmsnorm h (getf l :ng2))))))
+
+      (defparameter *ci-dec-net* (list (ci-dec-make-layer)))
+      (defparameter *ci-dec-emb* (ci-dec-matrix *ci-dec-vocab* *ci-dec-dim* 0.5))
+      (defparameter *ci-dec-pemb* (ci-dec-matrix *ci-dec-ctx* *ci-dec-dim* 0.1))
+      (defparameter *ci-dec-ngf* (vec:ones *ci-dec-dim* :element-type 'single-float))
+      (defparameter *ci-dec-cls* (ci-dec-matrix *ci-dec-vocab* *ci-dec-dim* 0.08))
+
+      (defun ci-dec-embed (tok pos)
+        (let ((x (vec:zeros *ci-dec-dim* :element-type 'single-float)))
+          (dotimes (j *ci-dec-dim* x)
+            (setf (aref x j) (+ (aref *ci-dec-emb* tok j) (aref *ci-dec-pemb* pos j))))))
+
+      (defun ci-dec-forward (tok pos)
+        (let ((x (ci-dec-embed tok pos)))
+          (dolist (l *ci-dec-net*) (setq x (ci-dec-layer l x pos)))
+          (vec:matvec *ci-dec-cls* (ci-dec-rmsnorm x *ci-dec-ngf*))))
+
+      ;; The gap between the winning logit and the runner-up, in thousandths: a value
+      ;; change too small to move the argmax still shows here, and the observed
+      ;; cross-backend spread is ~1e-6 logits, a thousand times finer than one unit.
+      (defun ci-dec-margin (logits best)
+        (let ((runner-up -1000000.0))
+          (dotimes (i *ci-dec-vocab* (round (* 1000.0 (- (aref logits best) runner-up))))
+            (when (and (/= i best) (> (aref logits i) runner-up)) (setq runner-up (aref logits i))))))
+
+      (defun ci-dec-decode (forward)
+        (let ((tok (first *ci-dec-prompt*)) (out '()) (margins '()))
+          (dotimes (pos *ci-dec-ctx* (list (reverse out) (reverse margins)))
+            (let* ((logits (funcall forward tok pos))
+                   (next (linalg:argmax logits)))
+              (if (< (+ pos 1) (length *ci-dec-prompt*))
+                  (setq tok (nth (+ pos 1) *ci-dec-prompt*))
+                  (progn (setq out (cons next out))
+                         (setq margins (cons (ci-dec-margin logits next) margins))
+                         (setq tok next)))))))
+
+      (defun ci-dec-text (ids)
+        (let ((s ""))
+          (dolist (i ids s)
+            (setq s (if (string= s "")
+                        (nth i *ci-dec-words*)
+                        (concatenate 'string s " " (nth i *ci-dec-words*)))))))
+
+      (defun ci-dec-report (label r)
+        (format t "~a ids: ~a~%" label (first r))
+        (format t "~a text: ~a~%" label (ci-dec-text (first r)))
+        (format t "~a margin: ~a~%" label (second r)))
+
+      (ci-dec-report "transformer" (ci-dec-decode #'ci-dec-forward))
+    expected: |
+      transformer ids: (27 18 15 3 31)
+      transformer text: sea hums rain on dawn
+      transformer margin: (286 140 188 586 222)
+  # The same alarm through a gated linear recurrence instead of attention: per head a
+  # kd x vd state matrix that decays, is corrected toward the current value by a
+  # rank-1 update and is read out by the query -- llm/deltanet.lisp's gated-delta-rule,
+  # which is the layer kind Qwen3.5 uses and the path the incident behind .todo/705 was
+  # reported against. A transformer fixture would not have exercised it: the state is
+  # carried ACROSS tokens, so an error at token 2 is still visible at the last one, which is
+  # the failure mode attention's stateless recompute does not have. The weights are the
+  # same generator from a fresh seed, and the case reuses the definitions above (this
+  # corpus is concatenated and runs IN ORDER); it pins the recurrence's SHAPE, not any
+  # trained DeltaNet's weights.
+  - name: gated-delta-rule-greedy-decode-text-cross-backend
+    source: |
+      (defparameter *ci-gdn-heads* 2)
+      (defparameter *ci-gdn-head-dim* 64)
+
+      (defun ci-gdn-sigmoid (x) (/ 1.0 (+ 1.0 (exp (- 0.0 x)))))
+
+      (defun ci-gdn-l2norm (v)
+        (vec:scale v (/ 1.0 (sqrt (+ (vec:dot v v) 0.00001)))))
+
+      (defun ci-gdn-slice (v h)
+        (let ((r (vec:zeros *ci-gdn-head-dim* :element-type 'single-float))
+              (base (* h *ci-gdn-head-dim*)))
+          (dotimes (i *ci-gdn-head-dim* r) (setf (aref r i) (aref v (+ base i))))))
+
+      ;; S <- decay * S + ((v - decay * S k) * beta) (x) k, then o = S q: the recurrence
+      ;; llm/deltanet.lisp runs, with the kv product taken on the undecayed state and
+      ;; scaled after so the decay and the rank-1 update are one pass.
+      (defun ci-gdn-rule (s q k v g beta)
+        (let ((decay (exp g))
+              (kv (vec:matvec s k)))
+          (dotimes (j *ci-gdn-head-dim*)
+            (let ((d (* (- (aref v j) (* decay (aref kv j))) beta)))
+              (dotimes (i *ci-gdn-head-dim*)
+                (setf (aref s j i) (+ (* (aref s j i) decay) (* d (aref k i)))))))
+          (vec:matvec s q)))
+
+      (setq *ci-dec-seed* 41)
+      (defparameter *ci-gdn-wq* (ci-dec-matrix *ci-dec-dim* *ci-dec-dim* 0.09))
+      (defparameter *ci-gdn-wk* (ci-dec-matrix *ci-dec-dim* *ci-dec-dim* 0.09))
+      (defparameter *ci-gdn-wv* (ci-dec-matrix *ci-dec-dim* *ci-dec-dim* 0.09))
+      (defparameter *ci-gdn-wo* (ci-dec-matrix *ci-dec-dim* *ci-dec-dim* 0.09))
+      (defparameter *ci-gdn-wb* (ci-dec-matrix *ci-gdn-heads* *ci-dec-dim* 0.2))
+      (defparameter *ci-gdn-wg* (ci-dec-matrix *ci-gdn-heads* *ci-dec-dim* 0.2))
+      (defparameter *ci-gdn-cls* (ci-dec-matrix *ci-dec-vocab* *ci-dec-dim* 0.09))
+      (defparameter *ci-gdn-state*
+        (let ((ss '()))
+          (dotimes (h *ci-gdn-heads* (reverse ss))
+            (setq ss (cons (linalg:zeros (list *ci-gdn-head-dim* *ci-gdn-head-dim*)
+                                         :element-type 'single-float)
+                           ss)))))
+
+      (defun ci-gdn-forward (tok pos)
+        (let* ((x (ci-dec-embed tok pos))
+               (h (ci-dec-rmsnorm x *ci-dec-ngf*))
+               (q (vec:matvec *ci-gdn-wq* h))
+               (k (vec:matvec *ci-gdn-wk* h))
+               (v (vec:matvec *ci-gdn-wv* h))
+               (b (vec:matvec *ci-gdn-wb* h))
+               (g (vec:matvec *ci-gdn-wg* h))
+               (o (vec:zeros *ci-dec-dim* :element-type 'single-float)))
+          (dotimes (hd *ci-gdn-heads*)
+            (let ((oh (ci-gdn-rule (nth hd *ci-gdn-state*)
+                                   (ci-gdn-l2norm (ci-gdn-slice q hd))
+                                   (ci-gdn-l2norm (ci-gdn-slice k hd))
+                                   (ci-gdn-slice v hd)
+                                   (- 0.0 (ci-gdn-sigmoid (aref g hd)))
+                                   (ci-gdn-sigmoid (aref b hd))))
+                  (base (* hd *ci-gdn-head-dim*)))
+              (dotimes (i *ci-gdn-head-dim*) (setf (aref o (+ base i)) (aref oh i)))))
+          (vec:matvec *ci-gdn-cls*
+                      (ci-dec-rmsnorm (vec:add x (vec:matvec *ci-gdn-wo* o)) *ci-dec-ngf*))))
+
+      (ci-dec-report "delta-rule" (ci-dec-decode #'ci-gdn-forward))
+    expected: |
+      delta-rule ids: (31 13 1 6 4)
+      delta-rule text: dawn doors cat and a
+      delta-rule margin: (356 91 202 576 567)
   # The geom package (solid modeling over linalg, .kb/geom.md): the primitives, the
   # measurements and the cached model-space mesh. Everything here is float32 and every
   # number a renderer would use comes out of trigonometry, which is exactly where four
