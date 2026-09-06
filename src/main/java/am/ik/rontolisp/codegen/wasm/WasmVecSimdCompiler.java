@@ -1,5 +1,6 @@
 package am.ik.rontolisp.codegen.wasm;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -115,6 +116,51 @@ final class WasmVecSimdCompiler {
 			case LispNames.VEC_CLIP_INTO -> 4;
 			default -> 2;
 		};
+	}
+
+	/**
+	 * The four CL operator spellings, which have no helper of their own: each maps onto
+	 * the helper of its named sibling, so the scalar-fallback table below reads its entry
+	 * from that sibling's defun and only falls back to the operator's own when the named
+	 * one is not in the program.
+	 */
+	private static final List<String> OPERATOR_SPELLINGS = List.of(LispNames.VEC_PLUS, LispNames.VEC_MINUS,
+			LispNames.VEC_STAR, LispNames.VEC_SLASH);
+
+	/**
+	 * The module function index of the spliced {@code vec.lisp} defun behind each helper,
+	 * indexed by {@link WasmVecSimdRuntimeBuilder} offset, {@code -1} where the program
+	 * has no such defun: what a helper hands a WIDTH-MISMATCHED call back to instead of
+	 * trapping ({@code .kb/vec.md}, "The four acceleration layers"). A mismatch is not an
+	 * error -- the scalar defun reads every operand through {@code aref}, which widens --
+	 * and the lane kernels carry no mixed-width form, so the decline has to leave the
+	 * accelerator, exactly as the interpreter's {@code VecSimd} and the JVM's lane-width
+	 * guard do.
+	 *
+	 * <p>
+	 * The entry is only used on the mismatch arm, so a member whose defun the program
+	 * does not hold (a shadowing redefinition of a different arity, a member the
+	 * tree-shaker dropped because nothing calls it) leaves its helper trapping as before
+	 * -- no call site can reach a helper whose defun the program lacks, since the call
+	 * site IS what keeps the defun reachable.
+	 */
+	static int[] scalarFallbacks(Map<String, WasmLispCompiler.WasmFunctionInfo> functions) {
+		int[] fallbacks = new int[WasmVecSimdRuntimeBuilder.FUNC_COUNT];
+		Arrays.fill(fallbacks, -1);
+		for (Map.Entry<String, Integer> kernel : KERNELS.entrySet()) {
+			String member = kernel.getKey();
+			int offset = kernel.getValue();
+			WasmLispCompiler.WasmFunctionInfo defun = functions.get(LispNames.VEC_PKG + ":" + member);
+			if (defun == null || defun.variadic() || defun.paramCount() != arity(member)) {
+				continue;
+			}
+			// The named member owns the entry whatever order the map iterates in; an
+			// operator spelling only fills one its sibling left empty.
+			if (!OPERATOR_SPELLINGS.contains(member) || fallbacks[offset] < 0) {
+				fallbacks[offset] = defun.funcIndex();
+			}
+		}
+		return fallbacks;
 	}
 
 	/** Returns whether the given qualified name is a kernel this compiler accelerates. */

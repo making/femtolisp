@@ -17,8 +17,9 @@
 ;;   checkpoints use), and every transform PRESERVES its input width -- a #f
 ;;   (single-float) array stays #f and a #bf16 array stays #bf16 through
 ;;   add/sub/mul/emap/transpose/dot/matmul/... (via linalg::%la-etype), so a value
-;;   flowing in from vec: is never silently widened (which would force a
-;;   mixed-width --simd error on the next vec:matvec). Every %la-make branch takes
+;;   flowing in from vec: is never silently widened (which would cost the next
+;;   vec:matvec its acceleration -- a mixed-width pair declines to the scalar
+;;   defun on every layer, .kb/vec.md). Every %la-make branch takes
 ;;   a LITERAL element-type so each backend picks the float[]/double[]/short[]
 ;;   (TYPE_F32ARR/F64ARR) repr statically -- interpreter, JVM AND wasm-GC all
 ;;   produce #f; #bf16 is the interpreter and the JVM only, and wasm-GC lowers its

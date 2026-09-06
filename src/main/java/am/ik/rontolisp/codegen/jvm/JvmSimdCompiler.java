@@ -389,16 +389,27 @@ final class JvmSimdCompiler {
 
 	/**
 	 * The lane kernels are TOTAL over the widths they carry -- a packed {@code double[]}
-	 * or {@code float[]} -- and cast anything else ({@link JvmSimdVectorTemplate}), so
-	 * every ARRAY argument is asked, POSITIVELY, whether it is one of those two before
-	 * the kernel is called; any other representation (a {@code bfloat16} {@code short[]}
-	 * today, whatever {@code .todo/672} brings tomorrow) takes the spliced
-	 * {@code vec.lisp} defun over the packed representation instead, the same decline the
-	 * interpreter's {@code VecSimd} chain gives. Asking "is it the unsupported one?"
-	 * would let the next unsupported width fall through to the cast. A scalar position
-	 * ({@link #SCALAR_TAIL}) is not an array and is not asked. Each failing test branches
-	 * to the caller's fallback; the positions are appended to {@code fallbackBranches}
-	 * for the caller to patch.
+	 * or {@code float[]}, all operands of ONE of the two -- and cast anything else
+	 * ({@link JvmSimdVectorTemplate}), so every ARRAY argument is asked, POSITIVELY,
+	 * whether it is that width before the kernel is called; any other representation (a
+	 * {@code bfloat16} {@code short[]} today, whatever {@code .todo/672} brings tomorrow)
+	 * takes the spliced {@code vec.lisp} defun over the packed representation instead,
+	 * the same decline the interpreter's {@code VecSimd} chain gives. Asking "is it the
+	 * unsupported one?" would let the next unsupported width fall through to the cast. A
+	 * scalar position ({@link #SCALAR_TAIL}) is not an array and is not asked. Each
+	 * failing test branches to the caller's fallback; the positions are appended to
+	 * {@code fallbackBranches} for the caller to patch.
+	 *
+	 * <p>
+	 * The FIRST array operand decides the width and every other one must match it: a
+	 * mixed {@code #d}/{@code #f} call is not an error -- {@code vec.lisp}'s
+	 * {@code %map2} reads every operand through {@code aref}, which widens whatever the
+	 * storage width is, so the scalar defun computes it happily and {@code --simd} may
+	 * not turn that answer into an error ({@code .kb/vec.md}, "The four acceleration
+	 * layers"). Asking each operand independently whether it is one of the two widths
+	 * admitted the mixed pair, which then reached {@link JvmSimdVectorTemplate}'s
+	 * fixed-width cast and raised {@code IllegalArgumentException} -- a divergence from
+	 * the interpreter, which declines it.
 	 *
 	 * <p>
 	 * The four members of {@link #BF16_OPERAND} carry a FUSED bfloat16 kernel as well, so
@@ -509,24 +520,38 @@ final class JvmSimdCompiler {
 			ctx.emitU2(0);
 			JvmEmitHelper.patchBranch(ctx, general, ctx.code.size());
 		}
-		for (int i = 0; i < arrays; i++) {
-			// if (!(slot instanceof double[]) && !(slot instanceof float[])) goto
-			// fallback
+		if (arrays > 0) {
+			// if (slot_0 instanceof double[]) { every array operand double[] }
+			// else { every array operand float[] } -- anything else falls back.
 			ctx.emit(Opcode.ALOAD);
-			ctx.emit(slots[i]);
+			ctx.emit(slots[0]);
 			ctx.emit(Opcode.INSTANCEOF);
 			ctx.emitU2(doubleArrayClass);
-			int isDouble = ctx.code.size();
-			ctx.emit(Opcode.IFNE);
-			ctx.emitU2(0);
-			ctx.emit(Opcode.ALOAD);
-			ctx.emit(slots[i]);
-			ctx.emit(Opcode.INSTANCEOF);
-			ctx.emitU2(floatArrayClass);
-			fallbackBranches.add(ctx.code.size());
+			int notDouble = ctx.code.size();
 			ctx.emit(Opcode.IFEQ);
 			ctx.emitU2(0);
-			JvmEmitHelper.patchBranch(ctx, isDouble, ctx.code.size());
+			for (int i = 1; i < arrays; i++) {
+				ctx.emit(Opcode.ALOAD);
+				ctx.emit(slots[i]);
+				ctx.emit(Opcode.INSTANCEOF);
+				ctx.emitU2(doubleArrayClass);
+				fallbackBranches.add(ctx.code.size());
+				ctx.emit(Opcode.IFEQ);
+				ctx.emitU2(0);
+			}
+			skipGenerals.add(ctx.code.size());
+			ctx.emit(Opcode.GOTO);
+			ctx.emitU2(0);
+			JvmEmitHelper.patchBranch(ctx, notDouble, ctx.code.size());
+			for (int i = 0; i < arrays; i++) {
+				ctx.emit(Opcode.ALOAD);
+				ctx.emit(slots[i]);
+				ctx.emit(Opcode.INSTANCEOF);
+				ctx.emitU2(floatArrayClass);
+				fallbackBranches.add(ctx.code.size());
+				ctx.emit(Opcode.IFEQ);
+				ctx.emitU2(0);
+			}
 		}
 		for (int skipGeneral : skipGenerals) {
 			JvmEmitHelper.patchBranch(ctx, skipGeneral, ctx.code.size());

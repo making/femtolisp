@@ -72,8 +72,12 @@ import am.ik.wasm.WasmWriter;
  * <p>
  * Widths are decided at RUNTIME from the {@code kind} field, so one kernel serves both
  * {@code #d} and {@code #f} vectors; each branch runs the loop from {@link WasmVecLoops}
- * at its own native precision. Mixing widths in one call traps, matching the JVM bridge's
- * hard error.
+ * at its own native precision. Mixing widths in one call has no lane form -- one
+ * {@code kind} picks the loop for the whole call -- so it DECLINES: the helper forwards
+ * the call to the scalar {@code vec.lisp} defun it replaced and returns its answer
+ * ({@link #requireSameKind}), the same decline the interpreter's {@code VecSimd} and the
+ * JVM's lane-width guard give, because the defun computes a mixed pair happily and
+ * {@code --simd} may not turn that answer into an error.
  */
 final class WasmVecSimdRuntimeBuilder {
 
@@ -263,66 +267,74 @@ final class WasmVecSimdRuntimeBuilder {
 		};
 	}
 
-	/** Builds the body of the given helper, in {@code vecFunc} index order. */
-	static byte[] build(int vecFunc, int vecBase) {
+	/**
+	 * Builds the body of the given helper, in {@code vecFunc} index order.
+	 * {@code scalarFuncs[vecFunc]} is the module function index of the spliced
+	 * {@code vec.lisp} defun this helper replaces -- what a width-mismatched call is
+	 * handed back to ({@link #declineToScalar}) -- or {@code -1} when the program holds
+	 * no such defun, which leaves the mismatch trapping as it did before (no call site
+	 * can reach a helper whose defun the program does not have).
+	 */
+	static byte[] build(int vecFunc, int vecBase, int[] scalarFuncs) {
+		int scalar = scalarFuncs[vecFunc];
 		return switch (vecFunc) {
 			case V_NEW -> buildVNewBody();
 			case V_GET -> buildVGetBody();
 			case V_SET -> buildVSetBody();
-			case ADD -> buildElementwise(Instruction.F64X2_ADD, false, vecBase);
-			case SUB -> buildElementwise(Instruction.F64X2_SUB, false, vecBase);
-			case MUL -> buildElementwise(Instruction.F64X2_MUL, false, vecBase);
-			case SCALE -> buildScale(false, vecBase);
+			case ADD -> buildElementwise(Instruction.F64X2_ADD, false, vecBase, scalar);
+			case SUB -> buildElementwise(Instruction.F64X2_SUB, false, vecBase, scalar);
+			case MUL -> buildElementwise(Instruction.F64X2_MUL, false, vecBase, scalar);
+			case SCALE -> buildScale(false, vecBase, scalar);
 			case SUM -> buildSum();
-			case DOT -> buildDot();
-			case MATVEC -> buildMatvec(false, vecBase);
-			case ADD_INTO -> buildElementwise(Instruction.F64X2_ADD, true, vecBase);
-			case SUB_INTO -> buildElementwise(Instruction.F64X2_SUB, true, vecBase);
-			case MUL_INTO -> buildElementwise(Instruction.F64X2_MUL, true, vecBase);
-			case DIV -> buildElementwise(Instruction.F64X2_DIV, false, vecBase);
-			case DIV_INTO -> buildElementwise(Instruction.F64X2_DIV, true, vecBase);
-			case SCALE_INTO -> buildScale(true, vecBase);
-			case MATVEC_INTO -> buildMatvec(true, vecBase);
-			case EXP -> buildUnaryElement(SCALAR_OP_EXP, false, vecBase);
-			case SQRT -> buildUnaryLane(WasmVecLoops.U_SQRT, false, vecBase);
-			case ABS -> buildUnaryLane(WasmVecLoops.U_ABS, false, vecBase);
-			case NEGATIVE -> buildUnaryLane(WasmVecLoops.U_NEG, false, vecBase);
-			case SIGN -> buildUnaryElement(SCALAR_OP_SIGN, false, vecBase);
-			case RECIPROCAL -> buildUnaryLane(WasmVecLoops.U_RECIP, false, vecBase);
-			case EXP_INTO -> buildUnaryElement(SCALAR_OP_EXP, true, vecBase);
-			case SQRT_INTO -> buildUnaryLane(WasmVecLoops.U_SQRT, true, vecBase);
-			case ABS_INTO -> buildUnaryLane(WasmVecLoops.U_ABS, true, vecBase);
-			case NEGATIVE_INTO -> buildUnaryLane(WasmVecLoops.U_NEG, true, vecBase);
-			case SIGN_INTO -> buildUnaryElement(SCALAR_OP_SIGN, true, vecBase);
-			case RECIPROCAL_INTO -> buildUnaryLane(WasmVecLoops.U_RECIP, true, vecBase);
-			case LOG -> buildUnaryElement(SCALAR_OP_LOG, false, vecBase);
-			case TANH -> buildUnaryElement(SCALAR_OP_TANH, false, vecBase);
-			case LOG_INTO -> buildUnaryElement(SCALAR_OP_LOG, true, vecBase);
-			case TANH_INTO -> buildUnaryElement(SCALAR_OP_TANH, true, vecBase);
-			case SIN -> buildUnaryElement(SCALAR_OP_SIN, false, vecBase);
-			case COS -> buildUnaryElement(SCALAR_OP_COS, false, vecBase);
-			case TAN -> buildUnaryElement(SCALAR_OP_TAN, false, vecBase);
-			case SIN_INTO -> buildUnaryElement(SCALAR_OP_SIN, true, vecBase);
-			case COS_INTO -> buildUnaryElement(SCALAR_OP_COS, true, vecBase);
-			case TAN_INTO -> buildUnaryElement(SCALAR_OP_TAN, true, vecBase);
-			case ASIN -> buildUnaryElement(SCALAR_OP_ASIN, false, vecBase);
-			case ACOS -> buildUnaryElement(SCALAR_OP_ACOS, false, vecBase);
-			case ATAN -> buildUnaryElement(SCALAR_OP_ATAN, false, vecBase);
-			case SINH -> buildUnaryElement(SCALAR_OP_SINH, false, vecBase);
-			case COSH -> buildUnaryElement(SCALAR_OP_COSH, false, vecBase);
-			case ASIN_INTO -> buildUnaryElement(SCALAR_OP_ASIN, true, vecBase);
-			case ACOS_INTO -> buildUnaryElement(SCALAR_OP_ACOS, true, vecBase);
-			case ATAN_INTO -> buildUnaryElement(SCALAR_OP_ATAN, true, vecBase);
-			case SINH_INTO -> buildUnaryElement(SCALAR_OP_SINH, true, vecBase);
-			case COSH_INTO -> buildUnaryElement(SCALAR_OP_COSH, true, vecBase);
-			case MAXIMUM -> buildSelectElementwise(true, false, vecBase);
-			case MINIMUM -> buildSelectElementwise(false, false, vecBase);
-			case RELU -> buildUnaryLane(WasmVecLoops.U_RELU, false, vecBase);
-			case CLIP -> buildClip(false, vecBase);
-			case MAXIMUM_INTO -> buildSelectElementwise(true, true, vecBase);
-			case MINIMUM_INTO -> buildSelectElementwise(false, true, vecBase);
-			case RELU_INTO -> buildUnaryLane(WasmVecLoops.U_RELU, true, vecBase);
-			case CLIP_INTO -> buildClip(true, vecBase);
+			case DOT -> buildDot(scalar);
+			case MATVEC -> buildMatvec(false, vecBase, scalar);
+			case ADD_INTO -> buildElementwise(Instruction.F64X2_ADD, true, vecBase, scalar);
+			case SUB_INTO -> buildElementwise(Instruction.F64X2_SUB, true, vecBase, scalar);
+			case MUL_INTO -> buildElementwise(Instruction.F64X2_MUL, true, vecBase, scalar);
+			case DIV -> buildElementwise(Instruction.F64X2_DIV, false, vecBase, scalar);
+			case DIV_INTO -> buildElementwise(Instruction.F64X2_DIV, true, vecBase, scalar);
+			case SCALE_INTO -> buildScale(true, vecBase, scalar);
+			case MATVEC_INTO -> buildMatvec(true, vecBase, scalar);
+			case EXP -> buildUnaryElement(SCALAR_OP_EXP, false, vecBase, scalar);
+			case SQRT -> buildUnaryLane(WasmVecLoops.U_SQRT, false, vecBase, scalar);
+			case ABS -> buildUnaryLane(WasmVecLoops.U_ABS, false, vecBase, scalar);
+			case NEGATIVE -> buildUnaryLane(WasmVecLoops.U_NEG, false, vecBase, scalar);
+			case SIGN -> buildUnaryElement(SCALAR_OP_SIGN, false, vecBase, scalar);
+			case RECIPROCAL -> buildUnaryLane(WasmVecLoops.U_RECIP, false, vecBase, scalar);
+			case EXP_INTO -> buildUnaryElement(SCALAR_OP_EXP, true, vecBase, scalar);
+			case SQRT_INTO -> buildUnaryLane(WasmVecLoops.U_SQRT, true, vecBase, scalar);
+			case ABS_INTO -> buildUnaryLane(WasmVecLoops.U_ABS, true, vecBase, scalar);
+			case NEGATIVE_INTO -> buildUnaryLane(WasmVecLoops.U_NEG, true, vecBase, scalar);
+			case SIGN_INTO -> buildUnaryElement(SCALAR_OP_SIGN, true, vecBase, scalar);
+			case RECIPROCAL_INTO -> buildUnaryLane(WasmVecLoops.U_RECIP, true, vecBase, scalar);
+			case LOG -> buildUnaryElement(SCALAR_OP_LOG, false, vecBase, scalar);
+			case TANH -> buildUnaryElement(SCALAR_OP_TANH, false, vecBase, scalar);
+			case LOG_INTO -> buildUnaryElement(SCALAR_OP_LOG, true, vecBase, scalar);
+			case TANH_INTO -> buildUnaryElement(SCALAR_OP_TANH, true, vecBase, scalar);
+			case SIN -> buildUnaryElement(SCALAR_OP_SIN, false, vecBase, scalar);
+			case COS -> buildUnaryElement(SCALAR_OP_COS, false, vecBase, scalar);
+			case TAN -> buildUnaryElement(SCALAR_OP_TAN, false, vecBase, scalar);
+			case SIN_INTO -> buildUnaryElement(SCALAR_OP_SIN, true, vecBase, scalar);
+			case COS_INTO -> buildUnaryElement(SCALAR_OP_COS, true, vecBase, scalar);
+			case TAN_INTO -> buildUnaryElement(SCALAR_OP_TAN, true, vecBase, scalar);
+			case ASIN -> buildUnaryElement(SCALAR_OP_ASIN, false, vecBase, scalar);
+			case ACOS -> buildUnaryElement(SCALAR_OP_ACOS, false, vecBase, scalar);
+			case ATAN -> buildUnaryElement(SCALAR_OP_ATAN, false, vecBase, scalar);
+			case SINH -> buildUnaryElement(SCALAR_OP_SINH, false, vecBase, scalar);
+			case COSH -> buildUnaryElement(SCALAR_OP_COSH, false, vecBase, scalar);
+			case ASIN_INTO -> buildUnaryElement(SCALAR_OP_ASIN, true, vecBase, scalar);
+			case ACOS_INTO -> buildUnaryElement(SCALAR_OP_ACOS, true, vecBase, scalar);
+			case ATAN_INTO -> buildUnaryElement(SCALAR_OP_ATAN, true, vecBase, scalar);
+			case SINH_INTO -> buildUnaryElement(SCALAR_OP_SINH, true, vecBase, scalar);
+			case COSH_INTO -> buildUnaryElement(SCALAR_OP_COSH, true, vecBase, scalar);
+			case MAXIMUM -> buildSelectElementwise(true, false, vecBase, scalar);
+			case MINIMUM -> buildSelectElementwise(false, false, vecBase, scalar);
+			case RELU -> buildUnaryLane(WasmVecLoops.U_RELU, false, vecBase, scalar);
+			case CLIP -> buildClip(false, vecBase, scalar);
+			case MAXIMUM_INTO -> buildSelectElementwise(true, true, vecBase, scalar);
+			case MINIMUM_INTO -> buildSelectElementwise(false, true, vecBase, scalar);
+			case RELU_INTO -> buildUnaryLane(WasmVecLoops.U_RELU, true, vecBase, scalar);
+			case CLIP_INTO -> buildClip(true, vecBase, scalar);
 			default -> throw new IllegalArgumentException("no vec: simd helper " + vecFunc);
 		};
 	}
@@ -501,7 +513,7 @@ final class WasmVecSimdRuntimeBuilder {
 	// depends only on element i).
 	//
 	// i32: count, kind, shift, ng, g, rem. v128: old, cur. eq: vbD. $v128arr: ga, gb, gd.
-	private static byte[] buildElementwise(int simdOp, boolean into, int vecBase) {
+	private static byte[] buildElementwise(int simdOp, boolean into, int vecBase, int scalar) {
 		int params = into ? 3 : 2;
 		int a = into ? 1 : 0;
 		int bArg = into ? 2 : 1;
@@ -513,8 +525,8 @@ final class WasmVecSimdRuntimeBuilder {
 		int ga = params + 9, gb = params + 10, gd = params + 11;
 
 		loadHeader(w, a, count, kind, shift, ng);
-		requireSameKind(w, kind, bArg);
-		destination(w, into, count, kind, vbD, gd, vecBase);
+		requireSameKind(w, kind, bArg, params, scalar);
+		destination(w, into, count, kind, vbD, gd, vecBase, params, scalar);
 		farrayGroups(w, a, ga);
 		farrayGroups(w, bArg, gb);
 		WasmVecLoops.get(w, kind);
@@ -536,7 +548,7 @@ final class WasmVecSimdRuntimeBuilder {
 	// min/max (the strict-comparison contract the vec.lisp defuns state; the SECOND
 	// operand wins any false comparison, NaN and the -0.0/0.0 tie included). Same
 	// shape, params and locals as buildElementwise.
-	private static byte[] buildSelectElementwise(boolean greater, boolean into, int vecBase) {
+	private static byte[] buildSelectElementwise(boolean greater, boolean into, int vecBase, int scalar) {
 		int params = into ? 3 : 2;
 		int a = into ? 1 : 0;
 		int bArg = into ? 2 : 1;
@@ -548,8 +560,8 @@ final class WasmVecSimdRuntimeBuilder {
 		int ga = params + 9, gb = params + 10, gd = params + 11;
 
 		loadHeader(w, a, count, kind, shift, ng);
-		requireSameKind(w, kind, bArg);
-		destination(w, into, count, kind, vbD, gd, vecBase);
+		requireSameKind(w, kind, bArg, params, scalar);
+		destination(w, into, count, kind, vbD, gd, vecBase, params, scalar);
 		farrayGroups(w, a, ga);
 		farrayGroups(w, bArg, gb);
 		WasmVecLoops.get(w, kind);
@@ -572,7 +584,7 @@ final class WasmVecSimdRuntimeBuilder {
 	// the defun.
 	//
 	// i32: count, kind, shift, ng, i. f64: lo, hi, t. eq: vbD, vbV, box.
-	private static byte[] buildClip(boolean into, int vecBase) {
+	private static byte[] buildClip(boolean into, int vecBase, int scalar) {
 		int params = into ? 4 : 3;
 		int v = into ? 1 : 0;
 		int loArg = into ? 2 : 1;
@@ -591,7 +603,7 @@ final class WasmVecSimdRuntimeBuilder {
 		unboxF64(w, box);
 		WasmVecLoops.set(w, hi);
 		if (into) {
-			requireSameKind(w, kind, 0);
+			requireSameKind(w, kind, 0, params, scalar);
 			farrayField(w, 0, 1);
 			WasmVecLoops.set(w, vbD);
 		}
@@ -638,7 +650,7 @@ final class WasmVecSimdRuntimeBuilder {
 	// (vec:scale v s) / -into: dst[i] = v[i] * s.
 	// i32: count, kind, shift, ng, g, rem. f64: s. v128: old, cur. eq: vbD, box.
 	// $v128arr: gv, gd.
-	private static byte[] buildScale(boolean into, int vecBase) {
+	private static byte[] buildScale(boolean into, int vecBase, int scalar) {
 		int params = into ? 3 : 2;
 		int v = into ? 1 : 0;
 		int sArg = into ? 2 : 1;
@@ -654,7 +666,7 @@ final class WasmVecSimdRuntimeBuilder {
 		WasmVecLoops.get(w, sArg);
 		unboxF64(w, box);
 		WasmVecLoops.set(w, s);
-		destination(w, into, count, kind, vbD, gd, vecBase);
+		destination(w, into, count, kind, vbD, gd, vecBase, params, scalar);
 		farrayGroups(w, v, gv);
 		WasmVecLoops.get(w, kind);
 		w.write(Instruction.IF, 0x40);
@@ -678,7 +690,7 @@ final class WasmVecSimdRuntimeBuilder {
 	// call site replaces the defun).
 	//
 	// i32: count, kind, shift, ng, g, rem. v128: old, cur. eq: vbD. $v128arr: gv, gd.
-	private static byte[] buildUnaryLane(int uop, boolean into, int vecBase) {
+	private static byte[] buildUnaryLane(int uop, boolean into, int vecBase, int scalar) {
 		int params = into ? 2 : 1;
 		int v = into ? 1 : 0;
 		ByteArrayOutputStream b = new ByteArrayOutputStream();
@@ -689,7 +701,7 @@ final class WasmVecSimdRuntimeBuilder {
 		int gv = params + 9, gd = params + 10;
 
 		loadHeader(w, v, count, kind, shift, ng);
-		destination(w, into, count, kind, vbD, gd, vecBase);
+		destination(w, into, count, kind, vbD, gd, vecBase, params, scalar);
 		farrayGroups(w, v, gv);
 		WasmVecLoops.get(w, kind);
 		w.write(Instruction.IF, 0x40);
@@ -766,7 +778,7 @@ final class WasmVecSimdRuntimeBuilder {
 	// at both widths.
 	//
 	// i32: count, kind, shift, ng, i. f64: the op's scratch locals. eq: vbD, vbV.
-	private static byte[] buildUnaryElement(int scalarOp, boolean into, int vecBase) {
+	private static byte[] buildUnaryElement(int scalarOp, boolean into, int vecBase, int scalar) {
 		int params = into ? 2 : 1;
 		int v = into ? 1 : 0;
 		ByteArrayOutputStream b = new ByteArrayOutputStream();
@@ -778,7 +790,7 @@ final class WasmVecSimdRuntimeBuilder {
 
 		loadHeader(w, v, count, kind, shift, ng);
 		if (into) {
-			requireSameKind(w, kind, 0);
+			requireSameKind(w, kind, 0, params, scalar);
 			farrayField(w, 0, 1);
 			WasmVecLoops.set(w, vbD);
 		}
@@ -1485,7 +1497,7 @@ final class WasmVecSimdRuntimeBuilder {
 
 	// (vec:dot a b) -> a boxed TYPE_FLOAT.
 	// i32: count, kind, shift, ng, g. f64: sum. f32: sumF. v128: acc. $v128arr: ga, gb.
-	private static byte[] buildDot() {
+	private static byte[] buildDot(int scalar) {
 		ByteArrayOutputStream b = new ByteArrayOutputStream();
 		WasmWriter w = new WasmWriter(b);
 		int count = 2, kind = 3, shift = 4, ng = 5, g = 6;
@@ -1495,7 +1507,7 @@ final class WasmVecSimdRuntimeBuilder {
 		int ga = 10, gb = 11;
 
 		loadHeader(w, 0, count, kind, shift, ng);
-		requireSameKind(w, kind, 1);
+		requireSameKind(w, kind, 1, 2, scalar);
 		farrayGroups(w, 0, ga);
 		farrayGroups(w, 1, gb);
 		WasmVecLoops.get(w, kind);
@@ -1546,7 +1558,7 @@ final class WasmVecSimdRuntimeBuilder {
 	// the COLUMN COUNT so the same column count takes the same path on all four --simd
 	// implementations); acc1..acc3 and `wide` exist for that. The f64 row keeps its one
 	// chain -- .todo/480 is about the f32x4 chain, and the f64 one is unmeasured.
-	private static byte[] buildMatvec(boolean into, int vecBase) {
+	private static byte[] buildMatvec(boolean into, int vecBase, int scalar) {
 		int params = into ? 3 : 2;
 		int mat = into ? 1 : 0;
 		int vec = into ? 2 : 1;
@@ -1585,7 +1597,7 @@ final class WasmVecSimdRuntimeBuilder {
 		// kind from the matrix; the vector must match
 		farrayKind(w, mat);
 		WasmVecLoops.set(w, kind);
-		requireSameKind(w, kind, vec);
+		requireSameKind(w, kind, vec, params, scalar);
 		WasmVecLoops.get(w, kind);
 		i32Const(w, 1);
 		w.write(Instruction.I32_ADD);
@@ -1593,7 +1605,7 @@ final class WasmVecSimdRuntimeBuilder {
 		// nrg = ceil(n / lanes): the groups one row spans
 		ceilShift(w, n, shift, nrg);
 		if (into) {
-			requireSameKind(w, kind, 0);
+			requireSameKind(w, kind, 0, params, scalar);
 			farrayField(w, 0, 1);
 			WasmVecLoops.set(w, vbD);
 		}
@@ -1860,9 +1872,9 @@ final class WasmVecSimdRuntimeBuilder {
 	// Sets up the destination groups: the caller's block for -into (same width required),
 	// a fresh zeroed $vblock otherwise.
 	private static void destination(WasmWriter w, boolean into, int countLocal, int kindLocal, int vbDLocal,
-			int gdLocal, int vecBase) {
+			int gdLocal, int vecBase, int params, int scalar) {
 		if (into) {
-			requireSameKind(w, kindLocal, 0);
+			requireSameKind(w, kindLocal, 0, params, scalar);
 			farrayGroups(w, 0, gdLocal);
 		}
 		else {
@@ -2008,14 +2020,44 @@ final class WasmVecSimdRuntimeBuilder {
 		w.write(Instruction.END);
 	}
 
-	// Traps unless the farray in otherLocal has the same element width as kindLocal.
-	// Mixing a #d and a #f operand is a hard error on every backend.
-	private static void requireSameKind(WasmWriter w, int kindLocal, int otherLocal) {
+	// Hands the whole call back to the scalar vec.lisp defun this helper replaced, and
+	// returns its answer: the helper's params ARE the defun's, in the same order and all
+	// (ref null eq), so the hand-back is a plain forwarding call -- behind the null env a
+	// compiled defun takes ahead of its own parameters and ignores
+	// (WasmFunctionCallCompiler's direct call), which is why a helper's arity is one
+	// SHORT of the function it calls. Emitted only where nothing has been allocated or
+	// written yet, so the defun starts from the state its own call site would have given
+	// it.
+	private static void declineToScalar(WasmWriter w, int params, int scalar) {
+		w.write(Instruction.REF_NULL);
+		w.writeHeapType(Type.EQ.code());
+		for (int i = 0; i < params; i++) {
+			WasmVecLoops.get(w, i);
+		}
+		w.write(Instruction.CALL).writeUnsignedLeb128(scalar);
+		w.write(Instruction.RETURN);
+	}
+
+	// DECLINES to the scalar defun unless the farray in otherLocal has the same element
+	// width as kindLocal. A mixed #d/#f call is not an error: vec.lisp's %map2 reads
+	// every operand through aref, which widens whatever the storage width is, so the
+	// scalar defun computes it happily, and --simd may not turn that answer into an
+	// error (.kb/vec.md, "The four acceleration layers"). The lane kernels carry no
+	// mixed-width form -- one `kind` picks the lane loop for the whole call -- so the
+	// mismatch leaves the accelerator entirely instead of being handled inside it, the
+	// same decline VecSimd gives the interpreter and emitLaneWidthGuard the JVM. With no
+	// defun to hand back to (scalar < 0) it stays the trap it was.
+	private static void requireSameKind(WasmWriter w, int kindLocal, int otherLocal, int params, int scalar) {
 		WasmVecLoops.get(w, kindLocal);
 		farrayKind(w, otherLocal);
 		w.write(Instruction.I32_NE);
 		w.write(Instruction.IF, 0x40);
-		w.write(Instruction.UNREACHABLE);
+		if (scalar < 0) {
+			w.write(Instruction.UNREACHABLE);
+		}
+		else {
+			declineToScalar(w, params, scalar);
+		}
 		w.write(Instruction.END);
 	}
 

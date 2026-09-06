@@ -13,13 +13,13 @@ Like the JSON and `linalg` libraries, `vec` is implemented once in Lisp source (
 | | `linalg` | `vec` |
 |---|---|---|
 | accepted inputs | packed arrays, general boxed arrays such as `#(1 2 3)`, plain numbers | packed float arrays only |
-| mixed widths (`#d` with `#f`) | allowed -- both are widened, the first operand's width wins | hard error |
+| mixed widths (`#d` with `#f`) | allowed -- both are widened, the first operand's width wins | allowed -- same rule, but no accelerated kernel takes the pair, so `--simd` runs the scalar definition for it |
 | broadcasting | numpy rules -- a scalar on either side, and arrays of different shapes along their trailing axes | only the scalar of `vec:scale` |
 | shapes | rank-n arrays and matrices, descriptive shape errors | rank-1 vectors (plus `vec:matvec`'s rank-2 matrix) |
 | allocation control | every result is a fresh array | `-into` siblings write into a caller-supplied destination |
 | `--no-gc` | does not compile | fully supported (the only vector package there) |
 
-Rule of thumb: **write against `linalg` by default.** It is the broader, numpy-style API, it forgives mixed inputs, and with `--simd` it is accelerated by the same kernels. Reach for `vec` when one of its three exclusives is the point: an allocation-free hot loop (the `-into` kernels), a `--no-gc` target, or the fail-fast strictness that turns a width mistake into an immediate error instead of a silent widening.
+Rule of thumb: **write against `linalg` by default.** It is the broader, numpy-style API, it forgives mixed inputs, and with `--simd` it is accelerated by the same kernels. Reach for `vec` when one of its two exclusives is the point: an allocation-free hot loop (the `-into` kernels) or a `--no-gc` target -- which is also the one place a width mistake is still an error, and a compile-time one (`--no-gc` types the packed widths apart).
 
 ## Data representation
 
@@ -135,7 +135,7 @@ The reductions (`vec:sum`, `vec:dot`, `vec:mean`, `vec:norm`) return a scalar an
 
 In the element-wise kernels -- binary and unary alike -- the destination **may alias** an operand: element *i* of the result depends only on element *i* of the inputs, so `(vec:add-into acc acc d)` above and `(vec:exp-into v v)` are well-defined in-place updates. `vec:matvec-into` is the exception -- each output element folds over all of `x`, so writing into `x` would clobber a value a later row still has to read. Passing the same array as both `out` and `x` (or `w`) signals an error rather than corrupting it.
 
-All operands must share an element type, and `out` must be at least as long as the inputs (its length is not checked, exactly as `vec:add` does not check its operands').
+`out` must be at least as long as the inputs (its length is not checked, exactly as `vec:add` does not check its operands'). It need not share their element type -- a destination of the other width is written through the same widening `aref` as everywhere else -- but keeping every operand at one width is what keeps the call on an accelerated kernel under `--simd`.
 
 This is what makes `--no-gc` usable for real numeric loops (see the memory table above): with `-into`, peak memory equals the vectors you actually keep alive. Measured on `--no-gc --simd`, accumulating a 65536-element vector 12000 times peaks at 13.7 MB with `vec:add-into`, against 4.31 GB -- and then a trap -- with `vec:add`. On the three garbage-collected targets `-into` changes nothing about correctness; there it is an allocation-rate optimization.
 
