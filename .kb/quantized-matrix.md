@@ -60,11 +60,16 @@ does not exist) and the kernels `VecSimdKernels.matvecQ8F/D` /
    `sx = amax / 127` IN DOUBLE, `q = (round (/ x sx))` -- CL `round` = `Math.rint`, ties to
    even -- and `0` when `sx` is 0. Never f32 arithmetic here: the defun has none.
 2. Per row, per block: FOUR exact integer lane sums -- lane `i` over the block's columns
-   `j` with `j mod 4 = i` (lanes: two `ByteVector.SPECIES_128` loads each side, `B2S` into
-   `ShortVector.SPECIES_128`, short multiply, short add of the two halves -- `|2 x 128 x
-   127| = 32512 < 32767`, which is why the activation is clipped to +-127 and never -128 --
-   `S2I` into `IntVector.SPECIES_128`, int adds; the defun four `s0..s3` over `j = base + 4k
-   + i`) -- then per lane ONE f32 multiply-add: the lane sum to f32 (`convert(I2F, 0)`,
+   `j` with `j mod 4 = i` (lanes: the activation quantized into a `short[]` once per GEMV;
+   four `ByteVector.SPECIES_64` weight loads each widened `B2S` into
+   `ShortVector.SPECIES_128` as PART 0, short multiply against the activation's shorts,
+   short add of two eight-column groups -- `|2 x 128 x 127| = 32512 < 32767`, which is why
+   the activation is clipped to +-127 and never -128 -- so short lane `k` holds columns `k`
+   and `k + 8`; then `S2I` into `IntVector.SPECIES_128` as part 0 of the sum and of the sum
+   with its halves swapped by a constant `rearrange`, int adds; the defun four `s0..s3` over
+   `j = base + 4k + i`). **No part-1 conversion anywhere**: it is a `slice`, and C2 compiles
+   `slice` as the Java it is (`.kb/vec.md`, the third JIT cliff; `.todo/706`) -- then per
+   lane ONE f32 multiply-add: the lane sum to f32 (`convert(I2F, 0)`,
    exact below 2^24) times `p = (float) (sw * sx)`, `sw` the binary16 scale widened, added
    into one `FloatVector.SPECIES_128` accumulator. No FMA: two roundings on both sides, and
    the defun has no fused form.
@@ -83,8 +88,13 @@ cannot change a bit, so tests assert equality, and `ci-spec`'s standalone `quant
 case prints the product. **Two shapes were built and rejected first** (2026-09-05, the
 README): one `reduceLanes` per block plus a scalar double chain, latency-bound at 5-6 Gelem/s
 on one thread whatever the shape; and double lanes through `convertShape(I2D)`, which Graal
-25 does not intrinsify -- 0.02 Gelem/s (`.kb/vec.md`, the second JIT cliff). The first is
-kept in `Q8GemvBench` as a probe. **Trap**: a NaN activation is `round`'s error on the defun
+25 does not intrinsify -- 0.02 Gelem/s (`.kb/vec.md`, the second JIT cliff). **A third shipped
+and was replaced** (2026-09-06, `.todo/706`): 128-bit byte loads widened through part-1
+conversions, the same bits as today's kernel, 0.7x of f32 under C2 because each part-1
+conversion is a `slice`; it is kept in `Q8GemvBench` as the probe row, the reduce-per-block
+shape's numbers standing in `.todo/672`'s README. A kernel here must also fit C2's
+`NodeCountInliningCutoff`: two rows a pass ran boxed (0.1x) with no warning. **Trap**: a
+NaN activation is `round`'s error on the defun
 and 0 in the kernel -- finite inputs only, as for every `vec:` member.
 - Bit-identity is between OUR defun and OUR kernels. ggml's `Q8_0 x Q8_0` kernel quantizes
   the activation in f32 and folds in f32 in its own order, so the two implementations agree
@@ -118,16 +128,23 @@ four wrappers on the reference for the same reason.
   Pinned by `WasmLispCompilerTest` / `NoGcWasmCompilerTest`; ci-spec `refusedOn`.
 - `--gpu`/`--blas`: silent decline. `rontolisp:jvm-export`: not a boundary type.
 
-## What it costs (2026-09-05, GB10, `.todo/672-.../README.md`)
-One thread, 4096x4096, against the shipped f32 GEMV: **Graal 1.42-1.52x** (bf16 1.31-1.41x),
-**C2 0.70-0.77x** -- slower than f32 on a stock OpenJDK. Instruction-bound, not
-bandwidth-bound: the Vector API has no int8 dot-product instruction, so a block costs ~30
-instructions where ggml's NEON kernel spends two `SDOT`s, and C2 compiles the chain worse
-than Graal. The quarter-size bytes pay where bandwidth is the limit: `--parallel` (20
-threads) 2.6-4.5x f32 under Graal (105-140 Gelem/s, past the f32 arm's 41 Gelem/s memory
-wall) and 1.4-2.3x under C2. The item's 2.00x premise was a one-accumulator f32 baseline
-with an FMA arm; the C2 serial regression is `.todo/706`. No size gate, for `.todo/488`'s
-reason. Relative error against f64: Q8_0 7.5e-3 .. 7.8e-3, bf16 1.6e-3, f32 2e-7.
+## What it costs (2026-09-06, GB10, `.todo/706-.../README.md`)
+One thread, 4096x4096, against the shipped f32 GEMV, two passes of the harness: **Graal
+1.42-1.57x** (12.6-12.9 Gelem/s; bf16 1.31-1.45x), **C2 1.72-1.91x** (14.6-14.8 Gelem/s;
+bf16 1.76-2.00x). Instruction-bound, not bandwidth-bound, on both JITs: the Vector API has
+no int8 dot-product instruction, so a block is a widen-multiply-widen chain of ~25
+instructions plus a ~10-instruction scalar scale chain where ggml's NEON kernel spends two
+`SDOT`s and a scale; Graal runs it at ~9 cycles a block (6.5 the integer part, 3.5 the
+scale, measured apart) and C2 slightly faster. 5632x2048 Graal 1.31-1.45x / C2 1.38-1.68x;
+the cache-resident shapes lose on both (1024x1024 0.67-0.78x, 288x288 0.42-0.6x). The
+quarter-size bytes pay where bandwidth is the limit: `--parallel` (20 threads) 2.2-3.3x f32
+under Graal (91-120 Gelem/s, past the f32 arm's ~40 Gelem/s memory wall) and 1.6-2.5x under
+C2 -- a direction, not a rate; that column moves 0.5x between passes (`.todo/702`). Until
+2026-09-06 the C2 column read 0.70-0.77x, slower than f32 on a stock OpenJDK: the kernel's
+part-1 conversions were each a `slice` under C2 (`.todo/706`; the 2026-09-05 record, with
+the item's 2.00x premise corrected, is `.todo/672-.../README.md`). No size gate, for
+`.todo/488`'s reason. Relative error against f64: Q8_0 7.5e-3 .. 7.8e-3, bf16 1.6e-3, f32
+2e-7.
 
 ## Against llama.cpp (2026-09-05, GB10)
 Raw completion of `"Once upon a time"` -- four token ids `12162 5028 264 854`, no BOS, no

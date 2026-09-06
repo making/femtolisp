@@ -181,13 +181,13 @@ class VecSimdQ8KernelsTest {
 		x[1] = 2.5f;
 		x[2] = -2.5f;
 		x[3] = 0.5f;
-		byte[] xq = new byte[cols];
+		short[] xq = new short[cols];
 		double[] xs = new double[2];
 		VecSimdKernels.quantizeActivationF(x, 0, cols, xq, xs);
-		assertThat(xq[0]).isEqualTo((byte) 127);
-		assertThat(xq[1]).isEqualTo((byte) 2);
-		assertThat(xq[2]).isEqualTo((byte) -2);
-		assertThat(xq[3]).isEqualTo((byte) 0);
+		assertThat(xq[0]).isEqualTo((short) 127);
+		assertThat(xq[1]).isEqualTo((short) 2);
+		assertThat(xq[2]).isEqualTo((short) -2);
+		assertThat(xq[3]).isEqualTo((short) 0);
 		assertThat(xs[0]).isEqualTo(1.0);
 		assertThat(xs[1]).isEqualTo(0.0);
 		byte[] w = blocks(3, cols, 9);
