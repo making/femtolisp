@@ -38,9 +38,9 @@ to 0.20x under C2 from an inlining cliff, so `.todo/488` takes its numbers under
 (rule 9); the measured rungs live in `examples/llm/README.md`, the closing accounts in
 `.todo/history/2026-09.md`.
 
-The order they were taken in -- `671` before either reader -- is the one reusable part:
-`671` needs no new array type, so a BF16 checkpoint loaded into `#f` BEFORE the bf16 width
-existed and the readers were debugged at f32 with the kernels out of the picture.
+The order they were taken in is the one reusable part: `671` needs no new array type, so a
+BF16 checkpoint loaded into `#f` BEFORE the bf16 width existed and both readers were
+debugged at f32 with the kernels out of the picture.
 
 ## What runs today
 
@@ -48,7 +48,8 @@ existed and the readers were debugged at f32 with the kernels out of the picture
 Qwen3.5-0.8B from its BF16 safetensors AND from ggml-org's BF16 GGUF, **token for token
 identical between the two**; TinyLlama-1.1B-Chat from safetensors and an F16 GGUF, same
 forty tokens; stories15M converted to GGUF answers with `run.c`'s own text token for token
--- the one EXTERNAL oracle, and the one that caught a live bug.
+-- the one EXTERNAL oracle, and the one that caught a live bug. **On all four backends since
+`693`**, the component leg having read past EOF rather than read a shard.
 
 **The device arm now leads.** `--gpu --simd` is 18.5 ms a forward on Qwen3.5-0.8B against
 `--simd --parallel`'s 21.6, where it trailed 1.9x one lane ago; neither change that moved it
@@ -66,10 +67,8 @@ The evidence is `489`'s -- **the knee did not move when the bytes halved**, six 
 two widths, where a DRAM cap would have pushed it outward; the byte-estimate-free leg and
 the strongest one. A third route, one rate read at two sizes, was WITHDRAWN by `.todo/702`:
 the rate over shape is a HUMP and those were two points on it. `702`'s own sweep says the
-cap is real but is neither one number nor one mechanism -- below ~500 rows the work is not
-cut finely enough to fill the box, above ~30 MB the bytes bind, and in between the kernel
-reaches 48-69 Gelem/s, 1.5x what was being quoted as the box's limit. Record and the
-leaf/grain arithmetic:
+cap is real but is neither one number nor one mechanism, and holds the leaf/grain
+arithmetic:
 `.todo/artefacts/702-the-parallel-cap-is-the-machinery-or-memory-one-run-decides/README.md`.
 
 Carry one consequence: **a parallel GEMV rate is a property of how the work was cut up**,
@@ -103,24 +102,25 @@ artefacts out -- see rule 12.
 
 ## The certification record
 
-**dorian certifies `a92e205f`** at the close of A's six-item lane: 10104 / 0 / 0 / 283
-skipped with **235** reports. **GB10 certifies `9b10e4f0f`** at the close of B's three-item
-lane: 10125 / 0 / 0 / 189 skipped with **237** reports, exit 0, `GpuTest`
-included. Both were taken by the ORCHESTRATOR on `develop`, not from any lane's worktree
-(rule 4) -- a lane's combination exists nowhere else. The two heads are days of work apart
-and are NOT one certification; jointly they establish that no box is red. `d4225aa5` remains
-the last head both boxes actually held, and dorian cannot verify B's `am.ik.gpu` /
-`eval/LinalgGpu*` / `codegen/jvm/JvmGpuTemplate` drift at all.
+**dorian certifies `4a0c8f5e9`** at the close of A's six-item lane: 10133 / 0 / 0 / 283
+skipped with **237** reports, exit 0 -- the run was taken at `53077edd2` and certifies the
+head by rule 8, `git diff --stat` over `src/` being empty. **GB10 certifies `9b10e4f0f`** at
+the close of B's three-item lane: 10125 / 0 / 0 / 189 skipped with **237** reports, exit 0,
+`GpuTest` included. Both were taken by the ORCHESTRATOR on `develop`, not from any lane's
+worktree (rule 4) -- a lane's combination exists nowhere else. The two heads are days of work
+apart and are NOT one certification; jointly they establish that no box is red, and dorian
+cannot verify B's `am.ik.gpu` / `eval/LinalgGpu*` / `codegen/jvm/JvmGpuTemplate` drift at all.
 
-**What a run certifies is failures, errors and the REPORT-FILE COUNT -- never the totals.**
-A differing report count means a class was DROPPED rather than skipped, which no skip
-accounting reveals. The count walked 232 -> 234 -> 235 on dorian and has read 237 on GB10
-across two lanes; **the arithmetic has never closed to the unit**, and no prior report SET
-still exists to diff against, which is the whole point of the discipline: the next run on
-either box diffs the LIST and names what left, because a count that misses by one is exactly
-what a dropped class looks like. **The set now survives**: the certifying run's list is
-`.todo/artefacts/670-run-a-published-slm-checkpoint/report-classes-gb10-9b10e4f0f.txt`, and
-the next certification on either box writes its own beside it and diffs.
+**What a run certifies is failures, errors and the report-file SET -- never the totals.** The
+count walked 232 -> 234 -> 235 -> 237 on dorian while reading 237 on GB10, and the arithmetic
+never closed to the unit. It does not have to any more: **the two boxes' report-class lists
+are identical, name for name**, so every class is present on both and what differs is only
+what each one SKIPS. That is stronger than the discipline was written to get -- a later run
+diffs against a list known to be SHARED, so a name that leaves is attributable to the box or
+to the change and never to the boxes having always differed. Both lists, and the prediction
+of a non-empty diff that this measurement overturned, are
+`.todo/artefacts/670-run-a-published-slm-checkpoint/`; each certification writes its own
+beside them.
 
 Three things a reader needs before comparing two runs:
 
@@ -128,16 +128,18 @@ Three things a reader needs before comparing two runs:
    `LispFormatterTest` used to walk `Path.of(".")` and format every `.lisp` under
    `.claude/worktrees/`, so one term of the comparison was how many agents had run on that
    box recently. After that point totals ARE comparable across boxes.
-2. **Skips are comparable, and the cross-box difference has been reproduced**: dorian's 283
-   against GB10's 189 is the **87** that `.todo/708` derived from seventeen differing
-   classes on ONE box. Contamination never reached skips.
+2. **Skips are comparable, and the cross-box difference is a skip difference, not a class
+   difference**: dorian's 283 against GB10's 189 is `.todo/708`'s **87**, derived from
+   seventeen classes that differ on ONE box -- classes present on both and skipping
+   different amounts, which the identical set above now proves. Contamination never reached
+   skips.
 3. **A skip count is only a signal against a prior count for the SAME slice.** Its designed
    meaning and its defect meaning are the same integer, and `Tests run` is invariant under
    skipping but not under deletion -- a skipped leg keeps the headline total while removing
    the coverage, which is how `682` was accepted by a run that skipped the part of the suite
    its rename was most likely to break. dorian's 276 -> 283 delta is left UNATTRIBUTED;
-   `CiSpecE2eTest` contributes 0 to it, since it reports zero tests when
-   `-Drontolisp.binary` is unset and shows up only in the native run.
+   `CiSpecE2eTest` contributes 0 to it, reporting zero tests when `-Drontolisp.binary` is
+   unset and showing up only in the native run.
 
 The argument for taking the run from `develop` rather than a worktree is that it is the run
 that found the red: `LispFormatterTest`'s walk raced a scratch file another test writes into
@@ -160,8 +162,18 @@ Pointers, not records -- the home is where it gets updated.
 - **`.kb/string-index-cost.md`** records what `690`'s 340x is and is not.
 - **A profile names the COST correctly and the CAUSE only as a guess** -- and the two JFR
   sample sets have to be read together, or a native-heavy arm reads as a Java profile. Both
-  came out of `718` and its closers; they are in B's lane retrospective below, and the
-  mechanics are `.kb/gpu.md`'s.
+  came out of `718` and its closers; the mechanics are `.kb/gpu.md`'s.
+- **The corpus's `--simd` axis was running the scalar path on BOTH of its legs.** Every
+  `vec:` / `linalg:` case in `ci-spec.yaml` was 2-6 elements, under every length gate
+  (THRESHOLD 128, MATVEC_ROW 16, MATVEC_ACC 32), so `694`'s new axis doubled the legs of
+  cases that could not reach the code it was added to cover. `705`'s two decode cases are
+  the first shapes in the corpus that clear the gates. Rule 6, on rule 6's own instrument;
+  the record is `.kb/vec.md`'s "The E2E `--simd` axis".
+- **A pin counts only in the lane that runs it** -- `705`, and rule 13.
+- **The examples suite compiled components without ever running one.** `examples.yaml`'s
+  `wasm-component` token was compile-only; `693` added `wasm-component-run` (build
+  `--component --optimize`, run under `wasmtime`, compare output) and moved twenty entries
+  onto it. `wasm-component` now marks only what cannot be run that way.
 
 ## Lanes: ONE worker per orchestrator
 
@@ -181,68 +193,67 @@ the end of B's section for what that now leaves open.
 
 ### Orchestrator A -- dorian, GPU-free, the model side
 
-A's previous lane closed `697`, `700`, `698`, `686`, `694` and `704` and certified
-`a92e205f`. **Three of the six had their premise moved by their own measurement**, which is
-the result that outlived them:
+A's previous lane closed `720`, `719`, `703`, `714`, `693` and `705` and certified
+`4a0c8f5e9`. Its subject was **which specialized array type survives an operation**, four
+items on one mechanism -- and in five of the six the defect was not the one the title named.
 
-- `697` -- the contention trap is a TAIL, not a floor. "One other build costs 10x" did not
-  reproduce; two 64-thread decode loops at once does. The thread default moved to
-  `min(cpus, max(2, cpus/2))` for a different reason entirely -- the IDLE-box curve bends
-  down past half the box (16 threads 9.55 tok/s, 32 9.45, 64 8.70) -- and the rescue the
-  item proposed was built, measured a cost at every budget, and dropped.
-- `694` -- the second corpus pass was predicted nearly free (fixed-cost) and is
-  marginal-dominated: 746 ms fixed against 479 x 74.8 ms, a whole pass. Taken anyway, with
-  the reason written down, because the axis is what `692` proved a backend count cannot see.
-- `704` -- both quadratic sites are linear now (JVM `read-file-string` 18,164 -> 537 ms on
-  2.7 M chars, n-ary `concatenate` 54,197 -> 357) and `examples/llm`'s `read-file-bytes`
-  detour still STAYS, the byte path remaining 2x (JVM) to 23x (interpreter, wasm) faster
-  because what is left is character `read-sequence` itself. Residue: `.todo/721`.
+- `720` -- only TWO backends had the hole. `--no-gc` types the widths apart and answers
+  `incompatible types F32VEC and F64VEC` at COMPILE time, so "a speed flag must not decide
+  whether a program runs" needed the JVM and wasm-GC only. Each declines in the shape its
+  call site allows: the JVM already had a fallback branch (the module-absence degrade),
+  wasm-GC has none, so there the decision moved INSIDE the helper and forwards to the
+  scalar defun.
+- `719` -- `subseq` was not the defect. `%array-alike`, the allocator `subseq` and
+  `copy-seq` share, decided by the RUNTIME MARKER (JVM: `long[]` only; wasm: the integer
+  array types) instead of by the element type the source answers. Fixing that DELETED two
+  duplicate paths rather than adding one, and the completion test was deleting the
+  `expectedByBackend` in which `698` had RECORDED the wrong answer.
+- `714` -- one surface, three entry points: the shared lowering, an interpreter
+  `concatenate` that does not go through it, and `#'concatenate` as a first-class value
+  dispatching separately -- with both compilers needing to be told the helper is reachable.
+- `693` -- the `--component` leg does not trap on a SHARDED read; it traps on reading past
+  EOF TWICE. Preview 1 keeps answering zero bytes, WASI 0.3 notifies the writable end's drop
+  once and the host traps on the next `stream.read`. Minimal case: three `read-line`s on a
+  one-line file. Its second half outweighs its fix -- see the findings above.
+- `703` -- **the item asked for an error the upstream oracle does not signal.** SBCL answers
+  a `t` array for `'not-a-type`, diagnosing only at compile time as a STYLE-WARNING, and
+  `deftype` may register AFTER the reference, so "this names no type" is not yet a fact
+  where `make-array` is compiled. 22 `:element-type` sites in the bundled corpus
+  (`'fixnum` 12, `'bit` 5, `'(unsigned-byte 64)` 5, across alexandria, cl-ppcre, ironclad,
+  jzon, chipz, md5, cl-base64, fast-io) are legal upgrades a signal would break. The weak
+  form has no oracle either: judging "names no type" wants a set of type names this project
+  does not have, and the nearest switch omits `BIT`. Closed as a DECISION, in
+  `.kb/array-literals.md`; the post-condition stays the caller's, as the item's own Do 3 had it.
+- `705` -- **its premise was false and the correction is rule 13.**
 
-`700` killed its own second option empirically (a jar with an `Add-Modules` manifest
-attribute still throws `ClassNotFoundException` under `java -jar`), and `698` found a wider
-defect than the one filed -- a SIMPLE packed float vector's `subseq` threw outright on the
-interpreter, so the reported adjustable case was the narrow half. The cards it left are
-`.kb/simd-parallel.md`, `.kb/string-accumulate-cost.md` and `.kb/vec.md`'s "The E2E `--simd`
-axis", the last of which is `694`'s new `CiSpecE2eTest` axis.
-
-**The current lane closes what the last one halved, then returns to the checkpoint path.**
-Four of the six are one mechanism seen from four sides -- which specialized array type
-survives an operation -- and the interpreter half of each is already correct, so every one
-of them is an ASYMMETRY rather than a fresh defect. That is rule 6's shape, and `694`'s new
-`--simd` axis is the instrument that now catches it.
+**The current lane is the two instruments the checkpoint path is measured with, then the
+error surface that three separate items describe from three sides.** The first half is
+ordered by what the rest of the lane rests on; the second half's order is forced, and taking
+it the other way round moves the lane's own headline for the wrong reason.
 
 | # | item | difficulty | why here, why now |
 | --- | --- | --- | --- |
-| A-1 | `720` JVM and wasm `--simd` still signal on a mixed-width `vec:` pair | Medium | FIRST because it is `686`'s other half and the invariant is currently true on one engine only: **a speed flag must not decide whether a program runs.** The interpreter declines to the scalar defun; the compiled backends still throw, where there is no closure to hand back. It is also the first thing the new `--simd` axis is pointed at, so a red here is the axis working |
-| A-2 | `719` JVM and wasm `subseq` of a packed vector loses the width | High | The lane's only High. Same compiled-array machinery as A-1 (`JvmArrayCompiler`, `WasmArrayCompiler`, `JvmIntArrayRuntimeBuilder`), taken while that context is warm. `698` already landed the interpreter side and left a `ci-spec` case whose `expectedByBackend` RECORDS the wrong answer -- closing this deletes that exception, which is the completion test |
-| A-3 | `703` an unknown `make-array` element type answers a boxed array | Medium | The same closed element-type space from the CONSTRUCTION side. `707` made the result-type normalizer carry the `ArrayElementTypes` code instead of a transcribed width; `make-array` still decides by hand, so an unrecognized type degrades silently. The item cites rule 6 itself: the defect sits entirely on one side of its condition |
-| A-4 | `714` `coerce` / `concatenate` to a `(vector character)` result | Low | The last member of that space `707` left behind -- one specialized code still answering a general vector. Smallest of the four and done while the space is in hand, not because it is urgent |
-| A-5 | `693` the wasm-component leg of `safetensors-check` traps on the sharded read | Medium | The first checkpoint-path defect rather than a representation one, and it contradicts the umbrella's own claim: four backends, and this one dies on a sharded index read. Already isolated -- present with and without `--simd` and on a jar built before `692`'s fix -- so the diagnosis starts clean rather than in a bisect |
-| A-6 | `705` no suite asserts on decoded text for any model | Medium | Last deliberately: it pins what the five above can move, so it wants them landed. Its own episode is the argument -- a lane spent a build-and-bisect cycle deciding whether the decoder had changed, and the answer was that two views of ONE string had been read as two strings. A pin makes that question answerable without the cycle |
+| A-1 | `722` the WASM component backend traps on a `ref.cast` that a one-line source edit MOVES | High | FIRST because every pin this lane or any other adds is behind it. The corpus is not one case FROM the cliff, it is AT it: `723`'s eleven lines trapped the whole corpus and its case was dropped rather than shipped red, `693`'s thirty lines passed, and the passing and trapping adapters are byte-identical. **A cross-backend pin an unrelated later case can turn red is not a pin** -- the lane's instrument, in the way `717` was B's |
+| A-2 | `724` `llm.lisp`'s `achieved tok/s` is sampled tokens over the prompt's clock | Medium | Second because it is the other instrument, and the one this file quotes: every `tok/s` row in `examples/llm/README.md` reads 1.7-2.1x low by a factor that DIFFERS per arm and per prompt length, so the rows compare with each other and with nothing else. The fix is Low and the blast radius is the record. **The `--gpu` rows can only be re-measured on GB10** -- A takes the harness and every GPU-free row, and step 3's "state the bias, dated" covers the rest until B's box is free |
+| A-3 | `701` diff every checkpoint's own `chat_template` against the hand-written one | Low | Third and cheap, while the checkpoint path is in hand. It is A's for a mechanical reason that outranks the item's note that the other orchestrator offered it: dorian holds all six models the script walks, GB10 would re-fetch them (rule 9's per-box decay, in the direction that skips a needed step). One positive case is already waiting to be explained -- both Qwen models answer with no think-aloud preamble where `llama-cli` still thinks aloud at `--reasoning-budget 0`, with tokenization ruled out since `495c4a6b` |
+| A-4 | `680` argument validation throws a raw Java exception no Lisp handler can catch | High | Opens the second half as the CAUSE the other two describe. An `IllegalArgumentException` out of an argument check passes straight through `handler-case` and kills the run; the ANSI suite bills it at 660 tests under one message, 101 more under `setf does not support place`, plus every `IndexOutOfBoundsException` out of `aref` |
+| A-5 | `681` the ANSI report drops failing tests from its own denominator | Low | Immediately after `680`, and the order is forced by what the report would otherwise show: those forms count into the reason table but not into `pass`/`fail`/`error`, so a `680` fix arrives as a SMALLER LOSS COUNT instead of as passes. The honest headline is 45.5%, not the 50.4% in bold, and three smaller accounting defects sit in the same file |
+| A-6 | `715` ANSI conformance: what the suite says to fix next | Medium | Last, because it is a READING of a report that both items before it change, and ranking gaps against a denominator known to be wrong is the one thing it must not do. Its own "two failure shapes worth investigating as bugs, not as gaps" IS `680`, so it inherits whatever that measurement decides |
 
 **A's pool, not in the lane.** All GPU-free, none blocking the checkpoint path:
 
-- `684` (the f64 GEMV row is one accumulator chain) and `696` (narrow-width element-wise
-  kernels and the operand pairing) each hold an **x64 half that is A's**, since every
-  `.todo/488` number behind them is aarch64. Neither is on the width chain's critical path.
-- `721` (`704`'s residue: character `read-sequence` costs ~1.2 us/char) is a kernel-cost
-  item wanting a quiet box, and it does not decay.
-- `722` (High -- the WASM component backend traps on a `ref.cast` that a one-line source
-  edit MOVES; passing and trapping adapters are byte-identical. **Its prediction came
-  true the same day, twice**: eleven lines of `723`'s, ~500 characters, touching nothing
-  the component path is suspected of, trapped the whole corpus -- before AND after
-  `693`'s adapter fix landed with 30 corpus lines of its OWN that passed. So it is a coin
-  flip per case; `723` dropped its case rather than ship red, and the corpus is not one
-  case FROM the cliff, it is AT it. **Every future cross-backend pin is behind it**)
-  and `724` (every `tok/s` row in
-  `examples/llm/README.md` was taken with a harness that divides sampled tokens by the
-  prompt's clock and counts the JIT warm-up, so the rows read 1.7-2x low). Both filed by
-  B's lane off `718`'s profile.
+- `684` (Low) and `696` (Medium) each hold an **x64 half that is A's**, every `.todo/488`
+  number behind them being aarch64. Neither is on the width chain's critical path, and the
+  partition note at the end of B's section is about them.
+- `721` (`704`'s residue: character `read-sequence` costs ~1.2 us/char) wants a quiet box
+  and does not decay.
+- `679` (High -- `'pi` reads as a double, so a read-time constant is not quotable) is the
+  third sibling of `680` and `681` and is deliberately NOT in the lane: it is a reader
+  defect that shares their report and none of their mechanism, and the lane already carries
+  two Highs.
 - `597` (the other four `geom:` model readers have no interpreter native), `689`
   (`jvm-export` handles do not carry bfloat16), `699` (one UTF-8 lead-byte table, two
-  hand-written copies), `701` (diff every checkpoint's own `chat_template` against the
-  hand-written one -- a measurement, not a renderer), `715` (ANSI conformance, the ranked
-  gap), `695` (the `.kb` compaction follow-up).
+  hand-written copies), `695` (the `.kb` compaction follow-up).
 
 ### Orchestrator B -- GB10, the device
 
@@ -301,7 +312,7 @@ wrong box. It belongs beside `.todo/709`: co-signed, not adopted unilaterally.
 **The one decision still open, and not either lane's to take alone: `.todo/709` is an
 explicit DRAFT and needs co-signing or cutting by both orchestrators.** It is process, so
 one side adopting it unilaterally is the failure it is written about. It has now outlived
-three full lanes, which is evidence about the item rather than about its subject. It is also
+four full lanes, which is evidence about the item rather than about its subject. It is also
 where the general reading disciplines belong -- diff the lists rather than reasoning about
 which terms ought to differ; a sum that closes is not evidence about its terms; relay a
 census with its total AND its class count -- **there or nowhere**.
@@ -327,7 +338,10 @@ Cited by number from other items -- **the numbering is fixed.**
 6. **A suite can hold a defect invisibly while every case sits on one side of its
    condition, and the half that looks more exhaustive is the half that hides it.** Three in
    one day, including `692` against a `671` that closed claiming all four backends while its
-   tests counted backends and never `--simd` on each (`.todo/694`).
+   tests counted backends and never `--simd` on each (`.todo/694`). **The instrument is not
+   exempt**: every `vec:` / `linalg:` case in the corpus was 2-6 elements, under every
+   `--simd` length gate, so `694`'s new axis doubled the legs of cases that could not reach
+   the code it exists to cover, until `705` added a shape that clears them.
 7. **A rule one lane derives from one measurement is a hypothesis until the other lane has
    tried to break it.** Three corrections in one day, each of which would otherwise have
    entered `.kb` as a law. What survives from the first: a failure count's SIZE narrows the
@@ -348,8 +362,8 @@ Cited by number from other items -- **the numbering is fixed.**
     lost is re-identified by matching bytes already held. **The digest and the refusal to
     guess are two independent goods** -- refusing to guess is why an id is VERIFIED, the
     digest is why a guess would have been SURVIVABLE. State the mechanical half first: a
-    written repo id reads as known, so nobody queries the manifest, and "do not guess" is
-    advice about judgement that the next person under time pressure will violate.
+    written repo id reads as known, so nobody queries the manifest.
+
 11. **A closer must check for items waiting on an EVENT, not only for items naming its
     number, and no grep finds those.** `.todo/682` was gated on "the first published
     checkpoint that runs end to end"; it fired THREE times unnoticed, because the trigger
@@ -365,10 +379,18 @@ Cited by number from other items -- **the numbering is fixed.**
     moving a directory that contains a `.gitignore`, run `git status --porcelain -uall` for
     untracked files at the OLD path before the next `git add`** -- `-uall`, or the residue
     is one collapsed `?? old/` line. The card is **`.kb/directory-rename.md`**, which
-    carries the rest: why the exposure needs a PER-FILE rename, and why the fix is free only
-    on the box that makes it (untracking DELETES the file for every puller who had it). The
-    full account of the other three things that rename broke outside its own diff is
+    carries the rest, and the full account of the other three things that rename broke
+    outside its own diff is
     `git show 97c85518~:.todo/708-the-formatter-corpus-walks-agent-worktrees.md`.
+
+13. **A pin counts only in the lane that RUNS it, so "no test asserts X" is a claim about
+    the lane and not about the assertion.** `705` was filed, and planned, as "no suite
+    asserts on decoded text for any model" while `examples/examples.yaml` had matched forty
+    tokens against run.c's own output on four backends since before the filing -- in
+    `ExamplesE2eTest`, which is `needs: release`, which `./mvnw test` skips, and which is
+    the one job allowed to be red. **Name the job an assertion runs in before concluding
+    there is none**, and when the answer is "a job the change does not run", the work is to
+    move the pin, not to write it again.
 
 ## What is deliberately not in the plan
 
