@@ -1008,27 +1008,7 @@ public final class BuiltinFunctionWrappers {
 		LispSymbol head = new LispSymbol("__cc_head");
 		LispVal headOfSpec = listToCons(List.of(new LispSymbol(LispNames.IF), call(LispNames.CONSP, "type"),
 				call(LispNames.CAR, "type"), new LispSymbol("type")));
-		// (reduce (lambda (a x) (%string-concat a (if (stringp x) x (coerce x 'string))))
-		// seqs :initial-value ""): the same "any character sequence" contract the
-		// call-position lowering gets from %seq-string, spelled inline here because the
-		// wrapper must stand alone (its own injection is gated separately).
-		LispVal step = listToCons(List
-			.of(new LispSymbol(LispNames.LAMBDA), listToCons(List.of(new LispSymbol("a"), new LispSymbol("x"))), callV(
-					LispNames.STRING_CONCAT, new LispSymbol("a"),
-					listToCons(List.of(new LispSymbol(LispNames.IF), call(LispNames.STRINGP, "x"), new LispSymbol("x"),
-							// The INTERNAL designator, for %seq-string's
-							// reason: this per-argument normalization feeds
-							// %string-concat, and only the reduce's RESULT
-							// (wrapped below) reaches the program.
-							coerceTo("x", LispNames.SEQ_STRING_RESULT))))));
-		// The reduce builds through %string-concat, which is the codegen's own append
-		// and is deliberately NOT wrapped -- so the wrapper finishes with the same
-		// mutable-result wrap the call-position lowering emits, and
-		// (funcall #'concatenate 'string a b) answers a string with the identity
-		// (concatenate 'string a b) answers one with (.kb/string-write-runtime.md).
-		LispVal strings = listToCons(
-				List.of(new LispSymbol(LispNames.STR_FRESH), listToCons(List.of(new LispSymbol(LispNames.REDUCE), step,
-						new LispSymbol("seqs"), new LispSymbol(LispNames.INITIAL_VALUE_KEYWORD), new LispString("")))));
+		LispVal strings = stringFamilyBuild();
 		// The vector arm honours an (unsigned-byte 8|16|32) element type and a packed
 		// FLOAT one, exactly like the call-position lowering: (apply #'concatenate
 		// '(simple-array (unsigned-byte 8) (*)) ...) is http-body's own spelling and
@@ -1229,17 +1209,65 @@ public final class BuiltinFunctionWrappers {
 		return java.util.Arrays.copyOf(floats, n);
 	}
 
+	// The string family, built in ONE pass over a result sized once:
+	//
+	// (let* ((__cc_strs (mapcar (lambda (x) (if (stringp x) x (coerce x
+	// '%seq-string-result))) seqs))
+	// (__cc_out (make-string (reduce (lambda (n s) (+ n (length s))) __cc_strs
+	// :initial-value 0))))
+	// (reduce (lambda (i s) (replace __cc_out s :start1 i) (+ i (length s))) __cc_strs
+	// :initial-value 0)
+	// __cc_out)
+	//
+	// NOT a fold through %string-concat: an append copies its accumulator, so folding n
+	// arguments costs the sum of the prefixes -- quadratic in the total length, and
+	// (apply #'concatenate 'string lines) over a file's lines is exactly that shape
+	// (.kb/string-accumulate-cost.md). The per-argument normalization keeps the INTERNAL
+	// %seq-string-result designator (it feeds replace, never the program). make-string
+	// already answers a fresh mutable buffer, so no %str-fresh wrap is needed for the
+	// mutable-result contract the call-position lowering satisfies
+	// (.kb/string-write-runtime.md); the reduce's own accumulator carries the write
+	// offset, so nothing setqs a captured variable.
+	private static LispVal stringFamilyBuild() {
+		LispSymbol strs = new LispSymbol("__cc_strs");
+		LispSymbol out = new LispSymbol("__cc_out");
+		LispVal normalize = listToCons(
+				List.of(new LispSymbol(LispNames.LAMBDA), listToCons(List.of(new LispSymbol("x"))),
+						listToCons(List.of(new LispSymbol(LispNames.IF), call(LispNames.STRINGP, "x"),
+								new LispSymbol("x"), coerceTo("x", LispNames.SEQ_STRING_RESULT)))));
+		LispVal normalized = callV(LispNames.MAPCAR, normalize, new LispSymbol("seqs"));
+		LispVal sumStep = listToCons(
+				List.of(new LispSymbol(LispNames.LAMBDA), listToCons(List.of(new LispSymbol("n"), new LispSymbol("s"))),
+						callV(LispNames.ADD, new LispSymbol("n"), call(LispNames.LENGTH, "s"))));
+		LispVal total = listToCons(List.of(new LispSymbol(LispNames.REDUCE), sumStep, strs,
+				new LispSymbol(LispNames.INITIAL_VALUE_KEYWORD), new LispInteger(0)));
+		LispVal copyStep = listToCons(
+				List.of(new LispSymbol(LispNames.LAMBDA), listToCons(List.of(new LispSymbol("i"), new LispSymbol("s"))),
+						listToCons(List.of(new LispSymbol(LispNames.REPLACE), out, new LispSymbol("s"),
+								new LispSymbol(LispNames.START1_KEYWORD), new LispSymbol("i"))),
+						callV(LispNames.ADD, new LispSymbol("i"), call(LispNames.LENGTH, "s"))));
+		LispVal copyAll = listToCons(List.of(new LispSymbol(LispNames.REDUCE), copyStep, strs,
+				new LispSymbol(LispNames.INITIAL_VALUE_KEYWORD), new LispInteger(0)));
+		LispVal bindings = listToCons(List.of(listToCons(List.of(strs, normalized)),
+				listToCons(List.of(out, callV(LispNames.MAKE_STRING, total)))));
+		return listToCons(List.of(new LispSymbol(LispNames.LET_STAR), bindings, copyAll, out));
+	}
+
 	// Every argument's elements, in order, in a FRESH list:
-	// (append (reduce (lambda (a x) (append a (coerce x 'list))) seqs :initial-value nil)
-	// nil) -- the outer append is what copies the last argument too. Built per use so the
-	// two dispatch arms never share one AST node.
+	// (reduce (lambda (x a) (append (coerce x 'list) a)) seqs :from-end t :initial-value
+	// nil)
+	// -- a RIGHT fold, so each step's append copies only that argument's own elements and
+	// the whole build is linear in the total length; a left fold re-copies the
+	// accumulator per argument and is quadratic, the list family's twin of the string
+	// one (.kb/string-accumulate-cost.md). The nil seed is what copies the LAST argument
+	// too. Built per use so the two dispatch arms never share one AST node.
 	private static LispVal concatenatedElements() {
 		LispVal step = listToCons(
-				List.of(new LispSymbol(LispNames.LAMBDA), listToCons(List.of(new LispSymbol("a"), new LispSymbol("x"))),
-						callV(LispNames.APPEND, new LispSymbol("a"), coerceTo("x", "LIST"))));
-		LispVal reduced = listToCons(List.of(new LispSymbol(LispNames.REDUCE), step, new LispSymbol("seqs"),
+				List.of(new LispSymbol(LispNames.LAMBDA), listToCons(List.of(new LispSymbol("x"), new LispSymbol("a"))),
+						callV(LispNames.APPEND, coerceTo("x", "LIST"), new LispSymbol("a"))));
+		return listToCons(List.of(new LispSymbol(LispNames.REDUCE), step, new LispSymbol("seqs"),
+				new LispSymbol(LispNames.FROM_END_KEYWORD), LispTrue.INSTANCE,
 				new LispSymbol(LispNames.INITIAL_VALUE_KEYWORD), LispNil.INSTANCE));
-		return callV(LispNames.APPEND, reduced, LispNil.INSTANCE);
 	}
 
 	// (coerce <var> '<type>)

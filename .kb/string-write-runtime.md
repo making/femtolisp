@@ -108,8 +108,9 @@ PROGRAM-WRITTEN `(map 'string ...)` and `(coerce seq 'string)`, `uiop:getenv`, t
   `'string` designator), computed identically by both compilers and copied into async chunk
   contexts by `WasmAsyncEmit`. On the JVM it also joined `programUsesAnyArrayOp`.
 - `%str-fresh` is the Lisp-level spelling of the wrap (`PureBuiltinFolder`'s fresh-string constants,
-  the `coerce` build arm, `concatenateWrapper`'s `%string-concat` reduce); the interpreter binds it
-  as a copy.
+  the `coerce` build arm); the interpreter binds it as a copy. `concatenateWrapper` used to need it
+  over its `%string-concat` reduce and does NOT any more: its string arm sizes the result once and
+  fills it, and `make-string` already answers a mutable buffer (`.kb/string-accumulate-cost.md`).
 - **`(coerce x 'string)` over a STRING answers the ARGUMENT** (CLHS; `%seq-string` depends on it),
   so the wrap sits on the BUILD arm only: `(if (stringp x) x (%str-fresh <build>))`.
 - **A sequence operator's own result conversion is NOT a program-written `coerce`.** `reverse` /

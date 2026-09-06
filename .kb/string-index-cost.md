@@ -129,11 +129,13 @@ reason of its own. Synthetic tokenizer-shaped JSON, 2026-09-05: 88k characters 1
 report saw no first timing line in seven minutes).
 
 Whole-string consumers (`string=`, `concatenate`, `write-string`, `_equal`/`_hash`/`_print_val`)
-still render once per CALL, which is their own cost and not an index's. **Separate mechanism, not
-fixed here**: ACCUMULATING a file into a string is quadratic in its own right on the compile path
--- `uiop:read-file-string`'s chunked `concatenate` and the `apply #'concatenate 'string` over
-`read-line` results both re-copy the accumulator per chunk, and neither reaches `json-parse` at all
-on a 12.8 MB file. Tracked as `.todo/704`.
+still render once per CALL, which is their own cost and not an index's. **Separate mechanism, fixed
+separately**: ACCUMULATING a file into a string was quadratic in its own right --
+`uiop:read-file-string`'s chunked `concatenate` and the `apply #'concatenate 'string` over
+`read-line` results both re-copied the accumulator per chunk, and neither reached `json-parse` at
+all on a 12.8 MB file. Both are linear now (`.kb/string-accumulate-cost.md`, `.todo/704`); the
+sentence above about which producer answers a `java.lang.String` still holds, and is why the
+byte-reader detour stayed.
 
 ## Costs and what is still not constant
 - WASM: **8 bytes per string** plus the bigger helper bodies (`zlib` +262 bytes at either

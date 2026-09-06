@@ -10901,6 +10901,80 @@ cases:
       128512
       T
       CV-SCAN-FLAT
+  - name: string-accumulate-is-not-quadratic
+    source: |
+      ;; Turning many pieces into one string must cost the TOTAL LENGTH, not the
+      ;; sum of the prefixes. Both portable ways a program has of doing it are
+      ;; pinned here as a ratio -- one call over N characters against the same N
+      ;; characters in short calls -- so the bound is machine-independent
+      ;; (.kb/string-accumulate-cost.md).
+      ;;
+      ;; The file shape the invariant exists for -- uiop:read-file-string over a
+      ;; multi-megabyte file -- is NOT what is timed: on the interpreter
+      ;; read-sequence costs about 1.2 us per character, so the accumulate does
+      ;; not dominate below roughly 1.2M characters and a corpus-affordable file
+      ;; cannot tell the two implementations apart there. What IS timed is the
+      ;; two mechanisms that read-file-string and its hand-written twin are made
+      ;; of, at a size every backend finishes in milliseconds.
+      (defvar *acc-piece* (make-string 64 :initial-element #\y))
+      (defvar *acc-pieces* nil)
+      (dotimes (i 4096) (push *acc-piece* *acc-pieces*))
+      (defvar *acc-sixteen* (subseq *acc-pieces* 0 16))
+      ;; The n-ary first-class concatenate: (apply #'concatenate 'string lines)
+      ;; is the shape a caller writes, and it used to fold PAIRWISE through the
+      ;; wrapper's reduce -- 495,920 lines of a tokenizer.json cost about 2.7e12
+      ;; character copies and never returned (.todo/704).
+      (print (apply #'concatenate 'string (list "ab" "cd" "ef")))
+      (print (funcall #'concatenate 'string "a" '(#\b #\c) #(#\d) nil "e"))
+      (print (apply #'concatenate 'list (list '(1 2) #(3 4) "ab")))
+      (apply #'concatenate 'string *acc-sixteen*)
+      (defvar *acc-t0* (get-internal-real-time))
+      (defvar *acc-whole* (length (apply #'concatenate 'string *acc-pieces*)))
+      (defvar *acc-t1* (get-internal-real-time))
+      (defvar *acc-chunked* 0)
+      (dotimes (k 256)
+        (setq *acc-chunked* (+ *acc-chunked* (length (apply #'concatenate 'string *acc-sixteen*)))))
+      (defvar *acc-t2* (get-internal-real-time))
+      (print (= *acc-whole* *acc-chunked*))
+      (print (if (<= (- *acc-t1* *acc-t0*) (+ 500 (* 6 (- *acc-t2* *acc-t1*))))
+                 'concat-flat
+                 'concat-quadratic))
+      ;; The string output stream uiop:read-file-string accumulates its chunks
+      ;; into: every backend appends into a buffer that doubles.
+      (defun ci-acc-stream (chunk k)
+        (with-output-to-string (out) (dotimes (i k) (write-string chunk out))))
+      (ci-acc-stream *acc-piece* 16)
+      (defvar *acc-t3* (get-internal-real-time))
+      (defvar *acc-swhole* (length (ci-acc-stream *acc-piece* 4096)))
+      (defvar *acc-t4* (get-internal-real-time))
+      (defvar *acc-schunked* 0)
+      (dotimes (k 256)
+        (setq *acc-schunked* (+ *acc-schunked* (length (ci-acc-stream *acc-piece* 16)))))
+      (defvar *acc-t5* (get-internal-real-time))
+      (print (= *acc-swhole* *acc-schunked*))
+      (print (if (<= (- *acc-t4* *acc-t3*) (+ 500 (* 6 (- *acc-t5* *acc-t4*))))
+                 'stream-flat
+                 'stream-quadratic))
+      ;; uiop:read-file-string itself, for CORRECTNESS: a file longer than the
+      ;; 4,096-character read buffer, with a multi-byte character straddling no
+      ;; boundary in particular, comes back whole and in order.
+      (with-open-file (out "ci-acc.txt" :direction :output :if-exists :supersede)
+        (dotimes (i 300) (write-string "0123456789abcdé" out)))
+      (defvar *acc-file* (uiop:read-file-string "ci-acc.txt"))
+      (print (length *acc-file*))
+      (print (subseq *acc-file* 0 15))
+      (print (subseq *acc-file* 4485 4500))
+    expected: |
+      "abcdef"
+      "abcde"
+      (1 2 3 4 #\a #\b)
+      T
+      CONCAT-FLAT
+      T
+      STREAM-FLAT
+      4500
+      "0123456789abcdé"
+      "0123456789abcdé"
   - name: string-identity-cross-backend
     source: |
       ;; A string a program allocates through copy-seq/subseq is a MUTABLE

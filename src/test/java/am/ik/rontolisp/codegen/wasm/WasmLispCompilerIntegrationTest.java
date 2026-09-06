@@ -764,6 +764,41 @@ class WasmLispCompilerIntegrationTest {
 				"ab\"""");
 	}
 
+	// The first-class concatenate must cost the TOTAL LENGTH, not the sum of the
+	// prefixes: (apply #'concatenate 'string lines) is the shape a caller reaches for
+	// over a file's lines, and the wrapper used to fold PAIRWISE through
+	// %string-concat (.todo/704, .kb/string-accumulate-cost.md). 4,096 pieces of 64
+	// characters here: 19,037 ms under the fold, 23 ms sized once.
+	@Test
+	void aNaryConcatenateCostsTheTotalLengthAndNotTheSumOfThePrefixes() throws Exception {
+		String program = """
+				(defvar *piece* (make-string 64 :initial-element #\\y))
+				(defvar *pieces* nil)
+				(dotimes (i 4096) (push *piece* *pieces*))
+				(defvar *sixteen* (subseq *pieces* 0 16))
+				(apply #'concatenate 'string *sixteen*)
+				(defvar *t0* (get-internal-real-time))
+				(defvar *whole* (length (apply #'concatenate 'string *pieces*)))
+				(defvar *t1* (get-internal-real-time))
+				(defvar *chunked* 0)
+				(dotimes (k 256)
+				  (setq *chunked* (+ *chunked* (length (apply #'concatenate 'string *sixteen*)))))
+				(defvar *t2* (get-internal-real-time))
+				;; Both halves build the same 262,144 characters.
+				(print (= *whole* *chunked*))
+				(print (- *t1* *t0*))
+				(print (- *t2* *t1*))
+				""";
+		String[] lines = compileAndRun(program).split("\n");
+		assertThat(lines[0]).as("the two halves must build the same characters").isEqualTo("T");
+		long whole = Long.parseLong(lines[1].trim());
+		long chunked = Long.parseLong(lines[2].trim());
+		assertThat(whole)
+			.as("concatenating 4,096 pieces in one call (%d ms) against the same characters "
+					+ "in 16-piece calls (%d ms)", whole, chunked)
+			.isLessThanOrEqualTo(500 + 6 * chunked);
+	}
+
 	@Test
 	void redefinedDefunKeepsTheTopLevelChunkIndicesRight() throws Exception {
 		// A redefined defun emits one module function PER DEFINITION (the defuns list),
