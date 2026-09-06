@@ -49,13 +49,14 @@ import am.ik.rontolisp.LispVal;
  * {@code .kb/string-write-runtime.md}: {@code reverse} / {@code remove} /
  * {@code substitute} / {@code sort} over a string (the gate cannot tell a string sequence
  * from a list one, so a list-only program would pay the JVM array runtime: +6,735 bytes
- * of class on {@code examples/console/nqueens.lisp}), a computed (non-literal-{@code nil})
- * {@code format} destination and a computed {@code coerce} result type that turn out to
- * name a string at run time (same gate problem), and {@code symbol-name} / {@code gensym}
- * names (CLHS leaves {@code symbol-name} mutation undefined; keeping the name immutable
- * is deliberate). The {@code #'format} wrapper needs nothing -- it renders through
- * {@code %fmt-cat}, which is a {@code concatenate 'string} -- and {@code #'concatenate}
- * wraps its own reduce in {@code %str-fresh}.
+ * of class on {@code examples/console/nqueens.lisp}), a computed
+ * (non-literal-{@code nil}) {@code format} destination and a computed {@code coerce}
+ * result type that turn out to name a string at run time (same gate problem), and
+ * {@code symbol-name} / {@code gensym} names (CLHS leaves {@code symbol-name} mutation
+ * undefined; keeping the name immutable is deliberate). The {@code #'format} wrapper
+ * needs nothing -- it renders through {@code %fmt-cat}, which is a
+ * {@code concatenate 'string} -- and {@code #'concatenate} wraps its own reduce in
+ * {@code %str-fresh}.
  */
 public final class MutableStringProducers {
 

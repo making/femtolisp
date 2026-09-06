@@ -42,12 +42,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * </ul>
  *
  * <p>
- * <b>What is not scanned, and why.</b> {@code .todo/artefacts/} and {@code .todo/history/}
- * are dated records: a measurement keeps the paths it was taken against, and a history row
- * names the path INSIDE the commit that removed it, so neither may be rewritten to match
- * today's tree. {@code doc/} markdown LINKS are relative to the rendered site rather than
- * to the source tree, so only their backticked citations are checked here;
- * {@code DocGenTest} walks the generated site.
+ * <b>What is not scanned, and why.</b> {@code .todo/artefacts/} and
+ * {@code .todo/history/} are dated records: a measurement keeps the paths it was taken
+ * against, and a history row names the path INSIDE the commit that removed it, so neither
+ * may be rewritten to match today's tree. {@code doc/} markdown LINKS are relative to the
+ * rendered site rather than to the source tree, so only their backticked citations are
+ * checked here; {@code DocGenTest} walks the generated site.
  */
 class PathCitationTest {
 
@@ -71,7 +71,8 @@ class PathCitationTest {
 			"examples/llama2", "examples/wasm-size", "examples/wit-world", "examples/hiragana",
 			// On the gui-poc branch only, never on develop (.todo/030).
 			"examples/maze-rl-gui.lisp",
-			// Promoted out of the examples into the shipped metal.lisp (eval/MetalLibrary).
+			// Promoted out of the examples into the shipped metal.lisp
+			// (eval/MetalLibrary).
 			"examples/macos/metal.lisp",
 			// rove's OWN tree, not ours: the vendored copy under src/test/resources/rove
 			// ships no examples directory (e2e/RoveE2eTest).
@@ -88,7 +89,10 @@ class PathCitationTest {
 
 	private static final Pattern MARKDOWN_LINK = Pattern.compile("]\\(([^)\\s]+)\\)");
 
-	/** {@code .todo/671}, {@code .todo/682-what-a-rename-breaks.md} -- an item, not a path. */
+	/**
+	 * {@code .todo/671}, {@code .todo/682-what-a-rename-breaks.md} -- an item, not a
+	 * path.
+	 */
 	private static final Pattern TODO_ITEM_REFERENCE = Pattern.compile("\\.todo/\\d+(-[^/]*\\.md)?");
 
 	/** A citation may carry a line or a range: {@code Foo.java:120-134}. */
@@ -134,7 +138,7 @@ class PathCitationTest {
 					if (bare.isEmpty() || TODO_ITEM_REFERENCE.matcher(resolveAgainst(file, bare)).matches()) {
 						continue;
 					}
-					if (!Files.exists(file.getParent().resolve(bare).normalize())) {
+					if (!Files.exists(Path.of(resolveAgainst(file, bare)))) {
 						broken.add(file + ":" + line + ": " + target);
 					}
 				}
@@ -149,10 +153,10 @@ class PathCitationTest {
 	 * artefacts, kept forever because the numbers outlive the item. They shared one
 	 * namespace until 2026-09-06, when {@code ls .todo/} showed sixteen numbered
 	 * directories of which two belonged to an open item, and three readers had taken one
-	 * of the other fourteen for an open item hours after it closed. The artefacts now live
-	 * under {@code .todo/artefacts/}, which makes the listing readable without opening
-	 * anything and costs nothing at close time -- the directory is already where it
-	 * belongs, so closing an item moves nothing.
+	 * of the other fourteen for an open item hours after it closed. The artefacts now
+	 * live under {@code .todo/artefacts/}, which makes the listing readable without
+	 * opening anything and costs nothing at close time -- the directory is already where
+	 * it belongs, so closing an item moves nothing.
 	 */
 	@Test
 	void theTodoDirectoryHoldsNoItemNumberedDirectories() throws IOException {
@@ -216,11 +220,18 @@ class PathCitationTest {
 		return TRAILING_LINES.matcher(result).replaceAll("");
 	}
 
+	/**
+	 * Every scanned file sits under {@code .kb/} or {@code .todo/}, so it has a parent.
+	 */
 	private static String resolveAgainst(Path file, String target) {
-		return file.getParent().resolve(target).normalize().toString();
+		Path directory = file.getParent();
+		return (directory == null ? Path.of(target) : directory.resolve(target)).normalize().toString();
 	}
 
-	/** Backticked text is quoted, not written -- a page that SHOWS link syntax is not linking. */
+	/**
+	 * Backticked text is quoted, not written -- a page that SHOWS link syntax is not
+	 * linking.
+	 */
 	private static String maskCodeSpans(String text) {
 		return BACKTICK_SPAN.matcher(text).replaceAll(match -> " ".repeat(match.group().length()));
 	}
@@ -236,7 +247,10 @@ class PathCitationTest {
 		return files;
 	}
 
-	/** Top level only: {@code .todo/artefacts/} and {@code .todo/history/} are dated records. */
+	/**
+	 * Top level only: {@code .todo/artefacts/} and {@code .todo/history/} are dated
+	 * records.
+	 */
 	private static List<Path> todoItemFiles() throws IOException {
 		try (Stream<Path> entries = Files.list(Path.of(".todo"))) {
 			return entries.filter(path -> path.getFileName().toString().endsWith(".md")).sorted().toList();

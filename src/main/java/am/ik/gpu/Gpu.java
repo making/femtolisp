@@ -201,9 +201,9 @@ public final class Gpu {
 	 * CPU's sequential walk wins. A fill has no operand to copy up -- only the result
 	 * comes back -- so its floor is the lowest of the set, and the CPU side costs ~3 ns
 	 * per uniform draw (~36 per Irwin-Hall normal, which is twelve of them). Measured on
-	 * the GB10 ({@code .todo/artefacts/123-gpu-acceleration/RngCrossover.java}): one uniform draw
-	 * per element is 0.7-0.8x at 2^12 and 1.6-1.8x at 2^13, the normal 4x at 2^12
-	 * already; 2^13 is where every rule wins, and the one threshold serves all three
+	 * the GB10 ({@code .todo/artefacts/123-gpu-acceleration/RngCrossover.java}): one
+	 * uniform draw per element is 0.7-0.8x at 2^12 and 1.6-1.8x at 2^13, the normal 4x at
+	 * 2^12 already; 2^13 is where every rule wins, and the one threshold serves all three
 	 * ({@code .kb/gpu.md}).
 	 */
 	static final long RNG_POOLED_MIN_ELEMENTS = 1L << 13;
