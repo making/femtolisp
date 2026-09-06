@@ -1,8 +1,13 @@
 package am.ik.rontolisp.format;
 
 import java.io.IOException;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Stream;
@@ -13,11 +18,13 @@ import am.ik.rontolisp.reader.LispReadException;
 import am.ik.rontolisp.reader.Token;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assumptions.assumeThat;
 
 class LispFormatterTest {
 
@@ -684,25 +691,90 @@ class LispFormatterTest {
 	 * @throws IOException if the tree cannot be walked
 	 */
 	static Stream<Path> repositoryLispSources() throws IOException {
-		try (Stream<Path> walk = Files.walk(Path.of("."))) {
-			return walk.filter(Files::isRegularFile)
-				.filter(path -> path.toString().endsWith(".lisp") || path.toString().endsWith(".asd"))
-				.filter(path -> !path.toString().contains("/target/"))
-				// The ANSI suite checkout is foreign, git-ignored code we do not format;
-				// whether it survives the fixpoint is the suite's business, not ours, and
-				// a developer who ran ansi-test/fetch.sh must not get a different verdict
-				// from `./mvnw test` than one who did not.
-				.filter(path -> !path.toString().contains("/ansi-test/suite/"))
-				// A `.claude/` directory (agent worktrees, or anything else the harness
-				// puts there) is foreign for the same reason: a developer who has stale
-				// agent worktrees on disk must not get a different verdict -- or a
-				// different TEST COUNT -- from `./mvnw test` than one who does not, and a
-				// worktree mid-edit must never make the MAIN tree's suite fail on a file
-				// the main tree does not contain. See .todo/708.
-				.filter(path -> !path.toString().contains("/.claude/"))
-				.sorted(Comparator.comparing(Path::toString))
-				.toList()
-				.stream();
+		return lispSourcesUnder(Path.of("."));
+	}
+
+	/**
+	 * The walk itself, over an arbitrary root so the boundary cases can be pinned against
+	 * a temporary tree rather than against the repository.
+	 * @param root the directory to walk
+	 * @return the {@code .lisp} and {@code .asd} files under it, in path order
+	 * @throws IOException if the tree cannot be walked
+	 */
+	static Stream<Path> lispSourcesUnder(Path root) throws IOException {
+		// Not Files.walk: it reports an entry it cannot stat by throwing
+		// UncheckedIOException out of the stream, and this walks the live working
+		// directory while the rest of the suite writes scratch files into it. An entry
+		// the walk cannot read is not a corpus member and must not be a suite failure --
+		// only a .lisp or .asd file it CAN read is.
+		List<Path> found = new ArrayList<>();
+		Files.walkFileTree(root, new SimpleFileVisitor<>() {
+			@Override
+			public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+				if (attrs.isRegularFile()) {
+					found.add(file);
+				}
+				return FileVisitResult.CONTINUE;
+			}
+
+			@Override
+			public FileVisitResult visitFileFailed(Path file, IOException failure) {
+				return FileVisitResult.CONTINUE;
+			}
+
+			@Override
+			public FileVisitResult postVisitDirectory(Path dir, @Nullable IOException failure) {
+				return FileVisitResult.CONTINUE;
+			}
+		});
+		return found.stream()
+			.filter(path -> path.toString().endsWith(".lisp") || path.toString().endsWith(".asd"))
+			.filter(path -> !path.toString().contains("/target/"))
+			// The ANSI suite checkout is foreign, git-ignored code we do not format;
+			// whether it survives the fixpoint is the suite's business, not ours, and
+			// a developer who ran ansi-test/fetch.sh must not get a different verdict
+			// from `./mvnw test` than one who did not.
+			.filter(path -> !path.toString().contains("/ansi-test/suite/"))
+			// A `.claude/` directory (agent worktrees, or anything else the harness
+			// puts there) is foreign for the same reason: a developer who has stale
+			// agent worktrees on disk must not get a different verdict -- or a
+			// different TEST COUNT -- from `./mvnw test` than one who does not, and a
+			// worktree mid-edit must never make the MAIN tree's suite fail on a file
+			// the main tree does not contain. See .todo/708.
+			.filter(path -> !path.toString().contains("/.claude/"))
+			.sorted(Comparator.comparing(Path::toString))
+			.toList()
+			.stream();
+	}
+
+	// The corpus walks the LIVE working directory while the rest of the suite is
+	// running in it, and other tests write scratch files into the project root and
+	// delete them again (JvmClassShakerCorpusTest's CORPUS_SCRATCH_FILES: bin.dat,
+	// ci-stream-value.txt, ci-model.gguf, ...). A file that disappears between being
+	// listed and being stat'd makes Files.walk throw UncheckedIOException, which failed
+	// the whole suite on develop 2026-09-06 with
+	// `NoSuchFileException: ./ci-stream-value.txt` -- from a file that is not a .lisp,
+	// is no part of the corpus, and was never going to be formatted.
+	//
+	// An entry the walk cannot stat is the general shape, so that is what is pinned. The
+	// deterministic stand-in is a directory the process may not read: the production
+	// trigger (a file removed mid-walk) cannot be scheduled from a test, and both arrive
+	// at the same handler.
+	@Test
+	void theCorpusWalkSurvivesAnEntryItCannotStat(@TempDir Path root) throws IOException {
+		assumeThat(System.getProperty("user.name")).as("root can read a 000 directory").isNotEqualTo("root");
+		Files.writeString(root.resolve("kept.lisp"), "(defun f (x) x)\n");
+		Path opaque = Files.createDirectory(root.resolve("opaque"));
+		Files.writeString(opaque.resolve("hidden.lisp"), "(defun g (x) x)\n");
+		Files.setPosixFilePermissions(opaque, PosixFilePermissions.fromString("---------"));
+		try {
+			assertThat(lispSourcesUnder(root).toList()).as("the readable corpus survives the unreadable entry")
+				.singleElement()
+				.asString()
+				.endsWith("kept.lisp");
+		}
+		finally {
+			Files.setPosixFilePermissions(opaque, PosixFilePermissions.fromString("rwx------"));
 		}
 	}
 
