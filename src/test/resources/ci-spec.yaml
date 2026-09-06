@@ -5276,6 +5276,42 @@ cases:
       T
       T
       (1 2)
+  # The packed element types are a CLOSED code space, and the FLOAT widths are
+  # members of it: (coerce seq '(vector single-float)) is the packed float array
+  # make-array builds, not a general vector, and a source that is already packed
+  # at another width converts rather than being answered unchanged. Both
+  # operators, in call position and through the #'concatenate wrapper's runtime
+  # dispatch. bfloat16 is deliberately absent here: it is interpreter + JVM only
+  # and every other backend refuses it by name (.kb/bfloat16.md), so it is pinned
+  # per backend instead. .kb/concatenate-result-families.md, .kb/vec.md.
+  - name: coerce-packed-float-element-type
+    source: |
+      (defun ci-float-hide (x) x)
+      (defun ci-coerce-packed-float ()
+        (let ((v (coerce (ci-float-hide '(1 2)) '(vector single-float))))
+          (print (list (array-element-type v)
+                       (typep v '(simple-array single-float (*)))
+                       v)))
+        (print (coerce (ci-float-hide '(1.0 2.5)) '(simple-array double-float (*))))
+        (print (coerce (ci-float-hide #f(1.0 -2.0 0.5)) '(array double-float)))
+        (print (concatenate '(vector single-float) '(1.0 2.0) #(3.0)))
+        (print (array-element-type (concatenate '(simple-array double-float (*)) #d(1.0))))
+        (print (funcall #'concatenate '(vector single-float) '(1.0) '(2.0)))
+        (print (array-element-type (apply #'concatenate '(array double-float) (list '(1.0)))))
+        ;; The integer widths and the general vector are unchanged beside them.
+        (print (array-element-type (funcall #'concatenate '(vector (unsigned-byte 8)) '(1))))
+        (print (array-element-type (coerce '(1 2) 'vector))))
+      (ci-coerce-packed-float)
+    expected: |
+      (SINGLE-FLOAT T #f(1.0 2.0))
+      #d(1.0 2.5)
+      #d(1.0 -2.0 0.5)
+      #f(1.0 2.0 3.0)
+      DOUBLE-FLOAT
+      #f(1.0 2.0)
+      DOUBLE-FLOAT
+      (UNSIGNED-BYTE 8)
+      T
   # Every CL FUNCTION the frontends lower in OPERATOR position must also have a
   # first-class VALUE: a name with a case and no BuiltinFunctionWrappers entry
   # answered "The function NAME is undefined" on all four backends, and rove's

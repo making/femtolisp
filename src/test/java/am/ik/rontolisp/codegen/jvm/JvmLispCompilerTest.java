@@ -5932,6 +5932,40 @@ class JvmLispCompilerTest {
 	}
 
 	@Test
+	void compileAndRunCoerceAndConcatenateKeepThePackedFloatElementType() throws Exception {
+		// The packed families are a closed code space and the float widths are members of
+		// it, so the very same designator rule builds the packed FLOAT array here -- and
+		// a source that is ALREADY packed at another width converts rather than being
+		// answered unchanged, which is what dropping the element type looked like from
+		// that direction (.todo/707). bfloat16 is on this backend, so all three widths
+		// run; only wasm refuses one.
+		assertThat(compileAndRun("""
+				(defun %id (x) x)
+				(let ((v (coerce (%id '(1 2)) '(vector single-float))))
+				  (print (list (array-element-type v) (typep v '(simple-array single-float (*))) v)))
+				(print (coerce (%id '(1.0 2.5)) '(simple-array double-float (*))))
+				(print (coerce (%id #f(1.0 -2.0 0.5)) '(array bfloat16)))
+				(print (coerce (%id #bf16(1.0 2.0)) '(vector single-float)))
+				(print (concatenate '(vector single-float) '(1.0 2.0) #(3.0)))
+				(print (array-element-type (concatenate '(simple-array double-float (*)) #d(1.0))))
+				(print (funcall #'concatenate '(vector single-float) '(1.0) '(2.0)))
+				(print (array-element-type (apply #'concatenate '(array bfloat16) (list '(1.0)))))
+				(print (array-element-type (funcall #'concatenate '(vector (unsigned-byte 8)) '(1))))
+				(print (array-element-type (funcall #'concatenate 'vector '(1))))
+				""")).isEqualTo("""
+				(SINGLE-FLOAT T #f(1.0 2.0))
+				#d(1.0 2.5)
+				#bf16(1.0 -2.0 0.5)
+				#f(1.0 2.0)
+				#f(1.0 2.0 3.0)
+				DOUBLE-FLOAT
+				#f(1.0 2.0)
+				BFLOAT16
+				(UNSIGNED-BYTE 8)
+				T""");
+	}
+
+	@Test
 	void compileAndRunFoldsALiteralLookupTableToItsPackedLiteral() throws Exception {
 		// The whole point of folding the table: it is DATA at compile time, so the
 		// backends bake it instead of consing the element list at run time. What the

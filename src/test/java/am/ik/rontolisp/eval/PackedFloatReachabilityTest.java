@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import am.ik.rontolisp.ArrayElementTypes;
 import am.ik.rontolisp.ClosRegistry;
 import am.ik.rontolisp.LispFloatArray;
 import am.ik.rontolisp.LispIntVector;
@@ -13,6 +14,7 @@ import am.ik.rontolisp.LispNil;
 import am.ik.rontolisp.LispSymbol;
 import am.ik.rontolisp.LispTrue;
 import am.ik.rontolisp.LispVal;
+import am.ik.rontolisp.compiler.ConcatenateForms;
 import am.ik.rontolisp.macro.LispMacroExpander;
 import am.ik.rontolisp.reader.LispReader;
 import org.junit.jupiter.api.Test;
@@ -147,6 +149,85 @@ class PackedFloatReachabilityTest {
 					"(vec:add (vec:ones 4 :element-type '" + name + ") (vec:ones 4 :element-type '" + name + "))");
 			assertThat(sum).as("vec:add preserves the %s width", name).isInstanceOf(proto.getClass());
 		}
+	}
+
+	/**
+	 * The {@code coerce} / {@code concatenate} door. A result-type designator names an
+	 * element type exactly as {@code make-array}'s {@code :element-type} does, so every
+	 * permit has to be reachable through it too -- and was not until 2026-09-06: the
+	 * result-type normalizer carried an INTEGER WIDTH beside the family, so the float
+	 * widths had nowhere to be and both operators silently answered a general vector
+	 * ({@code .todo/707}).
+	 */
+	@Test
+	void everyPermitIsReachableThroughCoerceAndConcatenate() {
+		for (LispFloatArray proto : prototypesForAllPermits()) {
+			String name = proto.elementType();
+			assertThat(eval("(coerce '(1 2) '(vector " + name + "))"))
+				.as("(coerce '(1 2) '(vector %s)) builds the width's own class", name)
+				.isInstanceOf(proto.getClass());
+			assertThat(eval("(concatenate '(simple-array " + name + " (*)) '(1) #(2))"))
+				.as("(concatenate '(simple-array %s (*)) ...) builds the width's own class", name)
+				.isInstanceOf(proto.getClass());
+		}
+	}
+
+	/**
+	 * The other half of that door: it is keyed on the closed element-type CODE SPACE, so
+	 * every code {@code make-array} can remember survives both operators and is reported
+	 * back unchanged.
+	 * <p>
+	 * The loop iterates {@link ArrayElementTypes#specializedCodes()} -- the generator the
+	 * lowering itself derives its arms from -- which is why the previous test pins the
+	 * float codes against the PERMITS as well: a width dropped from the generator would
+	 * otherwise shrink this loop silently instead of failing it, the exact shape
+	 * {@code .kb/vec.md} records for a door that iterates the table rather than the
+	 * permits.
+	 */
+	@Test
+	void everySpecializedElementTypeCodeSurvivesCoerceAndConcatenate() {
+		for (int code : ArrayElementTypes.specializedCodes()) {
+			if (code == ArrayElementTypes.CHARACTER) {
+				// The one code with no packed VECTOR representation of its own: a
+				// (vector character) result is the string family's business, and giving
+				// it a character array here would change what these operators ANSWER
+				// rather than what they remember (.todo/714).
+				continue;
+			}
+			String spelling = ArrayElementTypes.valueOf(code).print();
+			assertThat(eval("(array-element-type (coerce '(1) '(vector " + spelling + ")))").print())
+				.as("coerce to (vector %s) answers %s back", spelling, spelling)
+				.isEqualTo(spelling);
+			assertThat(eval("(array-element-type (concatenate '(vector " + spelling + ") '(1)))").print())
+				.as("concatenate to (vector %s) answers %s back", spelling, spelling)
+				.isEqualTo(spelling);
+		}
+	}
+
+	/**
+	 * The code space and the permits name the SAME set of packed float widths. This is
+	 * what makes the code-space loop above a real pin: remove a width from
+	 * {@link ArrayElementTypes#specializedCodes()} and this fails, rather than the loop
+	 * quietly testing one width fewer.
+	 * <p>
+	 * There is no integer twin, for the reason the audit below records:
+	 * {@link LispIntVector} is not sealed and its widths are parsed from the specifier,
+	 * so no reflective enumeration exists to compare the {@code (unsigned-byte N)} codes
+	 * against.
+	 */
+	@Test
+	void theSpecializedCodeSpaceNamesExactlyThePackedFloatPermits() {
+		Set<String> fromCodes = new java.util.HashSet<>();
+		for (int code : ArrayElementTypes.specializedCodes()) {
+			if (ConcatenateForms.isPackedFloat(code)) {
+				fromCodes.add(((LispSymbol) ArrayElementTypes.valueOf(code)).name());
+			}
+		}
+		Set<String> fromPermits = prototypesForAllPermits().stream()
+			.map(LispFloatArray::elementType)
+			.collect(Collectors.toSet());
+		assertThat(fromCodes).as("the packed float codes are exactly the permits of LispFloatArray")
+			.containsExactlyInAnyOrderElementsOf(fromPermits);
 	}
 
 	@Test

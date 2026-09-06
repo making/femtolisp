@@ -1198,8 +1198,16 @@ public final class JvmLispCompiler implements LispCompiler {
 		// runtime value, so it re-does the width dispatch there). Forces usesIntArray
 		// below -- the helper's make-array calls are in the WRAPPER, which the source
 		// scans below never see.
-		boolean usesSeqIntVector = ConcatenateForms.needsSeqIntVector(program, closRegistry) || program.stream()
+		boolean referencesConcatenateValue = program.stream()
 			.anyMatch(expr -> BuiltinFunctionWrappers.referencesFunctionValue(expr, LispNames.CONCATENATE));
+		boolean usesSeqIntVector = ConcatenateForms.needsSeqIntVector(program, closRegistry)
+				|| referencesConcatenateValue;
+		// The same for the packed FLOAT builder, on its own gate so a program that asks
+		// only for packed integer vectors carries none of the float allocations. Forces
+		// usesFloatArray below for the reason usesSeqIntVector forces usesIntArray: the
+		// helper's make-array calls are in the WRAPPER, which the source scans never see.
+		boolean usesSeqFloatVector = ConcatenateForms.needsSeqFloatVector(program, closRegistry)
+				|| referencesConcatenateValue;
 		// The hash-table runtime gate. Like the array gate it is a source scan that a
 		// lowering can outrun -- (%class-designator x) expands into a hash-table-p test,
 		// so a
@@ -1320,9 +1328,13 @@ public final class JvmLispCompiler implements LispCompiler {
 		if (!usesSeqString) {
 			wrapperExcludes.add(LispNames.SEQ_STRING);
 		}
-		// %seq-int-vector is the concatenate packed-vector builder, gated the same way.
+		// %seq-int-vector is the concatenate packed-vector builder, gated the same way,
+		// and %seq-float-vector is its float twin on its own gate.
 		if (!usesSeqIntVector) {
 			wrapperExcludes.add(LispNames.SEQ_INT_VECTOR);
+		}
+		if (!usesSeqFloatVector) {
+			wrapperExcludes.add(LispNames.SEQ_FLOAT_VECTOR);
 		}
 		// #'error/#'cerror/#'signal/#'warn wrappers forward the datum only (lite), and
 		// #'format renders via the runtime control renderer; inject each only when the
@@ -1603,7 +1615,7 @@ public final class JvmLispCompiler implements LispCompiler {
 				|| programUsesSymbol(program,
 						PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.MAKE_QUANTIZED_MATRIX));
 		boolean usesFloatArray = programUsesFloatArray(program, closRegistry) || usesRead || this.needsHandleRuntime
-				|| usesFloat16Bits || usesQuantized;
+				|| usesFloat16Bits || usesQuantized || usesSeqFloatVector;
 
 		// Whether the program can produce a packed integer vector (a #N@(...) literal
 		// or make-array :element-type '(unsigned-byte 8|16|32)). When true, the rank-1

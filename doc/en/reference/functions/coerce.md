@@ -6,6 +6,8 @@ Converts `object` to the given sequence or float type. `result-type` may be `'li
 
 A vector `result-type` spelling an `(unsigned-byte 8)`, `(unsigned-byte 16)` or `(unsigned-byte 32)` element type -- `'(vector (unsigned-byte 8))`, `'(simple-array (unsigned-byte 32) (*))` -- builds a specialized vector of that element type, the same representation [`make-array`](make-array.md) and [`concatenate`](concatenate.md) produce, so `array-element-type` reports it and `typep` against the matching `simple-array` specifier answers true. Elements are stored masked to the element width. Any other element type builds a general vector, whose element type is `t`. This is the spelling a lookup table usually takes, and a table whose elements are all literals is built at compile time on the compiled backends.
 
+A vector `result-type` spelling one of the packed float element types -- `'(vector single-float)`, `'(simple-array double-float (*))`, `'(array bfloat16)` -- builds a packed float array of that width, the same representation [`make-array`](make-array.md) produces, so `array-element-type` reports it back. Elements are stored at the array's own width, so an integer element becomes a float and a wider one is narrowed; a non-real element is an error. `bfloat16` arrays exist on the interpreter and the JVM backend only.
+
 ```lisp
 (coerce '(1 2 3) 'vector) ; => #(1 2 3)
 (coerce (vector 1 2 3) 'list) ; => (1 2 3)
@@ -16,6 +18,11 @@ A vector `result-type` spelling an `(unsigned-byte 8)`, `(unsigned-byte 16)` or 
 ```lisp
 (coerce '(1 2 260) '(vector (unsigned-byte 8))) ; => #(1 2 4)
 (array-element-type (coerce '(1) '(simple-array (unsigned-byte 32) (*)))) ; => (UNSIGNED-BYTE 32)
+```
+
+```lisp
+(coerce '(1 2) '(vector single-float)) ; => #f(1.0 2.0)
+(array-element-type (coerce '(1.0) '(simple-array double-float (*)))) ; => DOUBLE-FLOAT
 ```
 
 ```lisp

@@ -31,6 +31,14 @@ element-wise kernels preserve the input width (`vec::%make-like`), reductions fo
 - It is also a JAVA boundary type: `rontolisp:jvm-export`'s `:float-vector`/`:float-matrix` hand one
   over as `am.ik.rontolisp.runtime.RontoFloatArray`, a handle that ALIASES it (a copying boundary
   measured ~10x the kernel), [jvm-export.md](jvm-export.md).
+- **`coerce` and `concatenate` build one too**, from a result-type designator naming the width
+  (`(coerce seq '(vector single-float))`, `(concatenate '(array bfloat16) ...)`) -- the same door
+  `make-array` opens, through the shared `%seq-float-vector` helper
+  ([concatenate-result-families.md](concatenate-result-families.md)). It was NOT one until
+  2026-09-06: the result-type normalizer carried an integer width beside the family, so every
+  float width silently answered a general vector -- or, when the source was already packed, the
+  ARGUMENT UNCHANGED (`.todo/707`). `eval/PackedFloatReachabilityTest` now walks the permits
+  through that door too.
 
 ## Asking a packed array its width
 

@@ -891,6 +891,40 @@ class WasmLispCompilerIntegrationTest {
 	}
 
 	@Test
+	void coerceAndConcatenateKeepThePackedFloatElementType() throws Exception {
+		// The float widths are members of the same closed element-type code space the
+		// (unsigned-byte N) widths are, so the same designator rule builds the packed
+		// FLOAT array here (.todo/707). bfloat16 is the one width this backend does not
+		// carry: its arm is compiled and DEAD, and reaching it signals the sentence
+		// UnsupportedFloatWidth names -- the same one a literal (make-array
+		// :element-type 'bfloat16) gets, since the refusal has to sit where the
+		// representation is chosen (.kb/bfloat16.md).
+		String program = """
+				(defun %id (x) x)
+				(let ((v (coerce (%id '(1 2)) '(vector single-float))))
+				  (print (list (array-element-type v) (typep v '(simple-array single-float (*))) v)))
+				(print (coerce (%id '(1.0 2.5)) '(simple-array double-float (*))))
+				(print (coerce (%id #f(1.0 -2.0 0.5)) '(array double-float)))
+				(print (concatenate '(vector single-float) '(1.0 2.0) #(3.0)))
+				(print (array-element-type (concatenate '(simple-array double-float (*)) #d(1.0))))
+				(print (funcall #'concatenate '(vector single-float) '(1.0) '(2.0)))
+				(print (array-element-type (funcall #'concatenate '(vector (unsigned-byte 8)) '(1))))
+				(print (array-element-type (funcall #'concatenate 'vector '(1))))
+				(print (handler-case (coerce '(1.0) '(vector bfloat16)) (error (e) (format nil "~a" e))))
+				""";
+		assertThat(compileAndRun(program)).isEqualTo("""
+				(SINGLE-FLOAT T #f(1.0 2.0))
+				#d(1.0 2.5)
+				#d(1.0 -2.0 0.5)
+				#f(1.0 2.0 3.0)
+				DOUBLE-FLOAT
+				#f(1.0 2.0)
+				(UNSIGNED-BYTE 8)
+				T
+				"bfloat16 arrays are supported on the interpreter and the JVM only, not on the wasm-GC backend\"""");
+	}
+
+	@Test
 	void aQuotedDatumIsOneSharedConstantAcrossEvaluations() throws Exception {
 		// quote is the CONSTANT syntax: every evaluation of one quote site answers the
 		// SAME object, like the interpreter and like a real CL (CLHS leaves writes into

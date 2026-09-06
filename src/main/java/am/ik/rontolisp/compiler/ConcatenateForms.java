@@ -4,8 +4,10 @@ import java.util.List;
 
 import org.jspecify.annotations.Nullable;
 
+import am.ik.rontolisp.ArrayElementTypes;
 import am.ik.rontolisp.ClosRegistry;
 import am.ik.rontolisp.LispCons;
+import am.ik.rontolisp.LispFloatArray;
 import am.ik.rontolisp.LispInteger;
 import am.ik.rontolisp.LispNames;
 import am.ik.rontolisp.LispNil;
@@ -28,14 +30,17 @@ import am.ik.rontolisp.PackageRegistry;
  * (one call, never an inlined loop) before the binary {@code %string-concat} fold.
  *
  * <p>
- * The vector family carries its ELEMENT TYPE as well: an {@code (unsigned-byte 8|16|32)}
- * element type ({@code '(vector (unsigned-byte 8))},
- * {@code '(simple-array (unsigned-byte 8) (*))}) selects the packed integer-vector
- * representation {@code make-array} already builds
- * ({@code .kb/packed-integer-vectors.md}), through the {@code %seq-int-vector} helper;
- * every other element type is the general vector. ANSI requires the result to be of the
- * requested type, and real code checks: {@code md5:md5sum-sequence}'s {@code etypecase}
- * has a {@code (simple-array (unsigned-byte 8) (*))} arm and no general-vector one, so
+ * The vector family carries its ELEMENT TYPE as well, as one of the closed
+ * {@link ArrayElementTypes} codes, and one lowering per PACKED FAMILY builds the
+ * representation that code names: an {@code (unsigned-byte 8|16|32)} element type
+ * ({@code '(vector (unsigned-byte 8))}, {@code '(simple-array (unsigned-byte 8) (*))})
+ * selects the packed integer-vector representation
+ * ({@code .kb/packed-integer-vectors.md}) through {@code %seq-int-vector}, and a
+ * {@code single-float} / {@code double-float} / {@code bfloat16} one the packed float
+ * array ({@code .kb/vec.md}) through {@code %seq-float-vector}; every other element type
+ * is the general vector. ANSI requires the result to be of the requested type, and real
+ * code checks: {@code md5:md5sum-sequence}'s {@code etypecase} has a
+ * {@code (simple-array (unsigned-byte 8) (*))} arm and no general-vector one, so
  * cl-postgres' md5 authentication depends on it.
  *
  * <p>
@@ -44,15 +49,25 @@ import am.ik.rontolisp.PackageRegistry;
  * statically.
  *
  * <p>
- * <b>{@code coerce} shares the packed arm.</b> A result-type designator means the same
+ * <b>{@code coerce} shares the packed arms.</b> A result-type designator means the same
  * thing whichever operator reads it, so {@link #packedVectorCoerce} lowers
- * {@code (coerce seq '(vector (unsigned-byte 8)))} through the very same
- * {@code %seq-int-vector} helper and the very same {@link #needsSeqIntVector} gate. That
- * retires the divergence this file used to record as a re-evaluation trigger ("coerce
- * still DROPS the element type"): {@code expandCoerce} collapses a compound spec to its
- * head, so the packed spelling built a GENERAL vector -- which is how every literal
- * lookup table a library spells as {@code (coerce '(...) '(vector (unsigned-byte 32)))}
- * lost its element type.
+ * {@code (coerce seq '(vector (unsigned-byte 8)))} and
+ * {@code (coerce seq '(vector single-float))} through the very same helpers and the very
+ * same gates ({@link #needsSeqIntVector} / {@link #needsSeqFloatVector}). That retires
+ * the divergence this file used to record as a re-evaluation trigger ("coerce still DROPS
+ * the element type"): {@code expandCoerce} collapses a compound spec to its head, so the
+ * packed spelling built a GENERAL vector -- which is how every literal lookup table a
+ * library spells as {@code (coerce '(...) '(vector (unsigned-byte 32)))} lost its element
+ * type.
+ *
+ * <p>
+ * It retired it for the integer widths ONLY until 2026-09-06 ({@code .todo/707}): the
+ * float widths were never added, so {@code (coerce '(1.0) '(vector single-float))}
+ * answered a general vector and {@code (coerce #f(1.0) '(array bfloat16))} answered its
+ * ARGUMENT -- a silent wrong answer in both directions, at every float width, through
+ * both operators. That is why the element type travels as a CODE from the closed space
+ * rather than as a second width field beside the integer one: a hand-rolled list of the
+ * packed families is exactly what went one family short.
  */
 public final class ConcatenateForms {
 
@@ -78,14 +93,64 @@ public final class ConcatenateForms {
 
 	/**
 	 * A normalized result-type designator: its {@link ResultFamily} plus, for the vector
-	 * family, the packed unsigned-integer element width the designator asks for.
+	 * family, the UPGRADED element type the designator asks for, as one of the
+	 * {@link ArrayElementTypes} codes.
+	 *
+	 * <p>
+	 * The code and not a width: the packed representations are a closed code space
+	 * already ({@code make-array} picks one from exactly it), and a second field shaped
+	 * like the integer widths would be the next transcription of that space -- the defect
+	 * {@code .todo/487} removed from four other sites on 2026-09-05. Which representation
+	 * a code names is asked of the representations themselves
+	 * ({@link #packedIntWidth(int)}, {@link #isPackedFloat(int)}), never of a list here.
 	 *
 	 * @param family the sequence family the result belongs to
-	 * @param intWidth 8, 16 or 32 when the designator spells an {@code (unsigned-byte N)}
-	 * element type the packed representation supports, 0 for a general
-	 * (element-type-free) result
+	 * @param elementType the {@link ArrayElementTypes} code the designator's element type
+	 * upgrades to, {@link ArrayElementTypes#T} for a general (element-type-free) result
 	 */
-	public record ResultSpec(ResultFamily family, int intWidth) {
+	public record ResultSpec(ResultFamily family, int elementType) {
+
+		/**
+		 * The packed unsigned-integer element width this result asks for, or 0.
+		 * @return 8, 16, 32, or 0
+		 */
+		public int intWidth() {
+			return packedIntWidth(this.elementType);
+		}
+
+		/**
+		 * Whether this result asks for a packed FLOAT array.
+		 * @return true when the element type names one of the packed float widths
+		 */
+		public boolean packedFloat() {
+			return isPackedFloat(this.elementType);
+		}
+
+	}
+
+	/**
+	 * The packed unsigned-integer element width an {@link ArrayElementTypes} code names,
+	 * or 0 when the code names no packed integer vector. ASKED of the representation --
+	 * {@code LispNames.unsignedByteWidth} over the specifier the code answers -- so the
+	 * code space and the widths cannot drift apart.
+	 * @param elementTypeCode one of the {@link ArrayElementTypes} codes
+	 * @return 8, 16, 32, or 0
+	 */
+	public static int packedIntWidth(int elementTypeCode) {
+		return LispNames.unsignedByteWidth(ArrayElementTypes.valueOf(elementTypeCode));
+	}
+
+	/**
+	 * Whether an {@link ArrayElementTypes} code names a packed FLOAT width. ASKED of the
+	 * representation -- {@link LispFloatArray#prototypeFor} over the specifier the code
+	 * answers, i.e. of the sealed umbrella's own permits -- so a fourth width is
+	 * reachable here the moment it is reachable from {@code make-array}, with nothing to
+	 * add.
+	 * @param elementTypeCode one of the {@link ArrayElementTypes} codes
+	 * @return true when the code names one of the packed float widths
+	 */
+	public static boolean isPackedFloat(int elementTypeCode) {
+		return LispFloatArray.prototypeFor(ArrayElementTypes.valueOf(elementTypeCode)) != null;
 	}
 
 	private ConcatenateForms() {
@@ -145,13 +210,14 @@ public final class ConcatenateForms {
 			String member = qn == null ? sym.name() : qn.member();
 			switch (member) {
 				case "STRING", "SIMPLE-STRING", "BASE-STRING", "SIMPLE-BASE-STRING" -> {
-					return new ResultSpec(ResultFamily.STRING, 0);
+					return new ResultSpec(ResultFamily.STRING, ArrayElementTypes.T);
 				}
 				case "LIST", "CONS" -> {
-					return new ResultSpec(ResultFamily.LIST, 0);
+					return new ResultSpec(ResultFamily.LIST, ArrayElementTypes.T);
 				}
 				case "VECTOR", "SIMPLE-VECTOR", "ARRAY", "SIMPLE-ARRAY", "BIT-VECTOR", "SIMPLE-BIT-VECTOR" -> {
-					return new ResultSpec(ResultFamily.VECTOR, LispNames.packedVectorWidth(current));
+					return new ResultSpec(ResultFamily.VECTOR,
+							ArrayElementTypes.codeOf(LispNames.packedVectorElementType(current)));
 				}
 				default -> {
 					LispVal expansion = (closRegistry == null) ? null : closRegistry.findDeftype(sym.name());
@@ -279,16 +345,17 @@ public final class ConcatenateForms {
 		return switch (spec.family()) {
 			case STRING -> stringChain(args, normalizeArguments);
 			case LIST -> appendedElements(args);
-			case VECTOR -> (spec.intWidth() == 0) ? coerceCall(appendedElements(args), "VECTOR")
-					: intVectorCall(appendedElements(args), spec.intWidth());
+			case VECTOR -> packedVectorCall(appendedElements(args), spec.elementType());
 		};
 	}
 
 	/**
 	 * The packed-vector lowering of a {@code coerce} call, or {@code null} when the call
 	 * asks for anything else: {@code (coerce seq '(vector (unsigned-byte 8)))} is
-	 * {@code (%seq-int-vector seq 8)}, the same helper and the same value
-	 * {@code (concatenate '(vector (unsigned-byte 8)) seq)} produces.
+	 * {@code (%seq-int-vector seq 8)} and {@code (coerce seq '(vector single-float))} is
+	 * {@code (%seq-float-vector seq 5)}, the same helpers and the same values
+	 * {@code (concatenate '(vector (unsigned-byte 8)) seq)} and
+	 * {@code (concatenate '(vector single-float) seq)} produce.
 	 *
 	 * <p>
 	 * Every other designator -- including the general vector, and a width the packed
@@ -311,10 +378,11 @@ public final class ConcatenateForms {
 			return null;
 		}
 		ResultSpec spec = literalResultSpec(parts.get(2), closRegistry);
-		if (spec == null || spec.family() != ResultFamily.VECTOR || spec.intWidth() == 0) {
+		if (spec == null || spec.family() != ResultFamily.VECTOR) {
 			return null;
 		}
-		return intVectorCall(parts.get(1), spec.intWidth());
+		return (spec.intWidth() == 0 && !spec.packedFloat()) ? null
+				: packedVectorCall(parts.get(1), spec.elementType());
 	}
 
 	// (quote X) -> X; anything else is not a literal designator.
@@ -393,32 +461,55 @@ public final class ConcatenateForms {
 	 * @return {@code true} when at least one call builds a packed vector
 	 */
 	public static boolean needsSeqIntVector(List<LispVal> program, @Nullable ClosRegistry closRegistry) {
+		return needsPackedVector(program, closRegistry, spec -> spec.intWidth() != 0);
+	}
+
+	/**
+	 * {@link #needsSeqIntVector}'s float twin: whether the program writes a
+	 * {@code concatenate} or a {@code coerce} whose result type asks for a PACKED FLOAT
+	 * array, i.e. whose lowering will call {@code %seq-float-vector}. Gated separately
+	 * from the integer helper so a program that asks for one family never carries the
+	 * other family's allocations, and one that asks for neither stays byte-identical.
+	 * @param program the top-level forms
+	 * @param closRegistry the registry whose {@code deftype} expansions resolve alias
+	 * designators, or null for the built-in members only
+	 * @return {@code true} when at least one call builds a packed float array
+	 */
+	public static boolean needsSeqFloatVector(List<LispVal> program, @Nullable ClosRegistry closRegistry) {
+		return needsPackedVector(program, closRegistry, ResultSpec::packedFloat);
+	}
+
+	private static boolean needsPackedVector(List<LispVal> program, @Nullable ClosRegistry closRegistry,
+			java.util.function.Predicate<ResultSpec> wanted) {
 		for (LispVal form : program) {
-			if (needsSeqIntVector(form, closRegistry)) {
+			if (needsPackedVector(form, closRegistry, wanted)) {
 				return true;
 			}
 		}
 		return false;
 	}
 
-	private static boolean needsSeqIntVector(LispVal form, @Nullable ClosRegistry closRegistry) {
+	private static boolean needsPackedVector(LispVal form, @Nullable ClosRegistry closRegistry,
+			java.util.function.Predicate<ResultSpec> wanted) {
 		if (!(form instanceof LispCons cons)) {
 			return false;
 		}
 		List<LispVal> parts = cons.toList();
 		// (concatenate 'TYPE ...) reads its designator at index 1, (coerce value 'TYPE)
-		// at index 2; both lower through %seq-int-vector when it spells a packed width.
+		// at index 2; both lower through a packed builder when it spells a packed
+		// element type.
 		if (parts.size() >= 2 && parts.get(0) instanceof LispSymbol op) {
 			int designator = LispNames.CONCATENATE.equals(op.name()) ? 1
 					: (LispNames.COERCE.equals(op.name()) && parts.size() == 3) ? 2 : -1;
 			if (designator > 0) {
 				ResultSpec spec = literalResultSpec(parts.get(designator), closRegistry);
-				if (spec != null && spec.intWidth() != 0) {
+				if (spec != null && wanted.test(spec)) {
 					return true;
 				}
 			}
 		}
-		return needsSeqIntVector(cons.car(), closRegistry) || needsSeqIntVector(cons.cdr(), closRegistry);
+		return needsPackedVector(cons.car(), closRegistry, wanted)
+				|| needsPackedVector(cons.cdr(), closRegistry, wanted);
 	}
 
 	// Nested binary %string-concat calls; a lone argument is concatenated with "" so the
@@ -466,14 +557,32 @@ public final class ConcatenateForms {
 		return listToCons(call);
 	}
 
-	// (%seq-int-vector <elements> width) -- the packed vector family. A CALL, never an
-	// inlined allocate-and-fill loop, for the reason the string family calls
-	// %seq-string: one emitted body must not grow with the number of concatenate sites
-	// (.kb/wasm-function-body-size.md). The helper also walks its list linearly, which
-	// an inlined (make-array n :initial-contents list) would not (that fill indexes with
-	// elt).
-	private static LispVal intVectorCall(LispVal elements, int width) {
-		return listToCons(List.of(new LispSymbol(LispNames.SEQ_INT_VECTOR), elements, new LispInteger(width)));
+	// The vector family's element sequence as the representation its element type asks
+	// for: one lowering per PACKED FAMILY -- (%seq-int-vector elements width) for the
+	// packed unsigned-integer widths, (%seq-float-vector elements code) for the packed
+	// float ones -- and the general (coerce elements 'vector) for every other code, the
+	// character one included (a (vector character) result is the STRING family's
+	// business, and giving it a character array here would change what concatenate
+	// answers rather than what it remembers; .todo/714).
+	//
+	// A CALL either way, never an inlined allocate-and-fill loop, for the reason the
+	// string family calls %seq-string: one emitted body must not grow with the number of
+	// concatenate sites (.kb/wasm-function-body-size.md). The helpers also walk the
+	// element list linearly, which an inlined (make-array n :initial-contents list) would
+	// not (that fill indexes with elt). TWO helpers rather than one over the whole code
+	// space, so a program that asks for only one of the families carries only that
+	// family's allocations -- each rides its own injection gate (needsSeqIntVector /
+	// needsSeqFloatVector) and a program that asks for neither is byte-identical.
+	private static LispVal packedVectorCall(LispVal elements, int elementTypeCode) {
+		int width = packedIntWidth(elementTypeCode);
+		if (width != 0) {
+			return listToCons(List.of(new LispSymbol(LispNames.SEQ_INT_VECTOR), elements, new LispInteger(width)));
+		}
+		if (isPackedFloat(elementTypeCode)) {
+			return listToCons(
+					List.of(new LispSymbol(LispNames.SEQ_FLOAT_VECTOR), elements, new LispInteger(elementTypeCode)));
+		}
+		return coerceCall(elements, "VECTOR");
 	}
 
 	private static LispVal coerceCall(LispVal value, String type) {

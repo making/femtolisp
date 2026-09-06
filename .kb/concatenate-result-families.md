@@ -4,16 +4,23 @@
 `doc/{en,ja}/reference/functions/concatenate.md`.
 
 - `resultSpec(designator, closRegistry)` normalizes an EVALUATED designator to
-  `ResultSpec(family, intWidth)` -- families `STRING`, `LIST`, `VECTOR` (bit-vector
-  spellings included), `intWidth` 8/16/32 for `(unsigned-byte N)` else 0.
-  `literalResultSpec`/`literalResultFamily` normalize the type AS WRITTEN (only a literal
-  `(quote ...)`).
+  `ResultSpec(family, elementType)` -- families `STRING`, `LIST`, `VECTOR` (bit-vector
+  spellings included), `elementType` an `ArrayElementTypes` CODE (`T` for a general
+  result). **The code, not a width**: the packed representations are a closed code space
+  and a second width field beside the integer one is what left the float widths with
+  nowhere to be for months (`.todo/707`, 2026-09-06). Which representation a code names is
+  asked of the representations -- `ConcatenateForms.packedIntWidth` (via
+  `LispNames.unsignedByteWidth`) and `isPackedFloat` (via `LispFloatArray.prototypeFor`,
+  i.e. the sealed umbrella's own permits). `ResultSpec.intWidth()` is a derived reader kept
+  for its callers. `literalResultSpec`/`literalResultFamily` normalize the type AS WRITTEN
+  (only a literal `(quote ...)`).
 - `expand(cons, normalizeArguments)` is the compile-path lowering from
   `Jvm/WasmExprCompiler`'s `CONCATENATE` case; no per-backend emission. STRING -> a nested
   binary `%string-concat` chain (a lone argument concatenates with `""`, so the result is
   always fresh); LIST -> `(append (coerce a 'list) ... nil)`, the trailing `nil` being what
-  makes `append` copy the LAST argument; VECTOR -> that list in `(coerce ... 'vector)`,
-  packed -> in `(%seq-int-vector ... width)`.
+  makes `append` copy the LAST argument; VECTOR -> that list through `packedVectorCall`:
+  `(%seq-int-vector ... width)` for a packed integer code, `(%seq-float-vector ... code)`
+  for a packed float one, `(coerce ... 'vector)` for everything else.
 - The interpreter keeps its Java builtin over the same `resultSpec` and therefore also
   accepts a COMPUTED result type -- the one deliberate interpreter-only extra.
 
@@ -32,12 +39,45 @@ ANSI requires the result to BE the requested type, so these build the PACKED rep
   it while `(simple-vector SIZE)` carries a SIZE, so reading position 1 unconditionally makes
   `(simple-vector 41)` a specialized request. Unsupported widths stay general vectors.
 
-## `coerce` shares that arm; `map` does not
-- `packedVectorCoerce(cons, closRegistry)`: same `literalResultSpec`, same `%seq-int-vector`,
-  same gate (widened to a `coerce` designator at index 2). The three coerce sites consult it
-  BEFORE `LispMacroExpander.expandCoerce`; no packed width -> null -> byte-identical output.
+## Packed FLOAT vector results
+`single-float` / `double-float` / `bfloat16` are members of the same code space, so the same
+designator rule builds a packed float array (`.kb/vec.md`) -- landed 2026-09-06 (`.todo/707`);
+before it, both operators answered a GENERAL vector from a list source and the ARGUMENT
+UNCHANGED from an already-packed one, at every float width.
+
+- `%seq-float-vector` (`LispNames.SEQ_FLOAT_VECTOR`, `cl` internal, a
+  `BuiltinFunctionWrappers` entry): `%seq-int-vector`'s shape with the ArrayElementTypes
+  CODE in place of the width -- `(coerce seq 'list)`, one LITERAL `(make-array (length l)
+  :element-type '<name>)` per packed float code, then the same `do` loop of `%aset`. The
+  arms are DERIVED (`packedFloatElementTypeCodes()` filters `specializedCodes()` through
+  `ConcatenateForms.isPackedFloat`), so a fourth width is reachable here as soon as it is
+  reachable from `make-array`.
+- **Two helpers, not one over the whole code space**, so each rides its own gate
+  (`needsSeqFloatVector` beside `needsSeqIntVector`) and a program asking for one packed
+  family carries none of the other's allocations. On the JVM the float gate forces
+  `usesFloatArray` exactly as the integer one forces `usesIntArray`.
+- **bfloat16 is interpreter + JVM only** and the refusal reaches THIS path because the
+  representation is chosen at the helper's `make-array`: on wasm-GC that arm compiles to
+  `WasmArrayCompiler`'s call-time signal, so a program that never names the width is
+  unaffected and one that does gets `UnsupportedFloatWidth`'s sentence at the call, the
+  same one a literal `(make-array :element-type 'bfloat16)` gets (`.kb/bfloat16.md`).
+  `--no-gc` has no `coerce` operator and refuses a non-string `concatenate` family, so it
+  never reaches either helper.
+- **`character` is the one specialized code with no packed vector arm here**: a
+  `(vector character)` result stays general, because giving it a character array would
+  change what these operators ANSWER rather than what they remember (`.todo/714`).
+- No fold: `PureBuiltinFolder` bakes a literal `(coerce '(...) '(vector (unsigned-byte N)))`
+  into a packed literal and has no float twin -- a float table builds through the helper at
+  run time on every backend.
+
+## `coerce` shares those arms; `map` does not
+- `packedVectorCoerce(cons, closRegistry)`: same `literalResultSpec`, same helpers, same
+  gates (widened to a `coerce` designator at index 2). The three coerce sites consult it
+  BEFORE `LispMacroExpander.expandCoerce`; no packed element type -> null -> byte-identical
+  output.
 - Width test lives in `LispNames.unsignedByteWidth` / `packedVectorWidth` (root package)
-  because `PureBuiltinFolder` asks from `macro`, which may not import `compiler`.
+  because `PureBuiltinFolder` asks from `macro`, which may not import `compiler`;
+  `packedVectorElementType` is the SHAPE rule both of them and the float side read.
 - **`map` still drops it** (`expandMap` collapses a compound vector designator to bare
   `'VECTOR`, and that collapse is what keeps the gate sound), and **a COMPUTED coerce
   designator is still general**. Either fix must stop the collapse, route through
@@ -69,7 +109,9 @@ the scan, and wrapping those would call a helper the gate did not inject.
 - `BuiltinFunctionWrappers.concatenateWrapper` (`REFERENCE_GATED_FUNCTIONS`, injected only on
   `(function concatenate)`) re-does family dispatch with `member` at run time, mirroring
   `expand` arm for arm; the vector arm compares `(cadr type)` with `equal` against each
-  `(unsigned-byte N)` list -- no spec-shape reading.
+  `(unsigned-byte N)` list and each packed float NAME -- no spec-shape reading, and the
+  float names come from the same `packedFloatElementTypeCodes()` the helper's arms do. A
+  `#'concatenate` reference therefore gates BOTH helpers in.
 - `LispMacroExpander.expandComputedCoerce` dispatches on the designator's head over the same
   families, each arm the SAME body the literal path emits, plus `t` as identity.
 - `NoGcWasmCompiler.compileConcatenate` builds strings in linear memory, never through
@@ -77,12 +119,21 @@ the scan, and wrapping those would call a helper the gate did not inject.
 
 ## Pinning
 - ci-spec `concatenate-result-families`, `concatenate-packed-element-type`,
-  `coerce-packed-element-type` (literal and computed side by side).
-- `LispEvaluatorTest#evalConcatenate*`, `#evalSeqIntVectorHelper`,
-  `#evalCoerceKeepsThePackedElementType`.
+  `coerce-packed-element-type` (literal and computed side by side),
+  `coerce-packed-float-element-type` (bfloat16 deliberately absent -- it is pinned per
+  backend instead).
+- `LispEvaluatorTest#evalConcatenate*`, `#evalSeqIntVectorHelper`, `#evalSeqFloatVectorHelper`,
+  `#evalCoerceKeepsThePackedElementType`,
+  `#evalCoerceAndConcatenateKeepThePackedFloatElementType`.
 - `JvmLispCompilerTest#compileAndRunConcatenate*`,
   `#compileConcatenateWithComputedResultTypeFails`,
-  `#compileAndRunCoerceKeepsThePackedElementType`.
+  `#compileAndRunCoerceKeepsThePackedElementType`,
+  `#compileAndRunCoerceAndConcatenateKeepThePackedFloatElementType`.
 - `WasmLispCompilerIntegrationTest#concatenate{BuildsListAndVectorResultTypes,ResolvesADeftypeAliasResultType,KeepsThePackedElementType}`,
-  `#coerceKeepsThePackedElementTypeAndBakesALiteralTable`.
+  `#coerceKeepsThePackedElementTypeAndBakesALiteralTable`,
+  `#coerceAndConcatenateKeepThePackedFloatElementType` (carries the bfloat16 refusal text).
+- `eval/PackedFloatReachabilityTest#everyPermitIsReachableThroughCoerceAndConcatenate`,
+  `#everySpecializedElementTypeCodeSurvivesCoerceAndConcatenate` and
+  `#theSpecializedCodeSpaceNamesExactlyThePackedFloatPermits` -- the third is what makes the
+  second a pin rather than a shrinking loop.
 - `IroncladE2eTest` (HKDF vector), `LackEcosystem*E2eTest` lack legs.

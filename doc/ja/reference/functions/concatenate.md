@@ -6,6 +6,8 @@
 
 ベクタ系の `result-type` が `(unsigned-byte 8)` / `(unsigned-byte 16)` / `(unsigned-byte 32)` の要素型を指定している場合 -- `'(vector (unsigned-byte 8))`、`'(simple-array (unsigned-byte 8) (*))` など -- その要素型の特殊化ベクタを構築します。[`make-array`](make-array.md) が作るものと同じ表現なので、`array-element-type` はその要素型を返し、対応する `simple-array` 指定子に対する `typep` も真になります。要素は要素幅にマスクして格納されます。それ以外の要素型では要素型 `t` の汎用ベクタになります。
 
+ベクタ系の `result-type` がパックされた浮動小数点要素型を指定している場合 -- `'(vector single-float)`、`'(simple-array double-float (*))`、`'(array bfloat16)` など -- その幅のパック浮動小数点配列を構築します。[`make-array`](make-array.md) が作るものと同じ表現なので、`array-element-type` はその要素型を返します。要素は配列自身の幅で格納されるため、整数の要素は浮動小数点数になり、より広い幅のものは丸められます。実数でない要素はエラーです。`bfloat16` の配列はインタプリタと JVM バックエンドにのみ存在します。
+
 ```lisp
 (concatenate 'string "foo" "bar") ; => "foobar"
 (concatenate 'string "a" '(#\b #\c) nil "d") ; => "abcd"
@@ -14,6 +16,8 @@
 (concatenate '(vector (unsigned-byte 8)) #(1) #(2 3)) ; => #(1 2 3)
 (array-element-type (concatenate '(vector (unsigned-byte 8)) #(1))) ; => (UNSIGNED-BYTE 8)
 (array-element-type (concatenate 'vector #(1))) ; => T
+(concatenate '(vector single-float) '(1 2) #(3)) ; => #f(1.0 2.0 3.0)
+(array-element-type (concatenate '(simple-array double-float (*)) #d(1.0))) ; => DOUBLE-FLOAT
 (progn (deftype octet-vector () '(simple-array (unsigned-byte 8) (*)))
        (concatenate 'octet-vector #(1) #(2 3))) ; => #(1 2 3)
 ```
