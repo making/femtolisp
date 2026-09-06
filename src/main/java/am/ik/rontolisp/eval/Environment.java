@@ -1748,6 +1748,20 @@ public final class Environment implements Scope {
 				fn + ": a packed float array stores reals, got " + (val == null ? "nil" : val.print()));
 	}
 
+	/**
+	 * Builds a string from already-collected elements: the shared tail of
+	 * {@code concatenate}'s {@code (vector character)} arm and of {@code %seq-string}.
+	 * Each element must be a character -- the same type error {@code make-array
+	 * :initial-contents} signals for a {@code :element-type 'character} array.
+	 */
+	private static LispVal charVector(String fn, List<LispVal> elements) {
+		StringBuilder sb = new StringBuilder();
+		for (LispVal element : elements) {
+			sb.appendCodePoint(requireChar(fn, element).codePoint());
+		}
+		return new LispString(sb.toString());
+	}
+
 	private static int packedIntElementWidth(@Nullable LispVal elementType) {
 		return LispNames.unsignedByteWidth(elementType);
 	}
@@ -4866,14 +4880,7 @@ public final class Environment implements Scope {
 			}
 			List<LispVal> chars = new ArrayList<>();
 			appendSequenceElements(args.get(0), chars);
-			StringBuilder sb = new StringBuilder();
-			for (LispVal element : chars) {
-				if (!(element instanceof LispChar ch)) {
-					throw new LispEvalException("%seq-string expects characters, got: " + element.print());
-				}
-				sb.appendCodePoint(ch.codePoint());
-			}
-			return new LispString(sb.toString());
+			return charVector(LispNames.SEQ_STRING, chars);
 		}));
 		// %seq-int-vector: one sequence of integers as a packed (unsigned-byte 8|16|32)
 		// vector. The compile paths call it from the concatenate vector family's lowering
@@ -6155,6 +6162,12 @@ public final class Environment implements Scope {
 				LispFloatArray proto = LispFloatArray.prototypeFor(ArrayElementTypes.valueOf(spec.elementType()));
 				if (proto != null) {
 					return packedFloatVector(LispNames.CONCATENATE, proto, elements);
+				}
+				// A (vector character) result is the representation make-array builds
+				// for the same element type too: a mutable LispString, not a general
+				// vector that merely holds characters.
+				if (spec.elementType() == ArrayElementTypes.CHARACTER) {
+					return charVector(LispNames.CONCATENATE, elements);
 				}
 				return new LispArray(new int[] { elements.size() }, elements.toArray(new LispVal[0]));
 			}

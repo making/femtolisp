@@ -187,18 +187,15 @@ class PackedFloatReachabilityTest {
 	@Test
 	void everySpecializedElementTypeCodeSurvivesCoerceAndConcatenate() {
 		for (int code : ArrayElementTypes.specializedCodes()) {
-			if (code == ArrayElementTypes.CHARACTER) {
-				// The one code with no packed VECTOR representation of its own: a
-				// (vector character) result is the string family's business, and giving
-				// it a character array here would change what these operators ANSWER
-				// rather than what they remember (.todo/714).
-				continue;
-			}
 			String spelling = ArrayElementTypes.valueOf(code).print();
-			assertThat(eval("(array-element-type (coerce '(1) '(vector " + spelling + ")))").print())
+			// CHARACTER's own zero is a character, not the integer every other width
+			// accepts -- coerce/concatenate to (vector character) build a string, and a
+			// string only ever holds characters.
+			String elements = (code == ArrayElementTypes.CHARACTER) ? "'(#\\a)" : "'(1)";
+			assertThat(eval("(array-element-type (coerce " + elements + " '(vector " + spelling + ")))").print())
 				.as("coerce to (vector %s) answers %s back", spelling, spelling)
 				.isEqualTo(spelling);
-			assertThat(eval("(array-element-type (concatenate '(vector " + spelling + ") '(1)))").print())
+			assertThat(eval("(array-element-type (concatenate '(vector " + spelling + ") " + elements + "))").print())
 				.as("concatenate to (vector %s) answers %s back", spelling, spelling)
 				.isEqualTo(spelling);
 		}

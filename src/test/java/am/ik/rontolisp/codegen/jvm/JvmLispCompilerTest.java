@@ -5897,6 +5897,9 @@ class JvmLispCompilerTest {
 		// compile paths through the injected %seq-int-vector helper. The
 		// deftype alias carries the element type through as well, and any other element
 		// type -- or a spelling whose second element is a SIZE -- stays general.
+		// CHARACTER is its own arm --
+		// compileAndRunCoerceAndConcatenateToVectorCharacterBuildAString
+		// -- because it builds a string rather than a general vector.
 		// The zero-parameter deftype shape, like
 		// compileAndRunConcatenateWithADeftypeAlias
 		// ResultType: this harness does not run the CLI's UserMacroExpander, which is
@@ -5910,13 +5913,11 @@ class JvmLispCompilerTest {
 				(print (array-element-type (concatenate '(vector (unsigned-byte 32) *))))
 				(print (array-element-type (concatenate 'simple-byte-vector #(1 2))))
 				(print (array-element-type (concatenate '(simple-vector 2) '(1 2))))
-				(print (array-element-type (concatenate '(vector character) "ab")))
 				""")).isEqualTo("""
 				((UNSIGNED-BYTE 8) T #(1 2 4))
 				(UNSIGNED-BYTE 16)
 				(UNSIGNED-BYTE 32)
 				(UNSIGNED-BYTE 8)
-				T
 				T""");
 	}
 
@@ -5999,6 +6000,27 @@ class JvmLispCompilerTest {
 				BFLOAT16
 				(UNSIGNED-BYTE 8)
 				T""");
+	}
+
+	@Test
+	void compileAndRunCoerceAndConcatenateToVectorCharacterBuildAString() throws Exception {
+		// (vector character) names the same representation make-array builds for the
+		// element type -- a mutable string -- so coerce/concatenate answer a value that
+		// IS a string, not a general vector that merely holds characters.
+		assertThat(compileAndRun("""
+				(defun %id (x) x)
+				(let ((v (coerce (%id '(#\\a #\\b)) '(vector character))))
+				  (print (list (array-element-type v) (typep v '(simple-array character (*))) (stringp v) v)))
+				(print (concatenate '(vector character) "ab" (%id '(#\\c))))
+				(print (array-element-type (concatenate '(vector character) "ab")))
+				(print (funcall #'concatenate '(vector character) "ab" '(#\\c)))
+				(print (array-element-type (apply #'concatenate '(vector character) (list "ab"))))
+				""")).isEqualTo("""
+				(CHARACTER T T "ab")
+				"abc"
+				CHARACTER
+				"abc"
+				CHARACTER""");
 	}
 
 	@Test

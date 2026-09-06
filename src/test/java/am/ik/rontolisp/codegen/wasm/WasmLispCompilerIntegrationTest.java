@@ -832,7 +832,9 @@ class WasmLispCompilerIntegrationTest {
 		// An (unsigned-byte 8|16|32) result element type builds the PACKED vector, in
 		// call position and through the #'concatenate wrapper's runtime width dispatch
 		// alike. Any other element type -- and the spellings whose second
-		// element is a SIZE -- stay the general vector.
+		// element is a SIZE -- stay the general vector. CHARACTER is its own arm --
+		// coerceAndConcatenateToVectorCharacterBuildAString -- because it builds a
+		// string rather than a general vector.
 		// The zero-parameter deftype shape, like concatenateResolvesADeftypeAliasResult
 		// Type: this harness does not run the CLI's UserMacroExpander, which is what
 		// folds a parameterized deftype into the registrable form (the parameterized
@@ -845,7 +847,6 @@ class WasmLispCompilerIntegrationTest {
 				(print (array-element-type (concatenate '(vector (unsigned-byte 32) *))))
 				(print (array-element-type (concatenate 'simple-byte-vector #(1 2))))
 				(print (array-element-type (concatenate '(simple-vector 2) '(1 2))))
-				(print (array-element-type (concatenate '(vector character) "ab")))
 				(print (array-element-type (apply #'concatenate '(simple-array (unsigned-byte 8) (*))
 				                                  (list '(1 2) #(3)))))
 				(print (funcall #'concatenate '(vector (unsigned-byte 8)) '(1 260)))
@@ -856,7 +857,6 @@ class WasmLispCompilerIntegrationTest {
 				(UNSIGNED-BYTE 16)
 				(UNSIGNED-BYTE 32)
 				(UNSIGNED-BYTE 8)
-				T
 				T
 				(UNSIGNED-BYTE 8)
 				#(1 4)
@@ -957,6 +957,28 @@ class WasmLispCompilerIntegrationTest {
 				(UNSIGNED-BYTE 8)
 				T
 				"bfloat16 arrays are supported on the interpreter and the JVM only, not on the wasm-GC backend\"""");
+	}
+
+	@Test
+	void coerceAndConcatenateToVectorCharacterBuildAString() throws Exception {
+		// (vector character) names the same representation make-array builds for the
+		// element type -- a mutable string -- so coerce/concatenate answer a value that
+		// IS a string, not a general vector that merely holds characters.
+		String program = """
+				(defun %id (x) x)
+				(let ((v (coerce (%id '(#\\a #\\b)) '(vector character))))
+				  (print (list (array-element-type v) (typep v '(simple-array character (*))) (stringp v) v)))
+				(print (concatenate '(vector character) "ab" (%id '(#\\c))))
+				(print (array-element-type (concatenate '(vector character) "ab")))
+				(print (funcall #'concatenate '(vector character) "ab" '(#\\c)))
+				(print (array-element-type (apply #'concatenate '(vector character) (list "ab"))))
+				""";
+		assertThat(compileAndRun(program)).isEqualTo("""
+				(CHARACTER T T "ab")
+				"abc"
+				CHARACTER
+				"abc"
+				CHARACTER""");
 	}
 
 	@Test

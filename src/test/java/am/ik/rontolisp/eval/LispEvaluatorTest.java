@@ -1443,8 +1443,9 @@ class LispEvaluatorTest {
 		assertThat(eval("(princ-to-string (concatenate '(vector (unsigned-byte 8)) '(260 -1)))"))
 			.isEqualTo(new LispString("#(4 255)"));
 		// Any other element type -- and the spellings that carry a SIZE rather than an
-		// element type -- stay the general vector.
-		assertThat(eval("(array-element-type (concatenate '(vector character) \"ab\"))").print()).isEqualTo("T");
+		// element type -- stay the general vector. CHARACTER is its own arm --
+		// evalConcatenateAndCoerceToVectorCharacterBuildAString below -- because it
+		// builds a string rather than a general vector.
 		assertThat(eval("(array-element-type (concatenate '(simple-vector 3) '(1 2 3)))").print()).isEqualTo("T");
 		assertThat(eval("(array-element-type (concatenate '(vector (unsigned-byte 4)) '(1)))").print()).isEqualTo("T");
 		assertThat(eval("(array-element-type (concatenate 'vector '(1)))").print()).isEqualTo("T");
@@ -1484,9 +1485,10 @@ class LispEvaluatorTest {
 		assertThat(eval("(princ-to-string (coerce '(260 -1) '(vector (unsigned-byte 8))))"))
 			.isEqualTo(new LispString("#(4 255)"));
 		// Every other designator is untouched: the general vector, the spellings that
-		// carry a SIZE, an unsupported width, and the non-vector families.
+		// carry a SIZE, an unsupported width, and the non-vector families. CHARACTER is
+		// its own arm -- evalConcatenateAndCoerceToVectorCharacterBuildAString below --
+		// because it builds a string rather than a general vector.
 		assertThat(eval("(array-element-type (coerce '(1 2) 'vector))").print()).isEqualTo("T");
-		assertThat(eval("(array-element-type (coerce '(1 2) '(vector character)))").print()).isEqualTo("T");
 		assertThat(eval("(array-element-type (coerce '(1 2) '(simple-vector 2)))").print()).isEqualTo("T");
 		assertThat(eval("(array-element-type (coerce '(1) '(vector (unsigned-byte 4))))").print()).isEqualTo("T");
 		assertThat(eval("(coerce #(1 2) 'list)").print()).isEqualTo("(1 2)");
@@ -1521,6 +1523,29 @@ class LispEvaluatorTest {
 		// is no degrade path to a general vector.
 		assertThatThrownBy(() -> eval("(coerce '(#\\a) '(vector single-float))")).isInstanceOf(LispEvalException.class)
 			.hasMessageContaining("stores reals");
+	}
+
+	@Test
+	void evalConcatenateAndCoerceToVectorCharacterBuildAString() {
+		// (vector character) names the SAME representation make-array builds for the
+		// element type -- a mutable LispString -- so coerce/concatenate answer a value
+		// that IS a string, not a general vector that merely holds characters: SBCL
+		// answers CHARACTER from array-element-type and "ab" from the printer, and the
+		// designator must mean the same thing everywhere it is read.
+		assertThat(eval("(array-element-type (coerce '(#\\a #\\b) '(vector character)))").print())
+			.isEqualTo("CHARACTER");
+		assertThat(eval("(coerce '(#\\a #\\b) '(vector character))").print()).isEqualTo("\"ab\"");
+		assertThat(eval("(stringp (coerce '(#\\a #\\b) '(vector character)))")).isEqualTo(LispTrue.INSTANCE);
+		assertThat(eval("(typep (coerce '(#\\a #\\b) '(vector character)) '(simple-array character (*)))"))
+			.isEqualTo(LispTrue.INSTANCE);
+		// concatenate reads the same designator, and its arguments may be any character
+		// sequences.
+		assertThat(eval("(array-element-type (concatenate '(vector character) \"ab\"))").print())
+			.isEqualTo("CHARACTER");
+		assertThat(eval("(concatenate '(vector character) \"ab\" '(#\\c))").print()).isEqualTo("\"abc\"");
+		// The first-class value re-does the dispatch at run time and must answer the
+		// same: a designator does not mean two things depending on the call form.
+		assertThat(eval("(funcall #'concatenate '(vector character) \"ab\" '(#\\c))").print()).isEqualTo("\"abc\"");
 	}
 
 	@Test

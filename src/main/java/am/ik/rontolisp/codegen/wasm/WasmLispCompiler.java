@@ -2655,9 +2655,13 @@ public final class WasmLispCompiler implements LispCompiler {
 		// concatenate whose result type spells a packed element type lowers to a call to
 		// it, and so does the #'concatenate wrapper's own vector arm (its designator is a
 		// runtime value, so it re-does the width dispatch there). No array gate to force
-		// here -- the packed array types and _iv_set are unconditional on wasm-GC.
+		// here -- the packed array types and _iv_set are unconditional on wasm-GC. The
+		// wrapper's CHARACTER arm calls %seq-string the same way, so a #'concatenate
+		// reference forces usesSeqString on too -- otherwise the wrapper body would call
+		// a helper the exclusion list just dropped.
 		boolean referencesConcatenateValue = program.stream()
 			.anyMatch(expr -> BuiltinFunctionWrappers.referencesFunctionValue(expr, LispNames.CONCATENATE));
+		usesSeqString = usesSeqString || referencesConcatenateValue;
 		boolean usesSeqIntVector = ConcatenateForms.needsSeqIntVector(program, closRegistry)
 				|| referencesConcatenateValue;
 		// The same for the packed FLOAT builder, on its own gate so a program that asks

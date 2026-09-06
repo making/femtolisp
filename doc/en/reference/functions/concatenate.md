@@ -8,6 +8,8 @@ A vector `result-type` spelling an `(unsigned-byte 8)`, `(unsigned-byte 16)` or 
 
 A vector `result-type` spelling one of the packed float element types -- `'(vector single-float)`, `'(simple-array double-float (*))`, `'(array bfloat16)` -- builds a packed float array of that width, the same representation [`make-array`](make-array.md) produces, so `array-element-type` reports it back. Elements are stored at the array's own width, so an integer element becomes a float and a wider one is narrowed; a non-real element is an error. `bfloat16` arrays exist on the interpreter and the JVM backend only.
 
+A vector `result-type` spelling `character` -- `'(vector character)` -- builds a string instead, the same representation `make-array`'s `:element-type 'character` produces.
+
 ```lisp
 (concatenate 'string "foo" "bar") ; => "foobar"
 (concatenate 'string "a" '(#\b #\c) nil "d") ; => "abcd"
@@ -18,6 +20,8 @@ A vector `result-type` spelling one of the packed float element types -- `'(vect
 (array-element-type (concatenate 'vector #(1))) ; => T
 (concatenate '(vector single-float) '(1 2) #(3)) ; => #f(1.0 2.0 3.0)
 (array-element-type (concatenate '(simple-array double-float (*)) #d(1.0))) ; => DOUBLE-FLOAT
+(concatenate '(vector character) "ab" '(#\c)) ; => "abc"
+(array-element-type (concatenate '(vector character) "ab")) ; => CHARACTER
 (progn (deftype octet-vector () '(simple-array (unsigned-byte 8) (*)))
        (concatenate 'octet-vector #(1) #(2 3))) ; => #(1 2 3)
 ```

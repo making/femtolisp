@@ -5313,7 +5313,7 @@ cases:
       (UNSIGNED-BYTE 32)
       (UNSIGNED-BYTE 8)
       T
-      T
+      CHARACTER
       T
       (UNSIGNED-BYTE 8)
       #(1 4)
@@ -5391,6 +5391,32 @@ cases:
       DOUBLE-FLOAT
       (UNSIGNED-BYTE 8)
       T
+  # (vector character) names the SAME representation make-array builds for the
+  # element type -- a mutable string -- so coerce/concatenate answer a value
+  # that IS a string, not a general vector that merely holds characters, in
+  # call position, through a LITERAL and a computed sequence, and through the
+  # #'concatenate wrapper's runtime dispatch alike, on every backend.
+  # .kb/concatenate-result-families.md.
+  - name: concatenate-coerce-vector-character-builds-a-string
+    source: |
+      (defun ci-char-hide (x) x)
+      (defun ci-concat-coerce-char ()
+        (let ((v (coerce (ci-char-hide '(#\a #\b)) '(vector character))))
+          (print (list (array-element-type v)
+                       (typep v '(simple-array character (*)))
+                       (stringp v)
+                       v)))
+        (print (concatenate '(vector character) "ab" (ci-char-hide '(#\c))))
+        (print (array-element-type (concatenate '(vector character) "ab")))
+        (print (funcall #'concatenate '(vector character) "ab" '(#\c)))
+        (print (array-element-type (apply #'concatenate '(vector character) (list "ab")))))
+      (ci-concat-coerce-char)
+    expected: |
+      (CHARACTER T T "ab")
+      "abc"
+      CHARACTER
+      "abc"
+      CHARACTER
   # Every CL FUNCTION the frontends lower in OPERATOR position must also have a
   # first-class VALUE: a name with a case and no BuiltinFunctionWrappers entry
   # answered "The function NAME is undefined" on all four backends, and rove's

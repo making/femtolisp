@@ -8,6 +8,8 @@ A vector `result-type` spelling an `(unsigned-byte 8)`, `(unsigned-byte 16)` or 
 
 A vector `result-type` spelling one of the packed float element types -- `'(vector single-float)`, `'(simple-array double-float (*))`, `'(array bfloat16)` -- builds a packed float array of that width, the same representation [`make-array`](make-array.md) produces, so `array-element-type` reports it back. Elements are stored at the array's own width, so an integer element becomes a float and a wider one is narrowed; a non-real element is an error. `bfloat16` arrays exist on the interpreter and the JVM backend only.
 
+A vector `result-type` spelling `character` -- `'(vector character)` -- builds a string instead, the same representation `make-array`'s `:element-type 'character` produces: `array-element-type` answers `character`, `stringp` is true, and the printed form is a normal string.
+
 ```lisp
 (coerce '(1 2 3) 'vector) ; => #(1 2 3)
 (coerce (vector 1 2 3) 'list) ; => (1 2 3)
@@ -23,6 +25,11 @@ A vector `result-type` spelling one of the packed float element types -- `'(vect
 ```lisp
 (coerce '(1 2) '(vector single-float)) ; => #f(1.0 2.0)
 (array-element-type (coerce '(1.0) '(simple-array double-float (*)))) ; => DOUBLE-FLOAT
+```
+
+```lisp
+(coerce '(#\a #\b) '(vector character)) ; => "ab"
+(array-element-type (coerce '(#\a #\b) '(vector character))) ; => CHARACTER
 ```
 
 ```lisp

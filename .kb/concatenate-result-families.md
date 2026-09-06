@@ -20,7 +20,8 @@
   always fresh); LIST -> `(append (coerce a 'list) ... nil)`, the trailing `nil` being what
   makes `append` copy the LAST argument; VECTOR -> that list through `packedVectorCall`:
   `(%seq-int-vector ... width)` for a packed integer code, `(%seq-float-vector ... code)`
-  for a packed float one, `(coerce ... 'vector)` for everything else.
+  for a packed float one, `(%seq-string ...)` for CHARACTER, `(coerce ... 'vector)` for
+  everything else.
 - The interpreter keeps its Java builtin over the same `resultSpec` and therefore also
   accepts a COMPUTED result type -- the one deliberate interpreter-only extra.
 
@@ -63,12 +64,38 @@ UNCHANGED from an already-packed one, at every float width.
   same one a literal `(make-array :element-type 'bfloat16)` gets (`.kb/bfloat16.md`).
   `--no-gc` has no `coerce` operator and refuses a non-string `concatenate` family, so it
   never reaches either helper.
-- **`character` is the one specialized code with no packed vector arm here**: a
-  `(vector character)` result stays general, because giving it a character array would
-  change what these operators ANSWER rather than what they remember (`.todo/714`).
 - No fold: `PureBuiltinFolder` bakes a literal `(coerce '(...) '(vector (unsigned-byte N)))`
   into a packed literal and has no float twin -- a float table builds through the helper at
   run time on every backend.
+
+## CHARACTER vector results build a STRING
+Until 2026-09-06 (`.todo/714`) `character` was the one specialized code with no packed
+vector arm: a `(vector character)` result stayed a GENERAL vector, so `array-element-type`
+answered `t`, `typep` against `(simple-array character (*))` was false, and the value did
+not print or `stringp` as a string -- SBCL answers `character` / `stringp` T / `"ab"` for
+the same calls, because a `(vector character)` result IS a string in CL.
+
+- The decided shape is what `make-array`'s `:element-type 'character` already builds: a
+  mutable `LispString`, not an immutable value borrowed from the `'string` family. That
+  keeps the designator meaning ONE thing everywhere it names `character` -- `make-array`,
+  `coerce` and `concatenate` all answer the same representation for it.
+- `packedVectorCall`'s CHARACTER arm is `(%seq-string elements)` -- the STRING family's own
+  element-to-string builder, reused rather than re-derived, so `(coerce seq '(vector
+  character))` and `(concatenate '(vector character) seq)` build the identical value from
+  the identical elements.
+- `Environment.concatenateBuiltin` -- the interpreter's own `concatenate`, which does NOT go
+  through `ConcatenateForms.expand`/`packedVectorCall` at all (it re-derives the packed int
+  and float arms directly over the same `resultSpec`) -- needed its own CHARACTER arm too:
+  `charVector(fn, elements)`, the shared tail also used by the interpreter's `%seq-string`.
+- Gate: folded into `needsSeqString(program)` -- a `concatenate` / `coerce` whose result
+  type asks for `(vector character)` always needs `%seq-string` (unlike the STRING family's
+  own gate, which only fires for a non-literal-string argument), via the same
+  `needsPackedVector` scan `needsSeqIntVector` / `needsSeqFloatVector` use.
+- `BuiltinFunctionWrappers.concatenateWrapper`'s vector arm gained a CHARACTER test
+  (`member` over `ArrayElementTypes.CHARACTER_SPELLINGS`) ahead of the float/general
+  fallback, calling `%seq-string` the same way -- so a `#'concatenate` reference now forces
+  `usesSeqString` on too, exactly as it already forced `usesSeqIntVector` /
+  `usesSeqFloatVector`.
 
 ## `coerce` shares those arms; `map` does not
 - `packedVectorCoerce(cons, closRegistry)`: same `literalResultSpec`, same helpers, same
@@ -100,8 +127,10 @@ non-character element is an error, not a silent `princ`. `%seq-string`
 -- the loop emitted once, inside it.
 
 Gate: `needsSeqString(program)` -- true when the PROGRAM ITSELF writes a
-`(concatenate 'string ...)` with a non-literal-string argument; the flag rides
-`Ctx.usesSeqString` (must be copied by `WasmAsyncEmit.freshCtx`). Correctness, not
+`(concatenate 'string ...)` with a non-literal-string argument, OR a `concatenate` /
+`coerce` whose result type asks for `(vector character)` (which always needs the helper,
+literal arguments included -- see "CHARACTER vector results build a STRING" above); the
+flag rides `Ctx.usesSeqString` (must be copied by `WasmAsyncEmit.freshCtx`). Correctness, not
 optimization: `LispMacroExpander` emits `(concatenate 'string ...)` during CODEGEN long after
 the scan, and wrapping those would call a helper the gate did not inject.
 
@@ -109,9 +138,11 @@ the scan, and wrapping those would call a helper the gate did not inject.
 - `BuiltinFunctionWrappers.concatenateWrapper` (`REFERENCE_GATED_FUNCTIONS`, injected only on
   `(function concatenate)`) re-does family dispatch with `member` at run time, mirroring
   `expand` arm for arm; the vector arm compares `(cadr type)` with `equal` against each
-  `(unsigned-byte N)` list and each packed float NAME -- no spec-shape reading, and the
+  `(unsigned-byte N)` list and each packed float NAME, and with `member` against
+  `ArrayElementTypes.CHARACTER_SPELLINGS` for CHARACTER -- no spec-shape reading, and the
   float names come from the same `packedFloatElementTypeCodes()` the helper's arms do. A
-  `#'concatenate` reference therefore gates BOTH helpers in.
+  `#'concatenate` reference therefore gates all THREE helpers in
+  (`usesSeqIntVector` / `usesSeqFloatVector` / `usesSeqString`).
 - **The wrapper mirrors `expand`'s VALUES, not its shape, and must not FOLD** -- it is the
   arm `apply` reaches with a runtime argument list, so its argument count is the DATA's and
   not the program text's. Its string arm sizes the result once (`mapcar` normalize, a
@@ -129,19 +160,23 @@ the scan, and wrapping those would call a helper the gate did not inject.
 - ci-spec `concatenate-result-families`, `concatenate-packed-element-type`,
   `coerce-packed-element-type` (literal and computed side by side),
   `coerce-packed-float-element-type` (bfloat16 deliberately absent -- it is pinned per
-  backend instead).
+  backend instead), `concatenate-coerce-vector-character-builds-a-string`.
 - `LispEvaluatorTest#evalConcatenate*`, `#evalSeqIntVectorHelper`, `#evalSeqFloatVectorHelper`,
   `#evalCoerceKeepsThePackedElementType`,
-  `#evalCoerceAndConcatenateKeepThePackedFloatElementType`.
+  `#evalCoerceAndConcatenateKeepThePackedFloatElementType`,
+  `#evalConcatenateAndCoerceToVectorCharacterBuildAString`.
 - `JvmLispCompilerTest#compileAndRunConcatenate*`,
   `#compileConcatenateWithComputedResultTypeFails`,
   `#compileAndRunCoerceKeepsThePackedElementType`,
-  `#compileAndRunCoerceAndConcatenateKeepThePackedFloatElementType`.
+  `#compileAndRunCoerceAndConcatenateKeepThePackedFloatElementType`,
+  `#compileAndRunCoerceAndConcatenateToVectorCharacterBuildAString`.
 - `WasmLispCompilerIntegrationTest#concatenate{BuildsListAndVectorResultTypes,ResolvesADeftypeAliasResultType,KeepsThePackedElementType}`,
   `#coerceKeepsThePackedElementTypeAndBakesALiteralTable`,
-  `#coerceAndConcatenateKeepThePackedFloatElementType` (carries the bfloat16 refusal text).
+  `#coerceAndConcatenateKeepThePackedFloatElementType` (carries the bfloat16 refusal text),
+  `#coerceAndConcatenateToVectorCharacterBuildAString`.
 - `eval/PackedFloatReachabilityTest#everyPermitIsReachableThroughCoerceAndConcatenate`,
-  `#everySpecializedElementTypeCodeSurvivesCoerceAndConcatenate` and
+  `#everySpecializedElementTypeCodeSurvivesCoerceAndConcatenate` (CHARACTER included, with
+  a character literal in place of the integer every other width accepts) and
   `#theSpecializedCodeSpaceNamesExactlyThePackedFloatPermits` -- the third is what makes the
   second a pin rather than a shrinking loop.
 - `IroncladE2eTest` (HKDF vector), `LackEcosystem*E2eTest` lack legs.

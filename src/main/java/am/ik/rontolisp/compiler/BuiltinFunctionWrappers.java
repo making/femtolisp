@@ -1009,16 +1009,17 @@ public final class BuiltinFunctionWrappers {
 		LispVal headOfSpec = listToCons(List.of(new LispSymbol(LispNames.IF), call(LispNames.CONSP, "type"),
 				call(LispNames.CAR, "type"), new LispSymbol("type")));
 		LispVal strings = stringFamilyBuild();
-		// The vector arm honours an (unsigned-byte 8|16|32) element type and a packed
-		// FLOAT one, exactly like the call-position lowering: (apply #'concatenate
-		// '(simple-array (unsigned-byte 8) (*)) ...) is http-body's own spelling and
-		// ironclad's HKDF, and a designator must not mean two different things depending
-		// on the call form. The element type sits in position 1 of (vector T ...) /
-		// (array T ...) / (simple-array T ...); (simple-vector SIZE) carries a SIZE
-		// there, which no (unsigned-byte N) list and no width NAME can be equal to, so
-		// one test per member covers every head without reading the shape. The float
-		// tests are DERIVED from the closed code space (packedFloatElementTypeCodes), so
-		// this dispatch and %seq-float-vector's allocations cannot name different sets.
+		// The vector arm honours an (unsigned-byte 8|16|32) element type, a packed FLOAT
+		// one and CHARACTER, exactly like the call-position lowering: (apply
+		// #'concatenate '(simple-array (unsigned-byte 8) (*)) ...) is http-body's own
+		// spelling and ironclad's HKDF, and a designator must not mean two different
+		// things depending on the call form. The element type sits in position 1 of
+		// (vector T ...) / (array T ...) / (simple-array T ...); (simple-vector SIZE)
+		// carries a SIZE there, which no (unsigned-byte N) list, no width NAME and no
+		// CHARACTER spelling can be equal to, so one test per member covers every head
+		// without reading the shape. The float tests are DERIVED from the closed code
+		// space (packedFloatElementTypeCodes), so this dispatch and
+		// %seq-float-vector's allocations cannot name different sets.
 		LispSymbol elements = new LispSymbol("__cc_elts");
 		LispSymbol elementType = new LispSymbol("__cc_elt");
 		LispSymbol width = new LispSymbol("__cc_w");
@@ -1042,14 +1043,17 @@ public final class BuiltinFunctionWrappers {
 								callV(LispNames.CAR, call(LispNames.CDR, "type")), LispNil.INSTANCE)))),
 				listToCons(List.of(width, widthOfElementType)),
 				listToCons(List.of(floatCode, floatCodeOfElementType))));
+		LispVal isCharacter = memberOf(elementType, ArrayElementTypes.CHARACTER_SPELLINGS.toArray(new String[0]));
 		LispVal generalOrFloat = listToCons(
 				List.of(new LispSymbol(LispNames.IF), callV(LispNames.EQ, floatCode, new LispInteger(0)),
 						listToCons(List.of(new LispSymbol(LispNames.COERCE), elements,
 								listToCons(List.of(new LispSymbol(LispNames.QUOTE), new LispSymbol("VECTOR"))))),
 						callV(LispNames.SEQ_FLOAT_VECTOR, elements, floatCode)));
+		LispVal characterOrGeneralOrFloat = listToCons(List.of(new LispSymbol(LispNames.IF), isCharacter,
+				callV(LispNames.SEQ_STRING, elements), generalOrFloat));
 		LispVal vector = listToCons(List.of(new LispSymbol(LispNames.LET_STAR), vectorBindings,
 				listToCons(List.of(new LispSymbol(LispNames.IF), callV(LispNames.EQ, width, new LispInteger(0)),
-						generalOrFloat, callV(LispNames.SEQ_INT_VECTOR, elements, width)))));
+						characterOrGeneralOrFloat, callV(LispNames.SEQ_INT_VECTOR, elements, width)))));
 		LispVal unsupported = listToCons(
 				List.of(new LispSymbol(LispNames.ERROR), new LispString("concatenate: unsupported result type")));
 		LispVal dispatch = listToCons(

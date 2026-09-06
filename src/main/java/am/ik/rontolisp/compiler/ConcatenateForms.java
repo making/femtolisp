@@ -68,6 +68,15 @@ import am.ik.rontolisp.PackageRegistry;
  * both operators. That is why the element type travels as a CODE from the closed space
  * rather than as a second width field beside the integer one: a hand-rolled list of the
  * packed families is exactly what went one family short.
+ *
+ * <p>
+ * The CHARACTER code joined the packed arms the same day, through {@link #needsSeqString}
+ * and the {@code %seq-string} helper the string family already builds elements into: a
+ * {@code (vector character)} result answers a mutable {@code LispString} -- the same
+ * value {@code make-array}'s {@code :element-type 'character} builds -- rather than a
+ * general vector that merely holds characters, so {@code array-element-type},
+ * {@code stringp} and the printer agree with every other door onto the same
+ * representation.
  */
 public final class ConcatenateForms {
 
@@ -352,10 +361,12 @@ public final class ConcatenateForms {
 	/**
 	 * The packed-vector lowering of a {@code coerce} call, or {@code null} when the call
 	 * asks for anything else: {@code (coerce seq '(vector (unsigned-byte 8)))} is
-	 * {@code (%seq-int-vector seq 8)} and {@code (coerce seq '(vector single-float))} is
-	 * {@code (%seq-float-vector seq 5)}, the same helpers and the same values
-	 * {@code (concatenate '(vector (unsigned-byte 8)) seq)} and
-	 * {@code (concatenate '(vector single-float) seq)} produce.
+	 * {@code (%seq-int-vector seq 8)}, {@code (coerce seq '(vector single-float))} is
+	 * {@code (%seq-float-vector seq 5)}, and {@code (coerce seq '(vector character))} is
+	 * {@code (%seq-string seq)} -- the same helpers and the same values
+	 * {@code (concatenate '(vector (unsigned-byte 8)) seq)},
+	 * {@code (concatenate '(vector single-float) seq)} and
+	 * {@code (concatenate '(vector character) seq)} produce.
 	 *
 	 * <p>
 	 * Every other designator -- including the general vector, and a width the packed
@@ -366,8 +377,9 @@ public final class ConcatenateForms {
 	 * @param cons the coerce expression
 	 * @param closRegistry the registry whose {@code deftype} expansions resolve alias
 	 * designators, or null for the built-in members only
-	 * @return the {@code %seq-int-vector} call, or null when the result is not a packed
-	 * vector
+	 * @return the {@code %seq-int-vector} / {@code %seq-float-vector} /
+	 * {@code %seq-string} call, or null when the result is not one of the packed vector
+	 * representations
 	 */
 	public static @Nullable LispVal packedVectorCoerce(LispCons cons, @Nullable ClosRegistry closRegistry) {
 		if (!cons.isProperList()) {
@@ -381,8 +393,9 @@ public final class ConcatenateForms {
 		if (spec == null || spec.family() != ResultFamily.VECTOR) {
 			return null;
 		}
-		return (spec.intWidth() == 0 && !spec.packedFloat()) ? null
-				: packedVectorCall(parts.get(1), spec.elementType());
+		boolean packed = spec.intWidth() != 0 || spec.packedFloat()
+				|| spec.elementType() == ArrayElementTypes.CHARACTER;
+		return packed ? packedVectorCall(parts.get(1), spec.elementType()) : null;
 	}
 
 	// (quote X) -> X; anything else is not a literal designator.
@@ -398,10 +411,13 @@ public final class ConcatenateForms {
 	/**
 	 * Whether the program contains a {@code (concatenate 'string ...)} whose lowering
 	 * needs the {@code %seq-string} helper -- i.e. one with an argument that is not
-	 * already a string literal. The backends gate the helper's injection on this, so a
-	 * program that only concatenates literals (or none at all) stays byte-identical.
+	 * already a string literal -- OR a {@code concatenate} / {@code coerce} whose result
+	 * type asks for a {@code (vector character)}, which always lowers through a call to
+	 * it ({@link #packedVectorCall}). The backends gate the helper's injection on this,
+	 * so a program that only concatenates literals into a string (and never asks for a
+	 * character vector) stays byte-identical.
 	 * @param program the top-level forms
-	 * @return {@code true} when at least one argument has to be normalized at run time
+	 * @return {@code true} when at least one call needs the helper at run time
 	 */
 	public static boolean needsSeqString(List<LispVal> program) {
 		return needsSeqString(program, null);
@@ -410,12 +426,12 @@ public final class ConcatenateForms {
 	/**
 	 * {@link #needsSeqString(List)} with a class registry, so a
 	 * {@code (concatenate 'alias ...)} whose alias is a user {@code deftype} of the
-	 * string family gates the helper in too (see
-	 * {@link #resultFamily(LispVal, ClosRegistry)}).
+	 * string family, or of a {@code (vector character)} shape, gates the helper in too
+	 * (see {@link #resultFamily(LispVal, ClosRegistry)}).
 	 * @param program the top-level forms
 	 * @param closRegistry the registry whose {@code deftype} expansions resolve alias
 	 * designators, or null for the built-in members only
-	 * @return {@code true} when at least one argument has to be normalized at run time
+	 * @return {@code true} when at least one call needs the helper at run time
 	 */
 	public static boolean needsSeqString(List<LispVal> program, @Nullable ClosRegistry closRegistry) {
 		for (LispVal form : program) {
@@ -423,7 +439,7 @@ public final class ConcatenateForms {
 				return true;
 			}
 		}
-		return false;
+		return needsPackedVector(program, closRegistry, spec -> spec.elementType() == ArrayElementTypes.CHARACTER);
 	}
 
 	private static boolean needsSeqString(LispVal form, @Nullable ClosRegistry closRegistry) {
@@ -560,19 +576,24 @@ public final class ConcatenateForms {
 	// The vector family's element sequence as the representation its element type asks
 	// for: one lowering per PACKED FAMILY -- (%seq-int-vector elements width) for the
 	// packed unsigned-integer widths, (%seq-float-vector elements code) for the packed
-	// float ones -- and the general (coerce elements 'vector) for every other code, the
-	// character one included (a (vector character) result is the STRING family's
-	// business, and giving it a character array here would change what concatenate
-	// answers rather than what it remembers; .todo/714).
+	// float ones, (%seq-string elements) for CHARACTER -- and the general
+	// (coerce elements 'vector) for every other code.
+	//
+	// The character arm answers exactly what make-array builds for the same element
+	// type: a mutable LispString, not a general vector that merely holds characters. A
+	// (vector character) result IS a string in CL (SBCL answers CHARACTER from
+	// array-element-type and "ab" from the printer), and %seq-string is already the
+	// STRING family's own element-to-string builder, so the two designators converge on
+	// one call rather than diverging on what a result-type designator means.
 	//
 	// A CALL either way, never an inlined allocate-and-fill loop, for the reason the
 	// string family calls %seq-string: one emitted body must not grow with the number of
 	// concatenate sites (.kb/wasm-function-body-size.md). The helpers also walk the
 	// element list linearly, which an inlined (make-array n :initial-contents list) would
-	// not (that fill indexes with elt). TWO helpers rather than one over the whole code
-	// space, so a program that asks for only one of the families carries only that
-	// family's allocations -- each rides its own injection gate (needsSeqIntVector /
-	// needsSeqFloatVector) and a program that asks for neither is byte-identical.
+	// not (that fill indexes with elt). Each packed family rides its own injection gate
+	// (needsSeqIntVector / needsSeqFloatVector / needsSeqString) so a program that asks
+	// for only one of the families carries only that family's allocations, and one that
+	// asks for none is byte-identical.
 	private static LispVal packedVectorCall(LispVal elements, int elementTypeCode) {
 		int width = packedIntWidth(elementTypeCode);
 		if (width != 0) {
@@ -581,6 +602,9 @@ public final class ConcatenateForms {
 		if (isPackedFloat(elementTypeCode)) {
 			return listToCons(
 					List.of(new LispSymbol(LispNames.SEQ_FLOAT_VECTOR), elements, new LispInteger(elementTypeCode)));
+		}
+		if (elementTypeCode == ArrayElementTypes.CHARACTER) {
+			return listToCons(List.of(new LispSymbol(LispNames.SEQ_STRING), elements));
 		}
 		return coerceCall(elements, "VECTOR");
 	}

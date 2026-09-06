@@ -8,6 +8,8 @@
 
 ベクタ系の `result-type` がパックされた浮動小数点要素型を指定している場合 -- `'(vector single-float)`、`'(simple-array double-float (*))`、`'(array bfloat16)` など -- その幅のパック浮動小数点配列を構築します。[`make-array`](make-array.md) が作るものと同じ表現なので、`array-element-type` はその要素型を返します。要素は配列自身の幅で格納されるため、整数の要素は浮動小数点数になり、より広い幅のものは丸められます。実数でない要素はエラーです。`bfloat16` の配列はインタプリタと JVM バックエンドにのみ存在します。
 
+ベクタ系の `result-type` が `character` を指定している場合 -- `'(vector character)` -- 代わりに文字列を構築します。これは `make-array` の `:element-type 'character` が作るものと同じ表現です。
+
 ```lisp
 (concatenate 'string "foo" "bar") ; => "foobar"
 (concatenate 'string "a" '(#\b #\c) nil "d") ; => "abcd"
@@ -18,6 +20,8 @@
 (array-element-type (concatenate 'vector #(1))) ; => T
 (concatenate '(vector single-float) '(1 2) #(3)) ; => #f(1.0 2.0 3.0)
 (array-element-type (concatenate '(simple-array double-float (*)) #d(1.0))) ; => DOUBLE-FLOAT
+(concatenate '(vector character) "ab" '(#\c)) ; => "abc"
+(array-element-type (concatenate '(vector character) "ab")) ; => CHARACTER
 (progn (deftype octet-vector () '(simple-array (unsigned-byte 8) (*)))
        (concatenate 'octet-vector #(1) #(2 3))) ; => #(1 2 3)
 ```
