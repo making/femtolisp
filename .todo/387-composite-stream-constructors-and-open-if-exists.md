@@ -7,7 +7,7 @@ Opus-class model.
 
 Split out of `.todo/036` when that item closed (2026-08-15). It was never in
 036's table -- 036 was the pathname / file-system / `write` umbrella -- but
-`.todo/338` pointed at it for these names, so they get a home of their own
+`.todo/715` pointed at it for these names, so they get a home of their own
 rather than a dangling reference.
 
 ## What is missing
@@ -22,7 +22,7 @@ rather than a dangling reference.
 | `concatenated-stream-streams` | Function | the accessor |
 | `open`'s `:if-exists` / `:if-does-not-exist` | Keyword | `:supersede` / `:append` / `:overwrite` / `:error` / `:create` |
 
-`.todo/338` measures the consequence: the ANSI suite's `streams` chapter sits at
+`.todo/715` measures the consequence: the ANSI suite's `streams` chapter sits at
 20.0%, and these are what it blames first.
 
 ## The shape the constructors should take
