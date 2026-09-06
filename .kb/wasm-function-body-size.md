@@ -12,7 +12,9 @@ wasmtime 47.0.2, 4-core Linux amd64: 9 KB body = 284 MB; 261 KB = 2.7 GB; 630 KB
 15.1 GB; 850 KB = 25.8 GB / 36 s.
 
 Bound: **256 KiB**, pinned by `WasmToplevelChunkingTest`, guarded before the fact by
-`CiSpecE2eTest.wasmCompileMemoryGuard`. Raise it only with fresh cold-cache measurements
+`CiSpecE2eTest.requireRunnableModule` -- each WASM leg inspects the module it just
+compiled and refuses to hand wasmtime an over-large one, so the guard costs no extra
+compile and covers every leg of the backend x `--simd` matrix. Raise it only with fresh cold-cache measurements
 on the smallest CI runner, updating these numbers in the same change.
 
 - **Two bodies grow with the program**: the top level (with source length) and the

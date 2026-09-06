@@ -206,6 +206,9 @@ changing anything that can shift cross-backend output:
 ```
 
 A failure prints `[case '<name>' on <BACKEND>`; re-run step 2 only unless Java sources changed.
+The corpus runs on each backend TWICE -- default and `--simd`, so the leg is `<BACKEND> --simd` --
+because `--simd` changes the packed-array REPRESENTATION and a matrix counting only backends misses
+half of every accelerated primitive (`.kb/vec.md`, "The E2E `--simd` axis").
 
 ### Examples Suite
 
