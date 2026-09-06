@@ -87,9 +87,9 @@ that TRIPS the latch (a library load plus a long top level, or the ci-spec
 corpus itself) -- the existing test passes today.
 
 Measure BOTH WASM builds: `--component` cuts its bodies differently (async
-entry+resume pair), and `CiSpecE2eTest`'s `WasmGuard` is split in two precisely
-because a 650 KB component body once got through while the core build's largest
-was 214 KB.
+entry+resume pair), and `CiSpecE2eTest` checks each WASM leg's own module
+(`requireRunnableModule`, once per build x `--simd` leg) precisely because a 650 KB
+component body once got through while the core build's largest was 214 KB.
 
 ## Why it matters beyond ci-spec
 

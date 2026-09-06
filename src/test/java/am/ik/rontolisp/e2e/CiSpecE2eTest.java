@@ -6,6 +6,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -56,6 +57,10 @@ import static org.junit.jupiter.api.DynamicTest.dynamicTest;
  * identical to the Preview 1 WASM backend and is checked against the same
  * {@code expected} lines.
  * <p>
+ * Every backend runs the corpus TWICE, once per {@link Accel}: the default kernels and
+ * again under {@code --simd}. That is the second axis, and it is a whole second pass
+ * rather than a per-case flag or a chosen subset -- see {@link Accel}.
+ * <p>
  * Runs only when {@code -Drontolisp.binary=<path>} points at a built native binary;
  * otherwise the whole factory is skipped (the regular {@code mvn test} job runs on the
  * JVM before the native binary exists). The two WASM backends are additionally skipped
@@ -70,6 +75,91 @@ class CiSpecE2eTest {
 		INTERPRETER, JVM, WASM, WASM_COMPONENT
 
 	}
+
+	/**
+	 * The acceleration axis, crossed with {@link Backend}: every case runs on all four
+	 * backends with the default kernels AND with {@code --simd}.
+	 * <p>
+	 * {@code --simd} is not a faster route to the same code, it is a different DATA
+	 * REPRESENTATION -- wasm-GC packs a {@code #f}/{@code #d} array into a
+	 * {@code TYPE_VBLOCK} of {@code v128} groups instead of an {@code $f32arr}/
+	 * {@code $f64arr}, and every reader and writer of a packed array has to know. Which
+	 * primitives touch that representation is not a property anyone can enumerate by eye,
+	 * so the axis is the WHOLE corpus rather than the cases someone classified as
+	 * relevant: pinning only the obvious ones is what shipped the
+	 * {@code widen-float-bits} /{@code narrow-float-bits} trap green on both WASM
+	 * backends (`.kb/vec.md`).
+	 * <p>
+	 * A per-case flag was rejected for cost, not taste: the corpus is concatenated into
+	 * ONE program per backend, so a per-case flag means one program per case, and the
+	 * measured fixed cost of a program (~750 ms across the four backends) against 479
+	 * cases is ~6 minutes of process starts. A second whole pass pays that fixed cost
+	 * once. See {@code .kb/vec.md} for the measurement.
+	 * <p>
+	 * {@code --no-gc} and {@code --parallel} are deliberately NOT axes here;
+	 * {@code .kb/vec.md} records why.
+	 */
+	enum Accel {
+
+		/** The default kernels: no acceleration flag. */
+		SCALAR("", List.of(), List.of("java")),
+
+		/**
+		 * {@code --simd}. The {@code java} launcher needs
+		 * {@code --add-modules jdk.incubator.vector} for a {@code -o Prog.class} output
+		 * -- without it the emitted {@code _simdInit} catches the {@code LinkageError},
+		 * warns and runs the SCALAR kernels, which produces byte-identical output. That
+		 * degrade is why {@link #assertSimdTookEffect} exists: passing the flag is not
+		 * evidence that it did anything.
+		 */
+		SIMD("-simd", List.of("--simd"), List.of("java", "--add-modules", "jdk.incubator.vector"));
+
+		private final String tag;
+
+		private final List<String> flags;
+
+		private final List<String> javaLauncher;
+
+		Accel(String tag, List<String> flags, List<String> javaLauncher) {
+			this.tag = tag;
+			this.flags = flags;
+			this.javaLauncher = javaLauncher;
+		}
+
+		/** The compiler flags this leg adds, appended to every rontolisp invocation. */
+		List<String> flags() {
+			return this.flags;
+		}
+
+		/** The {@code java} command (plus module flags) that runs a compiled class. */
+		List<String> javaLauncher() {
+			return this.javaLauncher;
+		}
+
+		/** Suffix keeping this leg's generated files apart from the other leg's. */
+		String fileTag() {
+			return this.tag;
+		}
+
+		/** Suffix for a generated JVM class name, which cannot carry a hyphen. */
+		String classTag() {
+			return this == SIMD ? "Simd" : "";
+		}
+
+		/** How this leg names itself in a test-tree node and in a failure message. */
+		String label(Backend backend) {
+			return this == SIMD ? backend.name() + " --simd" : backend.name();
+		}
+
+	}
+
+	/**
+	 * The one line that says {@code --simd} FAILED OPEN: the CLI (interpreter) and the
+	 * emitted {@code _simdInit} (a {@code -o Prog.class} output) both print it and then
+	 * run the scalar kernels, and the program's own output is identical either way. Its
+	 * ABSENCE is the only positive evidence the flag took effect on the JVM family.
+	 */
+	private static final String SIMD_DEGRADE_MARKER = "jdk.incubator.vector is unavailable";
 
 	record Case(String name, String source, @Nullable String expected,
 			@Nullable Map<String, String> expectedByBackend) {
@@ -145,11 +235,17 @@ class CiSpecE2eTest {
 
 		Spec spec = loadSpec();
 		Path program = writeProgram(spec);
-		WasmGuard guard = wasmCompileMemoryGuard(bin, program);
 
+		// The SCALAR leg of a backend records its compiled artifact here and the SIMD
+		// leg of the SAME backend reads it back, to assert the flag changed what was
+		// emitted. The loop below is backend-major and builds every node eagerly, so
+		// the write always precedes the read.
+		Map<Backend, byte[]> scalarArtifacts = new EnumMap<>(Backend.class);
 		List<DynamicNode> backends = new ArrayList<>();
 		for (Backend backend : Backend.values()) {
-			backends.add(backendNode(backend, bin, program, spec, guard));
+			for (Accel accel : Accel.values()) {
+				backends.add(backendNode(backend, accel, bin, program, spec, scalarArtifacts));
+			}
 		}
 		return backends.stream();
 	}
@@ -162,103 +258,90 @@ class CiSpecE2eTest {
 	 * does not fail here, it gets the whole CI runner OOM-killed ("The runner has
 	 * received a shutdown signal", no stderr, no timeout, every other backend in the run
 	 * cancelled as a fail-fast peer). The bound and its measurements are pinned in
-	 * {@code WasmToplevelChunkingTest}, and it is checked for BOTH WASM builds (see
-	 * {@link WasmGuard}).
+	 * {@code WasmToplevelChunkingTest}, and it is checked for BOTH WASM builds, on both
+	 * {@link Accel} legs (see {@link ModuleTooLargeException}).
 	 */
 	private static final int MAX_WASM_FUNCTION_BODY_BYTES = 256 * 1024;
 
 	/**
-	 * Why each WASM backend must not be run, or {@code null} per backend when it is safe.
-	 * The two are measured separately because the {@code --component} build is NOT the
-	 * Preview 1 module plus a wrapper: an async top level (which the corpus has, and
-	 * every fetch/serve program has) compiles as an entry+resume pair, so the component's
-	 * bodies are cut differently and either one can be the larger. Guarding only the core
-	 * build let a 650 KB component body through while the core build's largest was 214
-	 * KB, and the runner was OOM-killed on the component leg.
+	 * Thrown instead of running wasmtime on a module whose largest function body is over
+	 * {@link #MAX_WASM_FUNCTION_BODY_BYTES} -- it turns a machine-killing OOM into an
+	 * ordinary test failure that names its own cause. Each WASM leg checks the module it
+	 * just compiled, so the {@code --component} build is measured separately from the
+	 * Preview 1 one: a component is NOT that module plus a wrapper (an async top level,
+	 * which the corpus has, compiles as an entry+resume pair), its bodies are cut
+	 * differently, and either can be the larger. Guarding only the core build once let a
+	 * 650 KB component body through while the core build's largest was 214 KB, and the
+	 * runner was OOM-killed on the component leg.
 	 */
-	private record WasmGuard(@Nullable String wasm, @Nullable String component) {
+	private static final class ModuleTooLargeException extends Exception {
 
-		@Nullable String forBackend(Backend backend) {
-			return backend == Backend.WASM_COMPONENT ? this.component : this.wasm;
+		ModuleTooLargeException(String message) {
+			super(message);
 		}
+
 	}
 
-	/**
-	 * Compiles the corpus both ways and reports why each WASM backend must not be run, or
-	 * {@code null} for one that is safe to run. Returning a message rather than launching
-	 * wasmtime is the whole point: it turns a machine-killing OOM into an ordinary test
-	 * failure that names its own cause.
-	 */
-	private static WasmGuard wasmCompileMemoryGuard(Path bin, Path program) {
-		return new WasmGuard(guardOne(bin, program, "compile-wasm-guard", "guard.wasm", List.of()),
-				guardOne(bin, program, "compile-wasm-component-guard", "guard.component.wasm", List.of("--component")));
-	}
-
-	private static @Nullable String guardOne(Path bin, Path program, String label, String output,
-			List<String> extraFlags) {
-		byte[] module;
-		try {
-			List<String> command = new ArrayList<>(List.of(bin.toString(), program.toString(), "-o", output));
-			command.addAll(extraFlags);
-			execLabeled(label, command);
-			module = Files.readAllBytes(workDir.resolve(output));
-		}
-		catch (Exception ex) {
-			// Not this guard's job to report a compile failure; the backend legs run
-			// their own compile and will surface it with their own label.
-			return null;
-		}
+	/** Refuses to hand wasmtime a module with an over-large function body. */
+	private static void requireRunnableModule(String output, byte[] module) throws ModuleTooLargeException {
 		int largest = WasmModuleInspector.largestFunctionBodySize(module);
 		if (largest <= MAX_WASM_FUNCTION_BODY_BYTES) {
-			return null;
+			return;
 		}
-		return ("refusing to run wasmtime: largest emitted function body of %s is %d bytes, over the %d byte bound. "
-				+ "A wasmtime cold compile needs memory superlinear in that number (850 KB of body -> 25.8 GB), "
-				+ "so running this module would OOM-kill the CI runner instead of failing. "
-				+ "See WasmToplevelChunkingTest.")
-			.formatted(output, largest, MAX_WASM_FUNCTION_BODY_BYTES);
+		throw new ModuleTooLargeException(
+				("refusing to run wasmtime: largest emitted function body of %s is %d bytes, over the %d byte bound. "
+						+ "A wasmtime cold compile needs memory superlinear in that number (850 KB of body -> 25.8 GB), "
+						+ "so running this module would OOM-kill the CI runner instead of failing. "
+						+ "See WasmToplevelChunkingTest.")
+					.formatted(output, largest, MAX_WASM_FUNCTION_BODY_BYTES));
 	}
 
-	private static DynamicContainer backendNode(Backend backend, Path bin, Path program, Spec spec, WasmGuard guard) {
-		if (backend == Backend.WASM || backend == Backend.WASM_COMPONENT) {
-			if (!onPath("wasmtime")) {
-				return dynamicContainer(backend.name(),
-						Stream.of(dynamicTest("(skipped)", () -> abort("wasmtime not on PATH"))));
-			}
-			String guardFailure = guard.forBackend(backend);
-			if (guardFailure != null) {
-				return dynamicContainer(backend.name(),
-						Stream.of(dynamicTest("(module too large to run)", () -> fail(guardFailure))));
-			}
+	private static DynamicContainer backendNode(Backend backend, Accel accel, Path bin, Path program, Spec spec,
+			Map<Backend, byte[]> scalarArtifacts) {
+		String leg = accel.label(backend);
+		if ((backend == Backend.WASM || backend == Backend.WASM_COMPONENT) && !onPath("wasmtime")) {
+			return dynamicContainer(leg, Stream.of(dynamicTest("(skipped)", () -> abort("wasmtime not on PATH"))));
 		}
 		// The standalone cases are their own programs, so each compiles and runs inside
 		// its own lazily-executed test rather than in the one shared run below.
 		List<DynamicNode> standalone = spec.standaloneCases()
 			.stream()
-			.<DynamicNode>map(s -> dynamicTest("standalone: " + s.name(), () -> runStandalone(backend, bin, s)))
+			.<DynamicNode>map(s -> dynamicTest("standalone: " + s.name(), () -> runStandalone(backend, accel, bin, s)))
 			.toList();
 
-		List<String> actual;
+		BackendRun run;
 		try {
-			System.err.println("[CiSpecE2eTest] starting backend " + backend);
+			System.err.println("[CiSpecE2eTest] starting backend " + leg);
 			long t0 = System.nanoTime();
-			actual = runBackend(backend, bin, program);
-			System.err.println("[CiSpecE2eTest] finished backend " + backend + " in "
+			run = runBackend(backend, accel, bin, program);
+			System.err.println("[CiSpecE2eTest] finished backend " + leg + " in "
 					+ ((System.nanoTime() - t0) / 1_000_000) + " ms");
 		}
+		catch (ModuleTooLargeException ex) {
+			return dynamicContainer(leg,
+					Stream.concat(Stream.of(dynamicTest("(module too large to run)", () -> fail(ex.getMessage()))),
+							standalone.stream()));
+		}
 		catch (Exception ex) {
-			System.err.println("[CiSpecE2eTest] backend " + backend + " failed: " + ex.getMessage());
-			return dynamicContainer(backend.name(),
+			System.err.println("[CiSpecE2eTest] backend " + leg + " failed: " + ex.getMessage());
+			return dynamicContainer(leg,
 					Stream.concat(Stream.of(dynamicTest("(execution failed)", () -> fail(ex.getMessage(), ex))),
 							standalone.stream()));
 		}
+		byte[] artifact = run.artifact();
+		if (accel == Accel.SCALAR && artifact != null) {
+			scalarArtifacts.put(backend, artifact);
+		}
 
 		List<DynamicNode> tests = new ArrayList<>();
+		if (accel == Accel.SIMD) {
+			byte[] scalarArtifact = scalarArtifacts.get(backend);
+			tests.add(dynamicTest("(--simd took effect)", () -> assertSimdTookEffect(leg, run, scalarArtifact)));
+		}
+		List<String> actual = run.stdout();
 		List<String> expectedAll = spec.cases().stream().flatMap(c -> c.expectedLines(backend).stream()).toList();
-		List<String> actualSnapshot = actual;
 		tests.add(dynamicTest("total-line-count",
-				() -> assertThat(actualSnapshot)
-					.as("%s produced a different number of output lines than the spec", backend)
+				() -> assertThat(actual).as("%s produced a different number of output lines than the spec", leg)
 					.hasSize(expectedAll.size())));
 
 		int offset = 0;
@@ -269,11 +352,42 @@ class CiSpecE2eTest {
 			List<String> slice = sublist(actual, start, expected.size());
 			tests.add(dynamicTest(c.name(),
 					() -> assertThat(slice)
-						.as("case '%s' on %s%n--- source ---%n%s--- end source ---", c.name(), backend, c.source())
+						.as("case '%s' on %s%n--- source ---%n%s--- end source ---", c.name(), leg, c.source())
 						.containsExactlyElementsOf(expected)));
 		}
 		tests.addAll(standalone);
-		return dynamicContainer(backend.name(), tests.stream());
+		return dynamicContainer(leg, tests.stream());
+	}
+
+	/**
+	 * Asserts that {@code --simd} DID something, which no output of the program can show:
+	 * the flag is semantically transparent by design, and both JVM-family paths degrade
+	 * to the scalar kernels with a warning when {@code jdk.incubator.vector} is off the
+	 * module graph. Without this, a {@code --simd} axis asserts only that the flag was
+	 * spelled on the command line -- exactly the fail-open it exists to kill.
+	 * <p>
+	 * Two independent pieces of evidence, per what the backend can offer:
+	 * <ul>
+	 * <li>the degrade warning is ABSENT from stderr (the interpreter and the JVM, the
+	 * only two paths that have a fallback at all);
+	 * <li>the emitted artifact DIFFERS from the scalar leg's (the JVM class and both WASM
+	 * modules -- a {@code --simd} wasm module carries the {@code v128} types and kernels
+	 * a default one must not have).
+	 * </ul>
+	 */
+	private static void assertSimdTookEffect(String leg, BackendRun run, byte @Nullable [] scalarArtifact) {
+		assertThat(run.stderr())
+			.as("%s degraded to the scalar kernels; the flag was passed but did nothing%n--- stderr ---%n%s", leg,
+					run.stderr())
+			.doesNotContain(SIMD_DEGRADE_MARKER);
+		byte[] artifact = run.artifact();
+		if (artifact == null) {
+			return;
+		}
+		assertThat(scalarArtifact).as("%s: no scalar artifact was recorded to compare against", leg).isNotNull();
+		assertThat(artifact)
+			.as("%s emitted an artifact byte-identical to the scalar one, so --simd changed nothing", leg)
+			.isNotEqualTo(scalarArtifact);
 	}
 
 	/**
@@ -283,36 +397,42 @@ class CiSpecE2eTest {
 	 * that reports and then traps prints wasmtime's own backtrace around our line, and
 	 * that text belongs to the host, not to the contract under test.
 	 */
-	private static void runStandalone(Backend backend, Path bin, Standalone standalone) throws Exception {
+	private static void runStandalone(Backend backend, Accel accel, Path bin, Standalone standalone) throws Exception {
 		Path source = workDir.resolve(standalone.name() + ".lisp");
 		Files.writeString(source, standalone.source());
-		String stem = "S" + standalone.name().replaceAll("[^A-Za-z0-9]", "");
+		String stem = "S" + accel.classTag() + standalone.name().replaceAll("[^A-Za-z0-9]", "");
+		String leg = accel.label(backend);
 		if (standalone.refusedOn(backend)) {
-			assertRefusedCompile(backend, bin, standalone, source, stem);
+			assertRefusedCompile(backend, accel, standalone, bin, source, stem);
 			return;
 		}
 		Result result = switch (backend) {
-			case INTERPRETER -> execCapture(List.of(bin.toString(), source.toString()));
+			case INTERPRETER -> execCapture(command(List.of(bin.toString(), source.toString()), accel.flags()));
 			case JVM -> {
-				execLabeled("compile-jvm-" + standalone.name(),
-						List.of(bin.toString(), source.toString(), "-o", stem + ".class"));
-				yield execCapture(List.of("java", stem));
+				execLabeled("compile-jvm-" + standalone.name() + accel.fileTag(),
+						command(List.of(bin.toString(), source.toString(), "-o", stem + ".class"), accel.flags()));
+				yield execCapture(command(accel.javaLauncher(), List.of(stem)));
 			}
 			case WASM -> {
-				execLabeled("compile-wasm-" + standalone.name(),
-						List.of(bin.toString(), source.toString(), "-o", stem + ".wasm"));
+				execLabeled("compile-wasm-" + standalone.name() + accel.fileTag(),
+						command(List.of(bin.toString(), source.toString(), "-o", stem + ".wasm"), accel.flags()));
 				yield execCapture(List.of("wasmtime", "--wasm", "gc", "--wasm", "exceptions=y", "--dir", ".", "--dir",
 						"/tmp", stem + ".wasm"));
 			}
 			case WASM_COMPONENT -> {
-				execLabeled("compile-wasm-component-" + standalone.name(),
-						List.of(bin.toString(), source.toString(), "-o", stem + ".component.wasm", "--component"));
+				execLabeled("compile-wasm-component-" + standalone.name() + accel.fileTag(), command(
+						List.of(bin.toString(), source.toString(), "-o", stem + ".component.wasm", "--component"),
+						accel.flags()));
 				yield execCapture(List.of("wasmtime", "run", "-W", "gc=y", "-W", "exceptions=y", "--dir", ".", "--dir",
 						"/tmp", stem + ".component.wasm"));
 			}
 		};
 		String where = "standalone case '%s' on %s%n--- source ---%n%s--- end source ---%n--- stderr ---%n%s"
-			.formatted(standalone.name(), backend, standalone.source(), result.stderr());
+			.formatted(standalone.name(), leg, standalone.source(), result.stderr());
+		if (accel == Accel.SIMD) {
+			assertThat(result.stderr()).as("%s: --simd degraded to the scalar kernels", where)
+				.doesNotContain(SIMD_DEGRADE_MARKER);
+		}
 		assertThat(splitLines(result.stdout())).as("%s", where)
 			.containsExactlyElementsOf(splitLines(standalone.stdout() == null ? "" : standalone.stdout()));
 		for (String line : splitLines(standalone.stderr() == null ? "" : standalone.stderr())) {
@@ -332,18 +452,18 @@ class CiSpecE2eTest {
 	 * refuses such a program by name at compile time; the refusal is the contract, so it
 	 * is asserted rather than skipped.
 	 */
-	private static void assertRefusedCompile(Backend backend, Path bin, Standalone standalone, Path source, String stem)
-			throws Exception {
-		List<String> command = switch (backend) {
+	private static void assertRefusedCompile(Backend backend, Accel accel, Standalone standalone, Path bin, Path source,
+			String stem) throws Exception {
+		List<String> base = switch (backend) {
 			case INTERPRETER -> List.of(bin.toString(), source.toString());
 			case JVM -> List.of(bin.toString(), source.toString(), "-o", stem + ".class");
 			case WASM -> List.of(bin.toString(), source.toString(), "-o", stem + ".wasm");
 			case WASM_COMPONENT ->
 				List.of(bin.toString(), source.toString(), "-o", stem + ".component.wasm", "--component");
 		};
-		Result result = execCapture(command);
+		Result result = execCapture(command(base, accel.flags()));
 		String where = "standalone case '%s' on %s: expected a refusal%n--- stderr ---%n%s".formatted(standalone.name(),
-				backend, result.stderr());
+				accel.label(backend), result.stderr());
 		assertThat(result.exit()).as("%s", where).isNotZero();
 		assertThat(result.stderr()).as("%s", where).contains(standalone.refusal() == null ? "" : standalone.refusal());
 	}
@@ -364,16 +484,45 @@ class CiSpecE2eTest {
 		return full;
 	}
 
-	private static List<String> runBackend(Backend backend, Path bin, Path program) throws Exception {
+	/** One command line: a base plus the acceleration flags this leg adds. */
+	private static List<String> command(List<String> base, List<String> extra) {
+		List<String> full = new ArrayList<>(base);
+		full.addAll(extra);
+		return full;
+	}
+
+	/**
+	 * What one backend leg produced: the program's standard output sliced per case, its
+	 * standard error (which is where {@code --simd} confesses a degrade), and the
+	 * compiled artifact, or {@code null} for the interpreter, which emits none.
+	 */
+	private record BackendRun(List<String> stdout, String stderr, byte @Nullable [] artifact) {
+	}
+
+	private static BackendRun runBackend(Backend backend, Accel accel, Path bin, Path program) throws Exception {
+		String tag = accel.fileTag();
+		List<String> flags = accel.flags();
 		return switch (backend) {
-			case INTERPRETER ->
-				execLabeled("interpret", withArguments(List.of(bin.toString(), program.toString(), "--")));
+			case INTERPRETER -> {
+				Result result = execLabeledCapture("interpret" + tag, withArguments(
+						command(List.of(bin.toString(), program.toString()), command(flags, List.of("--")))));
+				yield new BackendRun(splitLines(result.stdout()), result.stderr(), null);
+			}
 			case JVM -> {
-				execLabeled("compile-jvm", List.of(bin.toString(), program.toString(), "-o", "Test.class"));
-				yield execLabeled("run-jvm", withArguments(List.of("java", "Test")));
+				String className = "Test" + accel.classTag();
+				execLabeledCapture("compile-jvm" + tag,
+						command(List.of(bin.toString(), program.toString(), "-o", className + ".class"), flags));
+				Result result = execLabeledCapture("run-jvm" + tag,
+						withArguments(command(accel.javaLauncher(), List.of(className))));
+				yield new BackendRun(splitLines(result.stdout()), result.stderr(),
+						Files.readAllBytes(workDir.resolve(className + ".class")));
 			}
 			case WASM -> {
-				execLabeled("compile-wasm", List.of(bin.toString(), program.toString(), "-o", "test.wasm"));
+				String module = "test" + tag + ".wasm";
+				execLabeledCapture("compile-wasm" + tag,
+						command(List.of(bin.toString(), program.toString(), "-o", module), flags));
+				byte[] bytes = Files.readAllBytes(workDir.resolve(module));
+				requireRunnableModule(module, bytes);
 				// --dir . preopens the work dir so the file-stream cases can open files,
 				// and --dir /tmp preopens a directory whose NAME is absolute -- the
 				// runtime-absolute-path case needs a preopen that can COVER an absolute
@@ -381,27 +530,46 @@ class CiSpecE2eTest {
 				// exceptions=y because the concatenated program contains catching cases
 				// (handler-case &c), which put the whole module in EH mode (harmless
 				// otherwise).
-				yield execLabeled("run-wasm", withArguments(List.of("wasmtime", "--wasm", "gc", "--wasm",
-						"exceptions=y", "--dir", ".", "--dir", "/tmp", "test.wasm")));
+				Result result = execLabeledCapture("run-wasm" + tag, withArguments(List.of("wasmtime", "--wasm", "gc",
+						"--wasm", "exceptions=y", "--dir", ".", "--dir", "/tmp", module)));
+				yield new BackendRun(splitLines(result.stdout()), result.stderr(), bytes);
 			}
 			case WASM_COMPONENT -> {
-				execLabeled("compile-wasm-component",
-						List.of(bin.toString(), program.toString(), "-o", "test.component.wasm", "--component"));
-				yield execLabeled("run-wasm-component", withArguments(List.of("wasmtime", "run", "-W", "gc=y", "-W",
-						"exceptions=y", "--dir", ".", "--dir", "/tmp", "test.component.wasm")));
+				String module = "test" + tag + ".component.wasm";
+				execLabeledCapture("compile-wasm-component" + tag,
+						command(List.of(bin.toString(), program.toString(), "-o", module, "--component"), flags));
+				byte[] bytes = Files.readAllBytes(workDir.resolve(module));
+				requireRunnableModule(module, bytes);
+				Result result = execLabeledCapture("run-wasm-component" + tag, withArguments(List.of("wasmtime", "run",
+						"-W", "gc=y", "-W", "exceptions=y", "--dir", ".", "--dir", "/tmp", module)));
+				yield new BackendRun(splitLines(result.stdout()), result.stderr(), bytes);
 			}
 		};
 	}
 
 	private static List<String> execLabeled(String label, List<String> command)
 			throws IOException, InterruptedException {
+		return splitLines(execLabeledCapture(label, command).stdout());
+	}
+
+	/**
+	 * {@link #execLabeled} keeping standard error as well, since that is where
+	 * {@code --simd} reports having degraded to the scalar kernels. A non-zero exit is
+	 * still a failure here -- the corpus program is expected to run to completion.
+	 */
+	private static Result execLabeledCapture(String label, List<String> command)
+			throws IOException, InterruptedException {
 		System.err.println("[CiSpecE2eTest]   > " + label + " " + command);
 		long t0 = System.nanoTime();
 		try {
-			List<String> out = exec(command);
+			Result result = execCapture(command);
+			if (result.exit() != 0) {
+				throw new IOException(
+						"command %s exited with %d%nstderr:%n%s".formatted(command, result.exit(), result.stderr()));
+			}
 			System.err.println("[CiSpecE2eTest]   < " + label + " ok in " + ((System.nanoTime() - t0) / 1_000_000)
-					+ " ms (" + out.size() + " lines)");
-			return out;
+					+ " ms (" + splitLines(result.stdout()).size() + " lines)");
+			return result;
 		}
 		catch (IOException | InterruptedException ex) {
 			System.err.println("[CiSpecE2eTest]   ! " + label + " failed after "
@@ -420,15 +588,6 @@ class CiSpecE2eTest {
 
 	/** One child process's whole result; see {@link #execCapture}. */
 	private record Result(String stdout, String stderr, int exit) {
-	}
-
-	private static List<String> exec(List<String> command) throws IOException, InterruptedException {
-		Result result = execCapture(command);
-		if (result.exit() != 0) {
-			throw new IOException(
-					"command %s exited with %d%nstderr:%n%s".formatted(command, result.exit(), result.stderr()));
-		}
-		return splitLines(result.stdout());
 	}
 
 	/**

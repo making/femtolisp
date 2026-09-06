@@ -120,8 +120,10 @@ jobs:
         ./target/rontolisp -v
         # Run the ci-spec.yaml cases through the native binary in all four
         # backend modes (interpreter / JVM / WASM Preview 1 / WASM as a WASI 0.2
-        # component). The driver reports the exact failing case by name, so there
-        # is no positional expected file to keep in sync.
+        # component), each of them twice: default kernels and --simd, which is a
+        # different packed-array representation rather than a faster route to the
+        # same one (.kb/vec.md). The driver reports the exact failing case by
+        # name and leg, so there is no positional expected file to keep in sync.
         ./mvnw -V --no-transfer-progress \
           -Dtest=CiSpecE2eTest -DfailIfNoTests=false \
           -Drontolisp.binary="$PWD/target/rontolisp" \

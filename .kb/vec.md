@@ -200,7 +200,8 @@ bytecode/wasm rather than a captured closure); tracked separately (`.todo/720`).
 
 **Layer 0, interpreter `--simd`** (jdk.incubator.vector): the eight vectorizable kernels run on
 `eval.VecSimdKernels`. The DEFAULT interpreter is unchanged -- it is the cross-backend oracle, and
-`ci-spec.yaml` never passes `--simd`. `eval.VecSimd.available()`/`install(Environment)` are the ONLY
+`ci-spec.yaml`'s scalar pass never passes `--simd` (a SECOND pass does, and both check the same
+expected lines -- "The E2E `--simd` axis" below). `eval.VecSimd.available()`/`install(Environment)` are the ONLY
 callers of the kernels; `LispEvaluator.setSimd(true)` installs in `resolveFunction`'s lazy-load hook
 (so the REPL is accelerated too) and `RontoLispCli`'s `enableSimd` probes `available()` first
 (absent module -> a one-line note + the scalar reference) -- UNLESS `--parallel` is also given: then
@@ -295,7 +296,8 @@ apparent blocker -- "`v128.load`/`store` address LINEAR memory" -- is FALSE: GC
   `:initial-element`. **Every writer of a packed array has to be on that list, and the way one gets
   missed is a test matrix counting BACKENDS rather than backends x `--simd`** -- the bulk float-bits
   pair was pinned scalar-only and its wasm `ref.cast` to `$f32arr`/`$f64arr` TRAPS on a vblock; it
-  shipped green. `WasmVecLoops` holds the linear v128 bodies, the scalar ones AND the GC group bodies
+  shipped green. Both halves of that matrix now exist: the unit half here, and the E2E half as
+  `CiSpecE2eTest`'s `Accel` axis (below), which is red on this exact defect. `WasmVecLoops` holds the linear v128 bodies, the scalar ones AND the GC group bodies
   (`gcMap2`/`gcScale`/`gcSum`/`gcDot`); `NoGcWasmCompiler` delegates to the linear ones with its
   locals in the original order.
 - **Cost**: the GC representation costs ~1.93x on the kernel loop against a linear arena, the cause
@@ -359,7 +361,12 @@ The GEMV row groups as sixteen lanes (`2^24 + 960`); `vec:dot`/`vec:sum` keep on
 (`2^24 + 768`). **A GEMV row and a `vec:dot` over the same two vectors are the same value
 mathematically and NOT the same bits. Nothing may assume they agree.** NOTHING but the three
 `singleFloatReductionsAccumulateInSinglePrecision*` tests catches a regression here: every other `#f`
-test input stays under `2^24`, and `ci-spec.yaml` never passes `--simd`.
+test input stays under `2^24`.
+
+**This is also the one thing a ci-spec case may not do.** The corpus runs twice, scalar and
+`--simd`, against ONE set of `expected:` lines with no per-pass override, so a case whose `#f`
+reduction crosses `2^24` would make the two passes disagree and the axis would read that as a
+defect. Such a probe belongs in `VecSimdTest`, where the two answers can both be written down.
 
 ## Native image, Web Image, registration
 
@@ -435,6 +442,76 @@ test input stays under `2^24`, and `ci-spec.yaml` never passes `--simd`.
   axis you are not thinking about: five experiments "confirmed" GraalVM cannot vectorize because
   every one used `#f`; the first `#d` program came out 1100x faster.
 
+## The E2E `--simd` axis
+
+`CiSpecE2eTest` crosses the four backends with two `Accel` legs -- the default kernels and
+`--simd` -- so every corpus case and every `standalone:` case runs eight ways instead of four.
+Both legs check the SAME `expected:` lines (see the `2^24` rule above).
+
+**Why the whole corpus rather than the cases that touch packed floats.** `--simd` is not a faster
+route to the same code, it is a different data REPRESENTATION: a packed `#f`/`#d` array is a
+`TYPE_VBLOCK` of v128 groups instead of an `$f32arr`/`$f64arr`, and every reader and writer of one
+has to know. Which primitives touch it is not enumerable by eye -- the `widen-float-bits` /
+`narrow-float-bits` trap shipped green with ci-spec cases, unit tests on all four backends and a
+green native run, and was found by an unrelated lane running an example. A subset chosen by
+judgement rebuilds exactly that hole one level up.
+
+**Measured 2026-09-06** (this box, native binary, 479 corpus cases; "fixed" is a five-form
+program, "marginal" is `(corpus - fixed) / 479`):
+
+| leg | fixed | corpus | marginal per case |
+|---|---|---|---|
+| interpret | 16 ms | 7117 ms | 14.8 ms |
+| compile-jvm | 170 ms | 9212 ms | 18.9 ms |
+| run-jvm | 90 ms | 3541 ms | 7.2 ms |
+| compile-wasm | 157 ms | 4254 ms | 8.5 ms |
+| run-wasm | 89 ms | 3624 ms | 7.4 ms |
+| compile-component | 155 ms | 4531 ms | 9.1 ms |
+| run-component | 69 ms | 4320 ms | 8.9 ms |
+
+**The premise that this run is fixed-cost-dominated is WRONG**: 746 ms of fixed cost across the
+four backends against 479 x 74.8 ms = 35.8 s of marginal, i.e. 2% of a pass. So a second pass
+really does cost a second pass, and the per-case `simd:` flag it rules out is worse than doubling
+rather than better -- the corpus is concatenated into ONE program per backend, so a per-case flag
+means one program per case: 479 x 746 ms ~ 6 minutes of process starts, per pass. Whole suite:
+**65.5 s -> 111.9 s** (2008 -> 4020 tests). Under 2x only because the same change dropped a
+duplicated compile: each WASM leg now inspects the module it is about to run
+(`requireRunnableModule`) instead of compiling a throwaway `guard.wasm` first.
+
+**`--simd` FAILS OPEN, so passing the flag is not evidence it did anything.** The CLI's
+`enableSimd` and the emitted `_simdInit` both warn on stderr and run the scalar kernels when
+`jdk.incubator.vector` is off the module graph, and the program's stdout is then byte-identical --
+measured, not assumed. `CiSpecE2eTest.assertSimdTookEffect` therefore asserts two things no output
+can show: the degrade warning is ABSENT from stderr (interpreter and JVM, the only paths with a
+fallback), and the emitted artifact DIFFERS from the scalar leg's (the JVM class and both wasm
+modules). The JVM leg's `java` launcher carries `--add-modules jdk.incubator.vector`, as
+`ExamplesE2eTest`'s does.
+
+Verified by breaking it three ways (2026-09-06), each with everything else left alone:
+
+- `.todo/692`'s bug reintroduced (`WasmFloat16Compiler`'s `if (ctx.simd)` forced false): RED on
+  `WASM --simd` and `WASM_COMPONENT --simd` (the run traps, exit 134) plus the
+  `widen-narrow-float-bits` standalone case on both. All eight scalar-leg cells green, no example
+  touched.
+- the JVM launcher's `--add-modules` removed: RED on `JVM --simd` only -- 3 cells, and all 479
+  output comparisons still green, which is the fail-open this guards.
+- the binary replaced by a `java -jar` wrapper without `--add-modules`: RED on `INTERPRETER --simd`
+  only (1 + 22 standalone).
+
+**`--no-gc` and `--parallel` are NOT axes here, for different reasons.**
+
+- `--no-gc` lowers a small subset of the language and REFUSES the rest, so it cannot compile the
+  corpus at all -- there is no second pass to run. Its axis is which programs it refuses and with
+  what message, which is a different question and lives in `NoGcWasmCompilerTest` /
+  `WasmLispCompilerIntegrationTest`'s `noGcRuns*UnderBothLowerings` family.
+- `--parallel` changes reduction ORDER, not representation. It splits the rows of kernels that
+  `--simd` already selected, adds no new data layout, and touches nothing outside those kernels, so
+  its blast radius is enumerable -- unlike `--simd`'s, which is every reader of a packed array.
+  It is pinned where that radius is (`JvmSimdParallelCompilerTest`: serial == parallel == widened;
+  the `parallel: true` example). It also requires `--simd`, is REFUSED on both wasm backends, and
+  would double only the two JVM-family legs. Revisit if a `--parallel` defect ever lands outside
+  the kernels.
+
 ## Tests
 
 - `eval/VecSimdTest` (every kernel vs the oracle at both widths, below/above `THRESHOLD`; the bf16
@@ -466,7 +543,8 @@ test input stays under `2^24`, and `ci-spec.yaml` never passes `--simd`.
   compares `--no-gc` against a wasm-GC run, not a constant, and surfaced a `WasmTreeShaker` gap: no
   case for the `0xFD` prefix, so `--no-gc --optimize` on ANY vec program threw "unhandled opcode
   0xFD". Scalar-builtin probes `{log,tanh,sinCosTan}SoftwareApproximation`, tolerance 1e-5.
-- ci-spec: `vec-kernels-cross-backend` (four backends byte-identical; f64-exact inputs so
+- ci-spec: the whole corpus runs on four backends x {default, `--simd`} (the axis above), plus
+  `vec-kernels-cross-backend` (four backends byte-identical; f64-exact inputs so
   `mean`/`norm` land on exact doubles, plus a square and a non-square `vec:matvec`),
   `vec-destination-passing-kernels`, `comparison-select-ufuncs-cross-backend-cases`,
   `log-tanh-exact-cross-backend-cases`, `sin-cos-tan-exact-cross-backend-cases`. Run the native
