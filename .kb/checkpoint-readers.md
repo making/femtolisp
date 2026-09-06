@@ -54,9 +54,12 @@ whole reason the width exists on the load path:
   (`.kb/binary-sequence-io.md`), so `checkpoint:stage-float-bits` takes the STREAM and
   widens 1M-element chunks with `widen-float-bits ... :start`. The last chunk needs a
   buffer of its own size — `widen-float-bits` widens the whole vector handed to it.
-- `make-array :element-type` does not signal on an unknown element type; it silently
-  answers a boxed general array. `checkpoint:make-tensor` is the ONE allocation path and
-  asserts `(array-element-type a)`.
+- `make-array :element-type` does not signal on an unknown element type; it answers a
+  boxed general array. That is DECIDED, not an oversight — SBCL answers the same and a
+  `deftype` may be registered after the reference, so there is nothing to signal against
+  (`.kb/array-literals.md`, "An UNKNOWN `:element-type` upgrades to `t`"). The
+  postcondition is therefore the caller's: `checkpoint:make-tensor` is the ONE allocation
+  path and asserts `(array-element-type a)`.
 
 ## safetensors
 `u64` LE header length; that many bytes of JSON (`"<name>": {"dtype", "shape",
