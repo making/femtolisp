@@ -1493,7 +1493,12 @@
                       :fill-pointer 0
                       :adjustable t))
          (start nil)
-         (pos 0))
+         (pos 0)
+         ;; positions the model itself sampled -- NOT positions spent feeding
+         ;; the prompt (or the chat template) back in. A rate over zero
+         ;; generated tokens is not a rate: a checkpoint that emits EOS at the
+         ;; first sampled position must not print one.
+         (generated 0))
     ;; run.c prints each token as it is fed back in, which never shows the
     ;; first one -- BOS, in every prompt it sees. A tokenizer that adds no BOS
     ;; (SmolLM2, Qwen) starts the prompt with a word, which is echoed here.
@@ -1514,6 +1519,7 @@
               ;; a stop token ends the answer -- when the model produced it; the
               ;; prompt's own <|im_end|> is just the prompt
               (when (and (not prompted) (member next stops)) (return))
+              (unless prompted (setq generated (+ generated 1)))
               ;; run.c echoes the prompt as it is consumed; a chat template is
               ;; not part of the answer, so -m chat prints the answer alone
               (unless (and prompted (string= *mode* "chat"))
@@ -1523,9 +1529,9 @@
               (setq token next)
               (unless start (setq start (get-internal-real-time)))))
     (terpri)
-    (when (and start (> pos 1))
+    (when (and start (> generated 0))
       (format *error-output* "achieved tok/s: ~,2f~%"
-       (/ (* (- pos 1) 1000.0) (max 1 (- (get-internal-real-time) start)))))))
+       (/ (* generated 1000.0) (max 1 (- (get-internal-real-time) start)))))))
 
 ;;; --- main ------------------------------------------------------------------------
 
@@ -1551,9 +1557,16 @@
           (or (getf model :chat)
               (and (tokenizer:token-id tk "<|im_start|>") *chatml*)))
          (prompt
-          (if (and (string= *mode* "chat") template)
-              (format nil template *prompt*)
-              *prompt*))
+          (cond ((and (string= *mode* "chat") template)
+                 (format nil template *prompt*))
+                ;; -m chat on a checkpoint with no chat template used to fall through to
+                ;; plain generation silently -- a well-formed answer to a different
+                ;; question, with no diagnostic. It is a usage error, not a default.
+                ((string= *mode* "chat")
+                 (error
+                  "~a has no chat template -- run with -m generate instead"
+                  *checkpoint*))
+                (t *prompt*)))
          (state (make-state model)))
     (format *error-output*
             "loaded ~a: dim=~a hidden=~a layers=~a heads=~a kv-heads=~a vocab=~a seq-len=~a weights=~a in ~a ms (tokenizer + kv cache ~a ms)~%"
