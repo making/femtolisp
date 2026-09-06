@@ -112,7 +112,7 @@ carry this item.
 | `486` | the backends that do not carry it must refuse it, and `--gpu`/BLAS must decline it | Low |
 | `487` | conversion and bulk width change: the bits pair, `coerce`, reading a bf16 file | Medium |
 | `488` | the fused bf16 GEMV / dot kernels -- where the 1.6x comes from | DONE 2026-09-05 |
-| `489` | the goal: a 1B-class model on rontolisp | High |
+| `489` | the goal: a 1B-class model on rontolisp | DONE 2026-09-06 |
 | `490` | bf16 on the device: `gemv_bf16`, the residency cap, the precision row | High |
 
 Order: 483 first (a pure refactor that makes every later site a compile error rather than a

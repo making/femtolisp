@@ -41,7 +41,7 @@ to 0.20x under C2 from an inlining cliff, so `.todo/488` takes its numbers under
 | `672` | the Q8_0 weight matrix and its integer-dot `vec:matvec` | High | **closed** 09-05; one-thread follow-up is `.todo/706` |
 | `675` | read a safetensors file (+ `config.json`) | Medium | reader done; the `#bf16` target was waiting on `487`, which closed 09-05 |
 | `677` | the Gated DeltaNet layer: Qwen3.5-0.8B, and every Qwen 3.5-3.8 dense model | High | runs from both formats; bf16 `tok/s` unblocked since `488` |
-| `489` | the model rungs: TinyLlama / SmolLM2, Qwen3-0.6B, LFM2.5-1.2B, Qwen3.5-0.8B | High | **f32 and bf16 measured on six models 09-05**; result and reading in `489`. The fused pairing is bf16 weights against f32 activations only, every other pairing declining to the scalar defun (`.todo/696`) |
+| `489` | the model rungs: TinyLlama / SmolLM2, Qwen3-0.6B, LFM2.5-1.2B, Qwen3.5-0.8B | **closed 09-06** | f32 and bf16 measured on six models 09-05; result and reading now in `examples/llm/README.md` and `.todo/history/2026-09.md`. The fused pairing is bf16 weights against f32 activations only, every other pairing declining to the scalar defun (`.todo/696`) |
 | `490` | bf16 on the device | High | not started; GB10 only |
 
 **Order: 671 -> 673 / 675 -> 674 -> 489 rung 0 at f32 -> 676 -> 678 -> 677 -> 487 -> 489 at
@@ -168,8 +168,10 @@ six models at both widths, the reading beside the prediction in `489`, the summa
 | A-4 | `677` the Gated DeltaNet layer | High | Runs from both formats already and the bf16 `tok/s` leg is unblocked, so the remaining work is this layer's own |
 | A-5 | `711` what a directory rename breaks outside its own diff | Medium | The `.kb` card owed from `708`'s account. Last deliberately: its value does NOT decay, because `708` holds its evidence durably, so it loses nothing by waiting behind work that does |
 
-**`489` stays OPEN until A-1** -- not because anything is unmeasured, but because closing it
-IS the sweep, and the lane that measured it was right to refuse to do that from a worktree.
+**`489` closed 09-06 (A-1)**: the child table above and `482`'s carry the closure; the
+sweep found no item gated on the capability rather than the number (rule 11) and none of
+the "blocked by 489" style dependency lines rule 1 asks about -- every other reference to
+`489` in this tree is a data citation, which a closed item keeps.
 
 **Orchestrator B -- GB10, the width chain and the device.** In order:
 
