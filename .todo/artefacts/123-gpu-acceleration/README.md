@@ -105,6 +105,7 @@ warm-up, and the sub-millisecond rows still move by ~20% run to run.
 | `ResidencyCliff.java` | (2026-09-06, todo-490 step 6) what a decode loop does when the model does NOT fit the residency budget: runs a program under a forced budget through the package-private `residentBudget` seam (reached reflectively in whichever copy of the library the run has) and lets the program print its tok/s, announcing the budget in force as soon as one is derived and the resident bytes, hit/miss, eviction and re-upload counts every five seconds on stderr. Since todo-716 it drives BOTH halves of the flag -- it looks for the class output's renamed `RontoLispGpuGpu` and for the interpreter's own `am.ik.gpu.Gpu`, so passing the exec jar and `am.ik.rontolisp.cli.RontoLispCli` runs the CLI under the same forced budget (usage in the file header). Answer: under the interceptors the budget is the lazy HEADROOM rule (the device less an eighth), so a 1.5 GB model never meets the 1 GB eager cap; forced below the model, the tokens degrade to the CPU rate and no further (the numbers: `examples/llm/README.md`, "bf16 weights on the device"). |
 | `decode-per-token.py` | (2026-09-06, todo-718) where a DECODE STEP goes on the device side: buckets an `nsys` sqlite export of an `examples/llm` run per forward pass -- the classifier-head launch is the boundary -- into kernel time by grid, copies by size and CUDA API time on the calling thread, medians over the steady forwards plus the whole timeline (usage in the header). Answer for Qwen3.5-0.8B at bf16: 7.5 ms of kernels and 11.9 ms of driver calls in a 45 ms forward, 102 MB of KV cache going up every token. Python, no GPU code of its own. |
 | `decode-jfr-agg.py` | (2026-09-06, todo-718) the HOST side of the same step: aggregates a JFR recording of the run (record at ONE thread, print with `--stack-depth 64`) by category -- residency guards, driver waits, lane kernels, Lisp loops -- and by the innermost Lisp function. Answer: under the flag 40% of the main thread's decode window is `materialize` / `written`, called per store from the typed loop over the DeltaNet state, so the three mixer functions cost ~30 ms a forward against 6.8 without the flag. Not a GPU program. |
+| `gemv-q4-probe.cu` + `Q4KernelProbe.java` | (2026-09-07, todo-726) the Q4 ceiling MEASURED instead of scaled from bytes: Q4_0 and Q8_0 GEMV kernels over ggml's own block layouts (16-bit loads, `L` lanes a block; a `_split` re-pack as the layout upper bound; `_dp` = the integer-dot shape over a Q8-quantized activation, `__dp4a`) against the shipped `gemv_bf16` / `gemv_f32`, as device-side kernel time (CUDA events) cold from DRAM -- the launch rotated over >= 256 MB of copies, since a decode step streams the whole model through the 24 MB L2 every token -- at the seven shapes a Qwen3.5-0.8B forward launches and with their counts, so the last table is GEMV ms a FORWARD at each width. Answer: bf16 7.6 / 7.0 ms (cold median / min; in situ 6.74), Q8_0 0.50-0.58 of it, Q4_0 0.24-0.33; the f32-x kernels lose to the x-side stride, the `_dp` ones reach 200-220 GB/s at the head. The write-up is "The Q4 ceiling, measured" below. |
 | `AccelerateProbe.java` | no GPU at all: a tuned BLAS is plain C, costs no dependency, and unlike Metal it has a double. How fast is it, is one PRESENT, and is the one that is present actually TUNED? Walks a candidate list (Accelerate, NVPL, OpenBLAS, MKL, distro `libblas`), identifies what it bound and prints a verdict against measured throughput. Runs on either machine -- the probe that reframes the Apple plan, and the one that stopped it being reframed the same way on Linux. |
 
 ## Running them
@@ -851,7 +852,75 @@ kernels are 7.5 of the 45; and a Q4 GEMV could shrink only the 6.8 ms of bf16 ke
 7.5 -- `.kb/gpu.md`, "What is deliberately NOT here". Follow-ups: `.todo/723` (the guards),
 `.todo/724` (the printed rate), `.todo/725` (the full-length cache -- closed 2026-09-06: the cache
 now grows with the position reached, the 100 MB a forward stopped going up and the arm went
-25.0 -> 18.5 ms; `.kb/gpu.md`).
+25.0 -> 18.5 ms; `.kb/gpu.md`), `.todo/726` (the Q4 refusal re-taken on the measurement below).
+
+### The Q4 ceiling, measured (2026-09-07, todo-726)
+
+`.todo/718` refused a Q4 weight width on the device from a byte ratio -- a Q4_0 matrix is 0.28 of
+a bf16 one, the bf16 GEMV was 6.8 ms of a 45 ms forward -- and wrote down that the share decays
+when the denominator does. It did: `723` and `725` took the forward to 18.5 ms with the kernels
+unmoved. `726` re-took it with two measurements on develop `01312e40` (the day's build; GraalVM
+25.0.4, JVM class output `--gpu --simd`, one thread, `-Xmx16g -m chat -t 0 -i` the cat prompt from
+the BF16 GGUF, load average under 1 before each run).
+
+**The kernels** (`Q4KernelProbe.java`, the full output in the header's command): device-side time
+of one launch, median and min over a rotation through >= 256 MB of copies ("cold") and over one
+copy ("hot", what a microbenchmark sees -- 13.5 us for the 12.6 MB `wqkv` from L2 against 60 from
+DRAM), every kernel within 2e-8 of its own double oracle relative to the row's sum of |terms|:
+
+```
+shape         x/fwd   bf16 cold med/min  in situ (718)   q8_0 best cold      q4_0 best cold        q4_0 GB/s
+248320x1024     1     2204 / 2184 us       2160 us       1214 (l2) 223 GB/s   664 (dp2) 215 GB/s
+6144x1024      18       60 /   57 us         57 us         35 (l2) 191         21.3 (dp2) 166
+3584x1024      48       40 /   36 us         33 us       21.7 (dp4) 179       13.5 (dp2) 153
+1024x3584      24       40 /   37 us         --          22.8 (dp4) 171       13.6 (dp2) 152
+1024x2048      24       26 /   23 us         --          13.4 (dp4) 167        8.4 (dp2) 140
+2048x1024      30       24 /   20 us         20 us       13.5 (l4)  165        8.4 (dp2) 141
+512x1024       12        9 /    4 us        7.5 us        6.1 (dp4)  91        4.4 (dp4)  67
+
+GEMV ms a forward (157 launches), cold median / cold min:
+f32 13.85 / 12.34    bf16 7.60 / 7.01    q8_0 4.37 / 3.50 (dp4)    q4_0 2.54 / 1.71 (dp2)
+```
+
+Three readings. (1) The cold method is the decode step's: the in-situ `nsys` durations of `718`
+fall between the probe's cold median and cold min at every shape (the rotation across 22-256
+distinct buffers pays a TLB the model's own pages, hot every token, do not). (2) **The f32-x
+kernels are not bandwidth-bound and the reason is the VECTOR, not the matrix**: a lane owning a
+block reads its 32 x's at a 128-byte stride from its neighbours -- 32 L1 transactions a load --
+so `q4_0_l1` and the `_split` layout (one 128-bit load a block, the best any layout can do on the
+weight side) sit at 60-68 GB/s while `l4` reaches 207 at the head; the `_dp` shape, x quantized
+to int8 per block as the CPU's Q8_0 contract already has it, reads 32 bytes a block as words the
+lanes of a block share and is the fastest at every shape -- **0.24-0.33 of bf16 for Q4_0 (bytes
+0.28), 0.50-0.58 for Q8_0 (bytes 0.53)**. (3) The floor shows only at 512 rows (64 blocks on 48
+SMs); at the layer shapes Q4_0 is at 140-170 GB/s, the head at 215.
+
+**The forward** (`slope.sh`: `LLAMA2_TRACE` counted the tokens, 64 and 256 generated every run;
+forward = (256 / rate256 - 64 / rate64) / 192):
+
+```
+                 n=64 tok/s    n=256 tok/s    ms a forward
+-w bf16  round 1   34.38         50.16          16.89
+         round 2   33.90         50.50          16.57
+-w f32   round 1   24.06         37.18          22.01
+         round 2   24.72         35.89          23.67
+```
+
+Twice the GEMV bytes cost the forward 5.1-7.1 ms; the kernel difference in the probe is 6.25
+cold-median, 5.5 scaled to the in-situ 6.74. **The arm is linear in the kernel time, one for one**
+-- every launch is on the critical path (the next host form reads its result) and nothing else in
+the forward moves with the width. So the projections are subtractions from 16.7 ms: Q4_0 saves
+6.74 x (1 - 0.24..0.33) = **4.5-5.1 ms -> 12.2 ms, 1.37-1.44x**; Q8_0 saves **2.7-3.4 -> 13.5 ms,
+1.20-1.25x**; and Q4_0 over a shipped Q8_0 is the difference, **1.4-1.8 ms, ~12%**.
+
+**The decision** (`.kb/gpu.md`, "No Q4_0 / Q4_K weight width"): the ceiling is real, and the
+refusal is now about ORDER. Q8_0 on the device (`.todo/728`) costs the device seam alone -- the
+type, reader, quantizer, oracle and CPU kernel exist, ggml-org ships the file, and today `--gpu`
+over it declines every GEMV to the CPU -- and takes 60% of the Q4_0 gain. Q4_0 stays refused
+behind it: its increment over Q8_0 is 1.4-1.8 ms a forward at the 8.5%-error width against the
+0.75% one, for the format's CPU arms on every backend. Re-take after `728`, against that
+increment; it flips on a model whose bf16 GEMV is the majority of its forward (this one's is 40%),
+or on a discrete card. ggml-org's Qwen3.5-0.8B set is BF16 / Q8_0 / plain Q4_0 -- no K-quants --
+which is one reader fewer for this model and none fewer for the width.
 
 ### The GEMV on Metal (2026-08-22, todo-477), same machine
 

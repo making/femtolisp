@@ -697,6 +697,13 @@ whole product declines to the CPU, where it costs 1.4 ms. Kernels a forward 7.48
 share of `matvecRowsF` -- the f32 GEMV, which on this model is the attention pair and nothing else --
 went from **13.9% (10.4 ms a forward) to 2.2% (1.4 ms)**.
 
+**The arm is linear in the kernel time, measured** (2026-09-07, `.todo/726`, same box, same
+checkpoint, same 256-minus-64 method, two rounds): 16.6-16.9 ms a forward at `-w bf16` against
+22.0-23.7 at `-w f32`, the same launches at twice the bytes -- 5.1-7.1 ms for a kernel difference
+of 5.5-6.3. So a narrower weight width buys the forward exactly what it takes off the kernels, and
+what Q4_0 and Q8_0 kernels take off, measured over ggml's block layouts at these seven shapes cold
+from DRAM, is the arithmetic of "No Q4_0 / Q4_K weight width" below (and `.todo/728`).
+
 **The route not taken is the finding.** `.todo/725` proposed a row-count argument on `vec:matvec`
 itself, "that every backend implements". The value cache is TRANSPOSED, so its half of the pair wants
 a COLUMN bound and not a row bound: one member, two kinds of bound, on four backends times `--simd`,
@@ -1336,13 +1343,33 @@ Each is a measured decline, and each needs this file's numbers before it is revi
   24. Against that ceiling: a fifth packed type on every backend with its scalar oracle, GGUF
   readers for the Q4_0 block AND the K-quant super-blocks (a Q4_K_M file also carries Q5_K and Q6_K
   tensors), the CPU fallback the flag needs (`--gpu` may not turn an answer into an error) which is
-  the 1.1x-f32 kernel the width was refused on, and `.todo/483`'s switches. **Trigger (a) has now
-  FULLY fired** (2026-09-06): `.todo/723` took the forward from 45-51 ms to 25 and `.todo/725` took
-  it to **18.5**, while the bf16 GEMV barely moved (6.73 ms a forward), so the same kernel time is
-  **36%** of the arm and a Q4 ceiling is **~26%** -- 4.8 ms of 18.5 -- against the same cost list,
-  on an arm that now LEADS `--simd --parallel` (18.5 against 21.6 ms a forward). That is the
-  condition this paragraph was written to be re-measured under, and the re-measurement is
-  `.todo/726`; the refusal STANDS until it is taken, because a ceiling is not a measurement.
-  Trigger (b) -- a discrete card with its own memory joining the two calibration machines, where
-  the upload IS the cost and residency the win, and this paragraph is unified-memory arithmetic --
-  is unchanged. The CPU half stays where `.todo/670` left it.
+  the 1.1x-f32 kernel the width was refused on, and `.todo/483`'s switches. Trigger (a) fired
+  when `.todo/723` and `.todo/725` took the forward from 45-51 ms to 18.5 while the bf16 GEMV
+  barely moved, and **`.todo/726` re-took the refusal on 2026-09-07 with a measurement instead of
+  a byte ratio** (GB10, `Q4KernelProbe.java` / `gemv-q4-probe.cu`: device-side kernel time of
+  Q4_0 and Q8_0 GEMV kernels over ggml's own block layouts, cold from DRAM, at the seven shapes
+  the forward launches and with their launch counts, against the shipped `gemv_bf16` in the same
+  harness; plus the forward re-measured at `-w f32` and `-w bf16` by the 256-minus-64 method).
+  The numbers: the forward is **16.6-16.9 ms a token at bf16 and 22.0-23.7 at f32**, so doubling
+  the GEMV bytes costs 5.1-7.1 ms against a kernel difference of 5.5-6.3 -- **the arm is linear
+  in the kernel time, one for one**, and what a kernel saves the forward saves. The best Q4_0
+  kernel (the integer-dot shape over a Q8-quantized activation, two lanes a block) is **0.24-0.33
+  of the bf16 kernel time a forward** (bytes say 0.28; it reaches 200-220 GB/s at the head and
+  140-170 at the layer shapes, and only the 512-row `wk`/`wv` stay at the floor), the best Q8_0
+  kernel 0.50-0.58 (bytes say 0.53). Over the 6.74 ms of bf16 GEMV a forward that is **4.5-5.1 ms
+  saved by Q4_0 -- a 12.2 ms forward, 1.37-1.44x -- and 2.7-3.4 saved by Q8_0 -- 13.5, 1.20-1.25x**.
+  So the ceiling is real and the refusal is now about ORDER, not size: **Q8_0 on the device is
+  `.todo/728`** -- the type, the GGUF reader, the quantizer, the scalar oracle and the CPU kernel
+  all exist (`.kb/quantized-matrix.md`), ggml-org ships the file, and today `--gpu` over that
+  file declines EVERY GEMV to the CPU -- so it costs the device seam alone (a `byte[]` in
+  `DeviceResidency`, one kernel, the bridge arm, a pin) and takes 60% of what Q4_0 would. Once it
+  is in, a Q4_0 arm rides the same seam and its INCREMENT is the measured 1.4-1.8 ms a forward
+  (the Q8_0 kernel 3.4-4.0 ms against Q4_0's 1.6-2.3), ~12% of the forward, for the 8.5%-error
+  width against the 0.75% one, plus the format's CPU arms. ggml-org's Qwen3.5-0.8B set is BF16,
+  Q8_0 and plain Q4_0 (no K-quants), which drops the super-block readers from THIS model's cost
+  but not from the width's. **New trigger: re-take after `.todo/728` ships, against that increment**;
+  it flips when a model whose bf16 GEMV time is the MAJORITY of its forward exercises the device
+  (this one's is 40%; the rest is the Gated DeltaNet host loops and 157 launch round trips), or on
+  trigger (b) -- a discrete card with its own memory joining the two calibration machines, where
+  the upload IS the cost and residency the win, and this paragraph is unified-memory arithmetic.
+  The CPU half stays where `.todo/670` left it.

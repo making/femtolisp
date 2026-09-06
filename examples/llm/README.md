@@ -584,6 +584,16 @@ itself. The value cache is TRANSPOSED, so its bound is a column bound and not a 
 for a caller that can express the same bound by allocating what it uses. The library
 surface is unchanged; `vec.lisp` and `.kb/vec.md` do not mention this at all.
 
+**What a narrower weight width would now buy the device arm, measured** (2026-09-07,
+`.todo/726`, same box and method, two rounds): the forward is 16.6-16.9 ms at `-w bf16`
+and 22.0-23.7 at `-w f32` -- the same 157 launches at twice the bytes cost 5.1-7.1 ms,
+against a kernel difference of 5.5-6.3 -- so the arm is linear in the GEMV kernel time,
+and a Q4_0 GEMV kernel measured at this model's shapes would take 4.5-5.1 ms off it
+(a ~12 ms forward, 1.4x), a Q8_0 one 2.7-3.4 (~13.5 ms, 1.2x). Q8_0 on the device is
+`.todo/728` -- the width the publisher's `Q8_0` file already loads at, whose GEMVs
+`--gpu` today declines to the CPU one and all; Q4_0 stays refused behind it, with the
+arithmetic in `.kb/gpu.md`, "What is deliberately NOT here".
+
 ## The layer table
 
 The one thing here that is not `run.c`: the forward pass is a **table of layer
