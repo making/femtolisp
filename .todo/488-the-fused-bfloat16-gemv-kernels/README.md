@@ -257,6 +257,16 @@ the shapes measured here* until someone widens it.
   4096x4096 above was two points on a hump landing near each other, not one ceiling
   (memory or machinery) binding both. Full sweep:
   `.todo/702-the-parallel-cap-is-the-machinery-or-memory-one-run-decides/README.md`.
+
+  **And the sweep disagrees with the table above at a shape they share.** 702 measures
+  60-64 Gelem/s at 1024x1024 on this same box where the parallel f32 column here recorded
+  41-42 -- a factor of 1.5 at an identical shape, reproducible across 702's three
+  back-to-back runs. So "two points on a hump" explains the 4096x4096 agreement (41-44
+  against 41-42) and does NOT explain the 1024x1024 one: that cell is simply lower here
+  than the kernel achieves. This is what "treat the parallel column as the noisy one"
+  above was warning about, now with a number on it. **Do not quote this table's parallel
+  f32 cells as rates**; the ratios within a run are what it measures. The single-threaded
+  columns are unaffected.
 - **On `dorian` the analogous figure is per-MODEL, not per-box.** Measured on a quiet
   machine 2026-09-05 at 32 threads: TinyLlama-1.1B 39 GB/s, Qwen3.5-0.8B 29, Qwen3-0.6B
   22 -- and the ordering was predicted from access shape (plain-llama's big matvecs above

@@ -72,15 +72,32 @@ Three independent routes reach it:
    byte-estimate-free and is the strongest.**
 2. Dorian's knee at f32 alone: 1 -> 32 threads is **4.37x** for LFM2.5 against **2.95x**
    for Qwen3.5.
-3. GB10 measuring 41-42 Gelem/s at BOTH 4.2 MB and 67 MB of weights, which a DRAM ceiling
-   has no reason to bind identically (`488`'s README).
+3. ~~GB10 measuring 41-42 Gelem/s at BOTH 4.2 MB and 67 MB of weights~~ -- **withdrawn
+   2026-09-06 by `.todo/702`.** There was no plateau to explain: the f32 parallel arm's
+   rate over shape is a HUMP, and the two cells that agreed were two points on it. Route 3
+   is not evidence for anything and is kept here only so a reader who met it elsewhere
+   knows it was retired.
 
 A cross-model GB/s comparison is NOT among them: it divides by an activation-blind
 parameter-count estimate that omits exactly Qwen3.5's recurrent state.
 
-**The clean discriminator is still unrun** and is now confirmatory rather than sole: a
-parallel f32 GEMV at 256x256, unambiguously cache-resident. Same rate means the machinery,
-with no model in it at all -- `.todo/702`.
+**The clean discriminator RAN, 2026-09-06** -- a parallel f32 GEMV size sweep from 256x256
+(0.26 MB, unambiguously cache-resident) to 4096x4096 (67 MB), no model in it at all, on a
+verified-quiet GB10. Neither of the two answers it was built to choose between:
+
+- **256x256: 13.1 Gelem/s, 0.89x its own SERIAL rate.** Machinery, unambiguously -- 20
+  threads get eight leaves at that row count, so most of them get no work.
+- **1024x1024 to 2048x2048: 48-69 Gelem/s**, well above the retired "ceiling".
+- **4096x4096: 41-44**, and 3072x3072 dips to 25-28 for reasons nobody has explained yet
+  (`.todo/713`).
+
+So the cap is real but it is not one number and not one mechanism: below ~500 rows the
+work is not cut finely enough to fill the box, above ~30 MB the bytes bind, and in between
+the kernel runs at 1.5x what was being quoted as the box's limit. Record and the
+leaf/grain arithmetic:
+`.todo/702-the-parallel-cap-is-the-machinery-or-memory-one-run-decides/README.md`.
+**Route 1 is untouched by this and is still the strongest leg** -- it compares a model
+against itself across a width change and never divides by a byte estimate.
 
 Carry one consequence: **a parallel GEMV rate is a property of how the work was cut up**,
 not of the machine and not of the weights. The 10x collapse seen while two lanes shared a
@@ -185,7 +202,7 @@ the "blocked by 489" style dependency lines rule 1 asks about -- every other ref
 | # | item | difficulty | why here, why now |
 | --- | --- | --- | --- |
 | B-1 | `708` the formatter corpus walks `.claude/worktrees/` | Low | **done 09-06** (`0e65326b`): the walk excludes `/.claude/` and `repositoryCorpusStaysWithinASmallFactorOfTrackedSources` pins the corpus to a small factor of `git ls-files`. The standing caveat is lifted -- see the certification record above. Do #3 (25 stale worktrees) was cleanup and stays undone |
-| B-2 | `702` is the parallel cap machinery or memory | Low | One benchmark on a cleared GB10. `489`'s knee-invariance already answers it at a second width, so this is no longer sole evidence -- but it is the only leg with NO model in it. Needs a verified-quiet box: load < 1.5, checked, not assumed |
+| B-2 | `702` is the parallel cap machinery or memory | Low | **done 09-06** (`070984ae`): neither, and there was no plateau -- the rate over shape is a hump. It cost route 3 above and left `.todo/713` (the 3072x3072 dip) behind |
 | B-3 | `707` `coerce` / `concatenate` drop a packed FLOAT element type | Medium | A live correctness defect at all three float widths, on the width chain B owns |
 | B-4 | `710` a closed item's artefacts and an open item share one namespace | Medium | The path-citation link check FIRST -- it is what makes the rename safe and earns its place alone. **Fold in the live duplicate: `338-ansi-conformance-the-ranked-gap.md` and `338-string-concat-renders-through-the-value-printer.md` are both open on one number**; `.todo/.history.md` says the later commit's side renumbers |
 | B-5 | `490` bf16 on the device | High | The last child of the width chain, and GB10 is the only box that can run it |
