@@ -40,7 +40,7 @@ to 0.20x under C2 from an inlining cliff, so `.todo/488` takes its numbers under
 | `678` | the LFM2 gated short-conv layer: LFM2.5-1.2B-Instruct | Medium | **closed** 09-05, byte-identical to `llama.cpp` |
 | `672` | the Q8_0 weight matrix and its integer-dot `vec:matvec` | High | **closed** 09-05; one-thread follow-up is `.todo/706` |
 | `675` | read a safetensors file (+ `config.json`) | Medium | **closed** 09-06; the reader's `#bf16` destination is now pinned across the two engines that have the width (`cli/SafetensorsBfloat16CompilePathTest`) |
-| `677` | the Gated DeltaNet layer: Qwen3.5-0.8B, and every Qwen 3.5-3.8 dense model | High | runs from both formats; bf16 `tok/s` unblocked since `488` |
+| `677` | the Gated DeltaNet layer: Qwen3.5-0.8B, and every Qwen 3.5-3.8 dense model | High | **closed** 09-06: the layer and its pin (`examples/llm/deltanet.lisp`, `deltanet-check.lisp` on all four backends with and without `--simd`) landed 09-03; its "Remaining" -- the bf16 and quiet-box `tok/s` rows -- was `489`'s lane's work and is in `examples/llm/README.md`. Re-verified at the close on `40a80f91`: one 64-token answer from safetensors and GGUF at f32 and bf16, 1 and 32 threads (eight runs, token for token) |
 | `489` | the model rungs: TinyLlama / SmolLM2, Qwen3-0.6B, LFM2.5-1.2B, Qwen3.5-0.8B | **closed 09-06** | f32 and bf16 measured on six models 09-05; result and reading now in `examples/llm/README.md` and `.todo/history/2026-09.md`. The fused pairing is bf16 weights against f32 activations only, every other pairing declining to the scalar defun (`.todo/696`) |
 | `490` | bf16 on the device | High | not started; GB10 only |
 
@@ -113,8 +113,17 @@ box is `.todo/697`'s mechanism, not a property of anything measured here.
 A measurement without its base commit, JIT, machine and load average is not comparable to
 another; a quiet window is per-box and each side takes its own.
 
-**Checkpoints, per box.** On **dorian**, `/home/administrator/models/`; what each file is
-lives in `.todo/677`'s "Checkpoint on dorian" block (rule 9). On **GB10**,
+**Checkpoints, per box.** On **dorian**, `/home/administrator/models/`: `qwen35/`
+(Qwen/Qwen3.5-0.8B: `config.json`, `model.safetensors.index.json`,
+`model.safetensors-00001-of-00001.safetensors` 1746942600 bytes sha256
+`04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696`, `tokenizer.json`,
+`tokenizer_config.json`), `qwen35-gguf/` (ggml-org: `Qwen3.5-0.8B-BF16.gguf` 1557662496
+`9a7bed4041b7975e0f71fa34670d1e9025213bc92905ac0db75d36c4fa3fa623`, `Qwen3.5-0.8B-Q8_0.gguf`
+833592096 `37ae482d336108d23516fa35e8e0c4126688d81018b87178a18d752a1357814f`), and beside
+them `lfm25/`, `lfm25-gguf/`, `qwen3-0.6b/`, `qwen3-0.6b-gguf/`, `smollm2-135m/`,
+`smollm2-135m-instruct/`, `smollm2-360m-instruct/`, `tinyllama/`, the three `stories15M` /
+`smollm2-135m-f16` GGUFs, and `tools/` (`llama.cpp`); the `677` block that used to name
+them was stale by a directory move (rule 9, verified 09-06 by the digests). On **GB10**,
 `/home/maki/models/qwen35-gguf/` and `qwen35-hf/`, hash-verified 09-05; the HF cache holds
 only `unsloth/Qwen3.8-Flash-Next-GGUF`, so any other GB10 lane re-fetches. None of it
 belongs in the repo, and `examples/llm/.gitignore` is what keeps the two `stories15M`
@@ -189,7 +198,7 @@ six models at both widths, the reading beside the prediction in `489`, the summa
 | A-1 | close `489` | Low | Done criteria met; the lane deliberately left closing to lane design. It needs the child table above, the `675` / `677` cross-references, and rule 11's sweep for items waiting on the CAPABILITY ("a 1B-class model runs at bf16"), which no grep for the number finds |
 | A-2 | `712` `-m chat` with no template answers a different question | Low | Cost twelve discarded timed runs and left a suspect pair of rows on develop. A runs every future rung, so A pays again until it is fixed. One condition plus a failing test on the checked-in `stories260K` |
 | A-3 | `675` read a safetensors checkpoint | Medium | **done 09-06**: nothing was left to BUILD -- `487` landed all five bullets of the `#bf16` target on 09-05 -- and what the audit found missing was a PIN. Every bf16 pin was one engine each (`make-array` with a runtime designator, the bulk `read-sequence`, and the reader itself interpreted only), so the reader COMPOSED of them could have diverged between `java -jar` and a compiled `.class` with nothing to catch it. `cli/SafetensorsBfloat16CompilePathTest` runs one program both ways over a three-dtype fixture and compares bit patterns. No lane code was written, so neither JIT cliff was in the path |
-| A-4 | `677` the Gated DeltaNet layer | High | Runs from both formats already and the bf16 `tok/s` leg is unblocked, so the remaining work is this layer's own |
+| A-4 | `677` the Gated DeltaNet layer | High | **done 09-06**: nothing was left to BUILD -- the two "Remaining" bullets were `489`'s rows (in the README since `b87aed25`) and `678`'s run (closed 09-05), so rule 3 sorts both as done-elsewhere, not blocked. The close re-ran the model on `40a80f91` (safetensors and GGUF, f32 and bf16, 1 and 32 threads: one text, eight runs; 1.87 -> 2.54-2.63 tok/s on one thread and 6.39 -> 8.11-8.61 on 32, idle loadavg 1.5 with the parallel rows over the previous run's decaying workers -- a ratio check, not a replacement for the README's quieter window) and the `deltanet` slice of `ExamplesE2eTest` (12 legs green). The dorian checkpoint inventory moved here with sizes and digests (rule 10) |
 | A-5 | `711` what a directory rename breaks outside its own diff | Medium | The `.kb` card owed from `708`'s account. Last deliberately: its value does NOT decay, because `708` holds its evidence durably, so it loses nothing by waiting behind work that does. **708 closed 09-06; its account is `git show 97c85518~:.todo/708-...md`** and `711` now carries that command |
 
 **`489` closed 09-06 (A-1)**: the child table above and `482`'s carry the closure; the
