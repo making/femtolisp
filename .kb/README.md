@@ -169,3 +169,4 @@ last read the file, and nothing fails -- these files have no tests.
 - [dists.md](dists.md) -- the download half of `ql:quickload`
 - [time-environment-builtins.md](time-environment-builtins.md) -- time/environment built-ins and the environment-enquiry family
 - [documentation-site.md](documentation-site.md) -- doc site layout, fence conventions, search index, build/preview
+- [directory-rename.md](directory-rename.md) -- moving a directory: the four things that break outside the rename's own diff (a location-scoped ignore rule, a citation vs. a member, a re-flowed javadoc line, a fixture lookup that turns into a skip) and the walk-defined corpus behind them
