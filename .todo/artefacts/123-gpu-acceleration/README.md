@@ -849,7 +849,9 @@ both arms), SILU-IN-PLACE -> _ivAset1 (boxed on both arms)
 So the same three Lisp functions are 6.8 ms a forward without the flag and ~30 with it; the device
 kernels are 7.5 of the 45; and a Q4 GEMV could shrink only the 6.8 ms of bf16 kernel time in that
 7.5 -- `.kb/gpu.md`, "What is deliberately NOT here". Follow-ups: `.todo/723` (the guards),
-`.todo/724` (the printed rate), `.todo/725` (the full-length cache).
+`.todo/724` (the printed rate), `.todo/725` (the full-length cache -- closed 2026-09-06: the cache
+now grows with the position reached, the 100 MB a forward stopped going up and the arm went
+25.0 -> 18.5 ms; `.kb/gpu.md`).
 
 ### The GEMV on Metal (2026-08-22, todo-477), same machine
 

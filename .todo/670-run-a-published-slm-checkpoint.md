@@ -23,7 +23,7 @@ are each 100% BF16 in `model.safetensors`; no current small model is f16.
 | **bf16** | THE width. 1.5-2.1x f32 on one thread (Graal / C2), 1.6x on 20; widening exact; every checkpoint is in it | `.todo/482` (483-490) |
 | **IEEE f16** | not a width -- a **load-time conversion** into `#f` / `#bf16`. A fused f16 GEMV is 0.30-0.58x on either JIT | `.todo/671` |
 | **Q8_0** (32 int8 + a scale) | a **read-only weight matrix** type with an integer-dot GEMV: 1.4-1.6x f32 on one thread under Graal and 1.7-1.9x under C2, 2.2-3.3x on 20, a quarter of f32's bytes | `.todo/672`, `.todo/706`, both closed |
-| **Q4_0 / Q4_K** | not a CPU item: the nibble unpack is ALU-bound at 5.7 GB/s (1.1x f32 for 8.5% error). **Refused on the device too** (2026-09-06, `718`, on a decode profile, not a pointer): the device arm's whole bf16 GEMV is 6.8 ms of a 45 ms forward, so the width's ceiling is under 10% of an arm that trails `--simd --parallel` 1.9x | `.kb/gpu.md`, "What is deliberately NOT here" -- the refusal and its two re-open triggers (`.todo/723`, `.todo/725` bring the host floor down; a discrete card) |
+| **Q4_0 / Q4_K** | not a CPU item: the nibble unpack is ALU-bound at 5.7 GB/s (1.1x f32 for 8.5% error). **Refused on the device too** (2026-09-06, `718`, on a decode profile, not a pointer) -- and its re-open trigger (a) FIRED the same week, `723` and `725` having taken the forward 45 -> 18.5 ms while the GEMV held at 6.7 | `.kb/gpu.md`, "What is deliberately NOT here" -- the refusal, the fired trigger and the arithmetic; the re-measurement is `.todo/726` |
 
 Two facts under all four: **the width is bandwidth, not fitting** -- 4.4 GB of f32 fits an
 8 GB laptop -- and **every kernel number is JIT-dependent**: the spike's fused kernel fell
@@ -289,7 +289,7 @@ denominator the next is measured against.
 | # | item | difficulty | why here, why now |
 | --- | --- | --- | --- |
 | B-1 | `723` `--gpu` puts a residency guard in front of every typed store, and two loops were never typed | Medium | **CLOSED 2026-09-06: the device forward halved, 51 -> 25 ms, and the arm now edges past `--simd --parallel` (26.7).** FIRST because it is the DENOMINATOR. The DeltaNet mixer costs 6.8 ms a forward on the `--simd` build and ~30 ms on `--gpu --simd` -- about 40% of the arm spent proving arrays are not on the device -- so until it is hoisted, every later measurement on this box is taken through a host arm inflated 4x and a before/after for B-2 or B-3 is a ratio of two wrong numbers. It is also the first of the two conditions `718` wrote down for reopening Q4 |
-| B-2 | `725` attention multiplies the full seq-len KV cache every token | Medium | Taken against B-1's corrected host: its ~6 ms is now a QUARTER of the device forward, not an eighth. Second because it is the same profile's other half and the only item in the lane that is a wrong SHAPE rather than a cost: the model scores 4096 cache rows when `pos` of them are non-zero and the rest is arithmetic over deliberate zeros. It pays on BOTH arms -- 8.9 ms of an 81 ms one-thread `--simd` forward, and 96 of the 102 MB the device arm uploads per token -- which makes it the one result here that A's box also sees. Taken through B-1's corrected host, not around it |
+| B-2 | `725` attention multiplies the full seq-len KV cache every token | Medium | **CLOSED 2026-09-06: 24.9 -> 18.5 ms a forward on the device arm, 88.4 -> 76.7 on one `--simd` thread, 26.3 -> 21.6 on sixteen; the 100 MB a forward stopped going up.** Taken against B-1's corrected host: its ~6 ms was a QUARTER of the device forward, not an eighth. The fix is in `examples/llm/llm.lisp`, NOT in `vec:` -- the cache grows with the position reached (`grow-kv-cache`), which bounds BOTH products, where the row-count argument this item proposed bounds only the keys: the value cache is transposed and wants a COLUMN bound. **A bound one operand of the pair cannot spell is a bound in the wrong place**, and the library surface is unchanged. It also fired the Q4 refusal's trigger (a) -> `.todo/726` |
 | B-3 | `476` `am.ik.gpu`'s downcalls go through the generic `MethodHandle` invoker | Medium | Last deliberately: it is ~8% of a step, it does not decay, and 8% of an inflated step is a different number from 8% of a corrected one, so its before/after is only worth taking once B-1 and B-2 have landed. The item files itself Low-Medium and the lane rounds UP -- the edit is mechanical (instance handles to `static final`, in `CudaDriver` and in `--blas`'s `LinalgBlasKernels` the same way) and the CLOSE is a profile, which is the half this box keeps finding costs the judgement |
 
 **Not in this lane, and why.** `514` (`LinalgGpuTest` never finishes on an Apple silicon
@@ -298,7 +298,9 @@ CUDA on aarch64 Linux. Parking it is not a deferral under rule 3 -- there is no 
 plan that can even fail it. `684` and `696` stay A's for their x64 halves.
 
 **Filed by this lane and handed to A's pool, never worked recursively:** `722` and `724`,
-both GPU-free, which is the partition doing its job.
+both GPU-free, which is the partition doing its job. `726` (B-2's own residue -- Q4 on the
+device, whose re-open trigger B-1 and B-2 fired between them) is B's, and is the one item in
+this plan whose ARRIVAL was written down in advance by the item that refused it.
 
 **The one decision still open, and not either lane's to take alone: `.todo/709` is an
 explicit DRAFT and needs co-signing or cutting by both orchestrators.** It is process, so

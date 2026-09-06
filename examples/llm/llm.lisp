@@ -79,9 +79,12 @@
 ;;;; classifier head, two thirds of the multiply-adds; the 288x288 projections
 ;;;; are a tie and stay on the CPU -- from their second token on, which is about
 ;;;; 1.3x on the JVM class output, with the story unchanged. The KV cache is laid
-;;;; out per head as in tiny-llm.lisp: keys row-major (seq-len x head-size),
-;;;; values TRANSPOSED (head-size x seq-len), so both halves of attention are a
-;;;; GEMV as well (too small for the device, and rewritten every token). Measured
+;;;; out per head as in tiny-llm.lisp: keys row-major (capacity x head-size),
+;;;; values TRANSPOSED (head-size x capacity), so both halves of attention are a
+;;;; GEMV as well (too small for the device, and rewritten every token) -- and
+;;;; the CAPACITY is the position the run has reached, doubled up from 32, not
+;;;; the model's whole context window (grow-kv-cache): a 4096-position window
+;;;; costs 96 MB a token of arithmetic over deliberate zeros. Measured
 ;;;; 2026-08-22 on an NVIDIA GB10 box (stories15M, the 222-token story above):
 ;;;;
 ;;;;   JVM        104 tok/s -> 336 tok/s with --simd -> 637 tok/s with --simd --parallel
@@ -1202,15 +1205,63 @@
                (setf (aref states (getf layer :slot))
                      (shortconv-state layer))))))))
 
+(defparameter *kv-cache-initial* 32)
+
+(defun kv-cache-capacity (state)
+  ;; How many positions the cache matrices hold right now; 0 for a model with no
+  ;; attention layer at all.
+  (let ((kc (getf state :kc)))
+    (if (= (car (array-dimensions kc)) 0)
+        0
+        (car (array-dimensions (aref kc 0 0))))))
+
+(defun grow-kv-cache (model state need)
+  ;; Hold exactly the positions the run has REACHED, not the model's whole
+  ;; context window: every cache matrix starts at *kv-cache-initial* rows and
+  ;; DOUBLES, so attention's two GEMVs cost O(pos) rather than O(seq-len). A
+  ;; 4096-position window is 4 MB a matrix and 96 MB a token of arithmetic over
+  ;; deliberate zeros; the doubling keeps the waste under 2x and leaves the
+  ;; product byte-identical, since the rows and columns it drops are zero and a
+  ;; row's dot depends on nothing but the row.
+  (let ((cap (kv-cache-capacity state)))
+    (when (and (> cap 0) (< cap need))
+      (let* ((kc (getf state :kc))
+             (vt (getf state :vt))
+             (dims (array-dimensions kc))
+             (n-cache (car dims))
+             (n-kv (cadr dims))
+             (hs (getf model :head-size))
+             (new-cap
+              (min (getf model :seq-len)
+                   (do ((c cap (* 2 c))) ((>= c need) c)))))
+        (dotimes (l n-cache)
+          (dotimes (h n-kv)
+            (let ((old-k (aref kc l h))
+                  (old-v (aref vt l h))
+                  (new-k
+                   (linalg:zeros (list new-cap hs) :element-type 'single-float))
+                  (new-v
+                   (linalg:zeros (list hs new-cap)
+                                 :element-type 'single-float)))
+              (dotimes (u cap)
+                (dotimes (i hs) (setf (aref new-k u i) (aref old-k u i))))
+              (dotimes (i hs)
+                (dotimes (u cap) (setf (aref new-v i u) (aref old-v i u))))
+              (setf (aref kc l h) new-k)
+              (setf (aref vt l h) new-v))))))))
+
 (defun make-state (model)
-  ;; The KV cache: per attention layer, per kv-head, keys (seq-len x hs)
-  ;; row-major and values (hs x seq-len) transposed -- see the header. Plus the
+  ;; The KV cache: per attention layer, per kv-head, keys (capacity x hs)
+  ;; row-major and values (hs x capacity) transposed -- see the header. The
+  ;; capacity grows with the position reached (grow-kv-cache), so a run that
+  ;; decodes 64 tokens never touches the other 4032 rows of the window. Plus the
   ;; RoPE tables, which every layer that rotates at all shares, and the
   ;; recurrent state of every :deltanet / :shortconv layer.
   (let* ((layers (getf model :layers))
          (n-cache (layer-kind-count layers :attention))
          (n-kv (getf model :n-kv-heads))
          (seq-len (getf model :seq-len))
+         (cap (min seq-len *kv-cache-initial*))
          (hs (getf model :head-size))
          (rot (getf model :rotary-dim))
          (theta (getf model :rope-theta))
@@ -1228,9 +1279,9 @@
     (dotimes (l n-cache)
       (dotimes (h n-kv)
         (setf (aref kc l h)
-              (linalg:zeros (list seq-len hs) :element-type 'single-float))
+              (linalg:zeros (list cap hs) :element-type 'single-float))
         (setf (aref vt l h)
-              (linalg:zeros (list hs seq-len) :element-type 'single-float))))
+              (linalg:zeros (list hs cap) :element-type 'single-float))))
     ;; RoPE: freq_i = 1 / theta^(2i/rotary-dim), angle = pos * freq_i
     (dotimes (pos seq-len)
       (dotimes (i half)
@@ -1241,7 +1292,6 @@
           :vt vt
           :rope-cos rope-cos
           :rope-sin rope-sin
-          :att (vec:zeros seq-len :element-type 'single-float)
           :recurrent (recurrent-states layers))))
 
 ;;; --- the pieces a layer is made of --------------------------------------------
@@ -1304,7 +1354,6 @@
          (l (getf layer :cache))
          (kc (getf state :kc))
          (vt (getf state :vt))
-         (att (getf state :att))
          (out (vec:zeros (getf model :q-dim) :element-type 'single-float))
          (qh (vec:zeros hs :element-type 'single-float))
          (inv-sqrt-hs (getf layer :scale)))
@@ -1319,11 +1368,13 @@
             (vth (aref vt l (floor h kv-mul)))
             (base (* h hs)))
         (dotimes (i hs) (setf (aref qh i) (aref q (+ base i))))
-        ;; every score at once: (K q) / sqrt(hs); positions past pos stay 0
-        (let ((scores (vec:matvec kch qh)) (top -1e30) (z 0.0))
-          ;; softmax over 0..pos into att (the rest of att is 0 = the causal mask)
+        ;; every score at once: (K q) / sqrt(hs); the cache rows past pos are
+        ;; zero, so their scores are +0.0 and the softmax below leaves them --
+        ;; which is the causal mask, and why the weights can share this vector
+        (let ((att (vec:matvec kch qh)) (top -1e30) (z 0.0))
+          ;; softmax over 0..pos, in place (the rest of att is 0 = the mask)
           (dotimes (u (+ pos 1))
-            (let ((sc (* (aref scores u) inv-sqrt-hs)))
+            (let ((sc (* (aref att u) inv-sqrt-hs)))
               (setf (aref att u) sc)
               (when (> sc top) (setq top sc))))
           (dotimes (u (+ pos 1))
@@ -1403,6 +1454,7 @@
 
 (defun forward (model state token pos)
   ;; -> the logits over the vocabulary
+  (grow-kv-cache model state (+ pos 1))
   (let ((x (embedding-row (getf model :emb) token (getf model :dim)))
         (layers (getf model :layers))
         (emb-mult (getf model :emb-mult))

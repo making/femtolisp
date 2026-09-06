@@ -476,14 +476,17 @@ otherwise the single-float kernel, at half the bytes a resident row streams -- 2
 against 4.3 for this model's 248320x1024 head, 229 GB/s ([the guide](../../doc/en/guides/gpu-acceleration.md)).
 Measured on the GB10 box (GraalVM 25, JVM class output, `-Xmx16g`, `-m chat -t 0 -n 64`
 on the cat prompt from the BF16 GGUF, three runs each, the 64 tokens byte-identical
-across all twenty-four). Re-measured whole on 2026-09-06 after `.todo/723`, load average
-under 1.8; it supersedes the `628c4048` table, which read 11.1-11.9 in both `--gpu`
-columns:
+across all forty-eight). Re-measured whole on 2026-09-06 after `.todo/725` bounded the KV
+cache to the position reached (below), the two arms interleaved run by run on one build
+pair, load average under 1.8; it supersedes the post-`.todo/723` table, which is the
+"before" row here:
 
 | Qwen3.5-0.8B | `--simd` | `--gpu --simd` | `--simd --parallel`, 16 threads | `--gpu --simd --parallel`, 16 |
 | --- | --- | --- | --- | --- |
-| `-w f32` | 6.3 / 5.9 / 5.8 | 19.1 / 19.5 / 19.9 | 17.1 / 17.2 / 17.0 | 20.0 / 20.5 / 20.8 |
-| `-w bf16` | 8.0 / 8.1 / 7.8 | 25.7 / 26.1 / 25.1 | 25.0 / 25.8 / 25.0 | 26.2 / 25.7 / 26.5 |
+| `-w f32`, before | 6.3 / 5.9 / 5.9 | 19.4 / 19.5 / 19.4 | 17.1 / 16.9 / 17.0 | 20.6 / 20.5 / 20.2 |
+| `-w f32`, after | 6.7 / 6.5 / 6.5 | 24.0 / 24.3 / 23.9 | 19.0 / 19.3 / 19.2 | 24.0 / 24.3 / 25.8 |
+| `-w bf16`, before | 7.9 / 8.1 / 8.1 | 26.2 / 26.5 / 24.2 | 25.5 / 23.9 / 25.7 | 27.6 / 27.2 / 27.1 |
+| `-w bf16`, after | 9.0 / 9.0 / 9.0 | 33.6 / 34.6 / 32.6 | 31.2 / 30.0 / 29.3 | 33.9 / 35.8 / 34.0 |
 
 Three readings. **The device leg is not GEMV-bound**: bf16 leads f32 by 1.3x with the
 flag, the same lever the CPU legs get, though the device streams half the bytes -- if the
@@ -498,8 +501,8 @@ prompt. Of the 45: the device kernels are 7.5 ms
 each waited for by the host form that reads its result; the driver calls on the calling
 thread 11.9 ms (7.9 in 229 downloads with the kernel waits inside them, 2.4 in 193 uploads
 -- 102 MB, the 24 KV-cache matrices at 4 MB each going up every token because they are
-written every token and read by four heads, `.todo/725` -- and 1.1 in launches and
-allocations); and this model's Gated DeltaNet loops on the host ~30 ms, where the same
+written every token and read by four heads, since closed by `.todo/725` below -- and 1.1
+in launches and allocations); and this model's Gated DeltaNet loops on the host ~30 ms, where the same
 three functions cost 6.8 ms without the flag -- the residency guards the flag put in
 front of every store of the 128x128 state and every element of the boxed convolution loop
 were 40% of the arm's samples.
@@ -544,6 +547,42 @@ line on standard error when it ends, naming the budget, what went up again after
 evicted and the hit and miss counts, on the interpreter and the compiled class alike
 (`.kb/gpu.md`, "A budget below the working set"). Nothing is printed while the budget
 holds, which on this box is every run.
+
+**`.todo/725`: the cache holds the positions the run has REACHED, and that is the
+"after" row of the table above** (2026-09-06, same box, same checkpoint, same method).
+`attention` scored the WHOLE cache every token -- 4096 rows of keys and 4096 columns of
+values a head, when `pos` of them are non-zero and the rest is arithmetic over deliberate
+zeros. The matrices now start at 32 positions and DOUBLE (`grow-kv-cache`), so both GEMVs
+cost O(`pos`) with the waste under 2x, and every token measured is byte-identical to what
+the full-length cache answered -- at 64 tokens, at 256 and at 1024, at `-w f32` and
+`-w bf16`, on the CPU arm and the device arm. Where it went, per forward pass:
+
+| Qwen3.5-0.8B, `-w bf16` | before | after |
+| --- | --- | --- |
+| `--simd`, 1 thread | 90.6 / 86.3 ms | 78.4 / 75.0 ms |
+| `--simd --parallel`, 16 | 26.8 / 25.9 ms | 20.5 / 22.8 ms |
+| `--gpu --simd`, 1 thread | 24.3 / 26.2 ms | 18.3 / 18.6 ms |
+| device: HtoD a forward | 193 copies, 102.0 MB, 2.3 ms of `cuMemcpyHtoD` | 97 copies, 0.74 MB, 0.26 ms |
+| device: kernels a forward | 7.48 ms, 229 launches (0.73 of f32 GEMV over the cache, 72 of them) | 6.74 ms, 157 launches, no f32 GEMV at all |
+| device: CUDA API on the calling thread | 10.55 ms | 8.15 ms |
+| CPU: `matvecRowsF` share (JFR, `--simd` 1 thread) | 13.9%, 10.4 ms a forward | 2.2%, 1.4 ms |
+
+Two readings. **The device stopped uploading the cache**: 100 of the 102 MB a forward were
+the 24 cache matrices, and a bounded matrix is under the member's 2^17-element threshold,
+so the attention GEMVs decline to the CPU lane kernel and cost 1.4 ms there instead of
+0.73 ms of kernel plus 2.3 ms of upload plus the first sights. **And the shape was worth
+more than any width**: the same edit is 1.15x on the one-thread CPU arm, 1.22x on the
+parallel one and 1.36x on the device arm, where a narrower weight width could only ever
+have shrunk the 6.8 ms of bf16 GEMV. The device arm's lead over `--simd --parallel` grows
+with it (18.5 against 21.6 ms a forward; 33.6 against 31.2 printed), which supersedes the
+"the two arms are now level" reading above it.
+
+The route NOT taken, since `.todo/725` proposed it: a row-count argument on `vec:matvec`
+itself. The value cache is TRANSPOSED, so its bound is a column bound and not a row bound
+-- one member would have needed two kinds of bound, on four backends times `--simd`,
+`--blas`, `--gpu`, `--parallel`, bf16 and Q8_0, plus a reference page in two languages --
+for a caller that can express the same bound by allocating what it uses. The library
+surface is unchanged; `vec.lisp` and `.kb/vec.md` do not mention this at all.
 
 ## The layer table
 
@@ -676,6 +715,15 @@ story byte-identical: `--gpu --simd` 449 -> 555 tok/s and `--gpu --simd --parall
 425 -> 551, medians of five and three interleaved runs against the same build. The other
 columns did not move (`--simd --parallel` 657 before and 654 after, same rounds), so the
 recommendation below is unchanged; the rest of the table is still 2026-08-22's.
+
+The four accelerated JVM cells moved again the same day, when `.todo/725` bounded the KV
+cache to the position reached (see the Qwen section above) -- before and after taken
+together, medians of three interleaved runs on one build pair, all eight stories
+byte-identical: `--simd` 346 -> 348 tok/s, `--simd --parallel` at `RONTOLISP_THREADS=20`
+611 -> 660, `--gpu --simd` 508 -> 524, `--gpu --simd --parallel` 481 -> 515. **This model
+is where the bound buys the least**: its window is 256 positions and the story is 222 of
+them, so the cache is near full for most of the run -- which is exactly why the same edit
+is 1.15-1.36x on Qwen3.5's 4096-position window. The recommendation is unchanged.
 
 Without `--parallel` every rontolisp backend decodes on ONE thread (the JVM
 still runs its own GC and JIT threads: ~3.1 s of CPU for a 1.4 s run); with it
