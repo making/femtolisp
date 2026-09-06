@@ -348,50 +348,58 @@ cases:
       (UNSIGNED-BYTE 8)
       #(1732584193 4023233417 2225363975 255870178 1578413049 1761846468 178639645 2993401642)
   - name: subseq-of-an-adjustable-packed-vector
-    # subseq of a SIMPLE packed vector (no fill pointer / adjustability) already keeps
-    # the packed element type on every backend (packed-integer-vectors above); an
-    # adjustable / fill-pointer packed vector is the general boxed representation
-    # instead (.kb/adjustable-arrays.md), and subseq's general-array arm used to build a
-    # plain simple-vector for it regardless of the width it remembers -- CLHS says
-    # subseq answers a sequence of the SAME KIND. The interpreter fix (.todo/698) makes
-    # every width -- (unsigned-byte 8), single-float, double-float -- come back packed,
-    # for the simple case too (a packed float subseq threw outright on the interpreter
-    # before this, since it had no arm for a packed float array at all). The JVM/WASM
-    # compilers still build a general vector here (%array-alike has no packed-float
-    # arm, and the general LispArray copy loop does not consult the source's packed
-    # width): tracked as a follow-up, not fixed alongside the interpreter.
+    # subseq answers a sequence of the SAME KIND (CLHS), and on every backend that now
+    # holds for every packed representation: a SIMPLE packed vector (packed-integer-
+    # vectors above pins the (unsigned-byte 8) case), a packed float array of either
+    # width, a fill-pointer / adjustable packed vector -- the general boxed
+    # representation that only REMEMBERS its width (.kb/adjustable-arrays.md) -- and a
+    # displaced view whose chain ends on a packed target. subseq's general-array arm
+    # used to build a plain simple-vector for the last two, and threw outright on a
+    # packed float array on the interpreter; the interpreter was fixed first
+    # (.todo/698) and the JVM / WASM %array-alike allocators after it (.todo/719),
+    # both keyed on the ELEMENT TYPE the source answers rather than its runtime class.
+    # No bfloat16 line: the wasm-GC backend has no packed bfloat16 representation.
     source: |
       (let ((sq698-b (make-array 4 :element-type '(unsigned-byte 8) :fill-pointer 0 :adjustable t)))
         (vector-push-extend 65 sq698-b)
         (vector-push-extend 66 sq698-b)
         (print (type-of (subseq sq698-b 0 2)))
         (print (rontolisp:octets-to-string (subseq sq698-b 0 (fill-pointer sq698-b)))))
+      (let ((sq698-h (make-array 4 :element-type '(unsigned-byte 16) :fill-pointer 0 :adjustable t)))
+        (vector-push-extend 65 sq698-h)
+        (print (type-of (subseq sq698-h 0 1))))
+      (let ((sq698-w (make-array 4 :element-type '(unsigned-byte 32) :fill-pointer 0 :adjustable t)))
+        (vector-push-extend 65 sq698-w)
+        (print (type-of (subseq sq698-w 0 1))))
       (let ((sq698-s (make-array 4 :element-type 'single-float :fill-pointer 0 :adjustable t)))
         (vector-push-extend 1.0 sq698-s)
         (vector-push-extend 2.0 sq698-s)
-        (print (type-of (subseq sq698-s 0 2))))
+        (print (list (type-of (subseq sq698-s 0 2)) (subseq sq698-s 0 2))))
+      (let ((sq698-a (make-array 4 :element-type 'double-float :fill-pointer 0 :adjustable t)))
+        (vector-push-extend 1.0d0 sq698-a)
+        (print (list (type-of (subseq sq698-a 0 1)) (subseq sq698-a 0 1))))
       (let ((sq698-d (make-array 3 :element-type 'double-float :initial-element 1.5d0)))
-        (print (type-of (subseq sq698-d 0 2))))
+        (print (list (type-of (subseq sq698-d 0 2)) (array-element-type (copy-seq sq698-d)) (subseq sq698-d 1))))
+      (let ((sq698-f (make-array 3 :element-type 'single-float :initial-element 1.5)))
+        (print (list (type-of (subseq sq698-f 0 2)) (subseq sq698-f 1))))
+      (let* ((sq698-t (make-array 4 :element-type '(unsigned-byte 8) :initial-contents '(1 2 3 4)))
+             (sq698-v (make-array 2 :element-type '(unsigned-byte 8) :displaced-to sq698-t :displaced-index-offset 1)))
+        (print (list (type-of (subseq sq698-v 0 2)) (subseq sq698-v 0 2))))
+      (let ((sq698-g (make-array 3 :fill-pointer 2 :initial-element 7)))
+        (print (list (type-of (subseq sq698-g 0 2)) (subseq sq698-g 0 2))))
       (print (rontolisp:octets-to-string (vector 65 66 67)))
     expected: |
       (SIMPLE-ARRAY (UNSIGNED-BYTE 8) (2))
       "AB"
-      (SIMPLE-ARRAY SINGLE-FLOAT (2))
-      (SIMPLE-ARRAY DOUBLE-FLOAT (2))
+      (SIMPLE-ARRAY (UNSIGNED-BYTE 16) (1))
+      (SIMPLE-ARRAY (UNSIGNED-BYTE 32) (1))
+      ((SIMPLE-ARRAY SINGLE-FLOAT (2)) #f(1.0 2.0))
+      ((SIMPLE-ARRAY DOUBLE-FLOAT (1)) #d(1.0))
+      ((SIMPLE-ARRAY DOUBLE-FLOAT (2)) DOUBLE-FLOAT #d(1.5 1.5))
+      ((SIMPLE-ARRAY SINGLE-FLOAT (2)) #f(1.5 1.5))
+      ((SIMPLE-ARRAY (UNSIGNED-BYTE 8) (2)) #(2 3))
+      ((SIMPLE-VECTOR 2) #(7 7))
       "ABC"
-    expectedByBackend:
-      jvm: |
-        (SIMPLE-VECTOR 2)
-        "AB"
-        (SIMPLE-VECTOR 2)
-        (SIMPLE-VECTOR 2)
-        "ABC"
-      wasm: |
-        (SIMPLE-VECTOR 2)
-        "AB"
-        (SIMPLE-VECTOR 2)
-        (SIMPLE-VECTOR 2)
-        "ABC"
   - name: make-array-element-type-deftype-alias
     source: |
       (deftype mae-octet () '(unsigned-byte 8))

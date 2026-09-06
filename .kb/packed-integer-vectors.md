@@ -12,8 +12,10 @@ Rank-n falls back for every specialized type except packed floats; CHARACTER deg
 - Interpreter `LispIntVector`: `int width` (8/16/32) + pre-masked `long[]`.
 - JVM: bare `long[]{width, e0, ...}`, `instanceof long[]` the free discriminator;
   `JvmIntArrayRuntimeBuilder` `_ivAref1`/`_ivAset1`/`_ivDims`/`_ivLength`/`_ivToGeneral`/
-  `_ivElementType`/`_ivMake`/`_ivAlike`/`_ivRequireGeneral`, gated on `Ctx.usesIntArray`
-  (gate off = byte-identical build); dispatch chains iv -> fv -> general.
+  `_ivElementType`/`_ivMake`/`_ivRequireGeneral`, gated on `Ctx.usesIntArray`
+  (gate off = byte-identical build); dispatch chains iv -> fv -> general. The
+  `%array-alike` allocator is NOT in this tier: it is the general group's `_arrayAlike`
+  ([subseq-runtime.md](subseq-runtime.md)).
 - wasm-GC: the BARE `TYPE_I8ARR`/`TYPE_I16ARR`/`TYPE_I32ARR`, `(array (mut i8|i16|i32))`,
   types 57-59 in ONE rec group (keeping i32 structurally distinct from `TYPE_LIMBS` under GC
   canonicalization); no wrapper, no dims, `ref.test` discriminates width. `TYPE_IV_SET` (60)
@@ -62,18 +64,19 @@ registry, the `concatenateBuiltin` arrangement); `JvmArrayCompiler.compileMake` 
   RESULT TYPE asks ([concatenate-result-families.md](concatenate-result-families.md));
   `reverse`, `remove`, `map 'vector` and printing return GENERAL everywhere, the interpreter's
   `seqResult` deliberately rebuilding general to match the compilers.
-  **On the interpreter this covers every packed width, including a fill-pointer /
-  adjustable packed vector** (a general `LispArray` that only REMEMBERS a packed
-  `elementTypeCode`, [adjustable-arrays.md](adjustable-arrays.md)): `subseq`'s general-array
-  arm and `%array-alike`'s interpreter definition both consult that field
-  (`Environment.packedCopyForElementType`), and `subseq` gained a `LispFloatArray` arm it
-  never had before -- previously it THREW on any packed float array, adjustable or not
-  (`.todo/698`, 2026-09-06). **The JVM and WASM compilers still do not**: their
-  `%array-alike` lowering only recognizes the runtime `long[]` (packed-int) marker, so a
-  packed float array (any of the three widths) or a general array remembering a packed
-  elementTypeCode degrades to a plain simple-vector on those two backends --
-  `ci-spec.yaml`'s `subseq-of-an-adjustable-packed-vector` pins the divergence via
-  `expectedByBackend`, and closing it is `.todo/719`.
+  **This covers every packed width on every backend, including a fill-pointer /
+  adjustable packed vector** (a general array that only REMEMBERS a packed element type,
+  [adjustable-arrays.md](adjustable-arrays.md)) and a displaced view whose chain ends on
+  a packed target: the interpreter's `subseq` general-array arm and `%array-alike` consult
+  `LispArray.elementTypeCode` (`Environment.packedCopyForElementType`; `subseq` gained a
+  `LispFloatArray` arm it never had -- it THREW on any packed float array before,
+  2026-09-06), and both compilers' `%array-alike` are keyed on the element type the
+  source ANSWERS rather than its runtime class ([subseq-runtime.md](subseq-runtime.md)).
+  Before that (until 2026-09-06) the JVM's `_ivAlike` tested only the `long[]` marker and
+  a float-only program did not emit it at all, and wasm's dispatch tested only the three
+  packed integer types, so a packed float subseq, or any adjustable packed vector's, came
+  back a plain simple-vector on those two backends. Pinned by ci-spec
+  `subseq-of-an-adjustable-packed-vector` with ONE `expected:` block.
 - Fill-pointer / `adjust-array` / displacement MUTATORS error (`requireGeneralArray` /
   `_ivRequireGeneral`); the read-only probes are an UNPINNED divergence (`nil`/`0` on the
   interpreter, error on JVM, trap on wasm) -- keep out of ci-spec. A packed vector IS a valid

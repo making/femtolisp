@@ -23,6 +23,38 @@ The STRING lane answers a MUTABLE CHARACTER VECTOR (`_subseqCv` JVM, `_subseq_st
   array"; `JvmLispCompiler.programUsesAnyArrayOp` is that list plus its `concatenate` term.
 - `%schar-set-runtime` stays spelled `%subseq-core`, not `%subseq-runtime`.
 
+## `%array-alike` -- the copy is the SAME KIND as the source
+**Invariant: `(%array-alike seq n)` answers a fresh zero-filled rank-1 array whose element
+type is `(array-element-type seq)`, on all four backends, whichever representation `seq`
+is in** -- a packed integer vector, a packed float array (every width the backend has), a
+fill-pointer / adjustable vector that only REMEMBERS a packed width, or a displaced view
+whose chain ends on any of those. Keyed on the ELEMENT TYPE, never on the runtime class:
+a class test per representation is exactly what let the adjustable and float shapes fall
+through to a general vector on the two compilers until 2026-09-06 (`.todo/719`), while a
+`(unsigned-byte 8)` `long[]` alone was recognized.
+- Interpreter: `Environment`'s `%array-alike` (`packedCopyForElementType`).
+- JVM: ONE helper, `_arrayAlike` in the general array group (`JvmArrayRuntimeBuilder`),
+  always emitted with the group: it calls `_arrayElementType` (which already hops a
+  displaced chain and reads a packed target's width) and switches on the VALUE -- the
+  `(unsigned-byte w)` cons, the three float width names via `JvmPackedFloatWidth` (the
+  one owner of the packed header layout), else `_arrayMake`. There is no `_ivAlike` /
+  `_fvAlike` tier and no per-gate routing at the site; the produced representation can
+  only be one the program's gates already emit accessors for, since the element type
+  came from a `make-array` those same scans saw.
+- wasm: `WasmArrayCompiler.compileArrayAlike`, inline at the one site (the
+  `%subseq-runtime` defun). `emitAlikeKey` resolves the KEY first -- a packed value is
+  its own; a general array is walked to its chain end, a packed end becoming the key and
+  a buckets-backed end leaving its meta MARKER word -- then one dispatch: the key's type
+  for the packed families (a farray's width is its data type, under `--simd` the vblock's
+  kind word), the marker for the remembered widths (arms gated on `Ctx.typedArrayCodes`
+  like `emitRememberedElementType`'s), the general vector last.
+- A character element type is the general vector on every backend: a rank-1 character
+  array is a string and `subseq`'s `stringp` arm answers for it before `%array-alike`.
+- Pins: `JvmLispCompilerTest` / `WasmLispCompilerIntegrationTest`
+  `compileSubseqOfAPackedFloatArrayKeepsTheWidth` +
+  `compileSubseqOfAnAdjustablePackedVectorKeepsTheWidth` (the wasm pair runs `--simd`
+  too), ci-spec `subseq-of-an-adjustable-packed-vector`.
+
 ## `_arr_get` / `_arr_set` -- wasm runtime functions
 - A general array's field 0 is the header cons `(dims . (meta . data))`; a cell `data` means a
   DISPLACED VIEW, so a read adds the view offset and continues at the target's header, repeatedly.

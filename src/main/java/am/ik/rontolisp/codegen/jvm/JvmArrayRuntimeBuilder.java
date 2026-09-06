@@ -231,6 +231,19 @@ final class JvmArrayRuntimeBuilder {
 
 	static final String ADOPT_ELEMENT_TYPE_DESC = "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;";
 
+	/**
+	 * {@code _arrayAlike(seq, n) -> Object}: the {@code %array-alike} allocator -- a
+	 * fresh zero-filled rank-1 array of length {@code n} of the SAME KIND as {@code seq},
+	 * keyed on {@link #ELEMENT_TYPE}'s answer rather than on {@code seq}'s runtime class:
+	 * a packed integer vector, a packed float array, a fill-pointer / adjustable vector
+	 * that only REMEMBERS a packed width, and a displaced view over any of them all
+	 * answer the same element type and so get the same packed result. What keeps
+	 * {@code subseq} / {@code copy-seq} type-preserving ({@code .kb/subseq-runtime.md}).
+	 */
+	static final String ALIKE = "_arrayAlike";
+
+	static final String ALIKE_DESC = "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;";
+
 	static final String ELEMENT_TYPE_DESC = "(Ljava/lang/Object;)Ljava/lang/Object;";
 
 	static final String DEFAULT_ELEMENT_DESC = "(Ljava/lang/Object;)Ljava/lang/Object;";
@@ -299,7 +312,7 @@ final class JvmArrayRuntimeBuilder {
 			TO_DISPLAY_STRING, FILL_POINTER, SET_FILL_POINTER, HAS_FILL_POINTER, ADJUSTABLE_ARRAY_P, VECTOR_PUSH,
 			VECTOR_POP, VECTOR_PUSH_EXTEND, MAKE_DISPLACED, UNDISPLACE, RM_GET, RM_SET, ARRAY_BECOME, DISP_TARGET,
 			DISP_OFFSET, CHAR_VEC_MAKE, STRV, STR_TO_CHAR_VEC, SUBSEQ_CV, TO_MUT_STR, WIDEN, MAKE_TYPED, ELEMENT_TYPE,
-			DEFAULT_ELEMENT, ADOPT_ELEMENT_TYPE, CHECK_RANK);
+			DEFAULT_ELEMENT, ADOPT_ELEMENT_TYPE, ALIKE, CHECK_RANK);
 
 	/** An array helper method body ready to be emitted into the generated class. */
 	record ArrayMethod(Utf8Constant name, Utf8Constant desc, int maxStack, int maxLocals, List<Integer> code) {
@@ -2144,6 +2157,89 @@ final class JvmArrayRuntimeBuilder {
 		ad.areturn();
 		methods.add(new ArrayMethod(cp.addUtf8(ADOPT_ELEMENT_TYPE), cp.addUtf8(ADOPT_ELEMENT_TYPE_DESC), 7, 5,
 				ad.finish()));
+
+		// _arrayAlike(seq, n): a fresh zero-filled rank-1 array of length n of the same
+		// KIND as seq. The kind is _arrayElementType's answer, not seq's runtime class:
+		// that one call already tells a packed long[] / double[] / float[] / short[], a
+		// general array that only REMEMBERS a packed width (a fill-pointer / adjustable
+		// packed vector, .kb/adjustable-arrays.md) and a displaced view over either of
+		// them apart from a plain vector, in the value shape _arrayMakeTyped stores --
+		// the cons {"UNSIGNED-BYTE", {Long width, null}} for an integer width, the name
+		// string for a float width, "T" or a name that is not a packed width for the
+		// general vector (a rank-1 character array never reaches here: subseq's stringp
+		// arm answers for it first). The interpreter's %array-alike is keyed the same
+		// way (Environment.packedCopyForElementType). Locals: 0 = seq, 1 = n, 2 = et,
+		// 3 = ni, 4 = arr, 5 = k.
+		MethodrefConstant selfElementTypeForAlike = cp.addMethodref(selfClass,
+				cp.addNameAndType(cp.addUtf8(ELEMENT_TYPE), cp.addUtf8(ELEMENT_TYPE_DESC)));
+		JvmAsm al = new JvmAsm();
+		int alNotInt = al.label();
+		al.aload(0);
+		al.invokestatic(selfElementTypeForAlike);
+		al.astore(2);
+		al.aload(1);
+		al.checkcast(longClass);
+		al.invokevirtual(longIntValue);
+		al.istore(3);
+		// (unsigned-byte w): a long[]{w, 0...} -- the width word is the cons's cadr.
+		al.aload(2);
+		al.instanceOf(objectArrayClass);
+		al.branch(Opcode.IFEQ, alNotInt);
+		al.iload(3);
+		al.iconst(1);
+		al.op(Opcode.IADD);
+		al.newarrayLong();
+		al.astore(4);
+		al.aload(4);
+		al.iconst(0);
+		al.aload(2);
+		al.checkcast(objectArrayClass);
+		al.iconst(1);
+		al.aaload();
+		al.checkcast(objectArrayClass);
+		al.iconst(0);
+		al.aaload();
+		al.checkcast(longClass);
+		al.invokevirtual(longLongValue);
+		al.lastore();
+		al.aload(4);
+		al.areturn();
+		al.bind(alNotInt);
+		// A float width: the backing at that width with a fresh rank-1 header, laid out
+		// by JvmPackedFloatWidth -- the one place that knows each width's header.
+		for (JvmPackedFloatWidth w : JvmPackedFloatWidth.values()) {
+			int next = al.label();
+			al.ldcString(cp.addString(switch (w) {
+				case DOUBLE -> am.ik.rontolisp.LispNames.DOUBLE_FLOAT;
+				case SINGLE -> am.ik.rontolisp.LispNames.SINGLE_FLOAT;
+				case BFLOAT16 -> am.ik.rontolisp.LispNames.BFLOAT16;
+			}));
+			al.aload(2);
+			al.invokevirtual(stringEquals);
+			al.branch(Opcode.IFEQ, next);
+			al.iload(3);
+			al.iconst(w.dataOffset(1));
+			al.op(Opcode.IADD);
+			w.newBacking(al);
+			al.astore(4);
+			al.aload(4);
+			al.iconst(1);
+			w.storeRank(al);
+			al.iconst(0);
+			al.istore(5);
+			w.storeDim(al, 4, 5, 3);
+			al.aload(4);
+			al.areturn();
+			al.bind(next);
+		}
+		// Anything else: the general nil-filled vector.
+		al.aload(1);
+		al.aconstNull();
+		al.aconstNull();
+		al.aconstNull();
+		al.invokestatic(selfArrayMake);
+		al.areturn();
+		methods.add(new ArrayMethod(cp.addUtf8(ALIKE), cp.addUtf8(ALIKE_DESC), 6, 6, al.finish()));
 
 		// _strv(o): normalizes a mutable character vector (a length-4-header array whose
 		// elements are runtime CHARACTERs -- length-1 int[]{codePoint}) into the

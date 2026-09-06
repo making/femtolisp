@@ -18007,6 +18007,18 @@ class WasmLispCompilerIntegrationTest {
 	// members -- zeros/ones/arange/aref/length/mean/norm/to-list -- and the whole linalg:
 	// surface keep running as defuns over the packed representation even under --simd;
 	// only the vectorizable kernels are intercepted).
+	// The --simd twin of compileAndRunPrelude: the prelude splice (type-of is a prelude
+	// defun) compiled with the vblock packed-float representation, for a program that
+	// reads a packed array through the generic array surface rather than vec:.
+	private static String compileAndRunSimdPrelude(String lispCode) throws Exception {
+		List<LispVal> program = am.ik.rontolisp.eval.LispPreludeLibrary.process(LispReader.readAllFromString(lispCode));
+		byte[] wasmBytes = new WasmLispCompiler(false, false, false, OptimizeLevel.NONE, false, true).compile(program);
+		wasmtime.copyFileToContainer(Transferable.of(wasmBytes), path("test.wasm"));
+		ExecResult result = wasmtime.execInContainer("wasmtime", "run", "--wasm", "gc", path("test.wasm"));
+		assertThat(result.getExitCode()).as("exit code (simd): %s\nstderr: %s", lispCode, result.getStderr()).isZero();
+		return result.getStdout().trim();
+	}
+
 	private static String compileAndRunVec(String lispCode, boolean simd, String... extraFlags) throws Exception {
 		List<LispVal> program = am.ik.rontolisp.eval.VecLibrary
 			.process(am.ik.rontolisp.eval.LinalgLibrary.process(LispReader.readAllFromString(lispCode)));
@@ -21231,6 +21243,74 @@ class WasmLispCompilerIntegrationTest {
 				  (replace dst src)
 				  (print dst))
 				""")).isEqualTo("#(44 2 3)");
+	}
+
+	@Test
+	void compileSubseqOfAPackedFloatArrayKeepsTheWidth() throws Exception {
+		// %array-alike over a packed float array: the copy comes back a TYPE_FARRAY at
+		// the SAME width. It used to come back a general simple-vector -- the alike
+		// dispatch tested only the three packed integer types (.todo/719). Under --simd
+		// the data is a vblock and the width is its kind word, so the same program runs
+		// on both representations.
+		String source = """
+				(let ((d (make-array 3 :element-type 'double-float :initial-element 1.5d0)))
+				  (print (list (type-of (subseq d 0 2)) (array-element-type (copy-seq d)) (subseq d 1))))
+				(let ((s (make-array 3 :element-type 'single-float :initial-element 1.5)))
+				  (print (list (type-of (subseq s 0 2)) (subseq s 1))))
+				""";
+		String expected = """
+				((SIMPLE-ARRAY DOUBLE-FLOAT (2)) DOUBLE-FLOAT #d(1.5 1.5))
+				((SIMPLE-ARRAY SINGLE-FLOAT (2)) #f(1.5 1.5))""";
+		assertThat(compileAndRunPrelude(source)).isEqualTo(expected);
+		assertThat(compileAndRunSimdPrelude(source)).isEqualTo(expected);
+	}
+
+	@Test
+	void compileSubseqOfAnAdjustablePackedVectorKeepsTheWidth() throws Exception {
+		// A fill-pointer / adjustable packed vector is the general boxed representation
+		// that only REMEMBERS its width in the meta marker word
+		// (.kb/adjustable-arrays.md), so %array-alike reads the marker rather than the
+		// runtime type -- every width of both packed families this backend has. The
+		// masked store proves the copy really is packed.
+		String source = """
+				(let ((v (make-array 4 :element-type '(unsigned-byte 8) :fill-pointer 0 :adjustable t)))
+				  (vector-push-extend 65 v)
+				  (vector-push-extend 66 v)
+				  (let ((s (subseq v 0 2)))
+				    (setf (aref s 0) 300)
+				    (print (list (type-of s) s))))
+				(let ((v (make-array 4 :element-type '(unsigned-byte 16) :fill-pointer 0 :adjustable t)))
+				  (vector-push-extend 65 v)
+				  (print (type-of (subseq v 0 1))))
+				(let ((v (make-array 4 :element-type '(unsigned-byte 32) :fill-pointer 0 :adjustable t)))
+				  (vector-push-extend 65 v)
+				  (print (type-of (subseq v 0 1))))
+				(let ((v (make-array 4 :element-type 'single-float :fill-pointer 0 :adjustable t)))
+				  (vector-push-extend 1.0 v)
+				  (vector-push-extend 2.0 v)
+				  (print (list (type-of (subseq v 0 2)) (subseq v 0 2))))
+				(let ((v (make-array 4 :element-type 'double-float :fill-pointer 0 :adjustable t)))
+				  (vector-push-extend 1.0d0 v)
+				  (print (list (type-of (subseq v 0 1)) (subseq v 0 1))))
+				(let* ((tgt (make-array 3 :element-type 'double-float :initial-element 2.5d0))
+				       (view (make-array 2 :element-type 'double-float :displaced-to tgt :displaced-index-offset 1)))
+				  (print (list (type-of (subseq view 0 2)) (subseq view 0 2))))
+				(let ((g (make-array 3 :fill-pointer 2 :initial-element 7))
+				      (c (make-array 3 :element-type 'character :fill-pointer 2 :initial-element #\\a)))
+				  (print (list (type-of (subseq g 0 2)) (subseq g 0 2) (type-of (subseq c 0 2)) (subseq c 0 2))))
+				""";
+		// The displaced view answers its chain end's element type, so its subseq is
+		// packed too; a plain fill-pointer vector and a character vector are unchanged.
+		String expected = """
+				((SIMPLE-ARRAY (UNSIGNED-BYTE 8) (2)) #(44 66))
+				(SIMPLE-ARRAY (UNSIGNED-BYTE 16) (1))
+				(SIMPLE-ARRAY (UNSIGNED-BYTE 32) (1))
+				((SIMPLE-ARRAY SINGLE-FLOAT (2)) #f(1.0 2.0))
+				((SIMPLE-ARRAY DOUBLE-FLOAT (1)) #d(1.0))
+				((SIMPLE-ARRAY DOUBLE-FLOAT (2)) #d(2.5 2.5))
+				((SIMPLE-VECTOR 2) #(7 7) STRING "aa")""";
+		assertThat(compileAndRunPrelude(source)).isEqualTo(expected);
+		assertThat(compileAndRunSimdPrelude(source)).isEqualTo(expected);
 	}
 
 	@Test

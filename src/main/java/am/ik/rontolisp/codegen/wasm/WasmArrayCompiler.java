@@ -530,10 +530,20 @@ final class WasmArrayCompiler {
 		ctx.writer.write(Instruction.END);
 	}
 
-	// (%array-alike seq n): a fresh zero-filled rank-1 array of length n with the SAME
-	// representation as seq -- a packed integer vector yields a packed vector of the
-	// same width, anything else a general (nil-filled) vector. The subseq vector
-	// lowering allocates through this.
+	// (%array-alike seq n): a fresh zero-filled rank-1 array of length n of the SAME
+	// KIND as seq -- packed at seq's width when seq is a packed integer vector or a
+	// packed float array, when it is a general array that only REMEMBERS a packed width
+	// (a fill-pointer / adjustable packed vector, .kb/adjustable-arrays.md), or when it
+	// is a displaced view whose chain ends on either; a general (nil-filled) vector
+	// otherwise. The subseq vector lowering allocates through this, which is what keeps
+	// subseq / copy-seq type-preserving on every backend (.kb/subseq-runtime.md).
+	//
+	// The kind is read in two steps. First the KEY: the packed value itself, or for a
+	// general array the chain end of its displacement walk -- a packed target becomes
+	// the key, and a buckets-backed end leaves its meta MARKER word instead. Then one
+	// dispatch: the key's runtime type for the two packed families, the marker for the
+	// remembered widths (gated per code on Ctx.typedArrayCodes exactly as
+	// emitRememberedElementType's arms are), and the general vector last.
 	static void compileArrayAlike(LispCons cons, WasmLispCompiler.Ctx ctx) {
 		requireArgs(cons, 3, "%array-alike expects a sequence and a length");
 		List<LispVal> args = cons.toList();
@@ -541,30 +551,82 @@ final class WasmArrayCompiler {
 		int seqSlot = setTemp(ctx);
 		WasmExprCompiler.compileExpr(args.get(2), ctx);
 		int nSlot = setTemp(ctx);
-		testIntVector(ctx, seqSlot);
-		emitIfEq(ctx);
+		int keySlot = ctx.allocTemp();
 		getLocal(ctx, seqSlot);
+		setLocal(ctx, keySlot);
+		int markerSlot = ctx.allocTemp();
+		i32Const(ctx, 0);
+		boxI31(ctx);
+		setLocal(ctx, markerSlot);
+		emitAlikeKey(ctx, seqSlot, keySlot, markerSlot);
+		testIntVector(ctx, keySlot);
+		emitIfEq(ctx);
+		getLocal(ctx, keySlot);
 		ctx.writer.write(Instruction.GC_PREFIX, Instruction.REF_TEST);
 		ctx.writer.writeHeapType(WasmLispCompiler.TYPE_I8ARR);
 		emitIfEq(ctx);
-		getLocal(ctx, nSlot);
-		WasmEmitHelper.castI31GetS(ctx);
-		intArrNewDefault(ctx, WasmLispCompiler.TYPE_I8ARR);
+		emitIntVectorNew(ctx, nSlot, WasmLispCompiler.TYPE_I8ARR);
 		ctx.writer.write(Instruction.ELSE);
-		getLocal(ctx, seqSlot);
+		getLocal(ctx, keySlot);
 		ctx.writer.write(Instruction.GC_PREFIX, Instruction.REF_TEST);
 		ctx.writer.writeHeapType(WasmLispCompiler.TYPE_I16ARR);
 		emitIfEq(ctx);
-		getLocal(ctx, nSlot);
-		WasmEmitHelper.castI31GetS(ctx);
-		intArrNewDefault(ctx, WasmLispCompiler.TYPE_I16ARR);
+		emitIntVectorNew(ctx, nSlot, WasmLispCompiler.TYPE_I16ARR);
 		ctx.writer.write(Instruction.ELSE);
-		getLocal(ctx, nSlot);
-		WasmEmitHelper.castI31GetS(ctx);
-		intArrNewDefault(ctx, WasmLispCompiler.TYPE_I32ARR);
+		emitIntVectorNew(ctx, nSlot, WasmLispCompiler.TYPE_I32ARR);
 		ctx.writer.write(Instruction.END);
 		ctx.writer.write(Instruction.END);
 		ctx.writer.write(Instruction.ELSE);
+		testFarray(ctx, keySlot);
+		emitIfEq(ctx);
+		// The width is the key's own: the data array's type, or under --simd the
+		// vblock's kind word -- the same read emitPackedElementTypeValue makes.
+		if (ctx.simd) {
+			vblockKind(ctx, keySlot);
+			int kindSlot = ctx.allocTemp();
+			boxI31(ctx);
+			setLocal(ctx, kindSlot);
+			emitFarrayNew(ctx, nSlot, () -> {
+				getLocal(ctx, kindSlot);
+				WasmEmitHelper.castI31GetS(ctx);
+			});
+		}
+		else {
+			farrayField(ctx, keySlot, 1);
+			ctx.writer.write(Instruction.GC_PREFIX, Instruction.REF_TEST);
+			ctx.writer.writeHeapType(WasmLispCompiler.TYPE_F32ARR);
+			emitIfEq(ctx);
+			emitFarrayNew(ctx, nSlot, true);
+			ctx.writer.write(Instruction.ELSE);
+			emitFarrayNew(ctx, nSlot, false);
+			ctx.writer.write(Instruction.END);
+		}
+		ctx.writer.write(Instruction.ELSE);
+		int arms = 0;
+		for (int code : ArrayElementTypes.specializedCodes()) {
+			if (code == ArrayElementTypes.CHARACTER || code == ArrayElementTypes.BFLOAT16
+					|| (ctx.typedArrayCodes & (1 << code)) == 0) {
+				// CHARACTER is the general vector here (a rank-1 character array is a
+				// string, answered by subseq's stringp arm before this); bfloat16 has no
+				// packed representation on this backend.
+				continue;
+			}
+			arms++;
+			getLocal(ctx, markerSlot);
+			WasmEmitHelper.castI31GetS(ctx);
+			i32Const(ctx, elementTypeMarker(code));
+			ctx.writer.write(Instruction.I32_EQ);
+			emitIfEq(ctx);
+			switch (code) {
+				case ArrayElementTypes.UNSIGNED_BYTE_8 -> emitIntVectorNew(ctx, nSlot, WasmLispCompiler.TYPE_I8ARR);
+				case ArrayElementTypes.UNSIGNED_BYTE_16 -> emitIntVectorNew(ctx, nSlot, WasmLispCompiler.TYPE_I16ARR);
+				case ArrayElementTypes.UNSIGNED_BYTE_32 -> emitIntVectorNew(ctx, nSlot, WasmLispCompiler.TYPE_I32ARR);
+				case ArrayElementTypes.SINGLE_FLOAT -> emitFarrayNew(ctx, nSlot, true);
+				case ArrayElementTypes.DOUBLE_FLOAT -> emitFarrayNew(ctx, nSlot, false);
+				default -> throw new IllegalStateException("no packed representation for element type code " + code);
+			}
+			ctx.writer.write(Instruction.ELSE);
+		}
 		// general: array.new buckets(nil, n) under a fresh 1-dim header cell.
 		refNull(ctx);
 		getLocal(ctx, nSlot);
@@ -589,7 +651,124 @@ final class WasmArrayCompiler {
 		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TYPE_CONS);
 		ctx.writer.write(Instruction.GC_PREFIX, Instruction.STRUCT_NEW);
 		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TYPE_CELL);
+		for (int i = 0; i < arms; i++) {
+			ctx.writer.write(Instruction.END);
+		}
+		ctx.writer.write(Instruction.END); // farray
+		ctx.writer.write(Instruction.END); // int vector
+	}
+
+	// The representation KEY of %array-alike's argument (see compileArrayAlike). A
+	// packed value is its own key. A general array (the %arrayp shape: a TYPE_CELL whose
+	// header car is the dims buckets) is walked to the end of its displacement chain the
+	// way emitRememberedElementType walks it, re-reading each hop's CURRENT header; a
+	// chain end whose data slot is not the buckets array is a packed target (or a string,
+	// which subseq's stringp arm keeps from ever arriving here) and becomes the key,
+	// while a buckets-backed end leaves its meta marker word -- its own remembered
+	// element type, the offset word of no view -- in markerSlot. Anything that is not an
+	// array leaves both untouched: seq stays the key and the marker stays 0.
+	private static void emitAlikeKey(WasmLispCompiler.Ctx ctx, int seqSlot, int keySlot, int markerSlot) {
+		getLocal(ctx, seqSlot);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.REF_TEST);
+		ctx.writer.writeHeapType(WasmLispCompiler.TYPE_CELL);
+		ctx.writer.write(Instruction.IF, 0x40);
+		getLocal(ctx, seqSlot);
+		castCellGet0(ctx);
+		int headerSlot = setTemp(ctx);
+		getLocal(ctx, headerSlot);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.REF_TEST);
+		ctx.writer.writeHeapType(WasmLispCompiler.TYPE_CONS);
+		ctx.writer.write(Instruction.IF, 0x40);
+		getLocal(ctx, headerSlot);
+		castConsGet(ctx, 0);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.REF_TEST);
+		ctx.writer.writeHeapType(WasmLispCompiler.TYPE_HASH_BUCKETS);
+		ctx.writer.write(Instruction.IF, 0x40);
+		ctx.writer.write(Instruction.BLOCK, 0x40);
+		ctx.writer.write(Instruction.LOOP, 0x40);
+		getLocal(ctx, headerSlot);
+		castConsGet(ctx, 1);
+		castConsGet(ctx, 1);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.REF_TEST);
+		ctx.writer.writeHeapType(WasmLispCompiler.TYPE_CELL);
+		ctx.writer.write(Instruction.I32_EQZ);
+		ctx.writer.write(Instruction.BR_IF, 1);
+		getLocal(ctx, headerSlot);
+		castConsGet(ctx, 1);
+		castConsGet(ctx, 1);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.REF_CAST);
+		ctx.writer.writeHeapType(WasmLispCompiler.TYPE_CELL);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.STRUCT_GET);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TYPE_CELL);
+		ctx.writer.writeUnsignedLeb128(0);
+		setLocal(ctx, headerSlot);
+		ctx.writer.write(Instruction.BR, 0);
+		ctx.writer.write(Instruction.END); // loop
+		ctx.writer.write(Instruction.END); // block
+		getLocal(ctx, headerSlot);
+		castConsGet(ctx, 1);
+		castConsGet(ctx, 1);
+		int dataSlot = setTemp(ctx);
+		getLocal(ctx, dataSlot);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.REF_TEST);
+		ctx.writer.writeHeapType(WasmLispCompiler.TYPE_HASH_BUCKETS);
+		ctx.writer.write(Instruction.IF, 0x40);
+		getLocal(ctx, headerSlot);
+		getMeta(ctx);
+		castConsGet(ctx, 1);
+		castConsGet(ctx, 1);
+		setLocal(ctx, markerSlot);
+		ctx.writer.write(Instruction.ELSE);
+		getLocal(ctx, dataSlot);
+		setLocal(ctx, keySlot);
 		ctx.writer.write(Instruction.END);
+		ctx.writer.write(Instruction.END); // buckets header
+		ctx.writer.write(Instruction.END); // cons header
+		ctx.writer.write(Instruction.END); // cell
+	}
+
+	// array.new_default of the packed integer-vector type with the i31 length in nSlot.
+	private static void emitIntVectorNew(WasmLispCompiler.Ctx ctx, int nSlot, int type) {
+		getLocal(ctx, nSlot);
+		WasmEmitHelper.castI31GetS(ctx);
+		intArrNewDefault(ctx, type);
+	}
+
+	// A fresh zero-filled rank-1 TYPE_FARRAY of the compile-time width with the i31
+	// length in nSlot: the data is array.new_default at that width (a _v_new'd vblock
+	// under --simd), the dims a one-element buckets array.
+	private static void emitFarrayNew(WasmLispCompiler.Ctx ctx, int nSlot, boolean single) {
+		if (ctx.simd) {
+			emitFarrayNew(ctx, nSlot, () -> i32Const(ctx, single ? 1 : 0));
+			return;
+		}
+		getLocal(ctx, nSlot);
+		WasmEmitHelper.castI31GetS(ctx);
+		intArrNewDefault(ctx, single ? WasmLispCompiler.TYPE_F32ARR : WasmLispCompiler.TYPE_F64ARR);
+		int dataSlot = setTemp(ctx);
+		emitFarrayOver(ctx, nSlot, dataSlot);
+	}
+
+	// The --simd shape of emitFarrayNew: the data is _v_new(n, kind), the kind word
+	// pushed by the given emitter (0 = double, 1 = single, the vblock's own tag).
+	private static void emitFarrayNew(WasmLispCompiler.Ctx ctx, int nSlot, Runnable pushKind) {
+		getLocal(ctx, nSlot);
+		WasmEmitHelper.castI31GetS(ctx);
+		pushKind.run();
+		callVec(ctx, WasmVecSimdRuntimeBuilder.V_NEW);
+		int dataSlot = setTemp(ctx);
+		emitFarrayOver(ctx, nSlot, dataSlot);
+	}
+
+	// struct.new TYPE_FARRAY (dims = buckets{n}, data) -- the rank-1 header over the
+	// packed data in dataSlot.
+	private static void emitFarrayOver(WasmLispCompiler.Ctx ctx, int nSlot, int dataSlot) {
+		getLocal(ctx, nSlot);
+		i32Const(ctx, 1);
+		arrayNew(ctx);
+		getLocal(ctx, dataSlot);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.STRUCT_NEW);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TYPE_FARRAY);
 	}
 
 	// The --simd lowering of compilePackedMake: the data is a _v_new'd TYPE_VBLOCK stored

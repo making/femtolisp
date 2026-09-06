@@ -60,10 +60,6 @@ final class JvmIntArrayRuntimeBuilder {
 
 	static final String ELEMENT_TYPE_DESC = "(" + OBJ + ")" + OBJ;
 
-	static final String ALIKE = "_ivAlike";
-
-	static final String ALIKE_DESC = "(" + OBJ + OBJ + ")" + OBJ;
-
 	static final String REQUIRE_GENERAL = "_ivRequireGeneral";
 
 	static final String REQUIRE_GENERAL_DESC = "(" + OBJ + ")" + OBJ;
@@ -128,8 +124,6 @@ final class JvmIntArrayRuntimeBuilder {
 				JvmLengthRuntimeBuilder.DESC);
 		MethodrefConstant elementTypeDelegate = usesFloatArray ? self(cp, selfClass,
 				JvmFloatArrayRuntimeBuilder.ELEMENT_TYPE, JvmFloatArrayRuntimeBuilder.ELEMENT_TYPE_DESC) : null;
-		MethodrefConstant arrayMake = self(cp, selfClass, JvmArrayRuntimeBuilder.MAKE,
-				JvmArrayRuntimeBuilder.MAKE_DESC);
 		MethodrefConstant arrayMakeTyped = self(cp, selfClass, JvmArrayRuntimeBuilder.MAKE_TYPED,
 				JvmArrayRuntimeBuilder.MAKE_TYPED_DESC);
 
@@ -146,7 +140,6 @@ final class JvmIntArrayRuntimeBuilder {
 		methods.add(buildElementType(cp, longArrayClass, objectClass, longValueOf, elementTypeDelegate));
 		methods.add(buildMake(cp, longArrayClass, objectArrayClass, longClass, bigIntegerClass, numberClass,
 				longIntValue, longValueOf, numberLongValue, rtExClass, rtExInit, arrayMakeTyped));
-		methods.add(buildAlike(cp, longArrayClass, longClass, longIntValue, arrayMake));
 		methods.add(buildRequireGeneral(cp, longArrayClass, rtExClass, rtExInit));
 		return methods;
 	}
@@ -639,47 +632,6 @@ final class JvmIntArrayRuntimeBuilder {
 		a.aload(arr);
 		a.areturn();
 		return new ArrayMethod(cp.addUtf8(MAKE), cp.addUtf8(MAKE_DESC), 7, 8, a.finish());
-	}
-
-	// _ivAlike(seq, n): the %array-alike allocator -- a fresh zero-filled rank-1 array
-	// with the SAME representation as seq: packed at seq's width when seq is a packed
-	// integer vector, else a general nil-filled vector via _arrayMake. Keeps subseq /
-	// copy-seq type-preserving. Locals: 0=seq, 1=n, 2=ni, 3=arr.
-	private static ArrayMethod buildAlike(ConstantPool cp, ClassConstant longArrayClass, ClassConstant longClass,
-			MethodrefConstant longIntValue, MethodrefConstant arrayMake) {
-		int seq = 0, n = 1, ni = 2, arr = 3;
-		JvmAsm a = new JvmAsm();
-		int general = a.label();
-		a.aload(seq);
-		a.instanceOf(longArrayClass);
-		a.branch(Opcode.IFEQ, general);
-		a.aload(n);
-		a.checkcast(longClass);
-		a.invokevirtual(longIntValue);
-		a.istore(ni);
-		a.iload(ni);
-		a.iconst(1);
-		a.op(Opcode.IADD);
-		a.newarrayLong();
-		a.astore(arr);
-		// arr[0] = seq[0] -- copy the width header; the data slots stay zero
-		a.aload(arr);
-		a.iconst(0);
-		a.aload(seq);
-		a.checkcast(longArrayClass);
-		a.iconst(0);
-		a.laload();
-		a.lastore();
-		a.aload(arr);
-		a.areturn();
-		a.bind(general);
-		a.aload(n);
-		a.aconstNull();
-		a.aconstNull();
-		a.aconstNull();
-		a.invokestatic(arrayMake);
-		a.areturn();
-		return new ArrayMethod(cp.addUtf8(ALIKE), cp.addUtf8(ALIKE_DESC), 6, 4, a.finish());
 	}
 
 	// _ivRequireGeneral(o): the fill-pointer-surface guard -- a packed integer vector

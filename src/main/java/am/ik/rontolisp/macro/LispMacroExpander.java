@@ -11272,23 +11272,6 @@ public final class LispMacroExpander {
 	}
 
 	/**
-	 * The general-representation fallback of {@code %array-alike}: {@code (progn seq
-	 * (make-array n))} -- a fresh general (boxed) vector, evaluation order preserved.
-	 * Used by a backend that has no packed integer-vector representation (currently the
-	 * JVM).
-	 * @param cons the {@code (%array-alike seq n)} call
-	 * @return the lowered expression
-	 */
-	public static LispVal expandArrayAlikeGeneral(LispCons cons) {
-		List<LispVal> parts = cons.toList();
-		if (parts.size() != 3) {
-			throw new UnsupportedOperationException("%array-alike expects a sequence and a length");
-		}
-		return listToCons(List.of(new LispSymbol(LispNames.PROGN), parts.get(1),
-				listToCons(List.of(new LispSymbol(LispNames.MAKE_ARRAY), parts.get(2)))));
-	}
-
-	/**
 	 * Lowers a call to a name that is not a compiled FUNCTION but IS a known global
 	 * VARIABLE into {@code (funcall name args...)} -- the function value is read from the
 	 * variable at run time. This is how a defun nested inside a top-level {@code let}

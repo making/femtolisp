@@ -15722,6 +15722,80 @@ class JvmLispCompilerTest {
 	}
 
 	@Test
+	void compileSubseqOfAPackedFloatArrayKeepsTheWidth() throws Exception {
+		// %array-alike over a packed float array: the copy comes back packed at the
+		// SAME width, all three of them. It used to come back a general simple-vector
+		// -- _ivAlike tested only the long[] marker, and a float-only program did not
+		// even emit it (.todo/719).
+		assertThat(compileAndRun("""
+				(let ((d (make-array 3 :element-type 'double-float :initial-element 1.5d0)))
+				  (print (list (type-of (subseq d 0 2)) (array-element-type (copy-seq d)) (subseq d 1))))
+				""")).isEqualTo("((SIMPLE-ARRAY DOUBLE-FLOAT (2)) DOUBLE-FLOAT #d(1.5 1.5))");
+		assertThat(compileAndRun("""
+				(let ((s (make-array 3 :element-type 'single-float :initial-element 1.5)))
+				  (print (list (type-of (subseq s 0 2)) (subseq s 1))))
+				""")).isEqualTo("((SIMPLE-ARRAY SINGLE-FLOAT (2)) #f(1.5 1.5))");
+		assertThat(compileAndRun("""
+				(let ((b (make-array 3 :element-type 'bfloat16 :initial-element 1.5)))
+				  (print (list (type-of (subseq b 0 2)) (subseq b 1))))
+				""")).isEqualTo("((SIMPLE-ARRAY BFLOAT16 (2)) #bf16(1.5 1.5))");
+	}
+
+	@Test
+	void compileSubseqOfAnAdjustablePackedVectorKeepsTheWidth() throws Exception {
+		// A fill-pointer / adjustable packed vector is the general boxed representation
+		// that only REMEMBERS its width (.kb/adjustable-arrays.md), so %array-alike has
+		// to read the element type rather than the runtime class -- every width of both
+		// packed families. The masked store proves the copy really is packed.
+		assertThat(compileAndRun("""
+				(let ((v (make-array 4 :element-type '(unsigned-byte 8) :fill-pointer 0 :adjustable t)))
+				  (vector-push-extend 65 v)
+				  (vector-push-extend 66 v)
+				  (let ((s (subseq v 0 2)))
+				    (setf (aref s 0) 300)
+				    (print (list (type-of s) s))))
+				""")).isEqualTo("((SIMPLE-ARRAY (UNSIGNED-BYTE 8) (2)) #(44 66))");
+		assertThat(compileAndRun("""
+				(let ((v (make-array 4 :element-type '(unsigned-byte 16) :fill-pointer 0 :adjustable t)))
+				  (vector-push-extend 65 v)
+				  (print (type-of (subseq v 0 1))))
+				""")).isEqualTo("(SIMPLE-ARRAY (UNSIGNED-BYTE 16) (1))");
+		assertThat(compileAndRun("""
+				(let ((v (make-array 4 :element-type '(unsigned-byte 32) :fill-pointer 0 :adjustable t)))
+				  (vector-push-extend 65 v)
+				  (print (type-of (subseq v 0 1))))
+				""")).isEqualTo("(SIMPLE-ARRAY (UNSIGNED-BYTE 32) (1))");
+		assertThat(compileAndRun("""
+				(let ((v (make-array 4 :element-type 'single-float :fill-pointer 0 :adjustable t)))
+				  (vector-push-extend 1.0 v)
+				  (vector-push-extend 2.0 v)
+				  (print (list (type-of (subseq v 0 2)) (subseq v 0 2))))
+				""")).isEqualTo("((SIMPLE-ARRAY SINGLE-FLOAT (2)) #f(1.0 2.0))");
+		assertThat(compileAndRun("""
+				(let ((v (make-array 4 :element-type 'double-float :fill-pointer 0 :adjustable t)))
+				  (vector-push-extend 1.0d0 v)
+				  (print (list (type-of (subseq v 0 1)) (subseq v 0 1))))
+				""")).isEqualTo("((SIMPLE-ARRAY DOUBLE-FLOAT (1)) #d(1.0))");
+		assertThat(compileAndRun("""
+				(let ((v (make-array 4 :element-type 'bfloat16 :fill-pointer 0 :adjustable t)))
+				  (vector-push-extend 1.0 v)
+				  (print (list (type-of (subseq v 0 1)) (subseq v 0 1))))
+				""")).isEqualTo("((SIMPLE-ARRAY BFLOAT16 (1)) #bf16(1.0))");
+		// A displaced view answers its chain end's element type, so its subseq is
+		// packed too; a plain fill-pointer vector and a character vector are unchanged.
+		assertThat(compileAndRun("""
+				(let* ((tgt (make-array 3 :element-type 'double-float :initial-element 2.5d0))
+				       (view (make-array 2 :element-type 'double-float :displaced-to tgt :displaced-index-offset 1)))
+				  (print (list (type-of (subseq view 0 2)) (subseq view 0 2))))
+				""")).isEqualTo("((SIMPLE-ARRAY DOUBLE-FLOAT (2)) #d(2.5 2.5))");
+		assertThat(compileAndRun("""
+				(let ((g (make-array 3 :fill-pointer 2 :initial-element 7))
+				      (c (make-array 3 :element-type 'character :fill-pointer 2 :initial-element #\\a)))
+				  (print (list (type-of (subseq g 0 2)) (subseq g 0 2) (type-of (subseq c 0 2)) (subseq c 0 2))))
+				""")).isEqualTo("((SIMPLE-VECTOR 2) #(7 7) STRING \"aa\")");
+	}
+
+	@Test
 	void compilePackedIntVectorReaderLiteralAndRowMajor() throws Exception {
 		// ironclad's #N@(...) table syntax bakes as a native packed long[] for the
 		// 8/16/32 widths.

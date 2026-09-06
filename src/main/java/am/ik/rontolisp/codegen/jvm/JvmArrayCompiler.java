@@ -513,18 +513,19 @@ final class JvmArrayCompiler {
 	}
 
 	static void compileArrayAlike(LispCons cons, JvmLispCompiler.Ctx ctx, String className) {
-		// (%array-alike seq n): a fresh zero-filled rank-1 array with the SAME
-		// representation as seq (packed at the same width, else general) -- the
-		// type-preserving allocator behind the shared subseq/copy-seq lowering. Only
-		// used when the program uses packed integer vectors; otherwise the shared
-		// expandArrayAlikeGeneral lowering applies. Evaluation order: seq then n.
+		// (%array-alike seq n): a fresh zero-filled rank-1 array of the SAME KIND as seq
+		// (packed at the same width when seq is packed or REMEMBERS a packed width, else
+		// general) -- the type-preserving allocator behind the shared subseq/copy-seq
+		// lowering. One helper for every representation, keyed on the element type, so
+		// there is no per-gate routing to get wrong (.kb/subseq-runtime.md). Evaluation
+		// order: seq then n.
 		List<LispVal> args = cons.toList();
 		if (args.size() != 3) {
 			throw new UnsupportedOperationException("%array-alike expects a sequence and a length");
 		}
 		JvmExprCompiler.compileExpr(args.get(1), ctx, className);
 		JvmExprCompiler.compileExpr(args.get(2), ctx, className);
-		invokeHelper(ctx, className, JvmIntArrayRuntimeBuilder.ALIKE, JvmIntArrayRuntimeBuilder.ALIKE_DESC);
+		invokeHelper(ctx, className, JvmArrayRuntimeBuilder.ALIKE, JvmArrayRuntimeBuilder.ALIKE_DESC);
 	}
 
 	static void compileDims(LispCons cons, JvmLispCompiler.Ctx ctx, String className) {

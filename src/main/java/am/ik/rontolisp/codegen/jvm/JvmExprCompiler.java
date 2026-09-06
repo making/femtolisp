@@ -1336,17 +1336,7 @@ final class JvmExprCompiler {
 					JvmArrayCompiler.compileArrayDefaultElement(cons, ctx, className);
 				case LispNames.ARRAY_ADOPT_ELEMENT_TYPE ->
 					JvmArrayCompiler.compileArrayAdoptElementType(cons, ctx, className);
-				case LispNames.ARRAY_ALIKE -> {
-					// The type-preserving allocator (_ivAlike) when the program can
-					// build a packed integer vector; otherwise every array is general
-					// and the shared general lowering applies.
-					if (ctx.usesIntArray) {
-						JvmArrayCompiler.compileArrayAlike(cons, ctx, className);
-					}
-					else {
-						JvmExprCompiler.compileExpr(LispMacroExpander.expandArrayAlikeGeneral(cons), ctx, className);
-					}
-				}
+				case LispNames.ARRAY_ALIKE -> JvmArrayCompiler.compileArrayAlike(cons, ctx, className);
 				case LispNames.ARRAY_DISPLACEMENT ->
 					JvmExprCompiler.compileExpr(LispMacroExpander.expandArrayDisplacement(cons), ctx, className);
 				case LispNames.ARRAY_DISP_TARGET -> JvmArrayCompiler.compileDispTarget(cons, ctx, className);
