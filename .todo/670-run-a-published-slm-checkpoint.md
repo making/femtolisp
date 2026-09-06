@@ -111,8 +111,9 @@ artefacts out -- see rule 12.
 ## The certification record
 
 **dorian certifies `a92e205f`** at the close of A's six-item lane: 10104 / 0 / 0 / 283
-skipped with **235** reports. **GB10 certifies `97e3b9ba`** at the close of B's: 10094 / 0 /
-0 / 189 skipped with **235** reports, exit 0, `GpuTest` included. Both were taken by the
+skipped with **235** reports. **GB10 certifies `e2d8d1591`** at the close of B's
+five-item lane: 10122 / 0 / 0 / 189 skipped with **237** reports, exit 0, `GpuTest`
+included. Both were taken by the
 ORCHESTRATOR on `develop`, not from any lane's worktree (rule 4) -- a lane's combination
 exists nowhere else. The two heads are days of work apart and are NOT one certification;
 jointly they establish that no box is red. `d4225aa5` remains the last head both boxes
@@ -124,7 +125,12 @@ A differing report count means a class was DROPPED rather than skipped, which no
 accounting reveals. The count walks 232 -> 234 (`707`, and separately the two classes the
 prior A lane added) -> 235 (`710`); A's six-item lane held it at 235, so nothing it wrote
 created or dropped a class -- every test went into an existing class or into
-`ci-spec.yaml`.
+`ci-spec.yaml`. B's five-item lane reads **237**, and it added THREE classes
+(`am.ik.gpu.DeviceResidencyPressureTest` from `716`, `eval/LinalgBfloat16Test` and
+`eval/LinalgWidthWireTest` from `687`), so the arithmetic does not close by one. Neither
+prior report SET still exists to diff against, which is the whole point of the discipline:
+the next run on either box diffs the LIST and names what left, because a count that misses
+by one is exactly what a dropped class looks like.
 
 Three things a reader needs before comparing two runs:
 
@@ -236,6 +242,13 @@ of them is an ASYMMETRY rather than a fresh defect. That is rule 6's shape, and 
   `.todo/488` number behind them is aarch64. Neither is on the width chain's critical path.
 - `721` (`704`'s residue: character `read-sequence` costs ~1.2 us/char) is a kernel-cost
   item wanting a quiet box, and it does not decay.
+- `722` (High -- the WASM component backend traps on a `ref.cast` that a one-line source
+  edit MOVES; passing and trapping adapters are byte-identical, and the corpus sits one
+  case from the cliff, so the next person to touch a spliced library meets a `cast failure`
+  in a `gguf:` case they did not touch) and `724` (every `tok/s` row in
+  `examples/llm/README.md` was taken with a harness that divides sampled tokens by the
+  prompt's clock and counts the JIT warm-up, so the rows read 1.7-2x low). Both filed by
+  B's lane off `718`'s profile.
 - `597` (the other four `geom:` model readers have no interpreter native), `689`
   (`jvm-export` handles do not carry bfloat16), `699` (one UTF-8 lead-byte table, two
   hand-written copies), `701` (diff every checkpoint's own `chat_template` against the
@@ -244,23 +257,37 @@ of them is an ASYMMETRY rather than a fresh defect. That is rule 6's shape, and 
 
 ### Orchestrator B -- GB10, the device
 
-B's previous lane closed `708`, `702`, `707`, `710`, `490`, `706` and certified `97e3b9ba`.
-Two results the "done" markers understate: `702` cost route 3 of the parallel argument
-outright, and `490` closed the width chain with a NEGATIVE result -- the device arm loses to
-`--simd --parallel` on this box. Left behind: `PathCitationTest`, `.todo/artefacts/` as a
-root, a Q8_0 GEMV C2 runs at 1.9x of f32 where it used to run at 0.72x, and five filed
-items it deliberately did not work recursively.
+B's previous lane closed `717`, `716`, `687`, `718`, `713` and certified `e2d8d1591`. What
+the "done" markers understate is that **the lane's one High closed as a written REFUSAL and
+paid for itself in the profile that justified it**: `718` measured where a 45 ms forward
+actually goes -- device kernels 7.5 ms, driver calls on the calling thread 11.9, and the
+rest the HOST -- so Q4 on the device was declined on arithmetic (a Q4 GEMV saves at most
+4-5 ms of 45, and the CPU arm already runs at 24), and the items below are what that profile
+found instead. Also left behind: a re-upload counter that speaks only when the residency
+budget is under the working set (`716`), `linalg:`'s width protocol widened from a boolean
+to a code so bfloat16 rides it (`687`), a differential test that finally asks about
+`vec:matvec` and builds a real bf16 operand (`717`), and the 3072x3072 dip localised to a
+byte-size trough that needs more than 12 threads to appear at all (`713`).
 
-The current lane is **every item that needs the DEVICE**. `713` joins it for the box rather
-than the device: it is `702`'s remainder and wants the same cleared machine.
+The current lane is again **every pool item that needs the DEVICE**, and after `718` they
+have one subject between them: **the device arm's HOST floor.** The GEMV is not the cost
+any more, so each item here is a place where the flag makes the host slower, or moves bytes
+that never needed to move. Order matters more than usual, because each one changes the
+denominator the next is measured against.
 
 | # | item | difficulty | why here, why now |
 | --- | --- | --- | --- |
-| B-1 | `717` `GpuOfferDifferentialTest`'s stale bf16 operand and the offer it never asks | Low | FIRST because it is the lane's INSTRUMENT. That test says which types the interpreter offers the device and which the device refuses, and it builds its bf16 operand from a stub that predates the width while never asking about the `matvec` offer at all -- the exact offer `490` added. Every later item here is verified through it, and rule 6's shape precisely: a differential test with a hole looks more exhaustive than one without |
-| B-2 | `716` a model over the residency budget decodes BELOW `--simd`, silently | Medium | The only item in the lane that is a wrong OUTCOME a user meets rather than a representation or a measurement: over budget the model decodes at 6.8 tok/s against `--simd` alone at 7.7, and nothing prints. It is also half of "what does the device arm wait on", answerable by making an existing cliff visible, which is why it comes BEFORE `718` |
-| B-3 | `687` `linalg:` carries its element width as a boolean | Medium | GPU-free to WRITE and not to VERIFY -- it changes `LinalgGpu.gatherStrided`, which only this box runs. Here now because `707` just did the analogous change on `coerce` / `concatenate`: the element type carried as a code derived from the permits instead of a width transcribed into a second list. The pattern is proven and fresh, and `718` would otherwise route its kernel work around the boolean |
-| B-4 | `718` Q4_0 / Q4_K on the device | High | Last of the device items deliberately. Its first Done is a PROFILE, not a kernel -- what does this box wait on once the GEMV is off the critical path -- and that profile is worth more after `716` has made the residency cliff visible. **A written refusal is an accepted outcome**; the item exists because the width table cited a closed item and so read as done |
-| B-5 | `713` the 3072x3072 parallel GEMV dip | Low | Not a device item -- a `--parallel` f32 sweep at finer granularity -- but it needs the same cleared box. Last because it gates nothing and does not decay: `702`'s record holds its evidence durably |
+| B-1 | `723` `--gpu` puts a residency guard in front of every typed store, and two loops were never typed | Medium | FIRST because it is the DENOMINATOR. The DeltaNet mixer costs 6.8 ms a forward on the `--simd` build and ~30 ms on `--gpu --simd` -- about 40% of the arm spent proving arrays are not on the device -- so until it is hoisted, every later measurement on this box is taken through a host arm inflated 4x and a before/after for B-2 or B-3 is a ratio of two wrong numbers. It is also the first of the two conditions `718` wrote down for reopening Q4 |
+| B-2 | `725` attention multiplies the full seq-len KV cache every token | Medium | Second because it is the same profile's other half and the only item in the lane that is a wrong SHAPE rather than a cost: the model scores 4096 cache rows when `pos` of them are non-zero and the rest is arithmetic over deliberate zeros. It pays on BOTH arms -- 8.9 ms of an 81 ms one-thread `--simd` forward, and 96 of the 102 MB the device arm uploads per token -- which makes it the one result here that A's box also sees. Taken through B-1's corrected host, not around it |
+| B-3 | `476` `am.ik.gpu`'s downcalls go through the generic `MethodHandle` invoker | Medium | Last deliberately: it is ~8% of a step, it does not decay, and 8% of an inflated step is a different number from 8% of a corrected one, so its before/after is only worth taking once B-1 and B-2 have landed. The item files itself Low-Medium and the lane rounds UP -- the edit is mechanical (instance handles to `static final`, in `CudaDriver` and in `--blas`'s `LinalgBlasKernels` the same way) and the CLOSE is a profile, which is the half this box keeps finding costs the judgement |
+
+**Not in this lane, and why.** `514` (`LinalgGpuTest` never finishes on an Apple silicon
+Mac) is the one device item NEITHER orchestrator can take: it wants a Metal box, and GB10 is
+CUDA on aarch64 Linux. Parking it is not a deferral under rule 3 -- there is no box in this
+plan that can even fail it. `684` and `696` stay A's for their x64 halves.
+
+**Filed by this lane and handed to A's pool, never worked recursively:** `722` and `724`,
+both GPU-free, which is the partition doing its job.
 
 **The one decision still open, and not either lane's to take alone: `.todo/709` is an
 explicit DRAFT and needs co-signing or cutting by both orchestrators.** It is process, so
