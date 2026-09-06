@@ -30,6 +30,8 @@ does not vectorize, the answer is to leave the decline in place and record that 
 
 Asked by the orchestrator on 2026-09-05, recorded because a later reader cannot
 reconstruct it. `.todo/490` (bf16 on the device) and `.todo/672` (Q8_0) may both want it.
+(490 closed 2026-09-06 without it: the device takes exactly the CPU's pairing, bf16
+weights against f32 activations, and declines a bf16 vector to the rung below.)
 
 Today every fused kernel is **narrow weights against f32 activations** -- which is a PLAN
 decision, not an artifact: `.todo/670` line 259 ("bf16 is a storage width for weights, and
