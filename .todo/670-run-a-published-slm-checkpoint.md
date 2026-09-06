@@ -245,37 +245,52 @@ can run that arm. `684` and `696` each hold an **x64 half that is A's** whenever
 picked up, since every `.todo/488` number behind them is aarch64 -- but neither is on the
 width chain's critical path, so they stay in the pool.
 
-**Orchestrator B -- GB10, the width chain and the device. COMPLETE 2026-09-06**, all six
-serialized, each committed and pushed before the next started; certification `97e3b9ba`
-above. Two results the table's "done" markers understate: `702` cost route 3 of the
-parallel argument, and `490` closed the width chain with a NEGATIVE result on this box.
-The pool items B filed on the way -- `713`, `714`, `716`, `717`, `718` -- are for the next
-lane design and were deliberately not worked recursively. In order:
+**Orchestrator B -- GB10, the device.**
+
+The previous B lane closed all six of its items -- `708`, `702`, `707`, `710`, `490`, `706`
+-- one at a time, and certified the suite at `97e3b9ba` above. Two results the "done"
+markers understate: `702` cost route 3 of the parallel argument outright, and `490` closed
+the width chain with a NEGATIVE result -- the device arm loses to `--simd --parallel` on
+this box. What it left behind: `PathCitationTest`, `.todo/artefacts/` as a root, a Q8_0
+GEMV that C2 runs at 1.9x of f32 where it used to run at 0.72x, and five filed items it
+deliberately did not work recursively.
+
+The current lane is **every unassigned item that needs the DEVICE**, which is the one thing
+only this box can supply. `713` joins them for the box rather than the device: it is
+`702`'s remainder and wants the same cleared machine.
 
 | # | item | difficulty | why here, why now |
 | --- | --- | --- | --- |
-| B-1 | `708` the formatter corpus walks `.claude/worktrees/` | Low | **done 09-06** (`0e65326b`): the walk excludes `/.claude/` and `repositoryCorpusStaysWithinASmallFactorOfTrackedSources` pins the corpus to a small factor of `git ls-files`. The standing caveat is lifted -- see the certification record above. Do #3 (25 stale worktrees) was cleanup and stays undone |
-| B-2 | `702` is the parallel cap machinery or memory | Low | **done 09-06** (`070984ae`): neither, and there was no plateau -- the rate over shape is a hump. It cost route 3 above and left `.todo/713` (the 3072x3072 dip) behind |
-| B-3 | `707` `coerce` / `concatenate` drop a packed FLOAT element type | Medium | **done 09-06**: both operators build the packed float array at all three widths through a shared `%seq-float-vector`, and the result-type normalizer now carries the `ArrayElementTypes` CODE instead of an integer width, so the packed families come from the closed space. bfloat16's refusal reaches the new path on wasm. Left behind: `.todo/714` (`(vector character)` is the one specialized code still answering a general vector) |
-| B-4 | `710` a closed item's artefacts and an open item share one namespace | Medium | **done 09-06**: the link check went first and paid for itself before the rename -- `PathCitationTest` found five citations already broken on develop (three `examples/` paths in javadoc, an httpbin example that had moved under `examples/net/`, and a wasm-condition-catching card name that never existed -- `.kb/error-handling.md` is the file meant). The move then went further than the item asked: ALL sixteen artefact directories moved to `.todo/artefacts/`, open items included, so the recurring `git mv` per close is nil and the invariant is testable ("`.todo/` has no numbered directories") instead of resting on whoever closes an item remembering. The new mechanic it taught is in `.kb/directory-rename.md` 2b -- **a move that changes DEPTH rewrites the relative paths INSIDE what moved, and `git grep` for the old path finds none of them**. The duplicate is resolved: the ANSI ranked-gap item is `.todo/715` (later commit renumbers, per `.todo/.history.md`) |
-| B-5 | `490` bf16 on the device | High | **done 09-06** (`3c2e8d02`): the device takes `vec:matvec` over bf16 weights, on a compensated float accumulator that the measurement forced. **It closes the width chain**: every child in the table above is closed except `675` and `677`, which are A's. The result to carry is that it does NOT win here -- `--gpu --simd --parallel` decodes Qwen3.5-0.8B at 11.3 tok/s against `--simd --parallel`'s 18.5, because once the GEMV is off the critical path this box's bottleneck is elsewhere |
-| B-6 | `706` the Q8_0 integer-dot GEMV is instruction-bound on one thread | High | **closed** 09-06: the C2 slice cliff, `.todo/artefacts/706-.../README.md` |
+| B-1 | `717` `GpuOfferDifferentialTest`'s stale bf16 operand and the offer it never asks | Low | FIRST because it is the lane's INSTRUMENT. That test is what says which types the interpreter offers the device and which the device refuses, and it builds its bf16 operand from a stub that predates the width while never asking about the `matvec` offer at all -- the exact offer `490` added. Every later item here is verified through it. Rule 6's shape, precisely: a differential test with a hole looks more exhaustive than one without |
+| B-2 | `716` a model over the residency budget decodes BELOW `--simd`, silently | Medium | The only item in the lane that is a wrong OUTCOME a user meets rather than a representation or a measurement: over budget the model decodes at 6.8 tok/s against `--simd` alone at 7.7, and nothing prints. It is also half of "what does the device arm wait on", answerable by making an existing cliff visible, which is why it comes BEFORE `718` rather than out of it |
+| B-3 | `687` `linalg:` carries its element width as a boolean | Medium | A's lane ruled it out for the right reason -- GPU-free to WRITE, not to VERIFY, because it changes `LinalgGpu.gatherStrided`. Here now because `707` just did the analogous change on `coerce` / `concatenate`: the element type carried as a code derived from the permits, instead of a width transcribed into a second list. The pattern is proven and fresh, and `718` would otherwise have to route its kernel work around the boolean |
+| B-4 | `718` Q4_0 / Q4_K on the device | High | Last of the device items deliberately. Its first Done is a PROFILE and not a kernel -- what does this box wait on once the GEMV is off the critical path -- and that profile is worth more after `716` has made the residency cliff visible. **A written refusal is an accepted outcome**; the item exists because the width table cited a closed item and so read as done |
+| B-5 | `713` the 3072x3072 parallel GEMV dip | Low | Not a device item -- a `--parallel` f32 sweep at finer granularity -- but it needs the same cleared box, so it belongs to whoever holds that box. Last because it gates nothing and does not decay: `702`'s record holds its evidence durably, and an unexplained dip stays unexplained at the same cost later |
 
-**Decisions to take at planning, before either lane starts:**
+**Not in this lane, and why.** `684` and `696` are the two pool items whose prior numbers
+are GB10's, so B could measure them -- but each holds an **x64 half that is A's** the
+moment it is picked up, and neither is on the device. Splitting one across two boxes is
+what `.todo/709` Part 2 is about, so they stay whole in the pool until one side takes both
+halves. Everything else in the pool is GPU-free and therefore not B's to hold.
 
-- **`.todo/709` is an explicit DRAFT and needs co-signing or cutting by both
-  orchestrators.** It is process, so one side adopting it unilaterally is the failure it is
-  written about.
-- **The one-thread bf16 ratio** (1.10x-1.26x across six models against `489`'s "does not
-  move much") is B's to take into `489` rather than to run as a lane.
-- `711` deliberately does NOT carry the general reading disciplines -- diff the lists rather
-  than reasoning about which terms ought to differ; a sum that closes is not evidence about
-  its terms; relay a census from the file with its total AND its class count. Those are
-  process: they belong to the `709` co-sign or nowhere.
+**The one decision still open at planning, and it is not either lane's to take alone:**
 
-**Unassigned pool, neither side's yet:** `597`, `684`, `687`, `689`, `693`, `695`, `696`,
-`699`, `701`, `703`, `705`, `714`, `715`. `683` left it by closing. `713` is not really
-unassigned -- it is `702`'s remainder and wants a cleared GB10, so it falls to B.
+**`.todo/709` is an explicit DRAFT and needs co-signing or cutting by both orchestrators.**
+It is process, so one side adopting it unilaterally is the failure it is written about. It
+has now outlived two full lanes, which is evidence about the item and not about its
+subject: a process draft with no owner is exactly the thing both lanes keep rediscovering.
+It is also where the general reading disciplines belong -- diff the lists rather than
+reasoning about which terms ought to differ, a sum that closes is not evidence about its
+terms, relay a census with its total AND its class count -- **there or nowhere**; `711`
+closed without them by design.
+
+The two other standing decisions are discharged: the one-thread bf16 ratio went into
+`489` before it closed, and `711` is closed.
+
+**Unassigned pool, neither side's yet:** `597`, `684`, `689`, `693`, `695`, `696`, `699`,
+`701`, `703`, `705`, `714`, `715`. `683` left it by closing. `687` left it to B, which is
+the only side that can verify it. `713`, `716`, `717` and `718` never really entered it --
+B filed the last three and inherited the first, and all four need this box.
 
 ## Standing rules this run earned, in the order they cost the most
 
