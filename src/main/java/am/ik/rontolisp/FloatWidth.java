@@ -49,6 +49,19 @@ public enum FloatWidth {
 	 * The small integer this width travels as across a backend boundary. Stable: a
 	 * compiled program and the runtime that reads it are built from the same source, but
 	 * the codes reach emitted output, so reordering them changes bytes.
+	 *
+	 * <p>
+	 * <strong>Three templates TRANSCRIBE these numbers as bare literals</strong>, because
+	 * they travel into compiled output and so cannot import this enum:
+	 * {@code codegen/jvm/JvmSimdVectorTemplate.laGatherStrided},
+	 * {@code codegen/jvm/JvmGpuTemplate.gpuGatherStrided} / {@code gpuDropoutMask}, and
+	 * the body {@code codegen/wasm/WasmLinalgSimdRuntimeBuilder.buildGatherStrided}
+	 * emits. Each compares the wire value against a bare {@code 0} or {@code 1} and
+	 * DECLINES anything else. Reordering the constants leaves them reading the wrong
+	 * width in silence, which no round-trip or distinctness check can see, so the values
+	 * themselves are pinned as literals by
+	 * {@code FloatWidthTest#theWidthCodesAreTheNumbersTheTravellingTemplatesHardcode} --
+	 * change that test and all three templates together or not at all.
 	 * @return the code
 	 */
 	public int code() {

@@ -214,7 +214,7 @@ final class JvmGpuRuntimeBuilder {
 
 	/**
 	 * The fused tier's four-argument members: layer-norm's adjoint
-	 * ({@code g, x, eps, old}) and the dropout mask ({@code shape, p, st, single}).
+	 * ({@code g, x, eps, old}) and the dropout mask ({@code shape, p, st, width}).
 	 */
 	private static final List<String> FUSED4_KERNELS = List.of("gpuLayerNormGrad", "gpuDropoutMask",
 			// Layer-norm's affine forward ({@code x, w, b, eps}), todo-634.

@@ -614,10 +614,14 @@ class JvmBFloat16ArrayTest {
 	}
 
 	@Test
-	void linalgDeclinesTheWidthOnBothBackends() {
+	void linalgCarriesTheWidthOnBothBackends() throws Exception {
+		// It REFUSED it until 2026-09-06, while its width protocol was a boolean. Now the
+		// two backends that have the width answer it, and answer the same thing -- the
+		// half of the contract this file exists for; the --simd/--blas/--gpu seams
+		// declining it to the defun is LinalgBfloat16Test's and its compiled siblings'.
 		String program = "(print (linalg:add #bf16(1.0 2.0) #bf16(3.0 4.0)))";
-		assertThatThrownBy(() -> interpret(program)).isInstanceOf(Exception.class);
-		assertThatThrownBy(() -> compileAndRun(program)).isInstanceOf(Exception.class);
+		assertThat(interpret(program)).isEqualTo("#bf16(4.0 6.0)");
+		assertThat(compileAndRun(program)).isEqualTo("#bf16(4.0 6.0)");
 	}
 
 }

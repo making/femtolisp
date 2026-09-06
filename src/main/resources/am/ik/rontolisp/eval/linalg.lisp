@@ -9,20 +9,26 @@
 ;;   assigned with setq (let-rebound instead).
 ;; - Arrays are packed float arrays, DOUBLE by default: every allocation flows
 ;;   through the one linalg::%la-make funnel (make-array :element-type, an unboxed
-;;   (array double-float) / (array single-float)), and element reads coerce to
-;;   double. linalg is width-polymorphic: a constructor takes an :element-type
-;;   keyword (default 'double-float; opt in with 'single-float for half the
-;;   memory / 2x the SIMD lanes), and every transform PRESERVES its input
-;;   width -- a #f (single-float) array stays #f through add/sub/mul/emap/transpose/
-;;   dot/matmul/... (via linalg::%la-etype), so a #f value flowing in from vec: is
-;;   never silently widened back to double (which would force a mixed-width --simd
-;;   error on the next vec:matvec). Both %la-make branches take a LITERAL
-;;   element-type so each backend picks the float[]/double[] (TYPE_F32ARR/F64ARR)
-;;   repr statically -- interpreter, JVM AND wasm-GC all produce #f; only --no-gc is
-;;   unsupported (no array type). linalg is speed-oriented, not exact -- integer/
-;;   ratio inputs become doubles (numpy's model), and single-float trades precision
-;;   for speed, so precision-critical det/inv/solve are best left double (the
-;;   default; a singular integer matrix's determinant may be a tiny epsilon).
+;;   (array double-float) / (array single-float) / (array bfloat16)), and element
+;;   reads coerce to double. linalg is width-polymorphic over ALL THREE packed
+;;   float widths: a constructor takes an :element-type keyword (default
+;;   'double-float; opt in with 'single-float for half the memory / 2x the SIMD
+;;   lanes, or 'bfloat16 for a quarter and the storage format published ML
+;;   checkpoints use), and every transform PRESERVES its input width -- a #f
+;;   (single-float) array stays #f and a #bf16 array stays #bf16 through
+;;   add/sub/mul/emap/transpose/dot/matmul/... (via linalg::%la-etype), so a value
+;;   flowing in from vec: is never silently widened (which would cost the next
+;;   vec:matvec its acceleration -- a mixed-width pair declines to the scalar
+;;   defun on every layer, .kb/vec.md). Every %la-make branch takes
+;;   a LITERAL element-type so each backend picks the float[]/double[]/short[]
+;;   (TYPE_F32ARR/F64ARR) repr statically -- interpreter, JVM AND wasm-GC all
+;;   produce #f; #bf16 is the interpreter and the JVM only, and wasm-GC lowers its
+;;   branch to the call-time refusal (.kb/bfloat16.md), while --no-gc supports no
+;;   linalg at all. linalg is speed-oriented, not exact -- integer/ratio inputs
+;;   become doubles (numpy's model), and the narrow widths trade precision for
+;;   speed (bfloat16 keeps about three decimal digits), so precision-critical
+;;   det/inv/solve are best left double (the default; a singular integer matrix's
+;;   determinant may be a tiny epsilon).
 ;;
 ;; Internal helpers use the linalg::%la- prefix. An array is walked with a
 ;; flat row-major index k via row-major-aref, so the elementwise operations
@@ -41,43 +47,52 @@
 (defun linalg::%la-make (dims init &optional element-type)
   ;; The single funnel through which EVERY linalg result-array allocation flows.
   ;; A LITERAL element-type of 'single-float builds a packed single-float array
-  ;; (#f); anything else (the nil default) a packed double-float array (#d). Both
-  ;; make-array calls take a literal :element-type, so every backend --
-  ;; interpreter, JVM AND wasm-GC -- picks the double[]/float[] (TYPE_F64ARR/
-  ;; F32ARR) representation statically; a runtime-computed element-type could
-  ;; not. init is coerced to the element width.
-  (when (eq element-type 'bfloat16)
-    ;; Refused rather than quietly built at another width. linalg's width rides as a
-    ;; width CODE through %la-gather-strided (see %la-etype), and no kernel reads a
-    ;; bfloat16 one yet, so carrying it here would produce #d results from #bf16 inputs.
-    (error "linalg: does not yet carry bfloat16 arrays"))
-  (if (eq element-type 'single-float)
-      (make-array dims :element-type 'single-float :initial-element init)
-      (make-array dims :element-type 'double-float :initial-element init)))
+  ;; (#f) and one of 'bfloat16 a packed bfloat16 array (#bf16); anything else (the
+  ;; nil default) a packed double-float array (#d). Every make-array call takes a
+  ;; literal :element-type, so each backend picks the double[]/float[]/short[]
+  ;; (TYPE_F64ARR/F32ARR) representation statically; a runtime-computed
+  ;; element-type could not. init is coerced to the element width.
+  ;; A cond rather than an if because there are THREE widths -- vec::%make's shape,
+  ;; and for its reason: an eq on a symbol has no exhaustiveness to lean on, so a
+  ;; width added to the umbrella has to be added here by hand.
+  ;; wasm-GC has no bfloat16 array, and lowers THAT branch (and only that one) to
+  ;; the call-time refusal WasmArrayCompiler emits, so a program that never asks
+  ;; for the width compiles and runs there exactly as before (.kb/bfloat16.md,
+  ;; "Refusing a width").
+  ;; The arms are ordered as %la-etype's are, narrowest width first. That order is
+  ;; ALSO what the ci-spec corpus currently needs on the WASM COMPONENT backend:
+  ;; with the single-float arm first that corpus traps on a ref.cast far away from
+  ;; here, which is a layout-sensitive defect of that backend (.todo/722) and not a
+  ;; property of this defun -- any edit near this size can trip it, so reordering
+  ;; these arms is neither the cause nor the cure.
+  (cond
+   ((eq element-type 'bfloat16)
+    (make-array dims :element-type 'bfloat16 :initial-element init))
+   ((eq element-type 'single-float)
+    (make-array dims :element-type 'single-float :initial-element init))
+   (t (make-array dims :element-type 'double-float :initial-element init))))
 
 (defun linalg::%la-etype (a)
   ;; The literal element-type symbol matching a's packed width -- 'single-float
-  ;; for a #f array, else 'double-float -- so a transform that threads it into
-  ;; %la-make PRESERVES the input width (a #f stays #f, a #d stays #d). This is
-  ;; what makes the element-wise / product ops width-polymorphic. A general
-  ;; (boxed) array reads back as element-type t, so it maps to 'double-float --
-  ;; matching linalg's double default.
-  ;; A bfloat16 operand is REFUSED here rather than mapped to 'double-float, which
-  ;; would answer #d for a #bf16 input -- the failure mode this width exists to avoid.
-  ;; Every internal width question flows through here, the two %la-gather-strided
-  ;; width codes included, so this one guard covers them.
+  ;; for a #f array, 'bfloat16 for a #bf16 one, else 'double-float -- so a
+  ;; transform that threads it into %la-make PRESERVES the input width (a #f stays
+  ;; #f, a #bf16 stays #bf16, a #d stays #d). This is what makes the element-wise /
+  ;; product ops width-polymorphic. A general (boxed) array reads back as
+  ;; element-type t, so it maps to 'double-float -- matching linalg's double
+  ;; default.
+  ;; Every internal width question flows through here, the %la-gather-strided and
+  ;; %la-dropout-mask width codes included, so this one answer covers them.
   ;; A Q8_0 quantized matrix (rontolisp:quantize, a GGUF's Q8_0 tensor) reads as
   ;; SINGLE-FLOAT: every dequantized value is exact in f32, and f32 is the
   ;; activation width a quantized weight is paired with -- so linalg:row over a
   ;; quantized embedding table answers the #f vector the rest of a decode step
   ;; expects, not a #d one that the next vec: call refuses as mixed-width
   ;; (.kb/quantized-matrix.md).
-  (when (eq (array-element-type a) 'bfloat16)
-    (error "linalg: does not yet carry bfloat16 arrays"))
-  (if (or (eq (array-element-type a) 'single-float)
-          (eq (array-element-type a) 'q8-0))
-      'single-float
-      'double-float))
+  (cond ((eq (array-element-type a) 'bfloat16) 'bfloat16)
+        ((or (eq (array-element-type a) 'single-float)
+             (eq (array-element-type a) 'q8-0))
+         'single-float)
+        (t 'double-float)))
 
 (defun linalg::%la-like (a)
   ;; A fresh zero-filled packed array with the same shape AND width as a.
@@ -454,17 +469,29 @@
         ((null p) (reverse out))
       (setq out (cons (if (= k ax) n (car p)) out)))))
 
+(defun linalg::%la-width-code-of-etype (et)
+  ;; A packed float element-type symbol as the small integer every kernel reads,
+  ;; the codes of am.ik.rontolisp.FloatWidth: 0 single-float, 1 double-float,
+  ;; 2 bfloat16. The codes are the WIRE this library's width protocol travels on
+  ;; (%la-gather-strided, %la-dropout-mask); they were a BOOLEAN until 2026-09-03,
+  ;; which is a two-valued type and so admitted exactly two widths.
+  ;; No default arm: a symbol that names no width SIGNALS rather than being read as
+  ;; "therefore double", which is the silence this whole changeover exists to
+  ;; remove.
+  (cond ((eq et 'single-float) 0)
+        ((eq et 'double-float) 1)
+        ((eq et 'bfloat16) 2)
+        (t (error "linalg: unknown packed float element type"))))
+
 (defun linalg::%la-width-code (a)
-  ;; a's packed float width as the small integer every kernel reads, the codes of
-  ;; am.ik.rontolisp.FloatWidth: 0 single-float, 1 double-float. A width linalg does
-  ;; not carry cannot reach here -- %la-etype refuses it first -- but the PROTOCOL
-  ;; can name one, which a boolean could not.
-  (if (eq (linalg::%la-etype a) 'single-float) 0 1))
+  ;; a's packed float width as its code -- %la-etype's answer put on the wire.
+  (linalg::%la-width-code-of-etype (linalg::%la-etype a)))
 
 (defun linalg::%la-etype-of-width-code (w)
   ;; The inverse: the element-type symbol %la-make wants, for a width code.
   (cond ((= w 0) 'single-float)
         ((= w 1) 'double-float)
+        ((= w 2) 'bfloat16)
         (t (error "linalg: unknown packed float width code"))))
 
 (defun linalg::%la-gather-strided (a od rs base width)
@@ -1481,12 +1508,16 @@
   (let ((r (linalg::%la-layer-norm-grad-norm (linalg:mul g w) x eps old)))
     (list (car r) (linalg:mul g (car (cdr r))))))
 
-(defun linalg::%la-dropout-mask (shape p st single)
-  ;; The inverted-dropout mask (rand > p) / (1 - p) -- single-float when single is
-  ;; non-nil -- drawn from the generator state st, which is advanced IN PLACE to the
-  ;; state the fill ends on: the linalg:rand, linalg:greater and linalg:div that
-  ;; torch:dropout composed, as one member. The caller restores the specials from st.
-  (let* ((u (linalg::%la-make shape 0.0 (if single 'single-float nil)))
+(defun linalg::%la-dropout-mask (shape p st width)
+  ;; The inverted-dropout mask (rand > p) / (1 - p) at the width named by the CODE
+  ;; width (see %la-width-code-of-etype) -- drawn from the generator state st, which
+  ;; is advanced IN PLACE to the state the fill ends on: the linalg:rand,
+  ;; linalg:greater and linalg:div that torch:dropout composed, as one member. The
+  ;; caller restores the specials from st. The width rides as a small integer rather
+  ;; than an element-type symbol for %la-gather-strided's reason -- a kernel on any
+  ;; backend reads it without comparing symbols -- and was a BOOLEAN until 2026-09-06.
+  (let* ((u
+          (linalg::%la-make shape 0.0 (linalg::%la-etype-of-width-code width)))
          (end (linalg::%la-rng-fill u st 0 0.0 1.0)))
     (setf (aref st 0) (aref end 0))
     (setf (aref st 1) (aref end 1))

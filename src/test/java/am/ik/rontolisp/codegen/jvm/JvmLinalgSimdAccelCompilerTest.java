@@ -908,6 +908,25 @@ class JvmLinalgSimdAccelCompilerTest {
 	}
 
 	@Test
+	void everyBridgeKernelDeclinesABfloat16OperandWithoutMovingABit() throws Exception {
+		// The third packed float width reaches this seam at run time now that linalg:
+		// CARRIES it; until 2026-09-06 the library refused it upstream, and
+		// that refusal -- not anything in the template -- was what kept a short[] out.
+		//
+		// Every entry in JvmSimdVectorTemplate guards with laPacked, a POSITIVE test
+		// (double[] or float[]), so a short[] declines to the scalar defun. The failure
+		// this catches is an entry that instead asks "is it a float[]?" and reads the
+		// negative half as "therefore double[]": that is a ClassCastException at best and
+		// a wrong number at worst, and no source pin can see it -- only running the
+		// corpus with the flag and without it and comparing.
+		StringBuilder program = new StringBuilder(am.ik.rontolisp.LinalgBfloat16Corpus.PREAMBLE);
+		for (String form : am.ik.rontolisp.LinalgBfloat16Corpus.FORMS) {
+			program.append("(print ").append(form).append(")\n");
+		}
+		assertMatchesScalarReference(program.toString());
+	}
+
+	@Test
 	void generatorFillDeclinedInputsRunTheScalarDefun() throws Exception {
 		// A general boxed destination, a state vector of the wrong length, a state word
 		// outside the generator's range and an out-of-range mode: each declines.

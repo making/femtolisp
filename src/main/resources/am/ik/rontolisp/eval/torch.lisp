@@ -1612,7 +1612,8 @@
         (let* ((st (linalg::%la-rng-state))
                (mask
                 (linalg::%la-dropout-mask (torch:shape tx) p st
-                 (eq torch::*default-element-type* 'single-float))))
+                                          (linalg::%la-width-code-of-etype
+                                           torch::*default-element-type*))))
           ;; The mask (rand > p) / (1 - p) is ONE member over an explicit
           ;; generator state, so a device draws and scales it in one pass
           ;; (todo-499); the state it advances is put back as linalg:rand

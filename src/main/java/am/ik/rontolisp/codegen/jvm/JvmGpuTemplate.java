@@ -2178,18 +2178,18 @@ final class JvmGpuTemplate {
 	}
 
 	/**
-	 * {@code (linalg::%la-dropout-mask shape p st single)}: the inverted-dropout mask
+	 * {@code (linalg::%la-dropout-mask shape p st width)}: the inverted-dropout mask
 	 * drawn on the device from the state vector {@code st}, which is advanced in place to
 	 * the generator's end state -- through the write seam, as every in-place write is.
 	 * Declines what {@link #gpuRngFill} declines.
 	 * @param shape the mask's shape, a compiled proper list
 	 * @param pv the drop probability
 	 * @param st the generator state, a packed double vector of three words
-	 * @param single non-{@code null} for a single-float mask
+	 * @param widthv the mask's width, as {@code am.ik.rontolisp.FloatWidth}'s code
 	 * @return the packed mask, or {@code null} when the device declined it
 	 */
 	static @Nullable Object gpuDropoutMask(@Nullable Object shape, @Nullable Object pv, @Nullable Object st,
-			@Nullable Object single) {
+			@Nullable Object widthv) {
 		Double p = scalar(pv);
 		int[] od = shapeOf(shape);
 		if (p == null || od == null || !(gpuMaterialize(st) instanceof double[] s) || s.length != 5 || s[0] != 1.0
@@ -2213,8 +2213,20 @@ final class JvmGpuTemplate {
 		}
 		int n = (int) total, off = 1 + od.length;
 		double span = 1.0 - p;
+		// The width arrives as am.ik.rontolisp.FloatWidth's CODE (0 single, 1 double),
+		// spelled as a literal because this template travels with a compiled program and
+		// cannot import the enum -- gpuGatherStrided's wire, and pinned as literals by
+		// FloatWidthTest. It was a nil/non-nil flag until 2026-09-06; reading it that way
+		// now would answer "single" for every width, since a boxed 0 is not null.
+		//
+		// Anything that is not one of those two codes DECLINES rather than being read as
+		// a width: bfloat16 has no device kernel here and a broken call is the defun's to
+		// signal on.
+		if (!(widthv instanceof Long widthCode) || (widthCode != 0L && widthCode != 1L)) {
+			return null;
+		}
 		Object mask;
-		if (single != null) {
+		if (widthCode == 0L) {
 			float[] c = newLike(od);
 			mask = Gpu.dropoutMask(c, off, n, p, span, w[0], w[1], w[2]) ? c : null;
 		}

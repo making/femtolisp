@@ -948,7 +948,7 @@ class WasmLispCompilerTest {
 	@Test
 	void linalgSingleFloatCompilesInEveryMode() {
 		// Single-float (#f) linalg output compiles in Preview 1 and component
-		// modes. Both linalg::%la-make branches take a literal :element-type, so the
+		// modes. Every linalg::%la-make branch takes a literal :element-type, so the
 		// wasm-GC backend picks the TYPE_F32ARR/F64ARR repr statically (no reader
 		// conditional needed -- unlike the earlier vec::%make-like assumption, wasm-GC
 		// produces #f directly).
@@ -958,6 +958,27 @@ class WasmLispCompilerTest {
 			.process(LispReader.readAllFromString(source));
 		assertThat(new WasmLispCompiler().compile(program)).isNotEmpty();
 		assertThat(new WasmLispCompiler(false, true).compile(program)).isNotEmpty();
+	}
+
+	@Test
+	void linalgCarriesTheBfloat16ArmOnThisBackendWithoutRefusingAtCompileTime() {
+		// linalg::%la-make grew a third branch when linalg: took the width (2026-09-06),
+		// and this backend has no bfloat16 array. The branch is therefore a DEAD arm
+		// spliced into every wasm program that touches linalg: -- so it must lower to
+		// WasmArrayCompiler's call-time signal, exactly as vec::%make's does, and NOT to
+		// a compile error. A compile error here would fail every wasm-GC linalg build,
+		// which is the failure the call-time shape exists to prevent.
+		java.util.List<am.ik.rontolisp.LispVal> program = am.ik.rontolisp.eval.LinalgLibrary
+			.process(LispReader.readAllFromString("(print (linalg:sum (linalg:arange 4)))"));
+		assertThat(new WasmLispCompiler().compile(program)).isNotEmpty();
+		assertThat(new WasmLispCompiler(false, true).compile(program)).isNotEmpty();
+		// Asking for the width by name compiles too, and signals at the call. (A #bf16
+		// LITERAL is still a compile error -- see
+		// bfloat16LiteralsAreRefusedOnTheWasmGcBackend
+		// -- because there the representation is chosen at compile time, not at a call.)
+		java.util.List<am.ik.rontolisp.LispVal> asks = am.ik.rontolisp.eval.LinalgLibrary
+			.process(LispReader.readAllFromString("(print (linalg:zeros '(2) :element-type 'bfloat16))"));
+		assertThat(new WasmLispCompiler().compile(asks)).isNotEmpty();
 	}
 
 	@Test

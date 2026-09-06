@@ -301,15 +301,16 @@ class LispFloatArrayTest {
 	}
 
 	@Test
-	void linalgRefusesTheWidthRatherThanAnsweringAnotherOne() {
-		// linalg's width rides as a BOOLEAN through %la-gather-strided, which cannot say
-		// "bfloat16", so it declines instead of quietly answering #d for a #bf16 input.
-		// Temporary, and the message says so.
-		assertThatThrownBy(() -> eval("(linalg:add #bf16(1.0) #bf16(2.0))"))
-			.hasMessageContaining("does not yet carry bfloat16");
-		assertThatThrownBy(() -> eval("(linalg:zeros '(2) :element-type 'bfloat16)"))
-			.hasMessageContaining("does not yet carry bfloat16");
-		// The two widths linalg does carry are untouched.
+	void linalgKernelsPreserveTheBf16WidthToo() {
+		// linalg: REFUSED the width until 2026-09-06, because its own width protocol --
+		// the fifth argument of %la-gather-strided -- was a boolean, and a boolean cannot
+		// say "bfloat16". With that widened to a code the refusal is gone and linalg: has
+		// the property vec: has above: a constructor takes the width and every transform
+		// preserves it. (The whole surface, and the seams that must decline it, are
+		// LinalgBfloat16Test's; these are the two halves of "carries the width".)
+		assertThat(print("(linalg:zeros '(2) :element-type 'bfloat16)")).isEqualTo("#bf16(0.0 0.0)");
+		assertThat(print("(linalg:add #bf16(1.0) #bf16(2.0))")).isEqualTo("#bf16(3.0)");
+		// The two widths linalg always carried are untouched.
 		assertThat(print("(linalg:add #d(1.0 2.0) #d(3.0 4.0))")).isEqualTo("#d(4.0 6.0)");
 		assertThat(print("(linalg:add #f(1.0 2.0) #f(3.0 4.0))")).isEqualTo("#f(4.0 6.0)");
 	}

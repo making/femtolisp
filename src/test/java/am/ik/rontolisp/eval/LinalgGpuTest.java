@@ -350,7 +350,7 @@ class LinalgGpuTest {
 					.isLessThan(option.isEmpty() ? 1e-12 : 1e-5);
 			}
 			String mask = "(linalg::%la-dropout-mask '(" + FUSED_ROWS + " 384) 0.1 *st* "
-					+ (option.isEmpty() ? "nil" : "t") + ")";
+					+ (option.isEmpty() ? "1" : "0") + ")";
 			assertMatchesScalarOracle("(linalg:seed 5) (defparameter *st* (linalg::%la-rng-state)) " + mask);
 			assertMatchesScalarOracle("(linalg:seed 5) (defparameter *st* (linalg::%la-rng-state)) " + mask + " *st*");
 			// softmax sits where a single libm member sits, per element. The GELU pair

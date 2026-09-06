@@ -2,7 +2,7 @@
 
 `(linalg:rand shape &key element-type)`
 
-Returns an array of uniform draws in `[0, 1)` (numpy's `np.random.rand`, but taking a shape designator like [`linalg:zeros`](linalg-zeros.md): an integer for a vector, a list for a matrix). Double-float by default; pass `:element-type 'single-float` for a packed `#f` result. Draws come from the shared generator, so a program that calls [`linalg:seed`](linalg-seed.md) first gets the same values on every backend.
+Returns an array of uniform draws in `[0, 1)` (numpy's `np.random.rand`, but taking a shape designator like [`linalg:zeros`](linalg-zeros.md): an integer for a vector, a list for a matrix). Double-float by default; pass `:element-type 'single-float` for a packed `#f` result. `:element-type 'bfloat16` builds a packed bfloat16 (`#bf16`) array instead, on the interpreter and the JVM only ([Single-float precision](../../guides/linear-algebra.md#single-float-precision)). Draws come from the shared generator, so a program that calls [`linalg:seed`](linalg-seed.md) first gets the same values on every backend.
 
 ```lisp
 (linalg:seed 42) ; => 42

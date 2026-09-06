@@ -55,8 +55,11 @@ width, because `BFloat16`'s API only takes a `double`.
 `#bf16(...)` / `(make-array dims :element-type 'bfloat16)` is the third permit of the sealed
 `LispFloatArray` -- `LispBFloat16Array(short[] data, int[] dims)`, a fourth EMPTY subtype of
 `float` (every `aref` answers a `double`). Interpreter and JVM only; every other backend refuses
-it BY NAME at `compiler/UnsupportedFloatWidth`. `vec:` carries the width; `linalg:` declines it at
-`%la-etype` / `%la-make`.
+it BY NAME at `compiler/UnsupportedFloatWidth`. `vec:` and `linalg:` BOTH carry the width -- `linalg:`
+declined it at `%la-etype` / `%la-make` until 2026-09-06, because its own width protocol was a boolean
+and so admitted exactly two widths (`.todo/687`, `.kb/linalg.md`, "The third width, and the wire it
+needed"). No `linalg:` acceleration seam takes it: `--simd`, `--blas` and `--gpu` all decline a
+`short[]` operand to the defun, so a `linalg:` answer at this width is the portable one bit for bit.
 - **JVM representation: a bare `short[]` with a TWO-SLOTS-PER-DIMENSION header**
   `[rank, hi_0, lo_0, ..., e_0, ...]`, data offset `1 + 2 * rank` (a `short` caps at 32767).
   `codegen/jvm/JvmPackedFloatWidth` is the ONE place that knows the layout at every width.

@@ -1007,7 +1007,7 @@ public final class LinalgGpu {
 	}
 
 	/**
-	 * {@code (linalg::%la-dropout-mask shape p st single)}: the inverted-dropout mask
+	 * {@code (linalg::%la-dropout-mask shape p st width)}: the inverted-dropout mask
 	 * drawn on the device from the state vector {@code st}, which is advanced IN PLACE to
 	 * the generator's end state as the defun advances it. Declines what {@link #rngFill}
 	 * declines -- a bad state word, a small fill -- plus a ratio probability and a shape
@@ -1040,17 +1040,37 @@ public final class LinalgGpu {
 		}
 		int n = (int) total;
 		double span = 1.0 - p;
+		// The width arrives as a CODE, converted back to the enum ONCE here and switched
+		// over exhaustively below, so a fourth width is a compile error rather than an
+		// arm it inherits. It was a nil/non-nil flag until 2026-09-06; reading it that
+		// way now would answer "single" for every width, a boxed 0 not being nil.
+		FloatWidth width = LinalgSimd.widthArg(args.get(3));
+		if (width == null) {
+			return null;
+		}
+		// A switch EXPRESSION, not a statement switch: only the expression form is
+		// checked for exhaustiveness over an enum, so a fourth width is a compile error
+		// here (gatherStrided's shape, for its reason).
+		Boolean single = switch (width) {
+			case SINGLE -> Boolean.TRUE;
+			case DOUBLE -> Boolean.FALSE;
+			// No device kernel fills this width; the defun answers.
+			case BFLOAT16 -> null;
+		};
+		if (single == null) {
+			return null;
+		}
 		double[] end;
 		LispVal mask;
-		if (args.get(3) instanceof LispNil) {
-			double[] out = LinalgGpuKernels.result(n);
-			end = LinalgGpuKernels.dropoutMask(out, n, p, span, w[0], w[1], w[2]);
-			mask = new LispDoubleFloatArray(out, shape);
-		}
-		else {
+		if (single) {
 			float[] out = LinalgGpuKernels.resultF(n);
 			end = LinalgGpuKernels.dropoutMask(out, n, p, span, w[0], w[1], w[2]);
 			mask = new LispSingleFloatArray(out, shape);
+		}
+		else {
+			double[] out = LinalgGpuKernels.result(n);
+			end = LinalgGpuKernels.dropoutMask(out, n, p, span, w[0], w[1], w[2]);
+			mask = new LispDoubleFloatArray(out, shape);
 		}
 		if (end == null) {
 			return null;
