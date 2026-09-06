@@ -74,7 +74,11 @@ the end of the header, row-major.
 ## Tests
 `examples/llm/safetensors-check.lisp` over `safetensors-check.safetensors`
 (`safetensors-fixture.py`), expected `examples/.expected/safetensors-check.txt`, entry in
-`examples.yaml` — interpreter leg only until the JVM/WASM arms of `widen-float-bits` land.
+`examples.yaml` on all four backends, with and without `--simd` — but the
+`wasm-component` token is a COMPILE-only leg there, and that output actually TRAPS on the
+sharded section when it is run (`.todo/693`), so the RUN legs are interpreter, JVM and
+WASM preview 1.
+
 The `bfloat16` destination is pinned per engine, not cross-backend (two backends refuse the
 width): `SafetensorsLibraryTest#readsIntoABfloat16DestinationAndNarrowsOnlyWhereTheWidthRequiresIt`
 and `GgufLibraryTest#everyTensorTypeReadsIntoABfloat16Destination` cover all three source
@@ -82,3 +86,13 @@ types into it, and the bulk transfer under them is
 `LispEvaluatorTest#readWriteSequenceMovesABfloat16ArrayAsItsStoredPatterns` /
 `JvmLispCompilerTest#compileAndRunReadWriteSequenceMovesABfloat16ArrayAsItsStoredPatterns`,
 both keyed on bf16 `0x3F80` = 1.0 so a byte-order mistake is obvious rather than plausible.
+
+**Those are all one engine each, and the READER composed of them is where the two can
+disagree**, so `cli/SafetensorsBfloat16CompilePathTest` runs one program through
+`CompileFrontend` twice — interpreted, and as a compiled `.class` under `java -cp` — over a
+fixture carrying all three source dtypes, and compares the printed BIT PATTERNS element for
+element. It prints patterns rather than floats (no formatting accident can make two engines
+agree), carries the two round-to-nearest-even ties `1.00390625` / `1.01171875` (16256 stays,
+16258 lifts) so a truncating narrow shows, and reads twice with `checkpoint::%chunk` forced
+to 5 so the chunked arms of both narrowing paths run at non-zero offsets. There is no WASM
+leg by construction: those backends refuse the width by name.

@@ -85,8 +85,10 @@ one typed `dotimes` over the transposed state, measured at 21 ms of a ~300 ms f3
 at the 0.8B shape (the README's table, commit `594ddac9`, Graal JIT) -- under a tenth,
 so a kernel is not worth its surface until the GEMVs shrink under it. The contract the
 readers must honour (the `1 + w` norms, `-exp(A_log)`, the `q_proj` interleave, the
-un-permuted Qwen RoPE) is written into `.todo/673` / `.todo/675` and the two files'
-headers.
+un-permuted Qwen RoPE) lives in `examples/llm/llm.lisp`'s `load-hf-checkpoint` and in the
+two readers' own headers -- both reader items have since closed (`673` 09-03, `675` 09-06),
+so their statements of it are recoverable only through `.todo/history/2026-09.md`, whose row
+names the commit that removed each file.
 
 ## Done, part 2 (2026-09-03): the real checkpoint, from safetensors
 
