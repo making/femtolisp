@@ -3633,7 +3633,8 @@ final class JvmSimdVectorTemplate {
 	private static final long PARALLEL_SPIN_NANOS = 1_000_000L;
 
 	/**
-	 * The thread count RONTOLISP_THREADS asked for (the caller included), 0 until read.
+	 * The thread count RONTOLISP_THREADS asked for (the caller included), 0 until read;
+	 * {@link #parallelDefaultThreads} when it says nothing.
 	 */
 	private static volatile int parallelThreads;
 
@@ -3660,13 +3661,27 @@ final class JvmSimdVectorTemplate {
 		return rows >= 2 && rows * workPerRow >= PARALLEL_MIN_WORK && parallelThreads() > 1;
 	}
 
+	/**
+	 * Half the available processors, never below two on a box that has two: what
+	 * RONTOLISP_THREADS defaults to. A pool as wide as the machine buys nothing -- the
+	 * GEMV is bandwidth-bound well before the last core, and 64 threads measured BELOW 32
+	 * and 16 on an idle 64-thread box -- while it makes every call's latency the maximum
+	 * over as many threads as the box can run, so anything else runnable (a build, a
+	 * second copy of the same program) lands in the middle of a leaf and the caller waits
+	 * out a scheduler quantum for it. The measurements are in .kb/simd-parallel.md.
+	 */
+	private static int parallelDefaultThreads() {
+		int cpus = Runtime.getRuntime().availableProcessors();
+		return Math.min(cpus, Math.max(2, cpus / 2));
+	}
+
 	private static int parallelThreads() {
 		int t = parallelThreads;
 		if (t == 0) {
 			synchronized (JvmSimdVectorTemplate.class) {
 				t = parallelThreads;
 				if (t == 0) {
-					t = Runtime.getRuntime().availableProcessors();
+					t = parallelDefaultThreads();
 					String env = System.getenv("RONTOLISP_THREADS");
 					if (env != null && !env.isBlank()) {
 						try {

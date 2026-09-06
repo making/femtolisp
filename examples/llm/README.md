@@ -343,8 +343,18 @@ number that decides the `--parallel` row -- see below):
 | | tok/s | loadavg |
 | --- | --- | --- |
 | `--simd`, one thread | 2.45 / 2.18 (2.56 on the idle box before the day started) | 17.1 / 9.8 |
-| `--simd --parallel`, `RONTOLISP_THREADS=32` | **9.72 / 9.00** | 3.7 / 6.2 |
-| `--simd --parallel`, 64 threads (the default) | 9.17 / 8.37 | 7.7 / 16.2 |
+| `--simd --parallel`, the default (32 threads, half of 64) | **9.81 / 9.00** | 5.2 / 7.2 |
+| `--simd --parallel`, `RONTOLISP_THREADS=32` | 9.72 / 9.00 / 9.42 | 3.7 / 6.2 / 7.8 |
+| `--simd --parallel`, `RONTOLISP_THREADS=64` (the whole box) | 9.17 / 8.37 / 8.70 | 7.7 / 16.2 / 5.7 |
+
+The third value in each `--parallel` row and the default row were measured on
+2026-09-06 at `24d4dd80`, when the default became half the processors
+(`.todo/697`); the first two are the 2026-09-05 pair above. The rest of the
+sweep that day, same conditions, one run each: 9.55 tok/s at 16 threads, 7.58 at
+8, 5.50 at 4, 2.27 at 1. **The curve is flat from 16 to 32 and bends down at
+64** -- a GEMV is bandwidth-bound long before the last core, so the second half
+of this box's threads adds nothing and costs a spinner, which is why the default
+is half.
 
 The load: 5.7-6.2 s for 1.5 GB of bf16 into 2.4 GB of f32, of which
 `tokenizer.json` (11 MB) + the KV cache 2.6-3.0 s; from the GGUF 5.5 s, its
@@ -357,15 +367,24 @@ Qwen3.5's 576 small Gated DeltaNet reads per token worst -- which is what
 `.todo/678`'s lane predicted from the access shape before any of it was
 measured (`.todo/489` has the table).
 
-**The 64-thread row is the one to read twice.** Under the default thread count,
-one busy core anywhere on the box -- another lane's build, a second decode --
-costs this program 10x: the rows of a GEMV are handed out to spinning workers
-and the caller waits for the last one, so a worker descheduled mid-leaf holds
-every GEMV for a scheduler quantum. Measured on the same day with a six-core
-build running beside it: **0.62 tok/s at 64 threads against 9.88 at 32**, and
-Qwen3.5-0.8B 0.83 where the table above says 8.56. `RONTOLISP_THREADS=32` is
-the setting to use on a shared 64-thread box until the default changes
-(`.todo/697`).
+**Why the whole-box row is a trap, and what it really costs.** The rows of a
+GEMV are handed out to spinning workers and the caller waits for the last one,
+so a worker descheduled mid-leaf holds every GEMV for a scheduler quantum; with
+a thread per hardware thread, anything else runnable on the box lands in the
+middle of a leaf. Measured 2026-09-05 with a six-core build running beside it:
+**0.62 tok/s at 64 threads against 9.88 at 32**, and Qwen3.5-0.8B 0.83 where
+the table above says 8.56.
+
+That collapse is a TAIL, not the mean, and it takes real oversubscription. On
+2026-09-06 it reproduced once -- two copies of this decode loop, 64 threads
+each, five seconds apart: 0.57 and 3.38 tok/s -- and not at all in the other
+attempts that day: 6, 16 and 64 pure-CPU spinner threads beside a single 64-thread
+run gave 8.68 / 8.23 / 7.00, a maven build beside it 8.76, and three more pairs
+8.60/8.44, 8.04/8.51 and (at the new default) 8.75/9.43. So the whole-box count
+is not reliably slow; it is reliably EXPOSED, and one run in four paid for it.
+The default is now half the processors, which is both faster on an idle box and
+what makes a second lane cost nothing; `RONTOLISP_THREADS` still overrides it
+(`.kb/simd-parallel.md`).
 
 ### SmolLM2
 
@@ -570,7 +589,7 @@ interleaved runs, nothing pinned:
 
 | backend | threads | scalar | `--simd` | `--simd --parallel` | `--gpu --simd` | `--gpu --simd --parallel` |
 | --- | --- | --- | --- | --- | --- | --- |
-| JVM | 1, or 20 under `--parallel` | 104 tok/s | 336 tok/s | 637 tok/s (684 with `RONTOLISP_THREADS=10`) | 458 tok/s | 427 tok/s |
+| JVM | 1, or 20 under `--parallel` (the default at the time; it is 10 now) | 104 tok/s | 336 tok/s | 637 tok/s (684 with `RONTOLISP_THREADS=10`) | 458 tok/s | 427 tok/s |
 | wasm-GC (`wasmtime`) | 1 | 0.4 tok/s | 125 tok/s | -- (no threads) | -- (no FFM) | -- |
 | interpreter (`java -jar`) | 1, or 20 under `--parallel` | ~15 s per token | 44 tok/s | 44 tok/s | 42 tok/s | -- |
 
@@ -625,8 +644,11 @@ GEMV row is one accumulator chain). `--simd --parallel` runs
 every GEMV above ~2^15 multiply-adds -- all of them here, the 288x288
 projections included -- over a row range per thread, bit-identical to the
 serial kernel ([the guide](../../doc/en/guides/simd-acceleration.md#using-more-than-one-core---parallel));
-`RONTOLISP_THREADS=10` is slightly better than the default 20 on this box because
-the second ten cores are the small ones. `--gpu --simd` moves the GEMVs whose matrix is big enough and
+`RONTOLISP_THREADS=10` was slightly better than the 20 threads this box
+defaulted to when the table was measured, because the second ten cores are the
+small ones -- half the processors is what the default became on 2026-09-06
+(`.todo/697`), so 10 IS the default here now and that table's `--parallel`
+column is the explicit-20 one. `--gpu --simd` moves the GEMVs whose matrix is big enough and
 STAYS on the device -- the three feed-forward matrices per layer and the
 classifier head, two thirds of the multiply-adds; the 288x288 projections are a
 tie at ~12 us and stay on the CPU -- from their second token on, once the

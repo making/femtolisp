@@ -1126,8 +1126,8 @@ public final class RontoLispCli {
 		this.out.println("                     every other kernel, every reduction included, stays on the");
 		this.out.println("                     calling thread. The rows are independent chains, so the");
 		this.out.println("                     results are bit-identical to --simd alone. RONTOLISP_THREADS");
-		this.out.println("                     sets the thread count (the caller included; default: the");
-		this.out.println("                     available processors; 1 = serial); the workers are daemon");
+		this.out.println("                     sets the thread count (the caller included; default: half");
+		this.out.println("                     the available processors; 1 = serial); the workers are daemon");
 		this.out.println("                     threads that spin ~1 ms between calls before sleeping, so a");
 		this.out.println("                     loop of products keeps them busy. Interpreter (incl. the");
 		this.out.println("                     native binary) and JVM (.class) only -- WASM has no threads.");

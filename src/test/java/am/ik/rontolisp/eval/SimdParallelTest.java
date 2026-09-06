@@ -79,6 +79,22 @@ class SimdParallelTest {
 	}
 
 	@Test
+	void theDefaultThreadCountIsHalfTheBoxAndNeverFillsIt() {
+		// A pool as wide as the machine buys nothing and makes every call wait on the
+		// slowest of as many threads as the box can run: half is the measured default
+		// (.kb/simd-parallel.md), and the emitted JVM twin computes the same number
+		// (JvmSimdParallelCompilerTest#theEmittedPoolDefaultsToHalfTheBoxToo).
+		int cpus = Runtime.getRuntime().availableProcessors();
+		assertThat(SimdParallel.defaultThreads()).isEqualTo(Math.min(cpus, Math.max(2, cpus / 2)));
+		if (cpus >= 4) {
+			assertThat(SimdParallel.defaultThreads()).isLessThan(cpus);
+		}
+		// Two on any box that has two, so --parallel is never silently serial where it
+		// has something to split.
+		assertThat(SimdParallel.defaultThreads()).isGreaterThanOrEqualTo(Math.min(2, cpus));
+	}
+
+	@Test
 	void tooLittleWorkOrOneRowIsNotWorthSplitting() {
 		assertThat(SimdParallel.worth(128, 128)).isFalse();
 		assertThat(SimdParallel.worth(1, 1 << 20)).isFalse();

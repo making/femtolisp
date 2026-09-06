@@ -25,9 +25,12 @@ which row cannot change a bit** and every byte-identity statement in `.kb/linalg
 - `--parallel` is value-less (`CliOptions.noValueKeys`), requires `--simd`, hard error without it
   on interpreter/REPL/compiler (`RontoLispCli.requireSimdForParallel`, `JvmLispCompiler`'s
   7-argument constructor) and hard error on `.wasm` output (no threads there).
-- `RONTOLISP_THREADS` = thread count, CALLING thread included (default `availableProcessors`;
-  `1` = serial; malformed warns once). Read once by `JvmSimdVectorTemplate.parallelThreads` /
-  `eval/SimdParallel.threads`.
+- `RONTOLISP_THREADS` = thread count, CALLING thread included (default
+  `min(cpus, max(2, cpus / 2))` -- HALF the box, see below; `1` = serial; malformed warns
+  once). Read once by `JvmSimdVectorTemplate.parallelThreads` / `eval/SimdParallel.threads`,
+  both defaulting through a `parallelDefaultThreads` / `defaultThreads` twin pinned by
+  `JvmSimdParallelCompilerTest#theEmittedPoolDefaultsToHalfTheBoxToo` and
+  `SimdParallelTest#theDefaultThreadCountIsHalfTheBoxAndNeverFillsIt`.
 - Pool: `threads - 1` daemon workers (`rontolisp-parallel-N`), lazy, NOT a `ForkJoinPool`, one
   call at a time. JVM dispatch is one flat class with an `Object[]` job record (single-blob
   injection carries no nested class, `.kb/template-class-embedding.md`); `eval/SimdParallel` is
@@ -51,7 +54,8 @@ which row cannot change a bit** and every byte-identity statement in `.kb/linalg
 - **Parking is a Dekker handshake**: worker publishes `parked`, rechecks the epoch, parks; caller
   bumps the epoch then scans and unparks.
 - **The yield matters as much as the spin**: `Thread.yield()` every 64 spins (19 pure spinners on
-  a 20-core box crowd out the caller, the JIT and the GC).
+  a 20-core box crowd out the caller, the JIT and the GC). It belongs to the WORKERS' idle spin
+  only -- the same rule in the caller's wait for the last leaf measured worse (below).
 - Expected 1.7-5.6x per GEMV, ~1.8x whole-program on a decode loop. **"Ceiling is memory
   bandwidth" holds only once the matrix is unambiguously larger than cache** -- a
   `.todo/702` size sweep on GB10 (2026-09-06) found the f32 parallel arm's rate is a hump,
@@ -67,6 +71,44 @@ which row cannot change a bit** and every byte-identity statement in `.kb/linalg
   documented as not a win. The interpreter gains nothing on llm either.
 - GEMM: the row split buys 5.6-7.6x, but a tuned threaded BLAS still wins 1.3-3.8x, so `--blas`
   stays the answer where a library exists. `--blas` differs in the last digits; parallel does not.
+
+## The default is HALF the processors, and the caller may not help a straggler
+Both settled by measurement on 2026-09-06 (`.todo/697`, dorian: 2 sockets x 16 cores x 2
+threads = 64, GraalVM 25.0.4, JVM class output of `examples/llm`, Qwen3-0.6B BF16 read as
+f32, `-t 0 -n 64`, no other rontolisp lane on the box).
+
+- **A pool as wide as the machine is slower than half of it even when nothing else runs**:
+  8.70 tok/s at 64 threads, 9.45 at 32, 9.55 at 16, 7.58 at 8, 5.50 at 4, 2.27 at 1 -- the
+  curve is flat from 16 to 32 and BENDS DOWN at 64. Under `ParallelContentionBench`
+  (1024x1024 f32 GEMV in a decode-shaped loop, a 100 us gap between calls) 16 threads beat
+  64 in every cell, idle or with 16 or 48 busy cores beside it: 0.027-0.032 ms/call against
+  0.041-0.087. GB10's README row says the same from the other direction (`RONTOLISP_THREADS=10`
+  beat the 20 default on a 20-core box). So the default is half, and `RONTOLISP_THREADS`
+  still overrides it.
+- **What the full-machine default cost was a TAIL, not a mean.** The reported collapse
+  (0.62 tok/s at 64 threads against 9.88 at 32) reproduced ONCE: two copies of the decode
+  loop started five seconds apart, 64 threads each, printed 0.57 and 3.38 tok/s. It did
+  NOT reproduce with 6, 16 or 64 pure-CPU spinner threads beside a single run (8.68 / 8.23
+  / 7.00), nor with a maven build beside it (8.76), nor on three later repeats of the pair
+  (8.60/8.44, 8.04/8.51 -- and 8.75/9.43 at the new default). Do not expect a bad number on
+  demand: the mechanism is a worker descheduled while it holds a leaf, which needs the box
+  genuinely oversubscribed, and one run in four saw it.
+- **Rejected, measured: the caller helping the straggler.** Two shapes were built and
+  benched against the shipped one, both LOSING 20-45% on the healthy path:
+  (1) per-leaf done flags (`AtomicIntegerArray`) so the caller can RE-RUN a leaf a
+  descheduled worker still holds -- legal, since a leaf is a deterministic write of rows no
+  leaf reads, so running it twice writes the same bits -- with the rescue budget set to the
+  call's own serial cost. 0.041 -> 0.061 ms/call at 64 threads idle whether the budget was
+  20 us or 262 us, so the cost is the per-leaf flag traffic (64 cores writing 128 flags over
+  8 cache lines, and the caller reading all of them), not the rescue. Keeping a shared
+  countdown for the fast path does not help: exactly-once accounting needs the same per-leaf
+  write either way, and returning before a straggler has stopped writing is not an option --
+  it would let a stale leaf land in the NEXT call's `matvec-into` destination.
+  (2) `Thread.yield()` every 64 spins in the caller's wait (the workers' own rule, on the
+  theory that the caller occupies the CPU the straggler needs). No consistent gain and one
+  0.220 ms/call cell against 0.066 -- once the caller yields on a full box it waits to be
+  rescheduled among everything else. **The bench is `eval/ParallelContentionBench`; re-run it
+  before trying a third shape.**
 
 ## Tests
 - `codegen/jvm/JvmSimdParallelCompilerTest` -- bit-identity at both widths above and below the

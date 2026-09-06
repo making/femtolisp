@@ -85,7 +85,7 @@ final class SimdParallel {
 
 	/**
 	 * The thread count {@code RONTOLISP_THREADS} asked for (the calling thread included),
-	 * defaulting to the available processors; read once, and the workers start then.
+	 * defaulting to {@link #defaultThreads}; read once, and the workers start then.
 	 * @return the thread count, at least 1
 	 */
 	static int threads() {
@@ -94,7 +94,7 @@ final class SimdParallel {
 			synchronized (SimdParallel.class) {
 				t = threads;
 				if (t == 0) {
-					t = Runtime.getRuntime().availableProcessors();
+					t = defaultThreads();
 					String env = System.getenv("RONTOLISP_THREADS");
 					if (env != null && !env.isBlank()) {
 						try {
@@ -125,6 +125,21 @@ final class SimdParallel {
 			}
 		}
 		return t;
+	}
+
+	/**
+	 * Half the available processors, never below two on a box that has two -- the
+	 * template's rule, and the measurements behind it are in {@code .kb/simd-parallel.md}
+	 * ({@code .todo/697}). A pool as wide as the machine buys nothing (the GEMV is
+	 * bandwidth-bound well before the last core) and makes every call's latency the
+	 * maximum over as many threads as the box can run, so anything else runnable -- a
+	 * build, a second copy of the same program -- lands in the middle of a leaf and the
+	 * caller waits out a scheduler quantum for it.
+	 * @return the thread count to use when {@code RONTOLISP_THREADS} says nothing
+	 */
+	static int defaultThreads() {
+		int cpus = Runtime.getRuntime().availableProcessors();
+		return Math.min(cpus, Math.max(2, cpus / 2));
 	}
 
 	/**
