@@ -134,10 +134,23 @@ artefacts out -- see rule 12.
 **Head certified: `ff903aa8`.** dorian full suite green there: 10077 / 0 / 0 / 276 skipped
 with **234** reports. The report count moved from `0e65326b`'s 232 by exactly the two test
 classes A's lane added -- `cli/LlmChatModeWithoutTemplateTest` (A-2) and
-`cli/SafetensorsBfloat16CompilePathTest` (A-3). GB10 has NOT run this head; the previous
-certification `0e65326b` was GB10's (10066 / 0 / 0, 232 reports), and `d4225aa5` before it
-was the last one both boxes held. **Totals are now comparable across boxes** -- 708 landed
-2026-09-06 and the corpus stopped counting other agents' worktrees.
+`cli/SafetensorsBfloat16CompilePathTest` (A-3).
+
+**GB10 certifies `bc83d23c`**, four commits later: 10080 / 0 / 0 / **189** skipped with
+**235** reports, exit 0, `GpuTest` 57 / 0 / 0 included. Taken by the ORCHESTRATOR on
+`develop` after B-1 through B-4 had landed, not from any lane's worktree (rule 4) -- their
+combination exists nowhere else. Its report count walks 232 -> 234 (707) -> 235 (710), one
+class per item that added one.
+
+The two heads are three days' work apart on one branch and are NOT one certification; what
+they jointly establish is that no box is red. `d4225aa5` remains the last head both boxes
+actually held.
+
+**Totals are now comparable across boxes** -- 708 landed 2026-09-06 and the corpus stopped
+counting other agents' worktrees -- **and the first cross-box comparison since confirms
+the skip census**: 276 on dorian against 189 on GB10 is a difference of exactly **87**, the
+number `.todo/708`'s accounting derived from seventeen differing classes. It was derived
+from two censuses on ONE box and has now been reproduced as a live difference between two.
 Rule 8 decides when a certification lapses.
 
 **What a run certifies is failures, errors and the REPORT-FILE COUNT -- never the totals.**
