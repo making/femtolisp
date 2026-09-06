@@ -6,6 +6,7 @@ import jdk.incubator.vector.FloatVector;
 import jdk.incubator.vector.IntVector;
 import jdk.incubator.vector.ShortVector;
 import jdk.incubator.vector.VectorOperators;
+import jdk.incubator.vector.VectorShuffle;
 import jdk.incubator.vector.VectorSpecies;
 
 /**
@@ -1265,11 +1266,16 @@ final class VecSimdKernels {
 	// ggml's Q8_0 x Q8_1 shape, runq.c's shape (.kb/quantized-matrix.md). The matrix is
 	// the ggml block layout verbatim -- per block one binary16 scale then 32 int8 quants,
 	// 34 bytes -- and the activation is quantized to int8 per block of 32 first (absmax /
-	// 127 in DOUBLE, round half even, exactly what the vec.lisp defun writes). Per row
-	// and block: B2S widen, short multiply, short add of the two halves (|2 x 128 x 127|
-	// < 32767, which is why the activation is clipped to +-127 and never -128), S2I
-	// widen and int add into FOUR integer lanes -- lane i holds the exact sum over the
-	// block's columns j with j mod 4 = i -- then, per lane, ONE f32 multiply-add: the
+	// 127 in DOUBLE, round half even, exactly what the vec.lisp defun writes), into a
+	// short[] so the lane loop never widens it. Per row and block: four 64-bit byte
+	// loads of the weights, each widened B2S into eight shorts (a part-0 conversion, one
+	// instruction), short multiply against the activation's shorts, short add of two
+	// eight-column groups (|2 x 128 x 127| < 32767, which is why the activation is
+	// clipped to +-127 and never -128), S2I widen and int add into FOUR integer lanes --
+	// lane i holds the exact sum over the block's columns j with j mod 4 = i, so the
+	// upper four shorts of a group sum are brought down by a constant half-swapping
+	// rearrange and widened as a part-0 conversion too -- then, per lane, ONE f32
+	// multiply-add: the
 	// lane sum converted to f32 (exact, |sum| < 2^24) times p = (float) (sw * sx), added
 	// into a four-lane f32 accumulator, folded once per row as (acc0 + acc2) + (acc1 +
 	// acc3) in f32; the store narrows or widens to the result width. An integer sum is
@@ -1291,12 +1297,31 @@ final class VecSimdKernels {
 	// and ran at 0.02 Gelem/s; convert(I2F) into f32 lanes is the shape .todo/482's
 	// Quant.java measured fast under both JITs. No FMA, deliberately: `acc + lane * p`
 	// is two roundings on both sides, and the defun has no fused form to mirror one with.
+	//
+	// Why no part-1 conversion anywhere (2026-09-06, .todo/706): a convertShape whose
+	// part is not 0 is `slice(origin)` then the part-0 conversion, and `slice` is two
+	// rearranges and a blend over an iota shuffle -- which C2 compiles as written, ~4
+	// cycles a slice, and Graal folds into the widening instruction. The first kernel
+	// (128-bit byte loads, four part-1 B2S and two part-1 S2I a block) ran at 0.7x of
+	// the f32 GEMV under C2 and 1.45x under Graal; this shape, with the activation
+	// pre-widened and the upper halves swapped down by a constant rearrange, is 1.9x
+	// under C2 and unchanged under Graal, the same bits. A kernel must also stay within
+	// C2's NodeCountInliningCutoff: two rows a pass or two blocks an iteration overran
+	// it and the tail of the loop body ran boxed (0.1x). The record: .todo/artefacts/
+	// 706-the-q8-0-integer-dot-gemv-is-instruction-bound-on-one-thread/README.md.
 
-	/** The byte species one half-block loads: sixteen quants. */
-	private static final VectorSpecies<Byte> BSPECIES_Q8 = ByteVector.SPECIES_128;
+	/** The byte species one eight-quant group loads: 64 bits, widened B2S as part 0. */
+	private static final VectorSpecies<Byte> BSPECIES_Q8 = ByteVector.SPECIES_64;
 
 	/** The short species the products land in: eight lanes, 128 bits. */
 	private static final VectorSpecies<Short> SSPECIES_Q8 = ShortVector.SPECIES_128;
+
+	/**
+	 * Swaps a product vector's two four-lane halves, so the upper half widens as a part-0
+	 * conversion.
+	 */
+	private static final VectorShuffle<Short> Q8_SWAP_HALVES = VectorShuffle.fromValues(SSPECIES_Q8, 4, 5, 6, 7, 0, 1,
+			2, 3);
 
 	/**
 	 * The int species the block sum lands in: four lanes, 128 bits (pinned, see above).
@@ -1322,28 +1347,32 @@ final class VecSimdKernels {
 		return Float.float16ToFloat((short) ((w[off] & 0xff) | (w[off + 1] << 8)));
 	}
 
+	/** Eight weight quants at {@code o}, widened to shorts: a part-0 conversion. */
+	private static ShortVector q8Weights(byte[] w, int o) {
+		return (ShortVector) ByteVector.fromArray(BSPECIES_Q8, w, o).convertShape(VectorOperators.B2S, SSPECIES_Q8, 0);
+	}
+
+	/** The lower four lanes of a group sum, widened to ints: a part-0 conversion. */
+	private static IntVector q8Lower(ShortVector s) {
+		return (IntVector) s.convertShape(VectorOperators.S2I, ISPECIES_Q8, 0);
+	}
+
 	/**
 	 * The integer dot of one block's 32 weight quants at {@code wo} against the 32
 	 * activation quants at {@code xo}, as four exact lane sums: lane {@code i} is the sum
-	 * over the columns {@code j} of the block with {@code j mod 4 = i}.
+	 * over the columns {@code j} of the block with {@code j mod 4 = i}. Short lane
+	 * {@code k} of {@code p} holds columns {@code k} and {@code k + 8}, of {@code q}
+	 * columns {@code k + 16} and {@code k + 24}; int lane {@code i} is short lanes
+	 * {@code i} and {@code i + 4} of both.
 	 */
-	private static IntVector q8BlockDot(byte[] w, int wo, byte[] xq, int xo) {
-		ByteVector w0 = ByteVector.fromArray(BSPECIES_Q8, w, wo);
-		ByteVector w1 = ByteVector.fromArray(BSPECIES_Q8, w, wo + 16);
-		ByteVector x0 = ByteVector.fromArray(BSPECIES_Q8, xq, xo);
-		ByteVector x1 = ByteVector.fromArray(BSPECIES_Q8, xq, xo + 16);
-		ShortVector p = ((ShortVector) w0.convertShape(VectorOperators.B2S, SSPECIES_Q8, 0))
-			.mul((ShortVector) x0.convertShape(VectorOperators.B2S, SSPECIES_Q8, 0))
-			.add(((ShortVector) w0.convertShape(VectorOperators.B2S, SSPECIES_Q8, 1))
-				.mul((ShortVector) x0.convertShape(VectorOperators.B2S, SSPECIES_Q8, 1)));
-		ShortVector q = ((ShortVector) w1.convertShape(VectorOperators.B2S, SSPECIES_Q8, 0))
-			.mul((ShortVector) x1.convertShape(VectorOperators.B2S, SSPECIES_Q8, 0))
-			.add(((ShortVector) w1.convertShape(VectorOperators.B2S, SSPECIES_Q8, 1))
-				.mul((ShortVector) x1.convertShape(VectorOperators.B2S, SSPECIES_Q8, 1)));
-		return ((IntVector) p.convertShape(VectorOperators.S2I, ISPECIES_Q8, 0))
-			.add((IntVector) p.convertShape(VectorOperators.S2I, ISPECIES_Q8, 1))
-			.add((IntVector) q.convertShape(VectorOperators.S2I, ISPECIES_Q8, 0))
-			.add((IntVector) q.convertShape(VectorOperators.S2I, ISPECIES_Q8, 1));
+	private static IntVector q8BlockDot(byte[] w, int wo, short[] xq, int xo) {
+		ShortVector p = q8Weights(w, wo).mul(ShortVector.fromArray(SSPECIES_Q8, xq, xo))
+			.add(q8Weights(w, wo + 8).mul(ShortVector.fromArray(SSPECIES_Q8, xq, xo + 8)));
+		ShortVector q = q8Weights(w, wo + 16).mul(ShortVector.fromArray(SSPECIES_Q8, xq, xo + 16))
+			.add(q8Weights(w, wo + 24).mul(ShortVector.fromArray(SSPECIES_Q8, xq, xo + 24)));
+		return q8Lower(p).add(q8Lower(p.rearrange(Q8_SWAP_HALVES)))
+			.add(q8Lower(q))
+			.add(q8Lower(q.rearrange(Q8_SWAP_HALVES)));
 	}
 
 	/**
@@ -1351,7 +1380,7 @@ final class VecSimdKernels {
 	 * blocks, folded as {@code (acc0 + acc2) + (acc1 + acc3)} -- the defun's four
 	 * accumulators and its fold.
 	 */
-	private static float q8Row(byte[] w, int base, int nb, byte[] xq, double[] xs) {
+	private static float q8Row(byte[] w, int base, int nb, short[] xq, double[] xs) {
 		FloatVector acc = FloatVector.zero(FSPECIES_Q8);
 		for (int b = 0; b < nb; b++) {
 			int bo = base + b * Q8_BLOCK_BYTES;
@@ -1366,9 +1395,10 @@ final class VecSimdKernels {
 	 * Quantizes {@code n} activations at {@code xo} to int8 per block of 32, the defun's
 	 * rule exactly: {@code sx = amax / 127} in double, {@code q = rint(x / sx)} (CL's
 	 * {@code round}, half to even), all zero where the block is. A NaN never raises
-	 * {@code amax} (the compare is strict, like the defun's {@code >}).
+	 * {@code amax} (the compare is strict, like the defun's {@code >}). The quants are
+	 * int8 values in a {@code short[]}, so the lane loop multiplies them unwidened.
 	 */
-	static void quantizeActivationF(float[] x, int xo, int n, byte[] xq, double[] xs) {
+	static void quantizeActivationF(float[] x, int xo, int n, short[] xq, double[] xs) {
 		for (int b = 0; b * Q8_BLOCK < n; b++) {
 			int base = b * Q8_BLOCK;
 			double amax = 0.0;
@@ -1381,13 +1411,13 @@ final class VecSimdKernels {
 			double sx = amax / 127.0;
 			xs[b] = sx;
 			for (int k = 0; k < Q8_BLOCK; k++) {
-				xq[base + k] = sx == 0.0 ? 0 : (byte) (int) Math.rint(x[xo + base + k] / sx);
+				xq[base + k] = sx == 0.0 ? 0 : (short) (int) Math.rint(x[xo + base + k] / sx);
 			}
 		}
 	}
 
 	/** {@link #quantizeActivationF} over a double vector. */
-	static void quantizeActivationD(double[] x, int xo, int n, byte[] xq, double[] xs) {
+	static void quantizeActivationD(double[] x, int xo, int n, short[] xq, double[] xs) {
 		for (int b = 0; b * Q8_BLOCK < n; b++) {
 			int base = b * Q8_BLOCK;
 			double amax = 0.0;
@@ -1400,7 +1430,7 @@ final class VecSimdKernels {
 			double sx = amax / 127.0;
 			xs[b] = sx;
 			for (int k = 0; k < Q8_BLOCK; k++) {
-				xq[base + k] = sx == 0.0 ? 0 : (byte) (int) Math.rint(x[xo + base + k] / sx);
+				xq[base + k] = sx == 0.0 ? 0 : (short) (int) Math.rint(x[xo + base + k] / sx);
 			}
 		}
 	}
@@ -1410,7 +1440,7 @@ final class VecSimdKernels {
 	 * The same rows whichever thread runs them, so {@code --parallel} splits them as it
 	 * splits every GEMV.
 	 */
-	private static void matvecRowsQ8F(float[] r, byte[] w, int cols, byte[] xq, double[] xs, int from, int to) {
+	private static void matvecRowsQ8F(float[] r, byte[] w, int cols, short[] xq, double[] xs, int from, int to) {
 		int nb = cols / Q8_BLOCK;
 		int rowBytes = nb * Q8_BLOCK_BYTES;
 		for (int row = from; row < to; row++) {
@@ -1419,7 +1449,7 @@ final class VecSimdKernels {
 	}
 
 	/** {@link #matvecRowsQ8F} into a double result. */
-	private static void matvecRowsQ8D(double[] r, byte[] w, int cols, byte[] xq, double[] xs, int from, int to) {
+	private static void matvecRowsQ8D(double[] r, byte[] w, int cols, short[] xq, double[] xs, int from, int to) {
 		int nb = cols / Q8_BLOCK;
 		int rowBytes = nb * Q8_BLOCK_BYTES;
 		for (int row = from; row < to; row++) {
@@ -1432,7 +1462,7 @@ final class VecSimdKernels {
 	 * {@code w}) and an f32 vector, into a bare f32 result.
 	 */
 	static void matvecIntoQ8F(float[] r, byte[] w, int rows, int cols, float[] x, boolean parallel) {
-		byte[] xq = new byte[cols];
+		short[] xq = new short[cols];
 		double[] xs = new double[cols / Q8_BLOCK];
 		quantizeActivationF(x, 0, cols, xq, xs);
 		if (parallel && SimdParallel.worth(rows, cols)) {
@@ -1445,7 +1475,7 @@ final class VecSimdKernels {
 
 	/** {@link #matvecIntoQ8F} over a double vector, into a bare double result. */
 	static void matvecIntoQ8D(double[] r, byte[] w, int rows, int cols, double[] x, boolean parallel) {
-		byte[] xq = new byte[cols];
+		short[] xq = new short[cols];
 		double[] xs = new double[cols / Q8_BLOCK];
 		quantizeActivationD(x, 0, cols, xq, xs);
 		if (parallel && SimdParallel.worth(rows, cols)) {

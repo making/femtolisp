@@ -409,7 +409,25 @@ test input stays under `2^24`, and `ci-spec.yaml` never passes `--simd`.
   below 2^24) and accumulate in an f32 vector; a scalar oracle can still mirror that bit for bit,
   because 53 >= 2 * 24 + 2 makes a double op rounded once the f32 op (`.kb/quantized-matrix.md`).
   Never assume a lane conversion is intrinsified: time it under both JITs before building on it.
-- **Benchmarking discipline.** Run benchmarks SEQUENTIALLY. Take N >= 9 samples and print them ALL
+- **The third JIT cliff is a PART, and it is C2's.** `convertShape(conv, species, part)` with
+  `part != 0` is not an instruction: `AbstractVector.convertShapeTemplate` spells it
+  `slice(origin)` then the part-0 conversion, and `sliceTemplate` is an iota shuffle, a compare,
+  a second shuffle and two `rearrange`s blended -- Java that C2 compiles as written (~4 cycles a
+  slice) and Graal folds into the widening instruction's upper-half form. The Q8_0 GEMV's first
+  kernel did six a block and ran at 0.7x of f32 under C2, 1.45x under Graal; the same bits with
+  64-bit loads (part-0 widens only), the activation pre-widened and the upper half of a product
+  vector brought down by a constant half-swapping `rearrange` run at 1.9x / 1.45x (2026-09-06,
+  `.todo/706`'s README). Widen from the NARROWER species as part 0; never write a part-1
+  conversion in a lane loop. Two more C2 facts from the same item: a kernel's compile has
+  `NodeCountInliningCutoff` (18000 nodes, a stock default) as its size budget and the Vector API
+  spends hundreds of nodes a call, so two rows a pass or two blocks an iteration ran BOXED at
+  0.1x with `-XX:+PrintInlining` naming the loop body's last calls (`NodeCountInliningCutoff`);
+  and a helper C2 has compiled standalone for one caller is refused inlining into another once
+  its code exceeds `InlineSmallCode` (1000 bytes on aarch64; a boxed Vector API method always
+  does), "already compiled into a big method" -- so a kernel's helpers are private to their one
+  caller, and a shape harness times one shape per JVM.
+- **Benchmarking discipline.** Run benchmarks SEQUENTIALLY, and time kernel SHAPES one per JVM
+  (above). Take N >= 9 samples and print them ALL
   before claiming two configurations differ (a GraalVM scalar timing turned out bimodal --
   `226 269 269 271 271 381 383 395 400`). Measure allocation with `-XX:+UseEpsilonGC -Xmx12g
   -Xlog:gc` and read heap-used-at-exit. zsh does NOT word-split an unquoted `$FLAGS`. Everything
