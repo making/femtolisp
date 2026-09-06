@@ -517,6 +517,19 @@ Verified by breaking it three ways (2026-09-06), each with everything else left 
 - the binary replaced by a `java -jar` wrapper without `--add-modules`: RED on `INTERPRETER --simd`
   only (1 + 22 standalone).
 
+**A green `--simd` leg was, until 2026-09-06, a green SCALAR leg on the JVM family.** The kernels
+gate on LENGTH -- `THRESHOLD = 128` on the element-wise members and the reductions,
+`MATVEC_ROW_THRESHOLD = 16` and `MATVEC_ACC_THRESHOLD = 32` on the GEMV -- and every `vec:` /
+`linalg:` case in `ci-spec.yaml` was 2 to 6 elements long, so on the interpreter and JVM legs all of
+them took the scalar fallback and the flag changed nothing but the emitted artifact (wasm-GC and
+`--no-gc` have no threshold, so their v128 paths did run, which is why the axis still caught
+`.todo/692`). The two greedy-decode cases added for `.todo/705` --
+`transformer-greedy-decode-text-cross-backend` and
+`gated-delta-rule-greedy-decode-text-cross-backend` -- are the corpus's first shapes above every
+gate: element-wise operands of 128 and GEMV rows of 128 and 64, including the four-accumulator
+chain, decoded to TEXT so a moved argmax fails loudly rather than shifting a digit
+(`.kb/test-execution.md`, "Decoded text and the argmax alarm").
+
 **`--no-gc` and `--parallel` are NOT axes here, for different reasons.**
 
 - `--no-gc` lowers a small subset of the language and REFUSES the rest, so it cannot compile the

@@ -63,3 +63,46 @@ predating a second backend.
 - **Proving a test vacuous takes a mutation, not an argument**: restore the old constant with
   the new census in place; if the value assertions still pass and only the census fails, the
   test was pinning nothing.
+
+## Decoded text and the argmax alarm
+
+A model's decode is the one output a value, a shape or a length assertion cannot police.
+One moved argmax -- from a reduction order, an accumulator boundary or a routing decision
+-- is a different sentence that still reads like English, while every count and every
+tensor shape around it stays exactly as it was. The alarm has to be the TEXT.
+
+Three pins, in the order a lane reaches them:
+
+- **`ci-spec.yaml`: `transformer-greedy-decode-text-cross-backend` and
+  `gated-delta-rule-greedy-decode-text-cross-backend`.** Seeded synthetic models -- a
+  1-layer dim-128 transformer over a KV cache, and a 2-head gated delta rule whose state
+  is carried across tokens -- decoded greedily, printing the token ids, the words and the
+  top-2 logit margin in thousandths. Four backends x scalar/`--simd`, on every push AND
+  every pull request, and the corpus's only `vec:` shapes above the SIMD length gates
+  (`.kb/vec.md`). Untrained, so the words are garbage; garbage that changes when a
+  reduction order moves is the same alarm a trained model gives.
+- **`examples/examples.yaml`: `llm/llm.lisp` over the checked-in stories260K** (and
+  stories15M when it has been downloaded), `equals` against `run.c`'s own text. This is
+  the REAL-checkpoint pin, and the reason the synthetic ones exist rather than replace it
+  -- `ExamplesE2eTest` `needs: release`, so it never runs on a pull request, it is the one
+  job allowed to be red, and `./mvnw test` skips it.
+- **`examples/llm/deltanet-check.lisp` and `shortconv-check.lisp`**: the layer arithmetic
+  against a float64 transcription of the PyTorch reference, same job and same caveats.
+
+Measured 2026-09-06 (this box, native binary):
+
+- stories260K, 40 greedy tokens, scalar interpreter: **39 s**. That, plus llm.lisp's
+  engine and a 1 MB checkpoint the ci-spec driver has no way to stage, is why the
+  always-run lane carries synthetic models instead of the real one.
+- the two synthetic cases: **4.3 s** of the scalar interpreter leg, under a second on each
+  other leg; the whole `CiSpecE2eTest` 111.9 s / 4020 tests -> **113.7 s / 4076**.
+- all eight legs agree on every id, every word and every printed margin; at 1e-6
+  resolution one of the ten margins differs by ONE unit between legs, against a smallest
+  margin of 0.091 -- so the printed thousandth has ~1000x headroom and the argmax ~91000x.
+
+**What none of them covers**: no published checkpoint's decode is pinned anywhere CI can
+run -- TinyLlama, SmolLM2, Qwen3-0.6B and Qwen3.5-0.8B are gigabytes and outside the repo
+by design. Qwen3.5-0.8B's greedy answer is written down in `examples/llm/README.md`, which
+is findable by someone who thinks to look and is strictly weaker than detectable. A
+synthetic Gated DeltaNet fixture is the closest the repo gets, and it pins the
+recurrence's SHAPE, not a trained model's weights.
