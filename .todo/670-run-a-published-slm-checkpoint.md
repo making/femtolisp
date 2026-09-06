@@ -136,11 +136,23 @@ with **234** reports. The report count moved from `0e65326b`'s 232 by exactly th
 classes A's lane added -- `cli/LlmChatModeWithoutTemplateTest` (A-2) and
 `cli/SafetensorsBfloat16CompilePathTest` (A-3).
 
-**GB10 certifies `bc83d23c`**, four commits later: 10080 / 0 / 0 / **189** skipped with
-**235** reports, exit 0, `GpuTest` 57 / 0 / 0 included. Taken by the ORCHESTRATOR on
-`develop` after B-1 through B-4 had landed, not from any lane's worktree (rule 4) -- their
-combination exists nowhere else. Its report count walks 232 -> 234 (707) -> 235 (710), one
-class per item that added one.
+**GB10 certifies `97e3b9ba`**, at the close of B's whole lane: 10094 / 0 / 0 / **189**
+skipped with **235** reports, exit 0, `GpuTest` included. Taken by the ORCHESTRATOR on
+`develop`, not from any lane's worktree (rule 4) -- the six items' combination exists
+nowhere else. The report count walks 232 -> 234 (707) -> 235 (710); B-5 and B-6 added
+tests to existing classes and moved it no further. The mid-lane certification was
+`bc83d23c` (10080 / 0 / 0, 235 reports) after B-1 through B-4.
+
+**And the run that certified the lane is the one that found the red**, which is the whole
+argument for taking it from `develop`. At `91a5ec0c` the suite came back
+`Tests run: 9425, Errors: 1` -- `LispFormatterTest`'s corpus walk hit
+`NoSuchFileException: ./ci-stream-value.txt`, a scratch file another test in the same run
+writes into the project root and deletes again. Six lanes' worktrees were green
+throughout; the walk has always been able to lose that race, and `708` giving it a second
+caller only widened the window. Fixed in `97e3b9ba`: `walkFileTree` with
+`visitFileFailed -> CONTINUE`, so an entry the walk cannot read is not a corpus member.
+**Note what a `Tests run` total did here** -- 9425 against 10093 is the signature, and
+rule 3's "a skipped leg keeps the headline total" is the case where it is not.
 
 The two heads are three days' work apart on one branch and are NOT one certification; what
 they jointly establish is that no box is red. `d4225aa5` remains the last head both boxes
@@ -233,7 +245,12 @@ can run that arm. `684` and `696` each hold an **x64 half that is A's** whenever
 picked up, since every `.todo/488` number behind them is aarch64 -- but neither is on the
 width chain's critical path, so they stay in the pool.
 
-**Orchestrator B -- GB10, the width chain and the device.** In order:
+**Orchestrator B -- GB10, the width chain and the device. COMPLETE 2026-09-06**, all six
+serialized, each committed and pushed before the next started; certification `97e3b9ba`
+above. Two results the table's "done" markers understate: `702` cost route 3 of the
+parallel argument, and `490` closed the width chain with a NEGATIVE result on this box.
+The pool items B filed on the way -- `713`, `714`, `716`, `717`, `718` -- are for the next
+lane design and were deliberately not worked recursively. In order:
 
 | # | item | difficulty | why here, why now |
 | --- | --- | --- | --- |
