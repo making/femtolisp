@@ -8182,6 +8182,36 @@ cases:
     expected: |
       "onetwo"
       "onetwo!"
+  - name: reading-past-end-of-file-answers-eof-every-time
+    # A reader may keep asking after the end: read-line/read-char/read-byte answer
+    # the eof-value again, and re-opening the file starts over. Preview 1 gives that
+    # for free (fd_read returns 0 bytes forever), but WASI 0.3 delivers the writable
+    # end's drop ONCE and TRAPS on the next stream.read, so the component adapter has
+    # to latch it per stream -- which it did not, and safetensors:read over a sharded
+    # index (examples/llm/safetensors-check.lisp) died on that backend alone.
+    source: |
+      (with-open-file (out "eof.dat" :direction :output :if-exists :supersede)
+        (write-string "one" out))
+      (with-open-file (in "eof.dat")
+        (print (read-line in nil :eof))
+        (print (read-line in nil :eof))
+        (print (read-line in nil :eof))
+        (print (read-char in nil :eof)))
+      (with-open-file (in "eof.dat" :element-type '(unsigned-byte 8))
+        (print (list (read-byte in nil -1) (read-byte in nil -1) (read-byte in nil -1)))
+        (print (read-byte in nil -1))
+        (print (read-byte in nil -1)))
+      (with-open-file (in "eof.dat")
+        (print (read-line in nil :eof)))
+    expected: |
+      "one"
+      :EOF
+      :EOF
+      :EOF
+      (111 110 101)
+      -1
+      -1
+      "one"
   - name: defgeneric-short-form-method-combination
     # yason's encode-slots hook (the blocker that stood in front of http-body):
     # the operator applied to EVERY applicable method carrying the combination
