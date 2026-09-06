@@ -62,6 +62,18 @@ registry, the `concatenateBuiltin` arrangement); `JvmArrayCompiler.compileMake` 
   RESULT TYPE asks ([concatenate-result-families.md](concatenate-result-families.md));
   `reverse`, `remove`, `map 'vector` and printing return GENERAL everywhere, the interpreter's
   `seqResult` deliberately rebuilding general to match the compilers.
+  **On the interpreter this covers every packed width, including a fill-pointer /
+  adjustable packed vector** (a general `LispArray` that only REMEMBERS a packed
+  `elementTypeCode`, [adjustable-arrays.md](adjustable-arrays.md)): `subseq`'s general-array
+  arm and `%array-alike`'s interpreter definition both consult that field
+  (`Environment.packedCopyForElementType`), and `subseq` gained a `LispFloatArray` arm it
+  never had before -- previously it THREW on any packed float array, adjustable or not
+  (`.todo/698`, 2026-09-06). **The JVM and WASM compilers still do not**: their
+  `%array-alike` lowering only recognizes the runtime `long[]` (packed-int) marker, so a
+  packed float array (any of the three widths) or a general array remembering a packed
+  elementTypeCode degrades to a plain simple-vector on those two backends --
+  `ci-spec.yaml`'s `subseq-of-an-adjustable-packed-vector` pins the divergence via
+  `expectedByBackend`, and closing it is `.todo/719`.
 - Fill-pointer / `adjust-array` / displacement MUTATORS error (`requireGeneralArray` /
   `_ivRequireGeneral`); the read-only probes are an UNPINNED divergence (`nil`/`0` on the
   interpreter, error on JVM, trap on wasm) -- keep out of ci-spec. A packed vector IS a valid

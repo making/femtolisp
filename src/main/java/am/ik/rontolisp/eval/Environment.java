@@ -1433,6 +1433,24 @@ public final class Environment implements Scope {
 			if (args.get(0) instanceof LispIntVector iv) {
 				return new LispIntVector(iv.width(), new long[n]);
 			}
+			if (args.get(0) instanceof LispFloatArray fa) {
+				return zeroPackedFloatLike(fa, n);
+			}
+			if (args.get(0) instanceof LispArray arr) {
+				// A fill-pointer / adjustable packed vector: no
+				// LispIntVector/LispFloatArray
+				// instance of its own to match above, only the elementTypeCode it
+				// remembers -- same representation gap subseq's general-array arm closes
+				// (.todo/698).
+				int width = packedIntWidthForElementTypeCode(arr.elementTypeCode());
+				if (width > 0) {
+					return new LispIntVector(width, new long[n]);
+				}
+				LispFloatArray proto = floatPrototypeForElementTypeCode(arr.elementTypeCode());
+				if (proto != null) {
+					return zeroPackedFloatLike(proto, n);
+				}
+			}
 			LispVal[] data = new LispVal[n];
 			java.util.Arrays.fill(data, LispNil.INSTANCE);
 			return new LispArray(new int[] { n }, data);
@@ -1732,6 +1750,65 @@ public final class Environment implements Scope {
 
 	private static int packedIntElementWidth(@Nullable LispVal elementType) {
 		return LispNames.unsignedByteWidth(elementType);
+	}
+
+	// A zero-length prototype of the packed float width `elementTypeCode` names, or null
+	// when the code is not one of the float widths. The shared name -> width lookup for a
+	// general LispArray that only REMEMBERS an elementTypeCode (a fill-pointer /
+	// adjustable
+	// packed float vector), which has no LispFloatArray instance of its own to read the
+	// width from the way a simple packed array does.
+	private static @Nullable LispFloatArray floatPrototypeForElementTypeCode(int elementTypeCode) {
+		return switch (elementTypeCode) {
+			case ArrayElementTypes.SINGLE_FLOAT -> new LispSingleFloatArray(new float[0], new int[] { 0 });
+			case ArrayElementTypes.DOUBLE_FLOAT -> new LispDoubleFloatArray(new double[0], new int[] { 0 });
+			case ArrayElementTypes.BFLOAT16 -> new LispBFloat16Array(new short[0], new int[] { 0 });
+			default -> null;
+		};
+	}
+
+	// A fresh zero-filled rank-1 packed float array of length n, at proto's width -- the
+	// float twin of `new LispIntVector(width, new long[n])`, shared by %array-alike's
+	// LispFloatArray and packed-general-LispArray arms.
+	private static LispFloatArray zeroPackedFloatLike(LispFloatArray proto, int n) {
+		int[] dims = { n };
+		return switch (proto) {
+			case LispBFloat16Array ignored -> new LispBFloat16Array(new short[n], dims);
+			case LispSingleFloatArray ignored -> new LispSingleFloatArray(new float[n], dims);
+			case LispDoubleFloatArray ignored -> new LispDoubleFloatArray(new double[n], dims);
+		};
+	}
+
+	// The packed integer width `elementTypeCode` names (8/16/32), or 0 when the code is
+	// not one of the packed integer widths -- the ArrayElementTypes-code twin of
+	// packedIntElementWidth (which reads a make-array :element-type designator instead).
+	private static int packedIntWidthForElementTypeCode(int elementTypeCode) {
+		return switch (elementTypeCode) {
+			case ArrayElementTypes.UNSIGNED_BYTE_8 -> 8;
+			case ArrayElementTypes.UNSIGNED_BYTE_16 -> 16;
+			case ArrayElementTypes.UNSIGNED_BYTE_32 -> 32;
+			default -> 0;
+		};
+	}
+
+	// Rebuilds `elements` as the packed representation `elementTypeCode` remembers
+	// (every width in both families), or null for ArrayElementTypes.T -- an ordinary
+	// general array, which the caller builds itself. The shared tail of subseq's and
+	// %array-alike's general-array arms: a fill-pointer / adjustable packed vector is
+	// stored as a general LispArray that only REMEMBERS its width
+	// (.kb/adjustable-arrays.md),
+	// so a copy of one must consult this field rather than the runtime class the way the
+	// simple (LispIntVector/LispFloatArray) arms do (.todo/698).
+	private static @Nullable LispVal packedCopyForElementType(String fn, int elementTypeCode, LispVal[] elements) {
+		int width = packedIntWidthForElementTypeCode(elementTypeCode);
+		if (width > 0) {
+			return packedIntVector(fn, width, List.of(elements));
+		}
+		LispFloatArray proto = floatPrototypeForElementTypeCode(elementTypeCode);
+		if (proto != null) {
+			return packedFloatVector(fn, proto, List.of(elements));
+		}
+		return null;
 	}
 
 	// A packed integer-vector element: an exact integer, masked by the caller. Anything
@@ -3892,6 +3969,13 @@ public final class Environment implements Scope {
 				// A general 1-D array: return a fresh vector of the same element type.
 				// uax-15's canonical-ordering does (setf (subseq vec beg end) ...) on a
 				// unicode-string, so subseq must round-trip through the vector shape.
+				// When the array REMEMBERS a packed width (a fill-pointer / adjustable
+				// packed vector, which the general boxed representation is the only one
+				// that can carry) the copy stays packed too -- CLHS says subseq answers a
+				// sequence of the same kind, and the simple (non-adjustable) case already
+				// does this via the LispIntVector/LispFloatArray arms below, so the
+				// adjustable case must match rather than silently degrading to a
+				// simple-vector (.todo/698).
 				int len = arr.effectiveLength();
 				int end = (endArg != null) ? requireIndex(LispNames.SUBSEQ, endArg) : len;
 				if (start < 0 || end > len || start > end) {
@@ -3902,7 +3986,8 @@ public final class Environment implements Scope {
 				for (int i = start; i < end; i++) {
 					copy[i - start] = arr.readFlat(i);
 				}
-				return new LispArray(new int[] { copy.length }, copy);
+				LispVal packed = packedCopyForElementType(LispNames.SUBSEQ, arr.elementTypeCode(), copy);
+				return packed != null ? packed : new LispArray(new int[] { copy.length }, copy);
 			}
 			if (args.get(0) instanceof LispIntVector iv) {
 				// Type-preserving: a subsequence of a packed integer vector stays packed
@@ -3916,6 +4001,25 @@ public final class Environment implements Scope {
 				long[] copy = new long[end - start];
 				System.arraycopy(iv.data(), start, copy, 0, copy.length);
 				return new LispIntVector(iv.width(), copy);
+			}
+			if (args.get(0) instanceof LispFloatArray fa && fa.rank() == 1) {
+				// Type-preserving, the packed-float twin of the LispIntVector arm above:
+				// a subsequence of a packed float array (single/double/bfloat16) stays
+				// packed at the same width instead of falling through to the "expects a
+				// string, list, or vector" refusal below, which is what every packed
+				// float subseq did before .todo/698 (crashing on the interpreter; the
+				// compile paths silently degraded to a general boxed vector instead).
+				int len = fa.totalSize();
+				int end = (endArg != null) ? requireIndex(LispNames.SUBSEQ, endArg) : len;
+				if (start < 0 || end > len || start > end) {
+					throw new LispEvalException(LispNames.SUBSEQ + ": invalid bounds " + start + ", " + end
+							+ " for vector of length " + len);
+				}
+				List<LispVal> elements = new ArrayList<>(end - start);
+				for (int i = start; i < end; i++) {
+					elements.add(fa.readFlat(i));
+				}
+				return packedFloatVector(LispNames.SUBSEQ, fa, elements);
 			}
 			throw new LispEvalException(
 					LispNames.SUBSEQ + " expects a string, list, or vector, got: " + args.get(0).print());
@@ -6249,13 +6353,21 @@ public final class Environment implements Scope {
 		// that leads no valid sequence, and a sequence the vector truncates, answer
 		// their own characters -- pinned against the Lisp one by
 		// LispPreludeLibraryTest.
+		//
+		// The Lisp source reads its argument through plain length/aref, so it accepts ANY
+		// rank-1 array of small integers, not only a packed byte vector; the compile
+		// paths inherit that for free (their %octets-to-string-strict fast path declines
+		// a general array and the same generic loop runs). This native mirror used to
+		// require a LispIntVector outright, so a general array -- exactly what a general
+		// array's subseq answered before .todo/698 fixed it -- signaled here while the
+		// compile paths quietly decoded it: the interpreter/compiled-backend asymmetry
+		// .todo/698 found. asOctetVector closes it by widening to the same rank-1 array
+		// acceptance the Lisp source has, so only a genuinely non-array argument still
+		// signals.
 		String octetsToString = LispNames.OCTETS_TO_STRING_INTERNAL_QUALIFIED;
 		env.defineFunction(octetsToString, new LispFunction(octetsToString, args -> {
 			requireArgCount(LispNames.OCTETS_TO_STRING_INTERNAL, args, 1);
-			if (!(args.get(0) instanceof LispIntVector v)) {
-				throw new LispEvalException(LispNames.OCTETS_TO_STRING_INTERNAL
-						+ " expects an (unsigned-byte 8) vector, got: " + args.get(0).print());
-			}
+			LispIntVector v = asOctetVector(LispNames.OCTETS_TO_STRING_INTERNAL, args.get(0));
 			String strict = decodeUtf8Strict(v);
 			return new LispString(strict != null ? strict : decodeUtf8Leniently(v));
 		}));
@@ -7421,6 +7533,31 @@ public final class Environment implements Scope {
 		if (args.size() < min || args.size() > max) {
 			throw new LispEvalException(name + " expects " + min + " to " + max + " arguments, got " + args.size());
 		}
+	}
+
+	/**
+	 * Coerces {@code seq} into a {@link LispIntVector} of {@code %octets-to-string}'s
+	 * octets, accepting any rank-1 array -- a packed byte vector already is one, and a
+	 * general (boxed) array of integers is read element by element, matching the plain
+	 * {@code length}/{@code aref} the Lisp source decodes through. Only a genuinely
+	 * non-array argument signals.
+	 * @param fn the operator name, for the type error's message
+	 * @param seq the octets argument
+	 * @return the octets as a packed {@code (unsigned-byte 8)} vector
+	 */
+	private static LispIntVector asOctetVector(String fn, LispVal seq) {
+		if (seq instanceof LispIntVector iv) {
+			return iv;
+		}
+		if (seq instanceof LispArray arr && arr.dimensions().length == 1) {
+			int len = arr.effectiveLength();
+			long[] data = new long[len];
+			for (int i = 0; i < len; i++) {
+				data[i] = exactIntElement(fn, arr.readFlat(i));
+			}
+			return new LispIntVector(8, data);
+		}
+		throw new LispEvalException(fn + " expects an (unsigned-byte 8) vector, got: " + seq.print());
 	}
 
 	/**
