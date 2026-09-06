@@ -131,11 +131,13 @@ artefacts out -- see rule 12.
 
 ## The certification record
 
-**Head certified: `0e65326b`.** GB10 full suite green there: 10066 / 0 / 0 with **232**
-reports. The previous certification was `d4225aa5` (both boxes: GB10 10607 / 0 / 0 and
-dorian 0 failures, 231 reports each), and the report count moved by exactly the one test
-class added since -- `PackedFloatReachabilityTest`. The totals moved because 708 landed and
-the corpus stopped counting other agents' worktrees; that is the fix, not a regression.
+**Head certified: `ff903aa8`.** dorian full suite green there: 10077 / 0 / 0 / 276 skipped
+with **234** reports. The report count moved from `0e65326b`'s 232 by exactly the two test
+classes A's lane added -- `cli/LlmChatModeWithoutTemplateTest` (A-2) and
+`cli/SafetensorsBfloat16CompilePathTest` (A-3). GB10 has NOT run this head; the previous
+certification `0e65326b` was GB10's (10066 / 0 / 0, 232 reports), and `d4225aa5` before it
+was the last one both boxes held. **Totals are now comparable across boxes** -- 708 landed
+2026-09-06 and the corpus stopped counting other agents' worktrees.
 Rule 8 decides when a certification lapses.
 
 **What a run certifies is failures, errors and the REPORT-FILE COUNT -- never the totals.**
@@ -189,14 +191,20 @@ can touch one mechanism without either seeing the other.
 Model by difficulty, `effort=high` throughout: **High -> Fable, Medium -> Opus, Low ->
 Sonnet.** A dead worker is RESUMED, never respawned.
 
+**Orchestrator A's lane is COMPLETE as of 2026-09-06**: all five items closed, committed and
+pushed one at a time, and the suite run on `develop` at `ff903aa8` above. Two of the five
+(A-3, A-4) had nothing left to BUILD -- both were remainders that other lanes had already
+satisfied, and finding that out was the work. Nothing new was filed; the next turn's lane
+design starts from the unassigned pool.
+
 **Orchestrator A -- dorian, the model side, no GPU.** `489`'s bf16 rungs finished 09-05:
 six models at both widths, the reading beside the prediction in `489`, the summary in
 `examples/llm/README.md`. In order:
 
 | # | item | difficulty | why here, why now |
 | --- | --- | --- | --- |
-| A-1 | close `489` | Low | Done criteria met; the lane deliberately left closing to lane design. It needs the child table above, the `675` / `677` cross-references, and rule 11's sweep for items waiting on the CAPABILITY ("a 1B-class model runs at bf16"), which no grep for the number finds |
-| A-2 | `712` `-m chat` with no template answers a different question | Low | Cost twelve discarded timed runs and left a suspect pair of rows on develop. A runs every future rung, so A pays again until it is fixed. One condition plus a failing test on the checked-in `stories260K` |
+| A-1 | close `489` | Low | **done 09-06**: closed with the child table, `482`'s row and the rule-11 capability sweep, which found nothing gated on "a 1B-class model runs at bf16" that was not already 489 itself. Done criteria met; the lane deliberately left closing to lane design. It needs the child table above, the `675` / `677` cross-references, and rule 11's sweep for items waiting on the CAPABILITY ("a 1B-class model runs at bf16"), which no grep for the number finds |
+| A-2 | `712` `-m chat` with no template answers a different question | Low | **done 09-06**: `-m chat` on a checkpoint with no template now signals and names `-m generate` instead of falling through, and the `tok/s` line counts SAMPLED tokens and is suppressed at zero -- which is the half that made the discarded runs look like results. `cli/LlmChatModeWithoutTemplateTest` pins it on the checked-in `stories260K`. Cost twelve discarded timed runs and left a suspect pair of rows on develop. A runs every future rung, so A pays again until it is fixed. One condition plus a failing test on the checked-in `stories260K` |
 | A-3 | `675` read a safetensors checkpoint | Medium | **done 09-06**: nothing was left to BUILD -- `487` landed all five bullets of the `#bf16` target on 09-05 -- and what the audit found missing was a PIN. Every bf16 pin was one engine each (`make-array` with a runtime designator, the bulk `read-sequence`, and the reader itself interpreted only), so the reader COMPOSED of them could have diverged between `java -jar` and a compiled `.class` with nothing to catch it. `cli/SafetensorsBfloat16CompilePathTest` runs one program both ways over a three-dtype fixture and compares bit patterns. No lane code was written, so neither JIT cliff was in the path |
 | A-4 | `677` the Gated DeltaNet layer | High | **done 09-06**: nothing was left to BUILD -- the two "Remaining" bullets were `489`'s rows (in the README since `b87aed25`) and `678`'s run (closed 09-05), so rule 3 sorts both as done-elsewhere, not blocked. The close re-ran the model on `40a80f91` (safetensors and GGUF, f32 and bf16, 1 and 32 threads: one text, eight runs; 1.87 -> 2.54-2.63 tok/s on one thread and 6.39 -> 8.11-8.61 on 32, idle loadavg 1.5 with the parallel rows over the previous run's decaying workers -- a ratio check, not a replacement for the README's quieter window) and the `deltanet` slice of `ExamplesE2eTest` (12 legs green). The dorian checkpoint inventory moved here with sizes and digests (rule 10) |
 | A-5 | `711` what a directory rename breaks outside its own diff | Medium | **done 09-06**: the card is `.kb/directory-rename.md`, indexed from `.kb/README.md`. Every claim was re-measured against the tree rather than copied out of `708`, which is how the card's own closing paragraph earned its subject -- `708`'s "18 directory-local `.gitignore` files" is **17**, and the 18 counts the ROOT one, the single file the card does not apply to. Two mechanics `708` did not have: `git mv` on the DIRECTORY carries untracked files along, so the exposure needs a PER-FILE rename; and the residue reports as one collapsed `?? old/` line unless `git status --porcelain` is given `-uall` |
