@@ -174,6 +174,13 @@ Pointers, not records -- the home is where it gets updated.
 - **Seven sites hand-write the bf16 conversion arithmetic** and only
   `am.ik.rontolisp.BFloat16` is the authority. Census: `.todo/487`'s remainder.
 - **`.kb/string-index-cost.md`** records what `690`'s 340x is and is not.
+- **A profile names the COST correctly and the CAUSE only as a guess.** `718` measured the
+  three DeltaNet functions to the millisecond and was right about all three; its two guesses
+  at WHY two of them were boxed -- unary minus outside the typed subset, oddly shaped loops
+  -- were both wrong, and the real causes (a `(length v)` COUNT, and a conv kernel narrowed
+  to a weight width it is F32 in the file) were found in a minute with a flag that prints
+  the declining form (`-Drontolisp.debug.typedlooptrace=true`, added by `723`). Where a
+  profile hands over a "probably because", the closer measures that half too.
 
 ## Lanes: ONE worker per orchestrator
 
@@ -243,9 +250,13 @@ of them is an ASYMMETRY rather than a fresh defect. That is rule 6's shape, and 
 - `721` (`704`'s residue: character `read-sequence` costs ~1.2 us/char) is a kernel-cost
   item wanting a quiet box, and it does not decay.
 - `722` (High -- the WASM component backend traps on a `ref.cast` that a one-line source
-  edit MOVES; passing and trapping adapters are byte-identical, and the corpus sits one
-  case from the cliff, so the next person to touch a spliced library meets a `cast failure`
-  in a `gguf:` case they did not touch) and `724` (every `tok/s` row in
+  edit MOVES; passing and trapping adapters are byte-identical. **Its prediction came true
+  the same day**: the FIRST case added to `ci-spec.yaml` after it was filed -- eleven lines
+  of `723`'s, ~500 characters, touching nothing the component path is suspected of --
+  trapped the whole corpus, and `723` dropped its case rather than ship red. The corpus is
+  not one case FROM the cliff, it is AT it, and **it cannot grow until 722 closes**, which
+  promotes the item from a curiosity to the thing blocking every future cross-backend pin)
+  and `724` (every `tok/s` row in
   `examples/llm/README.md` was taken with a harness that divides sampled tokens by the
   prompt's clock and counts the JIT warm-up, so the rows read 1.7-2x low). Both filed by
   B's lane off `718`'s profile.
@@ -277,8 +288,8 @@ denominator the next is measured against.
 
 | # | item | difficulty | why here, why now |
 | --- | --- | --- | --- |
-| B-1 | `723` `--gpu` puts a residency guard in front of every typed store, and two loops were never typed | Medium | FIRST because it is the DENOMINATOR. The DeltaNet mixer costs 6.8 ms a forward on the `--simd` build and ~30 ms on `--gpu --simd` -- about 40% of the arm spent proving arrays are not on the device -- so until it is hoisted, every later measurement on this box is taken through a host arm inflated 4x and a before/after for B-2 or B-3 is a ratio of two wrong numbers. It is also the first of the two conditions `718` wrote down for reopening Q4 |
-| B-2 | `725` attention multiplies the full seq-len KV cache every token | Medium | Second because it is the same profile's other half and the only item in the lane that is a wrong SHAPE rather than a cost: the model scores 4096 cache rows when `pos` of them are non-zero and the rest is arithmetic over deliberate zeros. It pays on BOTH arms -- 8.9 ms of an 81 ms one-thread `--simd` forward, and 96 of the 102 MB the device arm uploads per token -- which makes it the one result here that A's box also sees. Taken through B-1's corrected host, not around it |
+| B-1 | `723` `--gpu` puts a residency guard in front of every typed store, and two loops were never typed | Medium | **CLOSED 2026-09-06: the device forward halved, 51 -> 25 ms, and the arm now edges past `--simd --parallel` (26.7).** FIRST because it is the DENOMINATOR. The DeltaNet mixer costs 6.8 ms a forward on the `--simd` build and ~30 ms on `--gpu --simd` -- about 40% of the arm spent proving arrays are not on the device -- so until it is hoisted, every later measurement on this box is taken through a host arm inflated 4x and a before/after for B-2 or B-3 is a ratio of two wrong numbers. It is also the first of the two conditions `718` wrote down for reopening Q4 |
+| B-2 | `725` attention multiplies the full seq-len KV cache every token | Medium | Taken against B-1's corrected host: its ~6 ms is now a QUARTER of the device forward, not an eighth. Second because it is the same profile's other half and the only item in the lane that is a wrong SHAPE rather than a cost: the model scores 4096 cache rows when `pos` of them are non-zero and the rest is arithmetic over deliberate zeros. It pays on BOTH arms -- 8.9 ms of an 81 ms one-thread `--simd` forward, and 96 of the 102 MB the device arm uploads per token -- which makes it the one result here that A's box also sees. Taken through B-1's corrected host, not around it |
 | B-3 | `476` `am.ik.gpu`'s downcalls go through the generic `MethodHandle` invoker | Medium | Last deliberately: it is ~8% of a step, it does not decay, and 8% of an inflated step is a different number from 8% of a corrected one, so its before/after is only worth taking once B-1 and B-2 have landed. The item files itself Low-Medium and the lane rounds UP -- the edit is mechanical (instance handles to `static final`, in `CudaDriver` and in `--blas`'s `LinalgBlasKernels` the same way) and the CLOSE is a profile, which is the half this box keeps finding costs the judgement |
 
 **Not in this lane, and why.** `514` (`LinalgGpuTest` never finishes on an Apple silicon

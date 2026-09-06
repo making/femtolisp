@@ -186,6 +186,27 @@
                          :initial-element 0.0)))
         (dotimes (i (length v) out) (setf (aref out i) (aref v i))))))
 
+(defun as-f32-matrix (m)
+  ;; A rank-2 weight the forward pass reads ELEMENT BY ELEMENT rather than
+  ;; through vec:matvec -- the depthwise convolution kernels, which are
+  ;; channels x kernel small -- as a packed single-float matrix. Nothing
+  ;; accelerates a bf16 matrix read one element at a time, and holding one at
+  ;; the weight width costs the JVM backend its typed loop: every array of one
+  ;; typed loop is float[] or double[], so a single bf16 operand puts the whole
+  ;; convolution back on the boxed path. The safetensors readers get this from
+  ;; squeeze-middle; the GGUF readers, whose conv1d tensor is already rank 2,
+  ;; come through here.
+  (if (or (null m) (eq (array-element-type m) 'single-float))
+      m
+      (let* ((rows (array-dimension m 0))
+             (cols (array-dimension m 1))
+             (out
+              (make-array (list rows cols)
+                          :element-type 'single-float
+                          :initial-element 0.0)))
+        (dotimes (r rows out)
+          (dotimes (c cols) (setf (aref out r c) (aref m r c)))))))
+
 (defun embedding-row (emb token dim)
   ;; Row TOKEN of the embedding table as a fresh packed single-float vector:
   ;; the activation the layers start from, f32 whatever the table's width
@@ -999,8 +1020,9 @@
                                                           "ssm_alpha.weight")))
                       :ssm-conv (funcall per-layer
                                          (lambda (l)
-                                           (layer-tensor l
-                                                         "ssm_conv1d.weight")))
+                                           (as-f32-matrix
+                                            (layer-tensor l
+                                             "ssm_conv1d.weight"))))
                       :ssm-a (funcall per-layer
                                       (lambda (l) (layer-tensor l "ssm_a")))
                       :ssm-dt-bias (funcall per-layer
@@ -1017,8 +1039,9 @@
                                            "shortconv.in_proj.weight")))
                       :conv-w (funcall per-layer
                                        (lambda (l)
-                                         (layer-tensor l
-                                          "shortconv.conv.weight")))
+                                         (as-f32-matrix
+                                          (layer-tensor l
+                                           "shortconv.conv.weight"))))
                       :conv-out (funcall per-layer
                                          (lambda (l)
                                            (layer-tensor l

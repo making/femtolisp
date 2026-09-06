@@ -16081,6 +16081,26 @@ class JvmLispCompilerTest {
 			    (handler-case (dotimes (i 10) (setq acc (+ acc (* scale (aref a i)))))
 			      (error (e) (print 'caught-raw)))
 			    (print acc)))
+			(defun tl-silu (v)
+			  (dotimes (c (length v))
+			    (let ((u (aref v c))) (setf (aref v c) (/ u (+ 1.0 (exp (- u))))))))
+			(let ((sv (make-array 4 :element-type 'single-float :initial-element 0.0))
+			      (dv (make-array 3 :element-type 'double-float :initial-element 0.0d0))
+			      (gv (make-array 3 :initial-element 0.0))
+			      (ev (make-array 0 :element-type 'single-float :initial-element 0.0)))
+			  (dotimes (i 4) (setf (aref sv i) (- i 2.0)))
+			  (tl-silu sv)
+			  (print sv)
+			  (dotimes (i 3) (setf (aref dv i) (+ i 1.0d0)))
+			  (tl-silu dv)
+			  (print dv)
+			  (tl-silu gv)
+			  (print gv)
+			  (tl-silu ev)
+			  (print ev)
+			  (print (dotimes (i (length sv) i) (setf (aref sv i) (+ (aref sv i) (length sv)))))
+			  (print sv)
+			  (print (let ((n 0)) (dotimes (i (length (list 1 2 3))) (setq n (+ n i))) n)))
 			""";
 
 	private static final String TYPED_LOOP_EXPECTED = """
@@ -16108,7 +16128,14 @@ class JvmLispCompilerTest {
 			6.0
 			9.0
 			CAUGHT-RAW
-			15.0""";
+			15.0
+			#f(-0.23840584 -0.26894143 0.0 0.7310586)
+			#d(0.7310585786300049 1.7615941559557646 2.8577223804672998)
+			#(0.0 0.0 0.0)
+			#f()
+			4
+			#f(3.761594 3.7310586 4.0 4.7310586)
+			3""";
 
 	@Test
 	void typedLoopsMatchTheBoxedPathAndTheSizeLevelDeclinesThem() throws Exception {

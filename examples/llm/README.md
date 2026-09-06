@@ -474,43 +474,61 @@ mind.
 2026-09-06 (`.todo/490`): the kernel decodes the stored patterns in its lane loop and is
 otherwise the single-float kernel, at half the bytes a resident row streams -- 2.2 ms
 against 4.3 for this model's 248320x1024 head, 229 GB/s ([the guide](../../doc/en/guides/gpu-acceleration.md)).
-Measured on the GB10 box (`628c4048` plus the item, GraalVM 25, JVM class output,
-`-Xmx16g`, `-m chat -t 0 -n 64` on the cat prompt from the BF16 GGUF, load average
-under 2.3 for the one-thread rows and under 1.5 for the re-check; three runs each, the
-64 tokens byte-identical across all twenty-four):
+Measured on the GB10 box (GraalVM 25, JVM class output, `-Xmx16g`, `-m chat -t 0 -n 64`
+on the cat prompt from the BF16 GGUF, three runs each, the 64 tokens byte-identical
+across all twenty-four). Re-measured whole on 2026-09-06 after `.todo/723`, load average
+under 1.8; it supersedes the `628c4048` table, which read 11.1-11.9 in both `--gpu`
+columns:
 
 | Qwen3.5-0.8B | `--simd` | `--gpu --simd` | `--simd --parallel`, 16 threads | `--gpu --simd --parallel`, 16 |
 | --- | --- | --- | --- | --- |
-| `-w f32` | 5.9 / 6.3 / 6.3 | 11.1 / 11.4 / 11.5 | 16.9 / 17.0 / 17.3 | 10.8 / 11.5 / 11.5 |
-| `-w bf16` | 7.7 / 7.7 / 7.8 | 11.3 / 11.6 / 11.9 | 18.3 / 18.5 / 19.1 | 11.2 / 11.3 / 11.4 |
+| `-w f32` | 6.3 / 5.9 / 5.8 | 19.1 / 19.5 / 19.9 | 17.1 / 17.2 / 17.0 | 20.0 / 20.5 / 20.8 |
+| `-w bf16` | 8.0 / 8.1 / 7.8 | 25.7 / 26.1 / 25.1 | 25.0 / 25.8 / 25.0 | 26.2 / 25.7 / 26.5 |
 
-Three readings. **The device leg is not GEMV-bound**: bf16 and f32 land on the same 11.5
-tok/s with the flag, though the device streams half the bytes. Profiled a forward pass at
-a time (`.todo/718`, 2026-09-06: `nsys` per forward, JFR per function; the probes
-`decode-per-token.py` / `decode-jfr-agg.py` in `.todo/artefacts/123-gpu-acceleration/`),
-a steady forward is **45-46 ms under the flag, at one thread or sixteen, against 24 under
-`--simd --parallel` and 81 under `--simd`** -- each the difference of a 128- and a 64-token
-run, which drops the JIT warm-up and the prompt. Of the 45: the device kernels are 7.5 ms
+Three readings. **The device leg is not GEMV-bound**: bf16 leads f32 by 1.3x with the
+flag, the same lever the CPU legs get, though the device streams half the bytes -- if the
+GEMV were the arm, halving its bytes would show up as more than the width shows anywhere
+else. Profiled a forward pass at a time (`.todo/718`, 2026-09-06: `nsys` per forward, JFR
+per function; the probes `decode-per-token.py` / `decode-jfr-agg.py` in
+`.todo/artefacts/123-gpu-acceleration/`), a steady forward WAS **45-46 ms under the flag,
+at one thread or sixteen, against 24 under `--simd --parallel` and 81 under `--simd`** --
+each the difference of a 128- and a 64-token run, which drops the JIT warm-up and the
+prompt. Of the 45: the device kernels are 7.5 ms
 (229 launches; 6.8 of bf16 GEMV, the head 2.2 of it; 0.7 of f32 GEMV over the KV cache),
 each waited for by the host form that reads its result; the driver calls on the calling
 thread 11.9 ms (7.9 in 229 downloads with the kernel waits inside them, 2.4 in 193 uploads
 -- 102 MB, the 24 KV-cache matrices at 4 MB each going up every token because they are
 written every token and read by four heads, `.todo/725` -- and 1.1 in launches and
 allocations); and this model's Gated DeltaNet loops on the host ~30 ms, where the same
-three functions cost 6.8 ms without the flag -- the residency guards the flag puts in
+three functions cost 6.8 ms without the flag -- the residency guards the flag put in
 front of every store of the 128x128 state and every element of the boxed convolution loop
-are 40% of the arm's samples (`.kb/gpu.md`, "The GEMV, and the matrix that stays";
-`.todo/723`). **Any narrower weight width could only shrink the 6.8 ms, so Q4 on the
-device was refused on this profile** (`.kb/gpu.md`, "What is deliberately NOT here").
+were 40% of the arm's samples.
+
+**`.todo/723` took those 23 ms out and halved the arm** (2026-09-06, same box, same
+checkpoint, same method, medians of two 256-minus-64 rounds, the tokens byte-identical
+across every configuration measured): **50.7 / 51.8 ms a forward before, 25.0 / 25.1
+after**, against 27.6 / 31.7 -> 26.2 / 27.2 for `--simd --parallel` and 90.6 -> 88.7 for
+`--simd`. Two mechanisms. A typed `dotimes` called `_gpuWritten` on EVERY store and now
+reports each stored array once, at loop entry (`.kb/jvm-typed-loops.md`) -- 23 of the
+26 ms. And `causal-conv` / `silu-in-place` ran boxed: the first because this file was
+narrowing the depthwise conv kernel, **F32 in the checkpoint**, to the `-w bf16` weight
+width, and one bf16 operand puts a whole typed loop on the boxed path -- it is read
+element by element and nothing accelerates it, so `as-f32-matrix` now keeps it at the
+file's own width; the second because its COUNT, `(length v)`, was the one call in it, now
+an admitted form. **The device arm edges past `--simd --parallel` on this model as a
+result**, and a narrower weight width could still only shrink the 6.8 ms of GEMV -- 27% of
+the shorter forward rather than 15% of the long one -- which is the arithmetic Q4 on the
+device stays refused against (`.kb/gpu.md`, "What is deliberately NOT here").
 **The printed rate understates the forward rate**: `achieved tok/s` divides the 64
 sampled tokens by the clock of 84 forward passes -- the 21-id chat prompt runs through the
 same loop, in the clock and not in the count -- and the first ten of them are 1.5-2x slow
 while the JIT warms, so 19.3 printed is 41 forwards a second steady and 11.0 is 22
 (`.todo/724`); the rows on this page are the printed figure and compare with each other,
-not with a forward rate. **`--simd --parallel` still wins on this box** (18.5 against
-11.6, printed; 24 against 45 ms a forward), for the
-reason the stories15M table below gives: the parallel workers and the driver compete for
-the cores, and under the flag the sixteen threads bought nothing. The width's own lever is
+not with a forward rate. **The two arms are now level on this box, the device one
+marginally ahead** (25.8 against 25.3 printed; 25.0 against 26.7 ms a forward) -- where
+before `.todo/723` `--simd --parallel` won 1.9x. Sixteen threads still buy the device arm
+almost nothing (26.2 against 25.8), for the reason the stories15M table below gives: the
+parallel workers and the driver compete for the cores. The width's own lever is
 intact on the CPU legs (1.2x on one thread, 1.1x on sixteen), as the table above found on
 the other box. **And the residency budget was never the constraint.** Under the
 interceptors the library keeps results on the device and its budget is the headroom
@@ -652,6 +670,13 @@ interleaved runs, nothing pinned:
 | wasm-GC (`wasmtime`) | 1 | 0.4 tok/s | 125 tok/s | -- (no threads) | -- (no FFM) | -- |
 | interpreter (`java -jar`) | 1, or 20 under `--parallel` | ~15 s per token | 44 tok/s | 44 tok/s | 42 tok/s | -- |
 
+The two JVM `--gpu` cells were **re-measured on 2026-09-06 after `.todo/723`** (which
+stopped a typed `dotimes` reporting a residency guard per store) and rose about 1.2x, the
+story byte-identical: `--gpu --simd` 449 -> 555 tok/s and `--gpu --simd --parallel`
+425 -> 551, medians of five and three interleaved runs against the same build. The other
+columns did not move (`--simd --parallel` 657 before and 654 after, same rounds), so the
+recommendation below is unchanged; the rest of the table is still 2026-08-22's.
+
 Without `--parallel` every rontolisp backend decodes on ONE thread (the JVM
 still runs its own GC and JIT threads: ~3.1 s of CPU for a 1.4 s run); with it
 the GEMVs run on every core and the rest of the token still runs on one. The C
@@ -674,12 +699,13 @@ softmax, RoPE, attention copies and KV-cache loops, ~60 ns an iteration of
 backend now compiles a `dotimes` of that shape to a primitive loop
 (`.kb/jvm-typed-loops.md`; the same values, ~30x on the softmax), and the GEMV
 kernel vectorizes a short row (the 48-wide attention head used to run scalar,
-`.kb/vec.md`); nothing in this file changed. `--gpu --simd` (458) and
-`--gpu --simd --parallel` (427) both trail `--simd --parallel` now: the device
-takes the big GEMVs but pays a synchronous download per call, and with the
+`.kb/vec.md`); nothing in this file changed. `--gpu --simd` (555 since `.todo/723`) and
+`--gpu --simd --parallel` (551) both still trail `--simd --parallel` (654): the
+device takes the big GEMVs but pays a synchronous download per call, and with the
 spinning worker threads also competing with its driver for the cores the
-combination is the slower of the two -- pick `--simd --parallel` for this
-program. `--blas` entered the intercepted set on 2026-09-02: `vec:matvec` and
+combination is no faster than the device alone -- pick `--simd --parallel` for
+this program. (The bigger Qwen3.5-0.8B above goes the other way, its device arm
+edging ahead: that model's per-token GEMV bytes are 25x this one's.) `--blas` entered the intercepted set on 2026-09-02: `vec:matvec` and
 `vec:matvec-into` are a `cblas_?gemv`, so the flag now reaches this program
 (`doc/en/guides/blas-acceleration.md`). It is NOT in the table above because it
 was not measured on this box -- on a 64-core Xeon E5-2697A v4 with OpenBLAS the

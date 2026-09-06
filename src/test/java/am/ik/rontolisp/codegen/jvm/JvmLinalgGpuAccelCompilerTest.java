@@ -973,6 +973,11 @@ class JvmLinalgGpuAccelCompilerTest {
 	 * expand to the setter this program already exercises. {@code read-sequence} over a
 	 * binary file IS here: its bulk primitive writes the storage behind the setter's back
 	 * on both backends, and it is how a model's weights arrive ({@code examples/llm}).
+	 * The two {@code typed-loop-aset} lines are a JVM-only writer with no interpreter
+	 * twin: a TYPED {@code dotimes} reports every array it stores into ONCE, at loop
+	 * ENTRY rather than per store ({@code .kb/jvm-typed-loops.md}), so a hoist that
+	 * reports the wrong array -- or none -- leaves a stale device copy exactly as a
+	 * missing {@code _fvAset*} would.
 	 */
 	private static String residencyWriters(int side, String type, String file) {
 		int n = side * side;
@@ -1002,9 +1007,12 @@ class JvmLinalgGpuAccelCompilerTest {
 				(vec:negative-into *v* *v*) (check "vec-negative-into")
 				(vec:clip-into *v* *v* -1 1) (check "vec-clip-into")
 				(vec:matvec-into *v* (linalg:ones '(%d 1)%s) *one*) (check "vec-matvec-into")
+				(let ((tv *v*)) (dotimes (i 4) (setf (aref tv i) (+ (aref tv i) 0.5)))) (check "typed-loop-aset")
+				(let ((tm *a*)) (dotimes (i 4) (setf (aref tm i 0) (+ (aref tm i 0) 0.25)))) (check "typed-loop-aset-2d")
 				(with-open-file (s "%s" :element-type '(unsigned-byte 8)) (read-sequence *v* s)) (check "read-sequence")
-				""".formatted(n + 1, type, side, side, side + 1, type, side, n + 1, type, type, side, type, side, side,
-				type, side, side, type, side, side, type, n, type, file);
+				"""
+			.formatted(n + 1, type, side, side, side + 1, type, side, n + 1, type, type, side, type, side, side, type,
+					side, side, type, side, side, type, n, type, file);
 	}
 
 	@Test

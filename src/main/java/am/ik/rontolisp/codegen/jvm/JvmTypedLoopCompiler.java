@@ -52,6 +52,13 @@ final class JvmTypedLoopCompiler {
 	private static final boolean DISABLED = Boolean.getBoolean("rontolisp.debug.notypedloops");
 
 	/**
+	 * Prints every {@code dotimes} the analyzer DECLINED, with the form and the frames
+	 * that threw. The {@code notypedloops} A/B says a loop is boxed; this says which form
+	 * made it so, which is otherwise a bisect of the source.
+	 */
+	static final boolean TRACE = Boolean.getBoolean("rontolisp.debug.typedlooptrace");
+
+	/**
 	 * The highest local slot the one-byte load/store operands can name, with headroom.
 	 */
 	private static final int SLOT_BUDGET = 250;
@@ -117,6 +124,12 @@ final class JvmTypedLoopCompiler {
 		boolean assigned;
 
 		/**
+		 * An ARRAY the body stores into. Under {@code --gpu} such an array's device copy
+		 * is dropped ONCE at loop entry rather than per store ({@code .kb/gpu.md}).
+		 */
+		boolean stored;
+
+		/**
 		 * A FREE DOUBLE variable that may hold a {@code Long} at run time: every use of
 		 * it is a position where the boxed path converts a Long to double anyway.
 		 */
@@ -176,6 +189,14 @@ final class JvmTypedLoopCompiler {
 		@Override
 		public T type() {
 			return T.DOUBLE;
+		}
+	}
+
+	/** {@code (length a)} of a rank-1 packed array: its one header dimension. */
+	record ArrLen(Var arr) implements Node {
+		@Override
+		public T type() {
+			return T.LONG;
 		}
 	}
 
@@ -251,10 +272,14 @@ final class JvmTypedLoopCompiler {
 	/** Thrown by the analyzer when a form is outside the typed subset. */
 	private static final class Ineligible extends RuntimeException {
 
-		static final Ineligible INSTANCE = new Ineligible();
+		static final Ineligible INSTANCE = new Ineligible(false);
 
-		private Ineligible() {
-			super(null, null, false, false);
+		static Ineligible raise() {
+			return TRACE ? new Ineligible(true) : INSTANCE;
+		}
+
+		private Ineligible(boolean trace) {
+			super(null, null, false, trace);
 		}
 
 	}
@@ -368,6 +393,14 @@ final class JvmTypedLoopCompiler {
 					return an.run(var.name(), specParts.get(1), parts.subList(2, parts.size()), resultForm);
 				}
 				catch (Ineligible e) {
+					if (TRACE) {
+						StringBuilder sb = new StringBuilder("[typedloop] REJECT " + cons.print() + " at");
+						StackTraceElement[] st = e.getStackTrace();
+						for (int i = 0; i < Math.min(6, st.length); i++) {
+							sb.append("\n    ").append(st[i]);
+						}
+						System.err.println(sb);
+					}
 					return null;
 				}
 				catch (Restart e) {
@@ -387,7 +420,7 @@ final class JvmTypedLoopCompiler {
 			Scope top = new Scope(null);
 			Node count = exprStrict(countForm, top);
 			if (count.type() != T.LONG) {
-				throw Ineligible.INSTANCE;
+				throw Ineligible.raise();
 			}
 			Var ctr = new Var(varName, Kind.LOOP, T.LONG, maxAbsOf(count), 0);
 			Scope loopScope = new Scope(top);
@@ -397,19 +430,19 @@ final class JvmTypedLoopCompiler {
 			List<Node> body = body(bodyForms, loopScope, false);
 			if (resultForm instanceof LispSymbol rs && !rs.isKeyword() && !rs.name().equals(varName)
 					&& !resolvable(rs.name())) {
-				throw Ineligible.INSTANCE;
+				throw Ineligible.raise();
 			}
 			// A loop whose body touches no array and assigns nothing has nothing to
 			// speed up that the boxed path would not do as well; keep the emission
 			// byte-identical there.
 			if (this.free.values().stream().noneMatch(v -> v.kind == Kind.ARRAY || v.assigned)) {
-				throw Ineligible.INSTANCE;
+				throw Ineligible.raise();
 			}
 			// Every array must be consistently ranked and the program must be able to
 			// produce a packed float array at all, or the guard could never pass.
 			for (Var v : this.free.values()) {
 				if (v.kind == Kind.ARRAY && !this.ctx.usesFloatArray) {
-					throw Ineligible.INSTANCE;
+					throw Ineligible.raise();
 				}
 			}
 			return new Analysis(this.free, ctr, count, body, resultForm, this.maxLetDepth, this.maxLoopDepth);
@@ -440,6 +473,19 @@ final class JvmTypedLoopCompiler {
 					String head = parts.get(0) instanceof LispSymbol hs ? hs.name() : "";
 					switch (head) {
 						case LispNames.AREF, LispNames.ASET -> scanArrayAccess(parts, bound, inIndex, specs, longNames);
+						case LispNames.LENGTH -> {
+							// (length a) reads the header, so it neither indexes A nor
+							// makes A index-shaped -- without this the count of
+							// `(dotimes (i (length a)) ...)` would mark the ARRAY as a
+							// fixnum. A name that is nothing but a (length x) argument
+							// gets no Spec and stays outside the subset.
+							if (parts.size() != 2 || !(parts.get(1) instanceof LispSymbol ls) || ls.isKeyword()
+									|| bound.contains(ls.name())) {
+								for (int i = 1; i < parts.size(); i++) {
+									scan(parts.get(i), bound, inIndex, specs, longNames);
+								}
+							}
+						}
 						case LispNames.SETF, LispNames.SETQ -> {
 							for (int i = 1; i + 1 < parts.size(); i += 2) {
 								LispVal place = parts.get(i);
@@ -555,11 +601,17 @@ final class JvmTypedLoopCompiler {
 				return v;
 			}
 			if (!resolvable(name)) {
-				throw Ineligible.INSTANCE;
+				if (TRACE) {
+					System.err.println("[typedloop]   unresolvable free name: " + name);
+				}
+				throw Ineligible.raise();
 			}
 			Spec sp = this.specs.get(name);
 			if (sp == null) {
-				throw Ineligible.INSTANCE;
+				if (TRACE) {
+					System.err.println("[typedloop]   no spec for free name: " + name);
+				}
+				throw Ineligible.raise();
 			}
 			Integer rawDoubleSlot = this.ctx.rawDoubleLocals.get(name);
 			if (rawDoubleSlot != null) {
@@ -569,7 +621,7 @@ final class JvmTypedLoopCompiler {
 				// guard, no typed copy and no write-back. It is not an index and not an
 				// array; a body that uses it as one keeps the boxed emission.
 				if (sp.arrayRank != 0 || sp.indexUse) {
-					throw Ineligible.INSTANCE;
+					throw Ineligible.raise();
 				}
 				v = new Var(name, Kind.FREE, T.DOUBLE, BigInteger.ZERO, 0);
 				v.rawDouble = true;
@@ -579,7 +631,11 @@ final class JvmTypedLoopCompiler {
 			}
 			if (sp.arrayRank != 0) {
 				if (sp.arrayRank < 0 || sp.arrayRank > 2 || sp.indexUse || sp.assigned) {
-					throw Ineligible.INSTANCE;
+					if (TRACE) {
+						System.err.println("[typedloop]   array name " + name + " rank=" + sp.arrayRank + " indexUse="
+								+ sp.indexUse + " assigned=" + sp.assigned);
+					}
+					throw Ineligible.raise();
 				}
 				v = new Var(name, Kind.ARRAY, null, BigInteger.ZERO, sp.arrayRank);
 			}
@@ -596,7 +652,7 @@ final class JvmTypedLoopCompiler {
 			}
 			if (sp.assigned) {
 				if (!plainLocal(name)) {
-					throw Ineligible.INSTANCE;
+					throw Ineligible.raise();
 				}
 				v.assigned = true;
 			}
@@ -644,6 +700,7 @@ final class JvmTypedLoopCompiler {
 		private static BigInteger maxAbsOf(Node n) {
 			return switch (n) {
 				case Lit l -> l.maxAbs();
+				case ArrLen ignored -> INT_BOUND;
 				case Ref r -> r.v().maxAbs;
 				case Arith a -> a.maxAbs();
 				case Neg g -> g.maxAbs();
@@ -651,14 +708,14 @@ final class JvmTypedLoopCompiler {
 				case Let l -> maxAbsOf(l.body().getLast());
 				case Progn p -> maxAbsOf(p.body().getLast());
 				case If i -> maxAbsOf(i.then()).max(maxAbsOf(java.util.Objects.requireNonNull(i.els())));
-				default -> throw Ineligible.INSTANCE;
+				default -> throw Ineligible.raise();
 			};
 		}
 
 		private Node expr(LispVal form, Scope sc) {
 			Node n = node(form, sc, true);
 			if (n.type() == null) {
-				throw Ineligible.INSTANCE;
+				throw Ineligible.raise();
 			}
 			return n;
 		}
@@ -671,7 +728,7 @@ final class JvmTypedLoopCompiler {
 				out.add(n);
 			}
 			if (valueNeeded && out.isEmpty()) {
-				throw Ineligible.INSTANCE;
+				throw Ineligible.raise();
 			}
 			return out;
 		}
@@ -692,33 +749,33 @@ final class JvmTypedLoopCompiler {
 				}
 				case LispNil ignored -> {
 					if (valueNeeded) {
-						throw Ineligible.INSTANCE;
+						throw Ineligible.raise();
 					}
 					return new Nop();
 				}
 				case LispSymbol s -> {
 					if (s.isKeyword()) {
-						throw Ineligible.INSTANCE;
+						throw Ineligible.raise();
 					}
 					Var v = sc.lookup(s.name());
 					if (v == null) {
 						v = freeVar(s.name());
 					}
 					if (v.kind == Kind.ARRAY) {
-						throw Ineligible.INSTANCE;
+						throw Ineligible.raise();
 					}
 					return new Ref(v);
 				}
 				case LispCons cons -> {
 					return consNode(cons, sc, valueNeeded);
 				}
-				default -> throw Ineligible.INSTANCE;
+				default -> throw Ineligible.raise();
 			}
 		}
 
 		private Node consNode(LispCons cons, Scope sc, boolean valueNeeded) {
 			if (!cons.isProperList() || !(cons.car() instanceof LispSymbol head)) {
-				throw Ineligible.INSTANCE;
+				throw Ineligible.raise();
 			}
 			List<LispVal> parts = cons.toList();
 			String name = head.name();
@@ -726,7 +783,7 @@ final class JvmTypedLoopCompiler {
 				case LispNames.ADD, LispNames.SUB, LispNames.MUL, LispNames.DIV -> {
 					int n = parts.size() - 1;
 					if (n == 0) {
-						throw Ineligible.INSTANCE;
+						throw Ineligible.raise();
 					}
 					if (n == 1) {
 						Node a = exprStrict(parts.get(1), sc);
@@ -735,7 +792,7 @@ final class JvmTypedLoopCompiler {
 								if (a.type() == T.LONG) {
 									BigInteger m = maxAbsOf(a);
 									if (m.compareTo(LONG_MAX) > 0) {
-										throw Ineligible.INSTANCE;
+										throw Ineligible.raise();
 									}
 									yield new Neg(a, T.LONG, m);
 								}
@@ -743,7 +800,7 @@ final class JvmTypedLoopCompiler {
 							}
 							case LispNames.DIV -> {
 								if (a.type() != T.DOUBLE) {
-									throw Ineligible.INSTANCE;
+									throw Ineligible.raise();
 								}
 								yield new Recip(a);
 							}
@@ -759,15 +816,24 @@ final class JvmTypedLoopCompiler {
 				}
 				case LispNames.LT, LispNames.GT, LispNames.LE, LispNames.GE, LispNames.EQ -> {
 					// a comparison is only typed as the test of if/when/unless
-					throw Ineligible.INSTANCE;
+					throw Ineligible.raise();
 				}
 				case LispNames.SQRT, LispNames.EXP, LispNames.LOG, LispNames.SIN, LispNames.COS, LispNames.TAN,
 						LispNames.ASIN, LispNames.ACOS, LispNames.ATAN, LispNames.SINH, LispNames.COSH,
 						LispNames.TANH -> {
 					if (parts.size() != 2) {
-						throw Ineligible.INSTANCE;
+						throw Ineligible.raise();
 					}
 					return new MathFn(name, expr(parts.get(1), sc));
+				}
+				case LispNames.LENGTH -> {
+					// Only of a rank-1 array of THIS loop: the guard has already proven
+					// it packed, and _fvLength answers its one header dimension for
+					// exactly that shape.
+					if (parts.size() != 2) {
+						throw Ineligible.raise();
+					}
+					return new ArrLen(arrayVar(parts.get(1), sc, 1));
 				}
 				case LispNames.AREF -> {
 					return aref(parts, sc);
@@ -777,7 +843,7 @@ final class JvmTypedLoopCompiler {
 				}
 				case LispNames.SETF, LispNames.SETQ -> {
 					if (parts.size() < 3 || parts.size() % 2 == 0) {
-						throw Ineligible.INSTANCE;
+						throw Ineligible.raise();
 					}
 					List<Node> stores = new ArrayList<>();
 					for (int i = 1; i + 1 < parts.size(); i += 2) {
@@ -793,7 +859,7 @@ final class JvmTypedLoopCompiler {
 							stores.add(aset(ap, sc));
 						}
 						else {
-							throw Ineligible.INSTANCE;
+							throw Ineligible.raise();
 						}
 					}
 					if (stores.size() == 1) {
@@ -810,7 +876,7 @@ final class JvmTypedLoopCompiler {
 				}
 				case LispNames.IF -> {
 					if (parts.size() < 3 || parts.size() > 4) {
-						throw Ineligible.INSTANCE;
+						throw Ineligible.raise();
 					}
 					Cmp cond = cmp(parts.get(1), sc, false);
 					Node then = valueNeeded ? exprStrict(parts.get(2), sc) : node(parts.get(2), sc, false);
@@ -818,7 +884,7 @@ final class JvmTypedLoopCompiler {
 							? (valueNeeded ? exprStrict(parts.get(3), sc) : node(parts.get(3), sc, false)) : null;
 					if (valueNeeded) {
 						if (els == null || then.type() != els.type()) {
-							throw Ineligible.INSTANCE;
+							throw Ineligible.raise();
 						}
 						return new If(cond, then, els, then.type());
 					}
@@ -826,7 +892,7 @@ final class JvmTypedLoopCompiler {
 				}
 				case LispNames.WHEN, LispNames.UNLESS -> {
 					if (valueNeeded || parts.size() < 3) {
-						throw Ineligible.INSTANCE;
+						throw Ineligible.raise();
 					}
 					Cmp cond = cmp(parts.get(1), sc, LispNames.UNLESS.equals(name));
 					List<Node> body = body(parts.subList(2, parts.size()), sc, false);
@@ -835,21 +901,21 @@ final class JvmTypedLoopCompiler {
 				case LispNames.DOTIMES -> {
 					if (valueNeeded || parts.size() < 2 || !(parts.get(1) instanceof LispCons spec)
 							|| !spec.isProperList()) {
-						throw Ineligible.INSTANCE;
+						throw Ineligible.raise();
 					}
 					List<LispVal> sp = spec.toList();
 					if (sp.size() < 2 || sp.size() > 3 || !(sp.get(0) instanceof LispSymbol v)
 							|| (sp.size() == 3 && !(sp.get(2) instanceof LispNil))) {
-						throw Ineligible.INSTANCE;
+						throw Ineligible.raise();
 					}
 					Var shadowed = sc.lookup(v.name());
 					if (shadowed != null && shadowed.kind == Kind.LOOP) {
 						// rebinding an enclosing counter: keep it simple
-						throw Ineligible.INSTANCE;
+						throw Ineligible.raise();
 					}
 					Node count = exprStrict(sp.get(1), sc);
 					if (count.type() != T.LONG) {
-						throw Ineligible.INSTANCE;
+						throw Ineligible.raise();
 					}
 					Var ctr = new Var(v.name(), Kind.LOOP, T.LONG, maxAbsOf(count), 0);
 					Scope inner = new Scope(sc);
@@ -862,11 +928,16 @@ final class JvmTypedLoopCompiler {
 				}
 				case LispNames.DECLARE -> {
 					if (valueNeeded) {
-						throw Ineligible.INSTANCE;
+						throw Ineligible.raise();
 					}
 					return new Nop();
 				}
-				default -> throw Ineligible.INSTANCE;
+				default -> {
+					if (TRACE) {
+						System.err.println("[typedloop]   form outside the subset: " + cons.print());
+					}
+					throw Ineligible.raise();
+				}
 			}
 		}
 
@@ -886,10 +957,10 @@ final class JvmTypedLoopCompiler {
 					case LispNames.ADD, LispNames.SUB -> ma.add(mb);
 					case LispNames.MUL -> ma.multiply(mb);
 					// an integer quotient is exact (a ratio) on the boxed path
-					default -> throw Ineligible.INSTANCE;
+					default -> throw Ineligible.raise();
 				};
 				if (m.compareTo(LONG_MAX) > 0) {
-					throw Ineligible.INSTANCE;
+					throw Ineligible.raise();
 				}
 				return new Arith(op, a, b, T.LONG, m);
 			}
@@ -899,11 +970,11 @@ final class JvmTypedLoopCompiler {
 		private Cmp cmp(LispVal form, Scope sc, boolean negate) {
 			if (!(form instanceof LispCons c) || !c.isProperList() || !(c.car() instanceof LispSymbol h)
 					|| !CMP_OPS.contains(h.name())) {
-				throw Ineligible.INSTANCE;
+				throw Ineligible.raise();
 			}
 			List<LispVal> parts = c.toList();
 			if (parts.size() != 3) {
-				throw Ineligible.INSTANCE;
+				throw Ineligible.raise();
 			}
 			Node a = expr(parts.get(1), sc);
 			Node b = expr(parts.get(2), sc);
@@ -918,11 +989,11 @@ final class JvmTypedLoopCompiler {
 
 		private Var arrayVar(LispVal form, Scope sc, int rank) {
 			if (!(form instanceof LispSymbol s) || s.isKeyword() || sc.lookup(s.name()) != null) {
-				throw Ineligible.INSTANCE;
+				throw Ineligible.raise();
 			}
 			Var v = freeVar(s.name());
 			if (v.kind != Kind.ARRAY || v.rank != rank) {
-				throw Ineligible.INSTANCE;
+				throw Ineligible.raise();
 			}
 			return v;
 		}
@@ -932,7 +1003,7 @@ final class JvmTypedLoopCompiler {
 			for (int i = from; i < from + rank; i++) {
 				Node n = exprStrict(parts.get(i), sc);
 				if (n.type() != T.LONG) {
-					throw Ineligible.INSTANCE;
+					throw Ineligible.raise();
 				}
 				idx.add(n);
 			}
@@ -942,7 +1013,7 @@ final class JvmTypedLoopCompiler {
 		private Node aref(List<LispVal> parts, Scope sc) {
 			int rank = parts.size() - 2;
 			if (rank < 1 || rank > 2) {
-				throw Ineligible.INSTANCE;
+				throw Ineligible.raise();
 			}
 			Var arr = arrayVar(parts.get(1), sc, rank);
 			return new Aref(arr, subscripts(parts, 2, rank, sc));
@@ -952,9 +1023,10 @@ final class JvmTypedLoopCompiler {
 			// (%aset a i... value)
 			int rank = parts.size() - 3;
 			if (rank < 1 || rank > 2) {
-				throw Ineligible.INSTANCE;
+				throw Ineligible.raise();
 			}
 			Var arr = arrayVar(parts.get(1), sc, rank);
+			arr.stored = true;
 			List<Node> idx = subscripts(parts, 2, rank, sc);
 			Node value = expr(parts.get(2 + rank), sc);
 			return new Aset(arr, idx, value);
@@ -962,14 +1034,14 @@ final class JvmTypedLoopCompiler {
 
 		private Node setq(LispSymbol place, LispVal valueForm, Scope sc) {
 			if (place.isKeyword()) {
-				throw Ineligible.INSTANCE;
+				throw Ineligible.raise();
 			}
 			Var v = sc.lookup(place.name());
 			if (v == null) {
 				v = freeVar(place.name());
 			}
 			if (v.kind == Kind.LOOP || v.kind == Kind.ARRAY) {
-				throw Ineligible.INSTANCE;
+				throw Ineligible.raise();
 			}
 			Node value = exprStrict(valueForm, sc);
 			if (value.type() != v.type) {
@@ -977,39 +1049,39 @@ final class JvmTypedLoopCompiler {
 					this.assignedTypes.put(v.name, T.DOUBLE);
 					throw Restart.INSTANCE;
 				}
-				throw Ineligible.INSTANCE;
+				throw Ineligible.raise();
 			}
 			if (v.type == T.LONG && maxAbsOf(value).compareTo(v.maxAbs) > 0) {
-				throw Ineligible.INSTANCE;
+				throw Ineligible.raise();
 			}
 			return new Setq(v, value);
 		}
 
 		private Node let(List<LispVal> parts, Scope sc, boolean valueNeeded, boolean sequential) {
 			if (parts.size() < 2) {
-				throw Ineligible.INSTANCE;
+				throw Ineligible.raise();
 			}
 			Scope inner = new Scope(sc);
 			List<Var> vars = new ArrayList<>();
 			List<Node> inits = new ArrayList<>();
 			if (parts.get(1) instanceof LispCons bs) {
 				if (!bs.isProperList()) {
-					throw Ineligible.INSTANCE;
+					throw Ineligible.raise();
 				}
 				for (LispVal b : bs.toList()) {
 					if (!(b instanceof LispCons bc) || !bc.isProperList()) {
-						throw Ineligible.INSTANCE;
+						throw Ineligible.raise();
 					}
 					List<LispVal> bp = bc.toList();
 					if (bp.size() != 2 || !(bp.get(0) instanceof LispSymbol bn) || bn.isKeyword()
 							|| this.ctx.specialVars.contains(bn.name())) {
-						throw Ineligible.INSTANCE;
+						throw Ineligible.raise();
 					}
 					Node init = exprStrict(bp.get(1), sequential ? inner : sc);
 					T t = java.util.Objects.requireNonNull(init.type());
 					Var v = new Var(bn.name(), Kind.LET, t, t == T.LONG ? maxAbsOf(init) : BigInteger.ZERO, 0);
 					if (inner.vars.containsKey(bn.name())) {
-						throw Ineligible.INSTANCE;
+						throw Ineligible.raise();
 					}
 					inner.vars.put(bn.name(), v);
 					vars.add(v);
@@ -1017,7 +1089,7 @@ final class JvmTypedLoopCompiler {
 				}
 			}
 			else if (!(parts.get(1) instanceof LispNil)) {
-				throw Ineligible.INSTANCE;
+				throw Ineligible.raise();
 			}
 			this.letDepth += vars.size();
 			this.maxLetDepth = Math.max(this.maxLetDepth, this.letDepth);
@@ -1265,7 +1337,11 @@ final class JvmTypedLoopCompiler {
 		 * Casts every array into its typed slot and reads its header once. The arrays are
 		 * loop-invariant, so under {@code --gpu} this is also where each is materialized
 		 * -- the raw {@code faload}s in the body read the host's bytes, which must be the
-		 * device's first ({@code .kb/gpu.md}).
+		 * device's first -- and where each array the body STORES into is reported written
+		 * ({@code .kb/gpu.md}). Nothing inside a typed loop can put an array back on the
+		 * device (the subset has no calls), so one report at entry covers every store the
+		 * loop makes; a loop of zero trips drops a copy it did not need to, which costs
+		 * speed and nothing else.
 		 */
 		private void hoistArrays(List<Var> arrays) {
 			ClassConstant cls = this.single ? this.floatArrayClass : this.doubleArrayClass;
@@ -1299,6 +1375,22 @@ final class JvmTypedLoopCompiler {
 					loadHeaderInt();
 					this.ctx.emit(Opcode.ISTORE);
 					this.ctx.emit(v.colsSlot);
+				}
+			}
+			// After EVERY materialize, not interleaved with them: two of the loop's
+			// arrays can be one object at run time, and dropping a device copy before
+			// the other one's materialize would leave that read with nothing to bring
+			// home. Reported on the program's object (refSlot), not the typed slot,
+			// which may be a result stub's backing the library does not key on.
+			if (this.written != null) {
+				for (Var v : arrays) {
+					if (v.stored) {
+						this.ctx.emit(Opcode.ALOAD);
+						this.ctx.emit(v.refSlot);
+						this.ctx.emit(Opcode.INVOKESTATIC);
+						this.ctx.emitU2(this.written.index());
+						this.ctx.emit(Opcode.POP);
+					}
 				}
 			}
 		}
@@ -1448,6 +1540,16 @@ final class JvmTypedLoopCompiler {
 					}
 				}
 				case Ref r -> load(r.v());
+				case ArrLen l -> {
+					// _fvLength of a rank-1 packed array: header dimension 0, read from
+					// the header rather than the Java length (a lazy result stub is the
+					// header alone).
+					this.ctx.emit(Opcode.ALOAD);
+					this.ctx.emit(l.arr().slot);
+					this.ctx.emit(Opcode.ICONST_1);
+					loadHeaderInt();
+					this.ctx.emit(Opcode.I2L);
+				}
 				case Aref a -> {
 					arrayIndex(a.arr(), a.idx());
 					if (this.single) {
@@ -1558,18 +1660,8 @@ final class JvmTypedLoopCompiler {
 		}
 
 		private void aset(Aset a, boolean valueNeeded) {
-			if (this.written != null) {
-				// --gpu, BEFORE the store: the array may have a resident device copy
-				// (materialized at loop entry, so it is clean by now); it is stale now.
-				// Reported on the program's object (the variable's slot), not the typed
-				// slot, which may be a stub's backing the library does not key on; the
-				// guard's answer is the typed slot already and is dropped.
-				this.ctx.emit(Opcode.ALOAD);
-				this.ctx.emit(a.arr().refSlot);
-				this.ctx.emit(Opcode.INVOKESTATIC);
-				this.ctx.emitU2(this.written.index());
-				this.ctx.emit(Opcode.POP);
-			}
+			// No --gpu guard here: hoistArrays already reported the array written, once
+			// for the whole loop.
 			arrayIndex(a.arr(), a.idx());
 			exprAsDouble(a.value());
 			int tmp = -1;

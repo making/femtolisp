@@ -23,6 +23,14 @@ back with `(vec:matvec vth att)` over the whole transposed cache, relying on the
   launches (0.7 ms), and the 12 first sights computed by the CPU lane kernel, 3.5 ms. Some
   6 ms of a 45 ms forward for an attention that touches 4 KB of live keys a head.
 
+**The denominator moved on 2026-09-06**, when `.todo/723` closed: the device forward is now
+**25 ms, not 45**, and the one-thread `--simd` forward 88.7, not 81 -- so the same ~6 ms is
+a QUARTER of the device arm rather than an eighth, and the 96 MB is unchanged in bytes and
+larger in share. The `--simd --parallel` forward is 26.7 ms and the device arm now edges
+past it, so this item is the one place left where both arms pay. Re-take the two shares the
+way the Done section says rather than scaling these; the profile is `.kb/gpu.md`, "The GEMV,
+and the matrix that stays".
+
 ## Do
 
 Bound the product to the live rows. The cleanest shape is a row-count argument or a
@@ -51,4 +59,4 @@ question, and this item does not answer it.
 
 ## Not in scope
 
-The residency guards (`.todo/723`) and the printed `tok/s` (`.todo/724`).
+The residency guards (`.todo/723`, closed 2026-09-06) and the printed `tok/s` (`.todo/724`).

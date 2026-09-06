@@ -106,13 +106,44 @@ cd /tmp/cirun && wasmtime run -W gc=y -W exceptions=y --dir . --dir /tmp p.compo
 
 Then reorder `linalg::%la-make`'s `cond` arms (`single-float` first) and repeat.
 
+## It fired again, on the FIRST case added after it was filed (2026-09-06)
+
+`.todo/723` added eleven lines to `jvm-typed-numeric-loops` -- about 500 characters, a
+`(dotimes (c (length v)) ...)` and two `print`s, touching neither `linalg:` nor `gguf:` nor
+the component path -- and the whole corpus trapped at the same `ref.cast` with the same
+backtrace (`wasmtime 47.0.3`, native binary, `CiSpecE2eTest`: 3569 run / 2 failed with the
+case, 4052 run / 0 failed with the eleven lines removed and nothing else changed). So the
+prediction below is now a measurement, and the corpus is not one case away from the cliff --
+**it is AT it**: the next case anyone adds, of any subject, is a coin flip.
+
+`723` chose not to ship a red corpus and DROPPED its case, so **a `(length a)` typed-loop
+case is queued behind this item** -- the form is otherwise pinned by
+`JvmLispCompilerTest.typedLoopsMatchTheBoxedPathAndTheSizeLevelDeclinesThem` (typed against
+boxed, bit for bit) and was hand-checked identical on all four backends, so what is missing
+is only the standing cross-backend pin. Re-add it when this closes:
+
+```lisp
+(defun tl-silu (v)
+  (dotimes (c (length v))
+    (let ((u (aref v c))) (setf (aref v c) (/ u (+ 1.0 (exp (- u))))))))
+(let ((tl-x (make-array 4 :element-type 'single-float :initial-element 0.0)))
+  (dotimes (i 4) (setf (aref tl-x i) (- i 2.0)))
+  (tl-silu tl-x)
+  (print (round (* 100000 (aref tl-x 0))))
+  (print (dotimes (i (length tl-x) i) (setf (aref tl-x i) (+ (aref tl-x i) (length tl-x)))))
+  (print (round (* 100000 (aref tl-x 3)))))
+```
+
+expecting `-23841`, `4`, `473106` on all four.
+
 ## Why it matters more than one corpus
 
-The corpus sits ONE case away from the cliff, and the cliff is invisible from the source: a
-change to any spliced library can land on either side of it, and what the author sees is a
+The cliff is invisible from the source: a change to any spliced library -- or, as `723`
+found, any new CASE -- can land on either side of it, and what the author sees is a
 `cast failure` in a `gguf:` case they did not touch. `.todo/687` shipped with the arm order
 that passes and a comment saying so, which is a coin landing the right way up, not a fix.
-Nothing here is `linalg:`'s to own.
+Nothing here is `linalg:`'s to own. **And the corpus can no longer GROW until this closes**,
+which is the cost that turns it from a curiosity into a blocker.
 
 ## Do
 
@@ -126,6 +157,8 @@ Nothing here is `linalg:`'s to own.
    some layouts.
 3. A regression pin has to be a whole-corpus one; nothing smaller reproduces. `CiSpecE2eTest`
    already is that pin, which is why this was found at all.
+4. Re-add `.todo/723`'s `(length a)` case to `jvm-typed-numeric-loops` (above) as the first
+   thing after the fix -- it is the case the defect has already cost.
 
 ## Verify
 

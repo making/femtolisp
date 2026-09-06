@@ -448,7 +448,10 @@ derived, and the surface exists so that a user can see the shortfall before anyo
 
 `written` and `materialize` are residency's CONTRACT on the caller. **Every in-place write to a packed
 array's storage must come through `written` BEFORE it lands**, or the next call answers for bytes the
-array no longer holds. **Every host READ of packed storage must come through `materialize` first**, or
+array no longer holds. BEFORE, not once per write: a writer that can prove nothing re-uploads the
+array between its first store and its last may report once and cover them all -- the JVM typed loop
+is the one place that proves it (`.kb/jvm-typed-loops.md`), and doing it per store instead cost half
+of a `--gpu` decode step. **Every host READ of packed storage must come through `materialize` first**, or
 it reads the zeros of an array nobody filled. Both are cheap when they do not matter (a volatile read,
 then an identity compare) and never run the probe.
 
@@ -470,7 +473,9 @@ One case looks like a writer and is not: `torch:set-data` REBINDS a tensor's dat
 (guarded by `if (_gpuInited != 0)`, which lets `_fvAset1` be emitted before the bridge class is
 defined): `_fvAref1/2/N`, `_fvAset1/2/N`, `_fvToGeneral`/`_fvToGeneralPrint`; every argument of every
 accelerated `linalg:` call site, right after the device attempt and before any host rung; every
-argument of every `vec:` call site; the typed loops at `hoistArrays`;
+argument of every `vec:` call site; a typed loop's `hoistArrays`, which materializes EVERY array of
+the loop and then reports written each array the body STORES into -- once for the loop, and in that
+order, since two of its array variables can be one object at run time;
 `_readSeqPacked`/`_writeSeqPacked`; and every argument of a Java interop call.
 `_fvDims`/`_fvLength`/`_fvElementType` read the header only.
 
@@ -640,14 +645,36 @@ every one on the critical path, since the next host form reads the result and `m
 it. **The driver API on the calling thread is 11.9 ms**: 7.9 in `cuMemcpyDtoH` (229 downloads, the
 kernel waits inside them), 2.4 in `cuMemcpyHtoD` (193 uploads, 102 MB -- the 24 KV-cache matrices at
 4 MB each, written every token and read by four heads, so first sight, upload, hit, hit, every token;
-`.todo/725`), 0.65 in launches, 0.4 in 422 pool allocations. **And the host's own Lisp loops are
+`.todo/725`), 0.65 in launches, 0.4 in 422 pool allocations. **And the host's own Lisp loops were
 ~30 ms, against 6.8 for the same three functions without the flag**: `gated-delta-rule` 20 ms,
-`causal-conv` 8.5, `silu-in-place` 2.2. The 23 ms are the residency guards -- 40% of the arm's
-samples sit in `materialize` / `written`, called ONCE PER STORE by the typed loop over the 128x128
-state (`.kb/jvm-typed-loops.md`; `CudaGemm.written` materializes first, so a store is two lookups) and
-once per element by the boxed `_fvAref2` / `_fvAset1` of the two loops that are not typed on any arm
-(`.todo/723`). **A narrower weight width can only shrink the 6.8 ms**, which is why the Q4 width was
-refused on this profile ("What is deliberately NOT here").
+`causal-conv` 8.5, `silu-in-place` 2.2. The 23 ms were the residency guards -- 40% of the arm's
+samples sat in `materialize` / `written`, called ONCE PER STORE by the typed loop over the 128x128
+state (`CudaGemm.written` materializes first, so a store was two lookups) and once per element by the
+boxed `_fvAref2` / `_fvAset1` of the two loops that were typed on neither arm.
+
+**`.todo/723` took that 23 ms out, and it was HALF the arm** (2026-09-06, same box, same checkpoint,
+same 128-minus-64 method, medians of two 256-minus-64 rounds on a quiet box, the 64 and the 256
+tokens byte-identical across every configuration measured):
+
+| ms per forward | `--simd`, 1 | `--simd --parallel`, 16 | `--gpu --simd`, 1 |
+| --- | --- | --- | --- |
+| before | 90.6 | 27.6 / 31.7 | 50.7 / 51.8 |
+| after | 88.7 | 26.2 / 27.2 | **25.0 / 25.1** |
+
+Two mechanisms, and the profile named the first correctly and the second wrongly. (1) A typed loop
+called `_gpuWritten` on EVERY store; it now reports each stored array ONCE at loop entry
+(`.kb/jvm-typed-loops.md`), which is 23 of the 26 ms. (2) `causal-conv` and `silu-in-place` were
+boxed -- but NOT, as `718` guessed, because unary `-` is outside the typed subset (it is inside) or
+because the loops are shaped oddly. `silu-in-place` was declined for its COUNT, `(length v)`, the
+one call in it, now an admitted form; and `causal-conv`'s loops were in the subset all along and
+failed their ARRAY GUARD, because the depthwise conv kernel -- F32 in the GGUF, 98304 bytes a layer
+-- was being narrowed to the `-w bf16` weight width, and one bf16 operand puts a whole typed loop on
+the boxed path. Reading it at f32 (`examples/llm/llm.lisp`, `as-f32-matrix`) is the other 3.4 ms.
+**The device arm now edges past `--simd --parallel` on this model** (25.0 against 26.7 ms;
+printed 25.8 against 25.2 tok/s), and stories15M's `--gpu` legs rise 1.2x (449 -> 555 tok/s at
+`--gpu --simd`, 425 -> 551 at `--gpu --simd --parallel`) while still trailing its 655.
+**A narrower weight width can still only shrink the 6.8 ms** -- now 27% of the forward rather than
+15% -- which is the arithmetic the Q4 refusal is re-opened against ("What is deliberately NOT here").
 
 **The seam is a CHAIN on both backends.** Interpreter: `LinalgGpu.installVec`, called from the VEC
 library's lazy-load hook after `VecSimd.install`, and it installs the write hook itself since a
@@ -1251,8 +1278,10 @@ Each is a measured decline, and each needs this file's numbers before it is revi
   24. Against that ceiling: a fifth packed type on every backend with its scalar oracle, GGUF
   readers for the Q4_0 block AND the K-quant super-blocks (a Q4_K_M file also carries Q5_K and Q6_K
   tensors), the CPU fallback the flag needs (`--gpu` may not turn an answer into an error) which is
-  the 1.1x-f32 kernel the width was refused on, and `.todo/483`'s switches. Re-measure when (a)
-  `.todo/723` and `.todo/725` have taken the host floor down enough for the GEMV to be a first-order
-  term of the device forward again, or (b) a discrete card with its own memory joins the two
+  the 1.1x-f32 kernel the width was refused on, and `.todo/483`'s switches. Trigger (a) has HALF fired: `.todo/723`
+  landed on 2026-09-06 and took the forward from 45-51 ms to 25, so the same 6.8 ms of GEMV is now
+  27% of it and a Q4 ceiling is ~18% rather than under 10% -- against the same cost list, and on an
+  arm that now edges PAST `--simd --parallel` rather than trailing it 1.9x. Re-measure when (a)
+  `.todo/725` has taken the remaining host floor down too, or (b) a discrete card with its own memory joins the two
   calibration machines -- there the upload IS the cost and residency the win, and this paragraph is
   unified-memory arithmetic. The CPU half stays where `.todo/670` left it.
