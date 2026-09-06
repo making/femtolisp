@@ -180,9 +180,9 @@ Pointers, not records -- the home is where it gets updated.
   `am.ik.rontolisp.BFloat16` is the authority. Census: `.todo/487`'s remainder.
 - **`.kb/string-index-cost.md`** records what `690`'s 340x is and is not.
 
-## Lanes for the week of 2026-09-15: ONE worker per orchestrator
+## Lanes: ONE worker per orchestrator
 
-The two-worker arrangement ran 2026-09-08 to 09-05 and is over. **From here each
+The two-worker arrangement is over. **From here each
 orchestrator drives ONE lane at a time, serialized: an item completes, is committed and
 pushed, and only then does the next start.** What that buys is the thing two lanes cost --
 the surface-accounting overhead in `.todo/709` exists entirely because two lanes on one box
@@ -191,28 +191,34 @@ can touch one mechanism without either seeing the other.
 Model by difficulty, `effort=high` throughout: **High -> Fable, Medium -> Opus, Low ->
 Sonnet.** A dead worker is RESUMED, never respawned.
 
-**Orchestrator A's lane is COMPLETE as of 2026-09-06**: all five items closed, committed and
-pushed one at a time, and the suite run on `develop` at `ff903aa8` above. Two of the five
-(A-3, A-4) had nothing left to BUILD -- both were remainders that other lanes had already
-satisfied, and finding that out was the work. Nothing new was filed; the next turn's lane
-design starts from the unassigned pool.
+**Orchestrator A -- dorian, the model side, no GPU.**
 
-**Orchestrator A -- dorian, the model side, no GPU.** `489`'s bf16 rungs finished 09-05:
-six models at both widths, the reading beside the prediction in `489`, the summary in
-`examples/llm/README.md`. In order:
+The previous A lane closed all five of its items -- `489`, `712`, `675`, `677`, `711` -- one
+at a time, and certified the suite at `ff903aa8` above. Two of the five had nothing left to
+BUILD: `675`'s remainder was landed by `487` and `677`'s by `489` and `678`, and rule 3's
+sort into blocked / not-done / done-elsewhere is what established that rather than a count.
+What it left behind: `cli/LlmChatModeWithoutTemplateTest`, `cli/SafetensorsBfloat16CompilePathTest`
+(the first pin of the bf16 reader across two ENGINES, where every part had been pinned on
+one engine each), and `.kb/directory-rename.md`.
+
+The current lane is drawn from the unassigned pool and is **GPU-free by construction** --
+dorian has no device, so every item in it must be verifiable without one. There is no High
+item: the GPU-free pool holds only Low and Medium, so nothing here is Fable's.
 
 | # | item | difficulty | why here, why now |
 | --- | --- | --- | --- |
-| A-1 | close `489` | Low | **done 09-06**: closed with the child table, `482`'s row and the rule-11 capability sweep, which found nothing gated on "a 1B-class model runs at bf16" that was not already 489 itself. Done criteria met; the lane deliberately left closing to lane design. It needs the child table above, the `675` / `677` cross-references, and rule 11's sweep for items waiting on the CAPABILITY ("a 1B-class model runs at bf16"), which no grep for the number finds |
-| A-2 | `712` `-m chat` with no template answers a different question | Low | **done 09-06**: `-m chat` on a checkpoint with no template now signals and names `-m generate` instead of falling through, and the `tok/s` line counts SAMPLED tokens and is suppressed at zero -- which is the half that made the discarded runs look like results. `cli/LlmChatModeWithoutTemplateTest` pins it on the checked-in `stories260K`. Cost twelve discarded timed runs and left a suspect pair of rows on develop. A runs every future rung, so A pays again until it is fixed. One condition plus a failing test on the checked-in `stories260K` |
-| A-3 | `675` read a safetensors checkpoint | Medium | **done 09-06**: nothing was left to BUILD -- `487` landed all five bullets of the `#bf16` target on 09-05 -- and what the audit found missing was a PIN. Every bf16 pin was one engine each (`make-array` with a runtime designator, the bulk `read-sequence`, and the reader itself interpreted only), so the reader COMPOSED of them could have diverged between `java -jar` and a compiled `.class` with nothing to catch it. `cli/SafetensorsBfloat16CompilePathTest` runs one program both ways over a three-dtype fixture and compares bit patterns. No lane code was written, so neither JIT cliff was in the path |
-| A-4 | `677` the Gated DeltaNet layer | High | **done 09-06**: nothing was left to BUILD -- the two "Remaining" bullets were `489`'s rows (in the README since `b87aed25`) and `678`'s run (closed 09-05), so rule 3 sorts both as done-elsewhere, not blocked. The close re-ran the model on `40a80f91` (safetensors and GGUF, f32 and bf16, 1 and 32 threads: one text, eight runs; 1.87 -> 2.54-2.63 tok/s on one thread and 6.39 -> 8.11-8.61 on 32, idle loadavg 1.5 with the parallel rows over the previous run's decaying workers -- a ratio check, not a replacement for the README's quieter window) and the `deltanet` slice of `ExamplesE2eTest` (12 legs green). The dorian checkpoint inventory moved here with sizes and digests (rule 10) |
-| A-5 | `711` what a directory rename breaks outside its own diff | Medium | **done 09-06**: the card is `.kb/directory-rename.md`, indexed from `.kb/README.md`. Every claim was re-measured against the tree rather than copied out of `708`, which is how the card's own closing paragraph earned its subject -- `708`'s "18 directory-local `.gitignore` files" is **17**, and the 18 counts the ROOT one, the single file the card does not apply to. Two mechanics `708` did not have: `git mv` on the DIRECTORY carries untracked files along, so the exposure needs a PER-FILE rename; and the residue reports as one collapsed `?? old/` line unless `git status --porcelain` is given `-uall` |
+| A-1 | `697` `--parallel`'s default thread count is a trap on a shared box | Medium | FIRST, because it is the one item that invalidates the others' evidence rather than adding to it. Its measurement is dorian's own: the default 64 threads against 32 is **16x slower** with one other build on the box, and 4x slower than ONE thread, because a worker preempted while holding a leaf costs the whole GEMV a scheduler quantum. A takes every future rung on this box and every `--parallel` row in `examples/llm/README.md` was taken at the default, so until this is fixed the lane cannot separate a codegen change from a descheduled worker |
+| A-2 | `700` `--simd` without the incubator module is a 100x cliff that reads as a hang | Low | The same failure shape as A-1 -- a run that is neither broken nor working -- on the same flag surface (`RontoLispCli`, beside `requireSimdForParallel`), so one worker holds both while the context is warm. The mechanics are correct and documented; what is wrong is the SEVERITY of a one-line warning in front of a 100x degrade. Check the item's second option before proposing it: `Add-Modules` is not a manifest attribute the launcher honours for `-jar` |
+| A-3 | `698` `subseq` of an adjustable packed vector is a `simple-vector` | Low | A live correctness defect that kills the INTERPRETER leg on a real checkpoint's `tokenizer.json`, which is why the Qwen3.5 rows in the README are JVM-only and nobody saw it. Rule 6's shape exactly: two defects, and the second -- three backends tolerating a general-vector `subseq` -- is what hides the first everywhere but the one place it bites |
+| A-4 | `686` `--simd` turns a mixed-width `vec:` call into an error the scalar path answers | Low | Unblocked: `484` landed the `defineFn` hand-back this needs, so the work is turning 16 `throw mixedWidth(...)` into `return null`. Here because it is A-3's invariant from the other side -- **a speed flag must not decide whether a program runs**, which is what every cross-backend bit-identity pin in `.kb/vec.md` exists to protect |
+| A-5 | `694` the cross-backend E2E corpus has no `--simd` axis | Medium | After the three above, deliberately: it is the AXIS each of them sits on one side of, so the cases this lane has just written are what the new axis first crosses. It is also the item rule 6 was written from -- `671` closed green on four backends with a native run, and every test it wrote sat on the non-`--simd` side of the condition that broke it on two of them |
+| A-6 | `704` accumulating a file into a string is quadratic in the file | Medium | On A's own path -- 12.8 MB of `tokenizer.json` never returns, sampled at 200 s still inside the accumulate -- and independent of everything above it, which is why it is last: its value does not decay. Both call sites and the already-linear path (`read-file-bytes` + `rontolisp:octets-to-string`) are written down in the item |
 
-**`489` closed 09-06 (A-1)**: the child table above and `482`'s carry the closure; the
-sweep found no item gated on the capability rather than the number (rule 11) and none of
-the "blocked by 489" style dependency lines rule 1 asks about -- every other reference to
-`489` in this tree is a data citation, which a closed item keeps.
+**Not in this lane, and why.** `687` (`linalg:` carries its element width as a boolean) is
+GPU-free to WRITE and not to VERIFY: it changes `LinalgGpu.gatherStrided`, and only GB10
+can run that arm. `684` and `696` each hold an **x64 half that is A's** whenever they are
+picked up, since every `.todo/488` number behind them is aarch64 -- but neither is on the
+width chain's critical path, so they stay in the pool.
 
 **Orchestrator B -- GB10, the width chain and the device.** In order:
 
@@ -237,8 +243,9 @@ the "blocked by 489" style dependency lines rule 1 asks about -- every other ref
   its terms; relay a census from the file with its total AND its class count. Those are
   process: they belong to the `709` co-sign or nowhere.
 
-**Unassigned pool, neither side's yet:** `693`, `694`, `683`, `684`, `686`, `687`, `689`,
-`696`, `697`, `698`, `699`, `700`, `701`, `703`, `704`, `705`, `597`, `695`.
+**Unassigned pool, neither side's yet:** `597`, `684`, `687`, `689`, `693`, `695`, `696`,
+`699`, `701`, `703`, `705`, `714`, `715`. `683` left it by closing. `713` is not really
+unassigned -- it is `702`'s remainder and wants a cleared GB10, so it falls to B.
 
 ## Standing rules this run earned, in the order they cost the most
 
