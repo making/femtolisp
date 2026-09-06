@@ -190,7 +190,14 @@ Layers 0-3 are `--simd` and TOTAL -- one lane kernel per member, so the JVM call
 `ci-spec.yaml` never passes `--simd`. `eval.VecSimd.available()`/`install(Environment)` are the ONLY
 callers of the kernels; `LispEvaluator.setSimd(true)` installs in `resolveFunction`'s lazy-load hook
 (so the REPL is accelerated too) and `RontoLispCli`'s `enableSimd` probes `available()` first
-(absent module -> a one-line note + the scalar reference).
+(absent module -> a one-line note + the scalar reference) -- UNLESS `--parallel` is also given: then
+an absent module is a hard error instead (`.todo/700`: the scalar fallback split across threads is a
+~100x slowdown from the accelerated kernel, which under a long-running program's own output reads as
+a hang, and the one-line warning is easy to miss under it -- `--parallel` is asked for only by
+someone about to run something large, unlike bare `--simd`, which stays an ordinary decline). The
+compiled `.class` output (`_simdInit`'s `LinkageError` catch, layer 1 below) keeps degrading either
+way -- it may run on a different, module-equipped machine LATER, where the interpreter's process IS
+the machine it will run on.
 
 **Layer 1, JVM `--simd`**: `JvmSimdCompiler` (from `JvmExprCompiler`, gated
 `usesSimd = simdAccel && programUsesAnyAcceleratedSimdOp` -> `Ctx.simdOps`) rewrites the call sites

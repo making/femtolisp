@@ -689,6 +689,61 @@ class RontoLispCliTest {
 			.hasMessageContaining("--parallel splits the --simd kernels across threads, so it needs --simd");
 	}
 
+	/**
+	 * The surefire JVM always has {@code jdk.incubator.vector} on its module path (the
+	 * {@code --add-modules} argLine), so {@code runCli} above can never reproduce the
+	 * module-absent interpreter path; only a FRESH child JVM launched without that flag
+	 * can. Mirrors {@code JvmSimdModuleFallbackTest}'s subprocess technique, one layer up
+	 * (the interpreter's own process instead of a class it defines in-process).
+	 */
+	private static Process runWithoutTheIncubatorModule(String... args) throws Exception {
+		String java = ProcessHandle.current().info().command().orElse("java");
+		List<String> command = new java.util.ArrayList<>(
+				List.of(java, "-cp", System.getProperty("java.class.path"), "am.ik.rontolisp.cli.RontoLispCli"));
+		command.addAll(List.of(args));
+		return new ProcessBuilder(command).start();
+	}
+
+	@Test
+	void interpreterSimdParallelIsAHardErrorWithoutTheIncubatorModule() throws Exception {
+		// .todo/700: on a JVM without jdk.incubator.vector, --simd --parallel used to
+		// degrade to the SCALAR vec:/linalg: kernels split across threads -- a ~100x
+		// slowdown that reads as a hang under a long program's own output, with only a
+		// one-line warning (easily scrolled off) as the tell. --parallel is asked for
+		// only by someone about to run something large, and unlike a compiled .class
+		// (which may run on a different machine later, so JvmSimdModuleFallbackTest
+		// keeps it degrading there), the interpreter knows RIGHT NOW whether the module
+		// is there -- so it refuses instead.
+		Path program = this.tempDir.resolve("prog.lisp");
+		Files.writeString(program, "(print (vec:matvec #d((1 2) (3 4)) #d(5 6)))\n");
+		Process process = runWithoutTheIncubatorModule(program.toString(), "--simd", "--parallel");
+		String out = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+		String err = new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
+		assertThat(process.waitFor()).as("stdout:%n%s%nstderr:%n%s", out, err).isEqualTo(1);
+		assertThat(out).isEmpty();
+		assertThat(err).contains("error:")
+			.contains("--parallel")
+			.contains("jdk.incubator.vector")
+			.contains("--add-modules jdk.incubator.vector");
+	}
+
+	@Test
+	void interpreterSimdAloneStillDegradesWithoutTheIncubatorModule() throws Exception {
+		// The counterpart to the hard error above: plain --simd (no --parallel) keeps
+		// degrading to the scalar kernels with a warning -- the same shape --blas/--gpu
+		// give with no library/device, and the same the compiled .class output gives
+		// (JvmSimdModuleFallbackTest). Only --parallel raises the stakes enough to
+		// refuse outright.
+		Path program = this.tempDir.resolve("prog.lisp");
+		Files.writeString(program, "(print (vec:matvec #d((1 2) (3 4)) #d(5 6)))\n");
+		Process process = runWithoutTheIncubatorModule(program.toString(), "--simd");
+		String out = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+		String err = new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
+		assertThat(process.waitFor()).as("stdout:%n%s%nstderr:%n%s", out, err).isZero();
+		assertThat(out.trim()).isEqualTo("#d(17.0 39.0)");
+		assertThat(err).contains("rontolisp: warning: --simd:").contains("jdk.incubator.vector");
+	}
+
 	@Test
 	void parallelOnAWasmOutputIsAHardErrorWhileTheClassOutputBindsTheParallelEntries() throws Exception {
 		// WASM has no threads, so a .wasm build could only ignore the flag; the JVM class
