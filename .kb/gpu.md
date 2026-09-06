@@ -628,6 +628,27 @@ against 58 us, 4096x4096 125 against 268, 32000x2048 575 against 1103, 248320x10
 between calls) never pays: 22 us at 384x384 against the CPU's 14. **What the width buys a decode
 step**: `examples/llm/README.md`, "bf16 weights on the device".
 
+**What the decode step waits on once the GEMV is on the device** (2026-09-06, `.todo/718`; GB10,
+JVM class output, Qwen3.5-0.8B from the BF16 GGUF at `-w bf16`; `nsys` per forward pass and JFR per
+function through `decode-per-token.py` / `decode-jfr-agg.py`). A steady forward pass is **45-46 ms
+under `--gpu --simd` at one thread or sixteen, against 24 under `--simd --parallel` and 81 under
+`--simd`** -- the difference of a 128- and a 64-token run, so the JIT warm-up and the prompt are out
+(the printed `tok/s` is 64 sampled tokens over 84 forwards INCLUDING the warm-up, 1.7-2x below these;
+`.todo/724`). Of the device arm's 45: **the kernels are 7.5 ms** -- 229 launches; 6.8 of bf16 GEMV
+(the head 2.2, w1/w3 1.6, w2/wo 1.3, wqkv 1.0, the rest 0.7) and 0.7 of f32 GEMV over the KV cache --
+every one on the critical path, since the next host form reads the result and `materialize` waits for
+it. **The driver API on the calling thread is 11.9 ms**: 7.9 in `cuMemcpyDtoH` (229 downloads, the
+kernel waits inside them), 2.4 in `cuMemcpyHtoD` (193 uploads, 102 MB -- the 24 KV-cache matrices at
+4 MB each, written every token and read by four heads, so first sight, upload, hit, hit, every token;
+`.todo/725`), 0.65 in launches, 0.4 in 422 pool allocations. **And the host's own Lisp loops are
+~30 ms, against 6.8 for the same three functions without the flag**: `gated-delta-rule` 20 ms,
+`causal-conv` 8.5, `silu-in-place` 2.2. The 23 ms are the residency guards -- 40% of the arm's
+samples sit in `materialize` / `written`, called ONCE PER STORE by the typed loop over the 128x128
+state (`.kb/jvm-typed-loops.md`; `CudaGemm.written` materializes first, so a store is two lookups) and
+once per element by the boxed `_fvAref2` / `_fvAset1` of the two loops that are not typed on any arm
+(`.todo/723`). **A narrower weight width can only shrink the 6.8 ms**, which is why the Q4 width was
+refused on this profile ("What is deliberately NOT here").
+
 **The seam is a CHAIN on both backends.** Interpreter: `LinalgGpu.installVec`, called from the VEC
 library's lazy-load hook after `VecSimd.install`, and it installs the write hook itself since a
 program may never reach `linalg:`. JVM: `JvmExprCompiler` routes a `vec:matvec` call site to
@@ -1221,3 +1242,17 @@ Each is a measured decline, and each needs this file's numbers before it is revi
   `MethodHandle` invoker under every downcall is the suspect.
 - **No per-device collection policy.** It becomes a `GpuDevice` question only if the two backends'
   collection requests ever want different answers.
+- **No Q4_0 / Q4_K weight width** (`.todo/718`, 2026-09-06 -- a refusal, recorded as one). The
+  8.5%-error width was ruled off the CPU by its nibble unpack (`.todo/670`'s table) and was to be
+  "a device width"; on the one model that exercises the device GEMV the arm's whole bf16 GEMV time
+  is 6.8 ms of a 45 ms forward ("The GEMV, and the matrix that stays"), and a Q4_0 matrix is 0.28
+  of a bf16 matrix's bytes, so the width's CEILING is 4-5 ms a forward -- under 10% -- on an arm
+  that already trails `--simd --parallel` 1.9x: a GEMV of zero cost would leave it at 38 ms against
+  24. Against that ceiling: a fifth packed type on every backend with its scalar oracle, GGUF
+  readers for the Q4_0 block AND the K-quant super-blocks (a Q4_K_M file also carries Q5_K and Q6_K
+  tensors), the CPU fallback the flag needs (`--gpu` may not turn an answer into an error) which is
+  the 1.1x-f32 kernel the width was refused on, and `.todo/483`'s switches. Re-measure when (a)
+  `.todo/723` and `.todo/725` have taken the host floor down enough for the GEMV to be a first-order
+  term of the device forward again, or (b) a discrete card with its own memory joins the two
+  calibration machines -- there the upload IS the cost and residency the win, and this paragraph is
+  unified-memory arithmetic. The CPU half stays where `.todo/670` left it.

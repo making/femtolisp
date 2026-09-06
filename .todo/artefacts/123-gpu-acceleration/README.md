@@ -103,6 +103,8 @@ warm-up, and the sub-millisecond rows still move by ~20% run to run.
 | `Bf16MatvecCrossover.java` + `matvec-bf16-baseline.lisp` | (2026-09-06, todo-490) the bfloat16 GEMV through the SHIPPED route (`Gpu.matvec(short[], ...)` over `target/classes`, residency included): bf16 resident against f32 resident against bf16 cold, shape by shape from 384x384 to Qwen3.5-0.8B's 248320x1024 head, and at every shape the equivalence the kernel promises -- the bf16 result against the f32 kernel over the widened matrix, in mismatching rows (0 everywhere). `matvec-bf16-baseline.lisp` under `--simd` on the JVM class output is the CPU column at both widths, under Graal and C2. Answer (`.kb/gpu.md`, "The GEMV, and the matrix that stays"): the device floor is ~10 us at either width, bf16 is 1.9-2.9x the f32 kernel from 12 MB up once the accumulator was fixed (below), and the 2^17 threshold stands -- with the f32 tie at exactly 2^17 recorded. Run from the repository root with `-cp target/classes`. |
 | `Bf16KernelProbe.java` + `gemv-bf16-probe.cu` | (2026-09-06, todo-490) the measurement that changed the shipped kernels: kernel-only time over resident buffers for the bf16 GEMV at one, two, four and eight patterns per lane -- all at the same ~138 GB/s, so the loads were not the bound -- then the same kernels with a plain float and a COMPENSATED float-float accumulator: the compensated pair at 232 GB/s (bf16) and bit-identical to the double-accumulated oracle on every row at seven shapes, the plain float sum off on most rows. The double FMA per element is a compute ceiling on the GB10 (~70 G/s, its fp64 rate), which the f32 kernel sat just under and the bf16 kernel hit. Needs `nvcc` once, for its own PTX (command in the `.cu` header). |
 | `ResidencyCliff.java` | (2026-09-06, todo-490 step 6) what a decode loop does when the model does NOT fit the residency budget: runs a program under a forced budget through the package-private `residentBudget` seam (reached reflectively in whichever copy of the library the run has) and lets the program print its tok/s, announcing the budget in force as soon as one is derived and the resident bytes, hit/miss, eviction and re-upload counts every five seconds on stderr. Since todo-716 it drives BOTH halves of the flag -- it looks for the class output's renamed `RontoLispGpuGpu` and for the interpreter's own `am.ik.gpu.Gpu`, so passing the exec jar and `am.ik.rontolisp.cli.RontoLispCli` runs the CLI under the same forced budget (usage in the file header). Answer: under the interceptors the budget is the lazy HEADROOM rule (the device less an eighth), so a 1.5 GB model never meets the 1 GB eager cap; forced below the model, the tokens degrade to the CPU rate and no further (the numbers: `examples/llm/README.md`, "bf16 weights on the device"). |
+| `decode-per-token.py` | (2026-09-06, todo-718) where a DECODE STEP goes on the device side: buckets an `nsys` sqlite export of an `examples/llm` run per forward pass -- the classifier-head launch is the boundary -- into kernel time by grid, copies by size and CUDA API time on the calling thread, medians over the steady forwards plus the whole timeline (usage in the header). Answer for Qwen3.5-0.8B at bf16: 7.5 ms of kernels and 11.9 ms of driver calls in a 45 ms forward, 102 MB of KV cache going up every token. Python, no GPU code of its own. |
+| `decode-jfr-agg.py` | (2026-09-06, todo-718) the HOST side of the same step: aggregates a JFR recording of the run (record at ONE thread, print with `--stack-depth 64`) by category -- residency guards, driver waits, lane kernels, Lisp loops -- and by the innermost Lisp function. Answer: under the flag 40% of the main thread's decode window is `materialize` / `written`, called per store from the typed loop over the DeltaNet state, so the three mixer functions cost ~30 ms a forward against 6.8 without the flag. Not a GPU program. |
 | `AccelerateProbe.java` | no GPU at all: a tuned BLAS is plain C, costs no dependency, and unlike Metal it has a double. How fast is it, is one PRESENT, and is the one that is present actually TUNED? Walks a candidate list (Accelerate, NVPL, OpenBLAS, MKL, distro `libblas`), identifies what it bound and prints a verdict against measured throughput. Runs on either machine -- the probe that reframes the Apple plan, and the one that stopped it being reframed the same way on Linux. |
 
 ## Running them
@@ -779,6 +781,75 @@ crossover is where the CPU passes 10 us -- bf16 at 384x384 (14 against 10.0, 1.4
 four accumulators since `.todo/480`) and 1.5x at 768x288. The threshold stays at 2^17 for both
 widths: moving it to 2^18 would drop llama2's 768x288 feed-forward matrices, a measured 1.5x. The
 cold column never pays (22 us against the CPU's 14 at 384x384), so the two-sight rule stands too.
+
+### Where a Qwen3.5-0.8B forward pass goes under the flag (2026-09-06, todo-718)
+
+Develop `17525dbf` (the day `490` closed), GraalVM 25.0.4, JVM class output compiled `--gpu --simd
+--parallel` and `--simd --parallel`, `-Xmx16g -m chat -t 0 -w bf16` on the cat prompt from the BF16
+GGUF (21 prompt ids, so `-n 64` is 85 forward passes), load average under 1.5 throughout. The item
+asked where "an 86 ms token" goes; the first answer is that 86 ms was the printed `tok/s` -- 64
+sampled tokens over 84 forwards including the warm-up -- and the forward itself, by the difference
+of a 128- and a 64-token run (two of each), is:
+
+```
+--simd --parallel, 16 threads      printed 19.1 19.5 (n 64)  27.1 25.5 (n 128)   -> 24 ms a forward (22-27)
+--gpu --simd --parallel, 16        printed 11.4 10.6          14.5 14.7           -> 46 ms (42-50)
+--simd, one thread                 printed  7.7  7.6           9.3  9.6           -> 81 ms (77-85)
+--gpu --simd, one thread           printed 10.4 11.3          14.8 14.3           -> 45 ms (39-51)
+```
+
+`decode-per-token.py` over `nsys profile -t cuda -s none` of the 16-thread device arm (63 head
+launches; the profiler adds ~10 ms a forward, the SHAPE is the result):
+
+```
+forward period ms: median 56.37  min 53.39  max 93.41  (n=58)     first ten: 93 86 78 77 93 77 81 77 79 74
+kernel time/forward ms: 7.51  launches 229
+    gemv_bf16  grid  31040:   2.16 ms  x1      the 248320x1024 head
+    gemv_bf16  grid    448:   1.60 ms  x48     w1 / w3, 3584x1024
+    gemv_bf16  grid    128:   1.31 ms  x48     w2 / wo, 1024-row
+    gemv_bf16  grid    768:   1.02 ms  x18     wqkv, 6144x1024
+    gemv_bf16  grid    256:   0.59 ms  x30     wz, wq, the attention gate
+    gemv_f32   grid     32:   0.42 ms  x36     the value cache, 256x4096
+    gemv_f32   grid    512:   0.31 ms  x36     the key cache, 4096x256
+    gemv_bf16  grid     64:   0.09 ms  x12     wk / wv
+memcpy HtoD/forward: count 193  MB 102.03  device ms 1.89      4194304 bytes: 24 a forward (the KV caches)
+memcpy DtoH/forward: count 229  MB 3.22    device ms 0.21      993280: the logits, 0.7 a forward
+CUDA API time on the calling thread, ms/forward (median), calls/forward:
+    cuMemcpyDtoH_v2          7.89 ms  x229
+    cuMemcpyHtoD_v2          2.43 ms  x193
+    cuLaunchKernel           0.65 ms  x229
+    cuMemAllocAsync          0.42 ms  x422
+    cuMemGetInfo_v2          0.14 ms  x4
+    cuMemFreeAsync           0.13 ms  x120
+    cuCtxSynchronize         0.11 ms  x169
+    TOTAL                   11.88 ms
+```
+
+36 KV launches a forward, not 48: each of the 12 caches is written every token and read by four
+heads, so the two-sight rule runs decline (the CPU lane kernel), upload, hit, hit -- every token.
+
+`decode-jfr-agg.py` over JFR at one thread (2 ms sampling; the decode window over 85 forwards, so
+a share times 56 ms is ms a forward with the warm-up in):
+
+```
+--gpu --simd    2161 samples, 4.78 s                    --simd      3047 samples, 6.41 s
+ 40.4%  residency guards (materialize / written)         88.0%  simd kernels (matvecRowsBf16 70.0, matvecRowsF 11.8)
+ 26.1%  device wait (DtoH copy / driver call)            12.0%  lisp code
+ 20.0%  lisp code (typed loops, aref/aset, boxing)
+ 13.5%  simd kernels (matvecRowsF 6.3: the 12 first-sight KV GEMVs)
+ 35.0%  GATED-DELTA-RULE  [26.2 guards, 8.8 loop]        2.4%  GATED-DELTA-RULE
+ 15.1%  CAUSAL-CONV       [7.6 guards, 6.5 loop]         5.7%  CAUSAL-CONV
+  3.8%  SILU-IN-PLACE     [3.1 guards, 0.7 loop]         0.9%  SILU-IN-PLACE
+top frames: CudaGemm.materialize:1817 20.2%  memcpyDtoHPinned 10.4%  GATED-DELTA-RULE 8.8%  Gpu.written:599 6.8%
+callers of the guards: GATED-DELTA-RULE -> _gpuWritten (the TYPED loop, per store; CudaGemm.written
+materializes first), CAUSAL-CONV -> _fvAref2 -> _gpuMaterialize and _fvAset1 -> _gpuWritten (boxed on
+both arms), SILU-IN-PLACE -> _ivAset1 (boxed on both arms)
+```
+
+So the same three Lisp functions are 6.8 ms a forward without the flag and ~30 with it; the device
+kernels are 7.5 of the 45; and a Q4 GEMV could shrink only the 6.8 ms of bf16 kernel time in that
+7.5 -- `.kb/gpu.md`, "What is deliberately NOT here". Follow-ups: `.todo/723` (the guards),
+`.todo/724` (the printed rate), `.todo/725` (the full-length cache).
 
 ### The GEMV on Metal (2026-08-22, todo-477), same machine
 

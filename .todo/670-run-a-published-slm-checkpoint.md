@@ -23,7 +23,7 @@ are each 100% BF16 in `model.safetensors`; no current small model is f16.
 | **bf16** | THE width. 1.5-2.1x f32 on one thread (Graal / C2), 1.6x on 20; widening exact; every checkpoint is in it | `.todo/482` (483-490) |
 | **IEEE f16** | not a width -- a **load-time conversion** into `#f` / `#bf16`. A fused f16 GEMV is 0.30-0.58x on either JIT | `.todo/671` |
 | **Q8_0** (32 int8 + a scale) | a **read-only weight matrix** type with an integer-dot GEMV: 1.4-1.6x f32 on one thread under Graal and 1.7-1.9x under C2, 2.2-3.3x on 20, a quarter of f32's bytes | `.todo/672`, `.todo/706`, both closed |
-| **Q4_0 / Q4_K** | not a CPU item: the nibble unpack is ALU-bound at 5.7 GB/s (1.1x f32 for 8.5% error). A device width -- **and no item has ever built it**; `490` was bf16 | `.todo/718` |
+| **Q4_0 / Q4_K** | not a CPU item: the nibble unpack is ALU-bound at 5.7 GB/s (1.1x f32 for 8.5% error). **Refused on the device too** (2026-09-06, `718`, on a decode profile, not a pointer): the device arm's whole bf16 GEMV is 6.8 ms of a 45 ms forward, so the width's ceiling is under 10% of an arm that trails `--simd --parallel` 1.9x | `.kb/gpu.md`, "What is deliberately NOT here" -- the refusal and its two re-open triggers (`.todo/723`, `.todo/725` bring the host floor down; a discrete card) |
 
 Two facts under all four: **the width is bandwidth, not fitting** -- 4.4 GB of f32 fits an
 8 GB laptop -- and **every kernel number is JIT-dependent**: the spike's fused kernel fell
@@ -346,6 +346,7 @@ Cited by number from other items -- **the numbering is fixed.**
 - **Not the device, beyond the GEMV.** `--gpu` takes `vec:matvec` over bf16 weights since
   `.todo/490` and declines every other new type; declining correctly is what `.todo/483`'s
   exhaustive switches buy.
-- **Not fp8 / int4 on the CPU.** Measured out; re-measure only when the Vector API grows a
-  dot-product or a narrower conversion, or on a host whose JIT beats 1 op/element for the
-  unpack.
+- **Not fp8 / int4 anywhere.** On the CPU, measured out; re-measure only when the Vector
+  API grows a dot-product or a narrower conversion, or on a host whose JIT beats 1
+  op/element for the unpack. On the device, refused by `718` on the decode profile (the
+  width table's row); re-measure on that row's two triggers, not before.
