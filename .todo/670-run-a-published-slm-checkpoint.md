@@ -95,7 +95,7 @@ So the cap is real but it is not one number and not one mechanism: below ~500 ro
 work is not cut finely enough to fill the box, above ~30 MB the bytes bind, and in between
 the kernel runs at 1.5x what was being quoted as the box's limit. Record and the
 leaf/grain arithmetic:
-`.todo/702-the-parallel-cap-is-the-machinery-or-memory-one-run-decides/README.md`.
+`.todo/artefacts/702-the-parallel-cap-is-the-machinery-or-memory-one-run-decides/README.md`.
 **Route 1 is untouched by this and is still the strongest leg** -- it compares a model
 against itself across a width change and never divides by a byte estimate.
 
@@ -213,7 +213,7 @@ the "blocked by 489" style dependency lines rule 1 asks about -- every other ref
 | B-1 | `708` the formatter corpus walks `.claude/worktrees/` | Low | **done 09-06** (`0e65326b`): the walk excludes `/.claude/` and `repositoryCorpusStaysWithinASmallFactorOfTrackedSources` pins the corpus to a small factor of `git ls-files`. The standing caveat is lifted -- see the certification record above. Do #3 (25 stale worktrees) was cleanup and stays undone |
 | B-2 | `702` is the parallel cap machinery or memory | Low | **done 09-06** (`070984ae`): neither, and there was no plateau -- the rate over shape is a hump. It cost route 3 above and left `.todo/713` (the 3072x3072 dip) behind |
 | B-3 | `707` `coerce` / `concatenate` drop a packed FLOAT element type | Medium | **done 09-06**: both operators build the packed float array at all three widths through a shared `%seq-float-vector`, and the result-type normalizer now carries the `ArrayElementTypes` CODE instead of an integer width, so the packed families come from the closed space. bfloat16's refusal reaches the new path on wasm. Left behind: `.todo/714` (`(vector character)` is the one specialized code still answering a general vector) |
-| B-4 | `710` a closed item's artefacts and an open item share one namespace | Medium | The path-citation link check FIRST -- it is what makes the rename safe and earns its place alone. **Fold in the live duplicate: `338-ansi-conformance-the-ranked-gap.md` and `338-string-concat-renders-through-the-value-printer.md` are both open on one number**; `.todo/.history.md` says the later commit's side renumbers |
+| B-4 | `710` a closed item's artefacts and an open item share one namespace | Medium | **done 09-06**: the link check went first and paid for itself before the rename -- `PathCitationTest` found five citations already broken on develop (three `examples/` paths in javadoc, an `examples/httpbin.lisp` that had moved under `net/`, a `.kb/wasm-condition-catching.md` that never existed). The move then went further than the item asked: ALL sixteen artefact directories moved to `.todo/artefacts/`, open items included, so the recurring `git mv` per close is nil and the invariant is testable ("`.todo/` has no numbered directories") instead of resting on whoever closes an item remembering. The new mechanic it taught is in `.kb/directory-rename.md` 2b -- **a move that changes DEPTH rewrites the relative paths INSIDE what moved, and `git grep` for the old path finds none of them**. The duplicate is resolved: the ANSI ranked-gap item is `.todo/715` (later commit renumbers, per `.todo/.history.md`) |
 | B-5 | `490` bf16 on the device | High | The last child of the width chain, and GB10 is the only box that can run it |
 | B-6 | `706` the Q8_0 integer-dot GEMV is instruction-bound on one thread | High | Falls straight out of `672`'s closure and is a kernel item |
 

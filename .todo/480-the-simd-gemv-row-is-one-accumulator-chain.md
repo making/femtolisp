@@ -51,7 +51,7 @@ promised. The cause is exactly the chain this item is about, seen from the other
 row is latency-bound at 5.5-7.6 Gelem/s, well short of the memory wall, so halving the
 weight bytes has no bandwidth to save. Give BOTH arms four accumulators + FMA and the
 spike reproduces almost exactly -- 1.59x Graal / 1.97x C2, against its 1.48x / 2.06x
-(`.todo/488-the-fused-bfloat16-gemv-kernels/README.md`).
+(`.todo/artefacts/488-the-fused-bfloat16-gemv-kernels/README.md`).
 
 And `.todo/488` cannot route around it: its safety contract is *fused ==
 widen-then-f32-kernel, bit for bit*, so the bf16 arm must carry whatever accumulator count
@@ -71,7 +71,7 @@ Two things that follow:
 
 Four independent accumulators per f32 GEMV row above a 32-column gate, in all four
 `--simd` implementations at once. Numbers, harness and the reasoning behind both constants:
-`.todo/480-the-simd-gemv-row-is-one-accumulator-chain/README.md`.
+`.todo/artefacts/480-the-simd-gemv-row-is-one-accumulator-chain/README.md`.
 
 - `eval/VecSimdKernels.matvecRowsF` (interpreter)
 - `codegen/jvm/JvmSimdVectorTemplate.matvecRowsF` (the embedded bridge a `.class` ships)

@@ -5,7 +5,7 @@ import java.util.Random;
 /**
  * The both-JIT benchmark harness for the Q8_0 integer-dot GEMV of {@link VecSimdKernels}
  * ({@code .kb/quantized-matrix.md}) -- a {@code main}, not a test, run by
- * {@code .todo/672-a-q8-0-quantized-weight-matrix-and-its-integer-dot-gemv/bench.sh}
+ * {@code .todo/artefacts/672-a-q8-0-quantized-weight-matrix-and-its-integer-dot-gemv/bench.sh}
  * under Graal and under C2 ({@code -XX:-UseJVMCICompiler}), because a Vector API kernel
  * that overruns C2's inlining budget runs boxed at 0.2x with no warning
  * ({@code .todo/482} round 2), and a number without its JIT beside it is not a number.

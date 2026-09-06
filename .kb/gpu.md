@@ -12,7 +12,7 @@ separate machine with its own memory, and -- since residency -- that arrays stop
 
 User-facing description and end-to-end numbers: `doc/{en,ja}/guides/gpu-acceleration.md` and
 `examples/llm-from-scratch/README.md`. **This file is the invariants and the mechanics.** Every number
-here is re-derivable from the probes in `.todo/123-gpu-acceleration/` plus the `*-baseline.lisp` CPU
+here is re-derivable from the probes in `.todo/artefacts/123-gpu-acceleration/` plus the `*-baseline.lisp` CPU
 baselines; that directory's README says which probe answers which question. The two calibration
 machines: an **NVIDIA GB10** (Grace Blackwell, `sm_121`, 48 SMs, unified addressing, driver 580 /
 CUDA 13, aarch64) and an **Apple M4 Max** (40 GPU cores, unified memory, 107 GB working set), both on

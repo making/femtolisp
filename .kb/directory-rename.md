@@ -112,9 +112,36 @@ produced `llm.c` and `Llm 2`.
 Not every citation the two searches turn up should be rewritten. **A dated measurement
 record keeps its old paths**, with one line saying why: rewriting them would make the
 measurement claim it was taken against a tree that did not exist when it ran. 682 froze
-`.todo/123-gpu-acceleration/README.md` and `.todo/672-*/README.md` on that ground, and
-rewrote `.todo/480-*/Gate.java` on the opposite one -- its path was navigation rather than
-evidence, and already stale.
+`.todo/artefacts/123-gpu-acceleration/README.md` and `.todo/artefacts/672-*/README.md` on
+that ground, and rewrote `.todo/artefacts/480-*/Gate.java` on the opposite one -- its path
+was navigation rather than evidence, and already stale. **The line is EVIDENCE against
+NAVIGATION, not record against source**: the same frozen README's pointer at a sibling
+record is navigation and moves with it.
+
+**The machine half of this item is `PathCitationTest`** (`.todo/710`, 2026-09-06). It fails
+when a repository-rooted path cited in a backtick span (`.kb/**`, `.todo/*.md`, `doc/**`,
+the root notes) or a javadoc `{@code ...}` no longer resolves, which is the citation a
+human's grep missed. Its own judgement call is stated at the top of the file: what counts
+as a citation, why `src/` alone is not a checked prefix (a note about a consumed ASDF
+system cites `src/strings.lisp`, which is someone else's tree), and why a `.todo/NNN` item
+reference is exempt where a `.todo/artefacts/NNN-*/` path is not. A path the tree
+deliberately no longer has goes in its `ABSENT_ON_PURPOSE` list with its reason, and a
+second test fails if one of those names comes back.
+
+### 2b. A move that changes DEPTH rewrites the paths INSIDE what moved
+
+The four renames above kept their depth, so nothing inside the moved files had to change.
+`.todo/NNN-title/` -> `.todo/artefacts/NNN-title/` (`.todo/710`, 2026-09-06) did not, and
+every `../../` inside the 16 moved directories -- `../../target/rontolisp-...-exec.jar` in
+a probe's run instructions, `../../.kb/gpu.md`, `cd ../..` in a `bench.sh` -- silently
+began resolving one level short. **`git grep` for the old path finds none of them**, because
+a relative path does not contain the directory it lives in; only walking the moved files
+does. Sibling references (`../471-.../` from `.todo/artefacts/649-.../`) survive a uniform
+move untouched, which is what makes the broken ones easy to miss among them.
+
+```bash
+grep -rn '\.\./' <new-path>        # then resolve each one against its own file
+```
 
 ### 3. Re-apply the formatter -- a shortened path changes wrapped line lengths
 

@@ -49,7 +49,11 @@ of at INTENTIONS.
   `examples/llama2/.gitignore` appeared in no content search -- loose, anchored, relative
   or absolute -- because its NAME is in the renamed path and its CONTENTS mention nothing.
   Only `git mv` found it. That is not a sharper grep; it is a different instrument for a
-  different question.
+  different question. **The citation half is now mechanical**: `PathCitationTest`
+  (`.todo/710`, 2026-09-06) fails on a repo-rooted path cited in `.kb/**`, `.todo/*.md`,
+  `doc/**` or a javadoc `{@code ...}` that no longer resolves, so the search nobody
+  remembers to run happens on every push. The MEMBER half stays human -- no test can
+  notice a file whose only mention of the moved path is its own name.
 
 ## Part 2 -- Failure directions, for whoever writes the `.kb` card
 

@@ -80,5 +80,5 @@ Porting it would need:
 
 - httpbin.org (the upstream hardcoded by the http-client template) answered
   503 during verification; the port was verified by forwarding that 503 and
-  separately against a local `examples/httpbin.lisp` upstream for the 200
+  separately against a local `examples/net/httpbin.lisp` upstream for the 200
   path. Nothing to fix in the example.

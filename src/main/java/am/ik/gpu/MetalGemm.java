@@ -151,7 +151,7 @@ final class MetalGemm implements GpuDevice {
 	 *
 	 * <p>
 	 * <b>Re-measured at the shape a CHAIN produces, which is not the shape above, and it
-	 * holds</b> ({@code .todo/123-gpu-acceleration/MtlPerRowMap.java}, M4 Max,
+	 * holds</b> ({@code .todo/artefacts/123-gpu-acceleration/MtlPerRowMap.java}, M4 Max,
 	 * 2026-09-02). The straddling operand is a per-row intermediate -- the {@code rows x
 	 * 1} array {@code log-softmax}'s {@code (linalg:log (linalg:sum ... :keepdims t))}
 	 * takes, 16384 elements at the book's shapes, an eighth of this threshold. Per call
@@ -184,7 +184,7 @@ final class MetalGemm implements GpuDevice {
 	 * The minimum {@code rows * cols} a matrix-by-vector product is accepted at, once its
 	 * matrix is resident: {@code 2^21}, just over a 1448x1448 matrix. Measured on an M4
 	 * Max at f32 against the JIT-warm {@code --simd} lane kernel, us per call, with the
-	 * matrix resident ({@code .todo/123-gpu-acceleration/MtlMatvecCrossover.java} against
+	 * matrix resident ({@code .todo/artefacts/123-gpu-acceleration/MtlMatvecCrossover.java} against
 	 * {@code matvec-baseline.lisp}): 1024x1024 is 100 CPU against 90 device -- a tie,
 	 * because a resident call is the ~77 us command-buffer floor plus a memory-bound
 	 * kernel that does not reach it until the matrix is several megabytes -- 1448x1448 is

@@ -63,7 +63,7 @@ guard and the bridge are width-agnostic, the pairing is what the plan restricts.
 Every `.todo/488` number is aarch64 (GB10). A left shift is a left shift, so the SHAPE of
 the result should hold, but the cache-resident crossover moves with the hierarchy and
 `.todo/482`'s x64 host runs the same f32 GEMV 2.6-2.9x slower in absolute terms. Run
-`.todo/488-the-fused-bfloat16-gemv-kernels/bench.sh both` on an x64 box and add the table
+`.todo/artefacts/488-the-fused-bfloat16-gemv-kernels/bench.sh both` on an x64 box and add the table
 beside the aarch64 one, with load average and base commit (`.todo/670`).
 
 Bit-identity is NOT at risk either way: `FSPECIES_REDUCE` is `SPECIES_128` and the decode

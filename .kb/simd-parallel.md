@@ -61,7 +61,7 @@ which row cannot change a bit** and every byte-identity statement in `.kb/linalg
   ceiling"), and back down to 41-44 only at 4096x4096 (67 MB, certainly out of cache).
   The 41-42 `.todo/488` measured at both 1024x1024 and 4096x4096 was two points on that
   hump landing near each other, not one bandwidth ceiling binding both -- see
-  `.todo/702-the-parallel-cap-is-the-machinery-or-memory-one-run-decides/README.md` for
+  `.todo/artefacts/702-the-parallel-cap-is-the-machinery-or-memory-one-run-decides/README.md` for
   the full sweep and the leaf/grain arithmetic behind the 256x256 undershoot.
 - **`--gpu --simd --parallel` is slower than either alone on llm** -- correct and pinned,
   documented as not a win. The interpreter gains nothing on llm either.

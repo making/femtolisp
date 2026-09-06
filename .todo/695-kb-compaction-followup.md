@@ -38,13 +38,17 @@ file carries, since it is what lets a reader confirm the invariant still holds.
    deleted snippets as intentional drops). The rest did not. Run it over all 128
    files and restore anything load-bearing that was lost -- this is the one check
    that can find real damage, and these files have no tests.
-3. **Cross-reference integrity.** `.kb` files cite each other by path and
-   occasionally by section name. Confirm every `.kb/<name>.md` reference still
-   resolves to an existing file, and that `CLAUDE.md`'s citation of
-   `.kb/jvm-export.md`, "What travels" still names a real heading.
+3. **Cross-reference integrity.** ~~Confirm every `.kb/<name>.md` reference still
+   resolves to an existing file~~ -- **done mechanically 2026-09-06 by
+   `PathCitationTest`** (`.todo/710`), which fails on a backticked repo-rooted path
+   or a markdown link in `.kb/**` that does not resolve, on every push. What is
+   left of this bullet is the half a path check cannot do: `CLAUDE.md`'s citation
+   of `.kb/jvm-export.md`, "What travels" must still name a real HEADING, and a
+   section named in prose is not a path.
 4. **Keep the index in step.** `README.md` must list every `.kb/*.md` exactly
    once, with no dead links. A new topic file added by another session needs a
-   line there.
+   line there. The dead-link half is now `PathCitationTest`'s; **listing every
+   file exactly once is not** -- a missing index line breaks no link.
 
 ## Constraint that outlived the pass
 

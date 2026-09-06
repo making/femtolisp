@@ -1088,7 +1088,7 @@ final class CudaGemm implements GpuDevice {
 	 * Which single-float kernel runs this shape. All three fold every cell identically (k
 	 * ascending, one fused multiply-add per term, K padded to 16 with zeros), so the
 	 * choice is invisible in the result and is made on speed alone. Measured on a GB10
-	 * (48 SMs; {@code .todo/123-gpu-acceleration/gemm-tile-probe.cu}): the 128x128 tile
+	 * (48 SMs; {@code .todo/artefacts/123-gpu-acceleration/gemm-tile-probe.cu}): the 128x128 tile
 	 * is 2.2-4x the 16x16 kernel once its grid holds about half the SMs -- a
 	 * transformer's feed-forward products, n >= 768 square -- and LOSES below that, where
 	 * the grid is too small to fill the card (0.3x at 256x256); the 64x64 tile is the

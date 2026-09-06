@@ -3,7 +3,7 @@
 Difficulty: High (the umbrella item; the children are sized individually)
 
 Spiked 2026-08-22. Probes and their full numbers:
-`.todo/482-bfloat16-a-narrow-width-that-pays/` (`README.md` there is the measurement
+`.todo/artefacts/482-bfloat16-a-narrow-width-that-pays/` (`README.md` there is the measurement
 record).
 
 **Re-verified 2026-09-03** (`README.md` there, "Round 2"): the width stands, three
@@ -38,7 +38,7 @@ in service of the tok/s.
 > accumulators + FMA) and stand as such; the shipped kernels differ from that shape only
 > by the second rounding, which wasm's lack of a deterministic FMA makes permanent. The
 > full record, the cache-resident cost and the no-size-gate decision are in
-> `.todo/488-the-fused-bfloat16-gemv-kernels/README.md`.
+> `.todo/artefacts/488-the-fused-bfloat16-gemv-kernels/README.md`.
 
 Scope: **interpreter and JVM only.** The wasm backends, `--no-gc` and the component path
 do not get the width and must refuse it loudly (item 486).

@@ -57,7 +57,7 @@ Emit the same check the interpreter has, per backend, on `char` / `schar` /
   the data, so the length is available.
 - The error must be the same TEXT on all four -- `CHAR: index N out of bounds for
   string of length L` -- or the ci-spec cannot pin it. Signalling makes it
-  catchable by `handler-case`, which is the point (`.kb/wasm-condition-catching.md`
+  catchable by `handler-case`, which is the point (`.kb/error-handling.md`
   for what that costs on the wasm side: an EH-mode program).
 
 Do this together with, or after, `.todo/185` (`(char s i)` is O(i) on the compile

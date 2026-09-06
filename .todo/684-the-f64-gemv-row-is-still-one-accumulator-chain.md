@@ -15,7 +15,7 @@ measured, and the f32 numbers do not carry over unexamined:
 
 - f32 gained **1.51x at 4096x4096, 2.40x at 1024x1024 and 1.64x at 288x288 under Graal**
   (1.12x / 1.89x / 1.39x under C2), one thread, on the GB10
-  (`.todo/480-the-simd-gemv-row-is-one-accumulator-chain/Acc.java`, 2026-09-03).
+  (`.todo/artefacts/480-the-simd-gemv-row-is-one-accumulator-chain/Acc.java`, 2026-09-03).
 - f64 runs `f64x2`: **half the lanes per group**, so each chain step moves half the
   elements for the same latency and the arithmetic intensity per accumulator differs.
   Whether that makes the extra accumulators more valuable (the chain is relatively more

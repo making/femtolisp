@@ -20,7 +20,7 @@ can stay resident at all, and a model that does not stay resident re-uploads eve
 
 **GB10's 128 GB of LPDDR5X is shared by the CPU and the GPU at ~273 GB/s.** The 20-thread
 CPU path already reached 93 GB/s of that in the spike
-(`.todo/482-bfloat16-a-narrow-width-that-pays/Par.java`). So on this machine a
+(`.todo/artefacts/482-bfloat16-a-narrow-width-that-pays/Par.java`). So on this machine a
 bandwidth-bound GEMV on the device is worth perhaps **2-3x the CPU `--parallel` path, not
 the order of magnitude a discrete HBM card would give** -- and `.kb/gpu.md` already says
 the same thing from the other direction ("every other kind was slower resident than copied
@@ -31,7 +31,7 @@ bf16's own ~2x is **orthogonal** to that choice: it applies on both sides, for t
 reason, and neither path needs the other to collect it. That is why this item is a
 follow-on and not a replacement for `.todo/488`.
 
-Measured 2026-09-03 (`.todo/482-bfloat16-a-narrow-width-that-pays/README.md`, round 2,
+Measured 2026-09-03 (`.todo/artefacts/482-bfloat16-a-narrow-width-that-pays/README.md`, round 2,
 section 5): **Q4_0 is a device width, not a CPU one** -- on the Vector API its nibble
 unpack is ALU-bound at 5.7 GB/s, 1.1x f32 on one thread, for 8.5% GEMV error; on the
 device the unpack is free beside the memory traffic. When this item lands bf16, the

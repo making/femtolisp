@@ -52,7 +52,7 @@ import jdk.incubator.vector.VectorSpecies;
  * java -XX:-UseJVMCICompiler --add-modules jdk.incubator.vector -cp $CP am.ik.rontolisp.eval.Bf16GemvBench
  * }</pre>
  *
- * {@code .todo/488-the-fused-bfloat16-gemv-kernels/bench.sh} runs both and labels the
+ * {@code .todo/artefacts/488-the-fused-bfloat16-gemv-kernels/bench.sh} runs both and labels the
  * output; the numbers it produced are recorded in that directory's {@code README.md}.
  */
 public final class Bf16GemvBench {

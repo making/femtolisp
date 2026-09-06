@@ -4,7 +4,7 @@ Difficulty: High
 
 Left open by `.todo/672` (closed 2026-09-05). Measured on the shipped kernel
 (`VecSimdKernels.matvecQ8F` / `JvmSimdVectorTemplate.matvecQ8F`, GB10, both JITs, the
-numbers and conditions in `.todo/672-a-q8-0-quantized-weight-matrix-and-its-integer-dot-gemv/README.md`):
+numbers and conditions in `.todo/artefacts/672-a-q8-0-quantized-weight-matrix-and-its-integer-dot-gemv/README.md`):
 
 | 4096x4096, one thread | Graal | C2 |
 | --- | --- | --- |
