@@ -467,15 +467,31 @@ extern "C" __global__ void rng_fill_f64(double* out, int n, int mode, double lo,
 // own bandwidth rather than over the link (.kb/gpu.md, "The GEMV, and the matrix that
 // stays").
 //
-// The accumulator is a DOUBLE at both widths and only the store narrows, which is the
-// scalar vec.lisp defun's own rule. At f32 that makes every product of two elements EXACT
-// in the accumulator, so what separates this kernel from the defun is only the ORDER of a
-// double sum -- which moves the narrowed float only when the sum lies within ~1e-16 of an
-// f32 rounding boundary: measured, 1024 of 1024 rows bit-identical, where a float
-// accumulator (the --simd lane kernel's width) lands 2.6e-7 away and ~20% faster on a
-// small call. At f64 the fused multiply-add and the tree are the product's own few-ulp
-// story. The whole warp shares one row, so the early return is warp-uniform and the
-// full-mask shuffles below it are safe.
+// THE ACCUMULATOR. At f64 it is a double: the fused multiply-add and the tree are the
+// product's own few-ulp story. At f32 and bf16 it WAS a double too (.todo/475: every
+// product of two floats is exact in it, so only the ORDER of a double sum separates the
+// kernel from the scalar vec.lisp defun's widen-accumulate-narrow rule, and it landed on
+// the defun's bits on 1024 of 1024 rows where a float accumulator landed on 268) -- until
+// .todo/490 measured the bfloat16 kernel at HALF the device's bandwidth (138 GB/s over a
+// 508 MB matrix against 234 for f32) and every load width from 16 to 128 bits at the same
+// figure: on a GB10 one double FMA per element is a COMPUTE ceiling (~70 G/s), which the
+// f32 kernel sat just under and the bf16 kernel, with half the bytes per element, hit. So
+// the f32 and bf16 kernels now keep the running sum as a COMPENSATED FLOAT-FLOAT PAIR --
+// the product's rounding error recovered exactly with an fma, every addition a TwoSum, the
+// warp fold pair-wise -- the arithmetic gemm.metal's gemv_f32 already used where there is
+// no double at all (.kb/gpu.md, "Residency and the GEMV on this backend"), spelled the
+// same here operation for operation. It carries ~48 bits, runs at the fp32 rate, and
+// measured bit-identical to the double-accumulated oracle on EVERY row at seven shapes
+// from 1024x1024 to 248320x1024 (.todo/artefacts/123-gpu-acceleration/Bf16KernelProbe.java):
+// bf16 at 232 GB/s and 1.7x the double kernel over the 508 MB head, f32 unchanged where it
+// was already bandwidth-bound and 2.5-5x where the matrix sits in L2. The equivalence the
+// two share: the bf16 kernel IS the f32 kernel over the widened matrix bit for bit
+// (widening a pattern is one exact shift), so it inherits the f32 row's relation to the
+// defun rather than earning a precision row of its own. -fmad=false (the file header) is
+// what makes the error-free transforms mean what they say: a compiler free to contract
+// `hi + p` across statements would compute a different `s` than the `p` the error term was
+// taken against. The whole warp shares one row, so the early return is warp-uniform and
+// the full-mask shuffles below it are safe.
 template <typename T>
 __device__ void gemv(const T* W, const T* x, T* y, int rows, int cols) {
   int row = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
@@ -488,12 +504,54 @@ __device__ void gemv(const T* W, const T* x, T* y, int rows, int cols) {
   if (lane == 0) y[row] = (T) acc;
 }
 
+// The element of a single-float or a bfloat16 matrix as the f32 it denotes: a bf16
+// pattern is the top sixteen bits of an f32, so its widening is one shift, exact for
+// every pattern including a NaN payload (.kb/bfloat16.md).
+__device__ __forceinline__ float gemv_widen(float v) { return v; }
+__device__ __forceinline__ float gemv_widen(unsigned short p) { return __uint_as_float(((unsigned) p) << 16); }
+
+template <typename T>
+__device__ void gemv_ff(const T* W, const float* x, float* y, int rows, int cols) {
+  int row = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+  int lane = threadIdx.x & 31;
+  if (row >= rows) return;
+  const T* w = W + (long long) row * cols;
+  float hi = 0.0f, lo = 0.0f;
+  for (int j = lane; j < cols; j += 32) {
+    float a = gemv_widen(w[j]), b = x[j];
+    float p = a * b;
+    float pe = fmaf(a, b, -p);
+    float s = hi + p;
+    float bv = s - hi;
+    float err = (hi - (s - bv)) + (p - bv);
+    hi = s;
+    lo += err + pe;
+  }
+  for (int off = 16; off > 0; off >>= 1) {
+    float ohi = __shfl_down_sync(0xffffffffu, hi, off);
+    float olo = __shfl_down_sync(0xffffffffu, lo, off);
+    float s = hi + ohi;
+    float bv = s - hi;
+    float err = (hi - (s - bv)) + (ohi - bv);
+    hi = s;
+    lo += olo + err;
+  }
+  if (lane == 0) y[row] = hi + lo;
+}
+
 extern "C" __global__ void gemv_f32(const float* W, const float* x, float* y, int rows, int cols) {
-  gemv<float>(W, x, y, rows, cols);
+  gemv_ff<float>(W, x, y, rows, cols);
 }
 
 extern "C" __global__ void gemv_f64(const double* W, const double* x, double* y, int rows, int cols) {
   gemv<double>(W, x, y, rows, cols);
+}
+
+// The bfloat16 GEMV (.todo/490): gemv_f32 over a matrix STORED as bf16 bit patterns
+// against an f32 vector, into an f32 result -- the one pairing the CPU's fused kernel has
+// (bf16 weights, f32 activations, .kb/bfloat16.md), at half the bytes a row streams.
+extern "C" __global__ void gemv_bf16(const unsigned short* W, const float* x, float* y, int rows, int cols) {
+  gemv_ff<unsigned short>(W, x, y, rows, cols);
 }
 
 // The RESIDENT tier (.todo/491): the members whose CPU twin is a LANE loop and which a

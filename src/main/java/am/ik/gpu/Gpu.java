@@ -1726,13 +1726,16 @@ public final class Gpu {
 	 * command buffer there; {@code MetalGemm}).
 	 *
 	 * <p>
-	 * The accumulator is a {@code double} at both widths and only the store narrows,
-	 * which is the scalar defun's rule (on Metal, which has no {@code double}, a
-	 * compensated float-float pair that lands on the same bits): at {@code #f} the
-	 * product of two elements is exact in it, so the result differs from the defun only
-	 * where the ORDER of a double sum crosses a single-float rounding boundary (measured:
-	 * never, over 1024 rows of 768); at {@code #d} the fused multiply-add and the warp's
-	 * tree are the product's own few-ulp story. Neither is asserted as byte-identity.
+	 * The accumulator at {@code #d} is a {@code double}, and the fused multiply-add and
+	 * the warp's tree are the product's own few-ulp story. At {@code #f} (and
+	 * {@code #bf16}) it is a COMPENSATED float-float pair on both backends -- the
+	 * product's rounding error recovered with an fma, every addition a TwoSum -- which
+	 * carries ~48 bits and lands on the scalar defun's widen-accumulate-narrow bits on
+	 * every measured row (1024 of 1024, and every row of seven larger shapes). CUDA used
+	 * a double there too until 2026-09-06 ({@code .todo/490}), when the double FMA per
+	 * element measured as a compute ceiling on a GB10 that the bfloat16 kernel hit at
+	 * half the device's bandwidth ({@code gemm.cu}). Neither width is asserted as
+	 * byte-identity.
 	 * @param w the matrix, row-major, elements starting at {@code offsetW}
 	 * @param offsetW the index of {@code w}'s first element
 	 * @param x the vector, elements starting at {@code offsetX}
@@ -1754,7 +1757,8 @@ public final class Gpu {
 	/**
 	 * The single-float sibling of
 	 * {@link #matvec(double[], int, double[], int, double[], int, int, int)}, and the
-	 * width a decode loop runs at. The accumulator is still a {@code double}.
+	 * width a decode loop runs at. The accumulator is the compensated float pair
+	 * ({@code gemm.cu}).
 	 * @param w the matrix, row-major, elements starting at {@code offsetW}
 	 * @param offsetW the index of {@code w}'s first element
 	 * @param x the vector, elements starting at {@code offsetX}
@@ -1770,6 +1774,40 @@ public final class Gpu {
 		GpuDevice device = Probe.DEVICE;
 		return device != null && offeredMatvec(extent(device, w), offsetW, extent(device, x), offsetX,
 				extent(device, y), offsetY, rows, cols) && device.gemvF(w, offsetW, x, offsetX, y, offsetY, rows, cols);
+	}
+
+	/**
+	 * The bfloat16 sibling of
+	 * {@link #matvec(float[], int, float[], int, float[], int, int, int)}, and the width
+	 * a published checkpoint's weights arrive in ({@code .todo/490}): the matrix is a
+	 * {@code short[]} of bf16 bit patterns -- the top sixteen bits of an f32 each, two
+	 * bytes an element -- and the vector and the result are f32, the one pairing the
+	 * CPU's fused kernel has (bf16 weights against f32 activations,
+	 * {@code .kb/bfloat16.md}). The kernel widens each pattern in its lane loop, which is
+	 * exact, and is otherwise the f32 kernel: the same compensated accumulator, the same
+	 * order, so it lands where the f32 kernel lands over the widened matrix, bit for bit,
+	 * and its relation to the scalar defun is the f32 row's -- not a new precision class.
+	 * What the width buys is the bytes: a resident row streams half of what the f32 row
+	 * does, on a member whose cost IS that stream. The same residency rule, the same size
+	 * threshold (re-derived at this width, {@code .kb/gpu.md}), and a hard decline on a
+	 * device without the kernel ({@link GpuDevice#supportsBfloat16()}: Metal).
+	 * @param w the matrix, row-major bf16 patterns, elements starting at {@code offsetW}
+	 * @param offsetW the index of {@code w}'s first element
+	 * @param x the vector, elements starting at {@code offsetX}
+	 * @param offsetX the index of {@code x}'s first element
+	 * @param y the array the {@code rows} results are written into
+	 * @param offsetY the index in {@code y} the results start at
+	 * @param rows rows of {@code w} and length of the result
+	 * @param cols columns of {@code w} and length of {@code x}
+	 * @return {@code true} when {@code y} was filled
+	 */
+	public static boolean matvec(short[] w, int offsetW, float[] x, int offsetX, float[] y, int offsetY, int rows,
+			int cols) {
+		GpuDevice device = Probe.DEVICE;
+		return device != null
+				&& device.supportsBfloat16() && offeredMatvec(extent(device, w), offsetW, extent(device, x), offsetX,
+						extent(device, y), offsetY, rows, cols)
+				&& device.gemvBf16(w, offsetW, x, offsetX, y, offsetY, rows, cols);
 	}
 
 	// --- the resident tier (.todo/491) -------------------------------------------------

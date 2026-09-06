@@ -308,11 +308,23 @@ final class JvmGpuTemplate {
 	 * since (the first sight of any matrix declines; {@code .kb/gpu.md}), so the emitted
 	 * chain falls through to the lane kernel or the defun exactly as it does for a shape
 	 * the device turns down.
+	 *
+	 * <p>
+	 * The widths pair as the lane kernels pair them: a {@code double[]} or
+	 * {@code float[]} matrix against a vector of its own width, and a bfloat16
+	 * {@code short[]} matrix against a {@code float[]} vector into a {@code float[]}
+	 * result ({@code .todo/490}; the pairing {@code .kb/bfloat16.md} names). The bf16
+	 * array's header is TWO slots a dimension ({@code [rank, hi_0, lo_0, ...]}, data at
+	 * {@code 1 + 2 * rank}) -- read here by {@link #bf16Dim}, the one place in this
+	 * template that spells the layout, beside {@code JvmSimdVectorTemplate}'s own pair.
 	 * @param w the matrix
 	 * @param x the vector
 	 * @return the packed result, or {@code null} when the device declined it
 	 */
 	static @Nullable Object gpuMatvec(@Nullable Object w, @Nullable Object x) {
+		if (w instanceof short[] bw) {
+			return gpuMatvecBf16(bw, x);
+		}
 		if (!(w instanceof double[]) && !(w instanceof float[])) {
 			return null;
 		}
@@ -337,6 +349,32 @@ final class JvmGpuTemplate {
 		}
 		double[] y = newVec(rows);
 		return Gpu.matvec(doubles(w), 3, doubles(x), 2, y, 2, rows, cols) ? y : null;
+	}
+
+	/** The bfloat16 arm of {@link #gpuMatvec}: a rank-2 {@code short[]} matrix. */
+	private static @Nullable Object gpuMatvecBf16(short[] w, @Nullable Object x) {
+		if (!(x instanceof float[] fx) || w.length < 1 || w[0] != 2 || rank(fx) != 1) {
+			return null;
+		}
+		int rows = bf16Dim(w, 0);
+		int cols = bf16Dim(w, 1);
+		if (rows < 1 || cols < 1 || dim(fx, 0) != cols || !Gpu.worthMatvec(rows, cols)) {
+			return null;
+		}
+		if (!Gpu.available()) {
+			return null;
+		}
+		float[] y = newVecF(rows);
+		return Gpu.matvec(w, 5, fx, 2, y, 2, rows, cols) ? y : null;
+	}
+
+	/**
+	 * Dimension {@code i} of a bfloat16 array: the two-slot header's high and low halves,
+	 * {@code [rank, hi_0, lo_0, ...]}, since a {@code short} cannot hold an extent above
+	 * 32767 ({@code .kb/bfloat16.md}, "The packed array").
+	 */
+	private static int bf16Dim(short[] a, int i) {
+		return ((a[1 + 2 * i] & 0xffff) << 16) | (a[2 + 2 * i] & 0xffff);
 	}
 
 	/**

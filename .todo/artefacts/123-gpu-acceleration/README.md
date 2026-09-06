@@ -100,6 +100,9 @@ warm-up, and the sub-millisecond rows still move by ~20% run to run.
 | `gpt-book-shapes-fast.lisp` | the chapter-3 GPT at the BOOK's shapes (`d_model` 384, block 256, 6 layers, 6 heads, batch 64) over a synthetic 36456-character corpus of the novel's 3038-character vocabulary, with `*max-steps*` from the `STEPS` environment variable and, since todo-499, the batch from `BATCH` (the step's graph is tens of gigabytes at 64; a machine sharing its memory runs 32). The per-step rows of every Metal table since todo-494 are taken on it: the novel itself costs six minutes of data-loader setup a run and the step does not depend on the corpus, so the step is `(t13 - t3) / 10`. Not a probe -- a rontolisp program; compile it to a class and run that. |
 | `fusion-baseline.lisp` + `fusion-segments.py` | (2026-09-02, todo-499) the per-member DEVICE cost of the fusible compositions at the book's shapes: every `linalg:` member of the softmax / layer-norm / GELU / dropout chains, the chains themselves, and the torch forward and forward+backward through each, as kernel time read back from an nsys trace -- the program opens every bench with a marker launch (an `rng_fill` over 1234567 elements) and syncs every call, and the script cuts the trace at the markers. Wall time is useless here (a call that allocates a fresh 100 MB result spends its host time in the allocator, and the clock has 1 ms resolution), which is why the first version of this probe, timed by `get-internal-real-time`, reported a GELU forward at 86 ms and its forward+backward at 59. Run it once per build and pair the tables: the numbers in `.kb/gpu.md` "The fused tier" are its before and after. |
 | `chains-baseline.lisp` (+ `fusion-segments.py`) | (2026-09-02, todo-629) the per-member DEVICE cost of the chains the fused tier left composed, at the book's shapes and BATCH 64: the attention scale and mask around each softmax, every member of the log-softmax chain and its adjoint over a `(16384 3038)` batch of logits, layer-norm's affine, and the GELU adjoint against its own bandwidth floor. Same marker-and-sync method as `fusion-baseline.lisp`, read back by the same script. One thing it must do that the older probe did not: the SCALAR tier is offered over a resident operand only, so its operands are the results of a device member rather than host arrays -- a host array there silently measures the CPU and every bench reads 0 launches. |
+| `Bf16MatvecCrossover.java` + `matvec-bf16-baseline.lisp` | (2026-09-06, todo-490) the bfloat16 GEMV through the SHIPPED route (`Gpu.matvec(short[], ...)` over `target/classes`, residency included): bf16 resident against f32 resident against bf16 cold, shape by shape from 384x384 to Qwen3.5-0.8B's 248320x1024 head, and at every shape the equivalence the kernel promises -- the bf16 result against the f32 kernel over the widened matrix, in mismatching rows (0 everywhere). `matvec-bf16-baseline.lisp` under `--simd` on the JVM class output is the CPU column at both widths, under Graal and C2. Answer (`.kb/gpu.md`, "The GEMV, and the matrix that stays"): the device floor is ~10 us at either width, bf16 is 1.9-2.9x the f32 kernel from 12 MB up once the accumulator was fixed (below), and the 2^17 threshold stands -- with the f32 tie at exactly 2^17 recorded. Run from the repository root with `-cp target/classes`. |
+| `Bf16KernelProbe.java` + `gemv-bf16-probe.cu` | (2026-09-06, todo-490) the measurement that changed the shipped kernels: kernel-only time over resident buffers for the bf16 GEMV at one, two, four and eight patterns per lane -- all at the same ~138 GB/s, so the loads were not the bound -- then the same kernels with a plain float and a COMPENSATED float-float accumulator: the compensated pair at 232 GB/s (bf16) and bit-identical to the double-accumulated oracle on every row at seven shapes, the plain float sum off on most rows. The double FMA per element is a compute ceiling on the GB10 (~70 G/s, its fp64 rate), which the f32 kernel sat just under and the bf16 kernel hit. Needs `nvcc` once, for its own PTX (command in the `.cu` header). |
+| `ResidencyCliff.java` | (2026-09-06, todo-490 step 6) what a decode loop does when the model does NOT fit the residency budget: runs a class compiled with `--gpu` under a forced budget through the package-private `residentBudget` seam (reached reflectively in the program's own embedded copy of the library) and lets the program print its tok/s, with the resident bytes and the hit/miss counts every five seconds on stderr. Answer: under the interceptors the budget is the lazy HEADROOM rule (the device less an eighth), so a 1.5 GB model never meets the 1 GB eager cap; forced below the model, the tokens degrade to the CPU rate and no further (the numbers: `examples/llm/README.md`, "bf16 weights on the device"). |
 | `AccelerateProbe.java` | no GPU at all: a tuned BLAS is plain C, costs no dependency, and unlike Metal it has a double. How fast is it, is one PRESENT, and is the one that is present actually TUNED? Walks a candidate list (Accelerate, NVPL, OpenBLAS, MKL, distro `libblas`), identifies what it bound and prints a verdict against measured throughput. Runs on either machine -- the probe that reframes the Apple plan, and the one that stopped it being reframed the same way on Linux. |
 
 ## Running them
@@ -629,6 +632,153 @@ MTLCreateSystemDefaultDevice   13.9 ms | newLibraryWithSource    2.6 ms | same s
 MTLCreateSystemDefaultDevice   12.2 ms | newLibraryWithSource    2.7 ms | same source again    0.1 ms | 1st pipeline   0.9 ms | 2nd pipeline   0.1 ms
 MTLCreateSystemDefaultDevice   14.7 ms | newLibraryWithSource    2.9 ms | same source again    0.1 ms | 1st pipeline   0.9 ms | 2nd pipeline   0.1 ms
 ```
+
+### The bfloat16 GEMV on the GB10 (2026-09-06, todo-490)
+
+Base `628c4048` plus the item's own tree, GraalVM 25 (Oracle), driver 580 / CUDA 13, load average
+under 1.0 for every table below unless stated. The kernel probe first, because it decided the
+shipped kernels: every load width lands on the same ~138 GB/s, the compensated float-float pair
+(`_ff`) lands on the device's bandwidth AND on the double-accumulated oracle's bits on every row,
+and the plain float sum (`_f`) is as fast and off on most rows. (The small shapes' 400-1100 GB/s
+are L2-resident re-reads; the two head shapes are the DRAM truth.)
+
+```
+$ cd .todo/artefacts/123-gpu-acceleration && nvcc -arch=compute_75 -ptx -fmad=false --extended-lambda gemv-bf16-probe.cu -o gemv-bf16-probe.ptx
+$ java --enable-native-access=ALL-UNNAMED -Xmx8g Bf16KernelProbe.java
+NVIDIA GB10, 48 SMs, checked-in compute_75 PTX loaded in 15.84 ms
+
+rows x cols   bf16 MB |       bf16_x1       bf16_x2       bf16_x4       bf16_x8       bf16_ff        bf16_f |        f32_x1        f32_x4        f32_ff   (us/call, GB/s)
+1024x1024         2.1 |   24.3     86   23.4     90   23.3     90   22.9     92    8.0    263    8.1    259 |   22.6    186   23.1    182    9.1    463   x1==f32x1 0, x4==f32x4 0, ff==f32ff 0 | vs oracle: x1 0 x4 0 ff 0 f 807, f32 x1 0 ff 0
+3584x1024         7.3 |   61.6    119   62.1    118   62.4    118   61.9    119   12.1    605   10.2    717 |   61.9    237   61.5    239   12.5   1175   x1==f32x1 0, x4==f32x4 0, ff==f32ff 0 | vs oracle: x1 0 x4 0 ff 0 f 2814, f32 x1 0 ff 0
+6144x1024        12.6 |   95.2    132   95.6    132   94.9    133   95.3    132   15.0    837   13.2    950 |   96.7    260   96.4    261   54.3    464   x1==f32x1 0, x4==f32x4 0, ff==f32ff 0 | vs oracle: x1 0 x4 0 ff 0 f 4786, f32 x1 0 ff 0
+2048x5632        23.1 |  181.6    127  182.7    126  183.7    126  183.4    126   38.4    601   37.6    614 |  222.9    207  207.3    223  201.9    229   x1==f32x1 0, x4==f32x4 0, ff==f32ff 0 | vs oracle: x1 0 x4 0 ff 0 f 1974, f32 x1 0 ff 0
+4096x4096        33.6 |  242.0    139  243.5    138  246.2    136  243.3    138  134.3    250  140.4    239 |  304.4    220  297.3    226  288.6    232   x1==f32x1 0, x4==f32x4 0, ff==f32ff 0 | vs oracle: x1 0 x4 0 ff 0 f 3697, f32 x1 0 ff 0
+32000x2048      131.1 |  926.4    141  926.5    141  932.0    141  924.6    142  565.0    232  584.1    224 | 1149.3    228 1128.5    232 1118.9    234   x1==f32x1 0, x4==f32x4 0, ff==f32ff 0 | vs oracle: x1 0 x4 0 ff 0 f 27387, f32 x1 0 ff 0
+248320x1024     508.6 | 3674.1    138 3670.6    139 3674.1    138 3654.3    139 2170.5    234 2217.1    229 | 4376.1    232 4259.2    239 4259.6    239   x1==f32x1 0, x4==f32x4 0, ff==f32ff 0 | vs oracle: x1 0 x4 0 ff 0 f 193622, f32 x1 0 ff 0
+```
+
+The shipped route on the compensated kernels (x up, launch, y down; the matrix resident from its
+second sight), against the CPU's fused bf16 kernel on one thread:
+
+```
+$ java --enable-native-access=ALL-UNNAMED -Xmx8g -cp target/classes .todo/artefacts/123-gpu-acceleration/Bf16MatvecCrossover.java
+device: NVIDIA GB10 (sm_121, 48 SMs, driver API 13.0)
+
+rows x cols      elems  bf16 MB |  bf16 min  bf16 med |   f32 min   f32 med |  cold min  cold med | mismatch
+256x256          65536      0.1 |       NaN       NaN |       NaN       NaN |       NaN       NaN |       0
+288x288          82944      0.2 |       NaN       NaN |       NaN       NaN |       NaN       NaN |       0
+384x384         147456      0.3 |      10.0      11.4 |      10.8      11.3 |      22.3      24.1 |       0
+512x512         262144      0.5 |      10.7      11.3 |      10.6      12.1 |      26.3      27.4 |       0
+768x288         221184      0.4 |       9.1      10.9 |      10.0      10.4 |      24.3      25.4 |       0
+288x768         221184      0.4 |       9.5      11.1 |       8.7      11.2 |      23.8      25.3 |       0
+768x768         589824      1.2 |       9.8      11.2 |       9.0      11.1 |      36.5      36.9 |       0
+1024x1024      1048576      2.1 |       9.3      11.2 |      10.6      12.3 |      51.6      55.0 |       0
+2048x1024      2097152      4.2 |      12.1      20.5 |      14.4      20.5 |      98.1      99.0 |       0
+1024x2048      2097152      4.2 |      11.3      13.2 |      14.3      20.4 |      97.6      98.8 |       0
+3584x1024      3670016      7.3 |      15.4      20.6 |      20.0      20.5 |     153.0     153.9 |       0
+1024x3584      3670016      7.3 |      19.4      20.5 |      19.2      20.4 |     151.4     160.0 |       0
+6144x1024      6291456     12.6 |      20.4      21.6 |      58.2      63.7 |     264.3     288.2 |       0
+5632x2048     11534336     23.1 |      45.8      49.1 |     198.3     205.0 |     480.3     487.1 |       0
+2048x5632     11534336     23.1 |      48.3      51.1 |     206.1     211.1 |     455.6     457.0 |       0
+2048x2048      4194304      8.4 |      16.2      20.5 |      19.1      20.5 |     170.9     178.6 |       0
+4096x4096     16777216     33.6 |     124.8     128.9 |     268.3     274.5 |     698.6     701.9 |       0
+32000x288      9216000     18.4 |      37.8      39.9 |     162.5     169.8 |     389.4     395.7 |       0
+32000x2048    65536000    131.1 |     575.3     582.6 |    1103.2    1111.9 |    3607.1    4028.0 |       0
+248320x1024  254279680    508.6 |    2216.0    2228.3 |    4280.9    4290.3 |   10855.0   10873.1 |       0
+```
+
+```
+$ java -jar $JAR matvec-bf16-baseline.lisp -o MvB.class --simd && java --add-modules jdk.incubator.vector -Xmx8g MvB   # Graal
+256 x 256 BFLOAT16: 6.5 us/call
+256 x 256 SINGLE-FLOAT: 5.0 us/call
+288 x 288 BFLOAT16: 8.0 us/call
+288 x 288 SINGLE-FLOAT: 6.0 us/call
+384 x 384 BFLOAT16: 14.0 us/call
+384 x 384 SINGLE-FLOAT: 10.5 us/call
+512 x 512 BFLOAT16: 25.0 us/call
+512 x 512 SINGLE-FLOAT: 15.0 us/call
+768 x 288 BFLOAT16: 20.0 us/call
+768 x 288 SINGLE-FLOAT: 15.0 us/call
+288 x 768 BFLOAT16: 20.0 us/call
+288 x 768 SINGLE-FLOAT: 10.0 us/call
+768 x 768 BFLOAT16: 50.0 us/call
+768 x 768 SINGLE-FLOAT: 35.0 us/call
+1024 x 1024 BFLOAT16: 66.7 us/call
+1024 x 1024 SINGLE-FLOAT: 66.7 us/call
+2048 x 1024 BFLOAT16: 166.7 us/call
+2048 x 1024 SINGLE-FLOAT: 133.3 us/call
+1024 x 2048 BFLOAT16: 166.7 us/call
+1024 x 2048 SINGLE-FLOAT: 133.3 us/call
+3584 x 1024 BFLOAT16: 300.0 us/call
+3584 x 1024 SINGLE-FLOAT: 300.0 us/call
+1024 x 3584 BFLOAT16: 300.0 us/call
+1024 x 3584 SINGLE-FLOAT: 300.0 us/call
+6144 x 1024 BFLOAT16: 566.7 us/call
+6144 x 1024 SINGLE-FLOAT: 533.3 us/call
+5632 x 2048 BFLOAT16: 1033.3 us/call
+5632 x 2048 SINGLE-FLOAT: 1133.3 us/call
+2048 x 5632 BFLOAT16: 1000.0 us/call
+2048 x 5632 SINGLE-FLOAT: 1233.3 us/call
+2048 x 2048 BFLOAT16: 366.7 us/call
+2048 x 2048 SINGLE-FLOAT: 300.0 us/call
+4096 x 4096 BFLOAT16: 1466.7 us/call
+4096 x 4096 SINGLE-FLOAT: 1800.0 us/call
+32000 x 288 BFLOAT16: 933.3 us/call
+32000 x 288 SINGLE-FLOAT: 966.7 us/call
+32000 x 2048 BFLOAT16: 5900.0 us/call
+32000 x 2048 SINGLE-FLOAT: 7500.0 us/call
+248320 x 1024 BFLOAT16: 22600.0 us/call
+248320 x 1024 SINGLE-FLOAT: 29800.0 us/call
+
+$ java --add-modules jdk.incubator.vector -Xmx8g -XX:-UseJVMCICompiler MvB   # C2
+256 x 256 BFLOAT16: 5.0 us/call
+256 x 256 SINGLE-FLOAT: 4.0 us/call
+288 x 288 BFLOAT16: 6.0 us/call
+288 x 288 SINGLE-FLOAT: 5.5 us/call
+384 x 384 BFLOAT16: 10.0 us/call
+384 x 384 SINGLE-FLOAT: 9.0 us/call
+512 x 512 BFLOAT16: 15.0 us/call
+512 x 512 SINGLE-FLOAT: 15.0 us/call
+768 x 288 BFLOAT16: 15.0 us/call
+768 x 288 SINGLE-FLOAT: 10.0 us/call
+288 x 768 BFLOAT16: 15.0 us/call
+288 x 768 SINGLE-FLOAT: 10.0 us/call
+768 x 768 BFLOAT16: 35.0 us/call
+768 x 768 SINGLE-FLOAT: 35.0 us/call
+1024 x 1024 BFLOAT16: 66.7 us/call
+1024 x 1024 SINGLE-FLOAT: 66.7 us/call
+2048 x 1024 BFLOAT16: 133.3 us/call
+2048 x 1024 SINGLE-FLOAT: 100.0 us/call
+1024 x 2048 BFLOAT16: 133.3 us/call
+1024 x 2048 SINGLE-FLOAT: 100.0 us/call
+3584 x 1024 BFLOAT16: 233.3 us/call
+3584 x 1024 SINGLE-FLOAT: 300.0 us/call
+1024 x 3584 BFLOAT16: 233.3 us/call
+1024 x 3584 SINGLE-FLOAT: 266.7 us/call
+6144 x 1024 BFLOAT16: 433.3 us/call
+6144 x 1024 SINGLE-FLOAT: 500.0 us/call
+5632 x 2048 BFLOAT16: 733.3 us/call
+5632 x 2048 SINGLE-FLOAT: 1100.0 us/call
+2048 x 5632 BFLOAT16: 733.3 us/call
+2048 x 5632 SINGLE-FLOAT: 1166.7 us/call
+2048 x 2048 BFLOAT16: 233.3 us/call
+2048 x 2048 SINGLE-FLOAT: 233.3 us/call
+4096 x 4096 BFLOAT16: 1100.0 us/call
+4096 x 4096 SINGLE-FLOAT: 1833.3 us/call
+32000 x 288 BFLOAT16: 700.0 us/call
+32000 x 288 SINGLE-FLOAT: 900.0 us/call
+32000 x 2048 BFLOAT16: 4400.0 us/call
+32000 x 2048 SINGLE-FLOAT: 7400.0 us/call
+248320 x 1024 BFLOAT16: 18000.0 us/call
+248320 x 1024 SINGLE-FLOAT: 31600.0 us/call
+```
+
+Read against the threshold: the device is ~10 us at either width up to a million elements, so the
+crossover is where the CPU passes 10 us -- bf16 at 384x384 (14 against 10.0, 1.4x) and clearly by
+512x512 (25 against 10.7); f32 is a TIE at exactly 2^17 (10.5 against 10.8; the lane kernel has
+four accumulators since `.todo/480`) and 1.5x at 768x288. The threshold stays at 2^17 for both
+widths: moving it to 2^18 would drop llama2's 768x288 feed-forward matrices, a measured 1.5x. The
+cold column never pays (22 us against the CPU's 14 at 384x384), so the two-sight rule stands too.
 
 ### The GEMV on Metal (2026-08-22, todo-477), same machine
 

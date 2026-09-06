@@ -91,6 +91,14 @@ it BY NAME at `compiler/UnsupportedFloatWidth`. `vec:` carries the width; `linal
 - The Q8_0 quantized matrix is NOT a fourth width of this umbrella and not a float width at all
   (`.kb/quantized-matrix.md`); `rontolisp:dequantize m 'bfloat16` narrows into this one through
   `BFloat16.bits` / `_bf16Bits`.
+- **`--gpu` takes the SAME pairing on CUDA, and nothing else** (2026-09-06, `.todo/490`):
+  `vec:matvec` over a `#bf16` matrix and an `#f` vector runs `gemv_bf16`, which decodes in its
+  lane loop and is otherwise `gemv_f32` -- the f32 kernel over the widened matrix bit for bit, the
+  equivalence above carried to the device -- at half the bytes a resident row streams (1.9-2.9x
+  the f32 kernel where the GEMV is bandwidth-bound; the accumulator became a compensated float
+  pair at both widths for it, `.kb/gpu.md`, "The GEMV, and the matrix that stays"). Metal
+  declines the width (`GpuDevice.supportsBfloat16()`); every other pairing declines to the rung
+  below on either backend. A `short[]` is a residency key like any other host array.
 - **No element-wise bf16 kernel**: widening is one shift but NARROWING is not vectorized
   (round-to-nearest-even with a NaN guard), so an element-wise arm would be a scalar store loop.
   `.todo/696`.

@@ -483,8 +483,9 @@ class LinalgGpuTest {
 		assumeThat(takesMatvec()).as("this device keeps resident copies").isTrue();
 		// .kb/vec.md's f32 reduction probe, as a matrix row: the scalar defun (double
 		// accumulation, narrowed) prints 16778240 and the --simd lane kernel 16778176.
-		// The device accumulates in double, so its answer is the DEFUN's -- and the
-		// first call is the lane kernel's, because the first sight of a matrix declines.
+		// The device's compensated accumulator carries the bits a double would, so its
+		// answer is the DEFUN's -- and the first call is the lane kernel's, because the
+		// first sight of a matrix declines.
 		// That makes the chain legible from Lisp: (lane device).
 		// .todo/480 gave the lane rung four independent accumulators above 32 columns,
 		// so at 1024 columns it groups as sixteen lanes and answers 16778176 where it
@@ -516,10 +517,86 @@ class LinalgGpuTest {
 				(defparameter *w* (linalg:reshape (linalg:arange 1 257) '(16 16)))
 				(list (vec:matvec *w* (linalg:arange 1 17)) (vec:matvec *w* (linalg:arange 1 17)))
 				""", "(vec:matvec #f((1.0 2.0) (3.0 4.0)) #d(1.0 2.0))", "(vec:matvec #d(1.0 2.0) #d(1.0 2.0))",
-				"(vec:matvec #d((1.0 2.0) (3.0 4.0)) #d(1.0))" }) {
+				"(vec:matvec #d((1.0 2.0) (3.0 4.0)) #d(1.0))",
+				// A bf16 matrix against a bf16 or a double vector, ABOVE the threshold:
+				// the device carries the bf16-against-f32 pairing only (.todo/490), so
+				// both are the defun's answer with the flag and without.
+				"""
+						(defparameter *w* (make-array '(512 512) :element-type 'bfloat16 :initial-element 0.375))
+						(defparameter *x* (make-array 512 :element-type 'bfloat16 :initial-element 1.5))
+						(list (aref (vec:matvec *w* *x*) 0) (aref (vec:matvec *w* *x*) 511))
+						""", """
+						(defparameter *w* (make-array '(512 512) :element-type 'bfloat16 :initial-element 0.375))
+						(defparameter *x* (linalg:ones '(512)))
+						(list (aref (vec:matvec *w* *x*) 0) (aref (vec:matvec *w* *x*) 511))
+						""" }) {
 			assertThat(outcome(form, true, false)).as(form).isEqualTo(outcome(form, false, false));
 			assertThat(outcome(form, true, true)).as(form + " --simd").isEqualTo(outcome(form, false, true));
 		}
+	}
+
+	// --- the bfloat16 matrix-by-vector product (.todo/490) ---------------------------
+
+	private static boolean takesBf16Matvec() {
+		return takesMatvec() && am.ik.gpu.GpuThresholds.supportsBfloat16();
+	}
+
+	/**
+	 * {@link #exactMatvec} at the fused pairing: a {@code #bf16} matrix of exact +1 / -1
+	 * entries ({@code linalg:} declines the width, so it is filled by hand) against an
+	 * {@code #f} index ramp, twice.
+	 */
+	private static String exactBf16Matvec(int side) {
+		return """
+				(defparameter *w* (make-array '(%d %d) :element-type 'bfloat16))
+				(dotimes (i %d)
+				  (dotimes (j %d)
+				    (setf (aref *w* i j) (if (> (sin (+ (* i %d) j 1)) 0) 1.0 -1.0))))
+				(defparameter *x* (linalg:arange 0 %d :element-type 'single-float))
+				(vec:matvec *w* *x*)
+				(vec:matvec *w* *x*)
+				""".formatted(side, side, side, side, side, side);
+	}
+
+	@Test
+	void theBfloat16MatrixByVectorProductMatchesTheScalarOracleOnExactInputsOnceResident() {
+		assumeThat(takesBf16Matvec()).as("this device carries the bfloat16 GEMV").isTrue();
+		assertMatchesScalarOracle(exactBf16Matvec(matvecSide()));
+	}
+
+	@Test
+	void theBfloat16MatrixByVectorProductReallyRanOnTheDeviceOnTheSecondSight() {
+		assumeThat(takesBf16Matvec()).as("this device carries the bfloat16 GEMV").isTrue();
+		String program = exactBf16Matvec(matvecSide()) + "(vec:matvec *w* *x*)\n";
+		long hits = am.ik.gpu.GpuThresholds.residencyHits();
+		LispVal result = eval(program, true);
+		assertThat(am.ik.gpu.GpuThresholds.residencyHits()).isGreaterThan(hits);
+		// And the result keeps x's width, as the defun's does.
+		assertThat(result).isInstanceOf(LispSingleFloatArray.class);
+	}
+
+	@Test
+	void theBfloat16DeviceRungIsAskedOnTheSecondSightAndTheFusedLaneKernelOnTheFirst() {
+		assumeThat(takesBf16Matvec()).as("this device carries the bfloat16 GEMV").isTrue();
+		// The f32 legibility probe above, with the matrix at bf16 (4096.0 and 1.0 are
+		// exact there): the fused lane kernel is the f32 kernel over the widened matrix
+		// and prints its 16778176; the device kernel's compensated accumulator carries
+		// the defun's bits and prints 16778240. So the chain reads (lane device) here
+		// too.
+		int rows = (int) Math.max(128, (am.ik.gpu.GpuThresholds.matvecMinElements() + 1023) / 1024);
+		String program = """
+				(defparameter *w* (make-array '(%d 1024) :element-type 'bfloat16 :initial-element 0.0))
+				(setf (aref *w* 0 0) 4096.0)
+				(dotimes (j 1023) (setf (aref *w* 0 (+ j 1)) 1.0))
+				(defparameter *x* (linalg:ones '(1024) :element-type 'single-float))
+				(setf (aref *x* 0) 4096.0)
+				(defun probe () (round (aref (vec:matvec *w* *x*) 0)))
+				(list (probe) (probe))
+				""".formatted(rows);
+		assertThat(eval(program, true, false, true).print()).as("--gpu --simd").isEqualTo("(16778176 16778240)");
+		assertThat(eval(program, false, false, true).print()).as("--simd").isEqualTo("(16778176 16778176)");
+		assertThat(eval(program, true, false, false).print()).as("--gpu").isEqualTo("(16778240 16778240)");
+		assertThat(eval(program, false, false, false).print()).as("scalar").isEqualTo("(16778240 16778240)");
 	}
 
 	/** What a program prints, or the error it signals, under the given flags. */

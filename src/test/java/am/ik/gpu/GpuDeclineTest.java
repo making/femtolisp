@@ -277,6 +277,12 @@ class GpuDeclineTest {
 		// The GEMV pair behind vec:matvec, the one member outside linalg:.
 		assertThat(ptx).contains(".visible .entry " + CudaGemm.KERNEL_GEMV_F64);
 		assertThat(ptx).contains(".visible .entry " + CudaGemm.KERNEL_GEMV_F32);
+		// And the bfloat16 one (.todo/490), which decodes in its lane loop and is
+		// otherwise gemv_f32 -- the source says so with the one shift that widens.
+		assertThat(ptx).contains(".visible .entry " + CudaGemm.KERNEL_GEMV_BF16);
+		assertThat(resource("gemm.cu")).contains("__uint_as_float(((unsigned) p) << 16)")
+			.contains("gemv_ff<unsigned short>(W, x, y, rows, cols)")
+			.contains("gemv_ff<float>(W, x, y, rows, cols)");
 		// The resident tier's eight, and the mirrors it added: the four maps past the
 		// libm ones and the five comparison masks.
 		for (String kernel : CudaGemm.KERNELS_RESIDENT) {
@@ -331,6 +337,8 @@ class GpuDeclineTest {
 		float[] wf = new float[64 * 64], xf = new float[64], yf = new float[64];
 		assertThat(Gpu.matvec(w, 0, x, 0, y, 0, 64, 64)).isFalse();
 		assertThat(Gpu.matvec(wf, 0, xf, 0, yf, 0, 64, 64)).isFalse();
+		short[] wb = new short[64 * 64];
+		assertThat(Gpu.matvec(wb, 0, xf, 0, yf, 0, 64, 64)).isFalse();
 		assertThat(y).containsOnly(0.0);
 		assertThat(yf).containsOnly(0.0f);
 	}
@@ -353,6 +361,20 @@ class GpuDeclineTest {
 		assertThat(Gpu.matvec(w, 0, x, 0, y, 0, 0, cols)).isFalse();
 		assertThat(Gpu.matvec(w, 0, x, 0, y, 0, rows, 0)).isFalse();
 		assertThat(y).containsOnly(0.0);
+		// The bfloat16 form (.todo/490): the same conditions over a short[] matrix and an
+		// f32 vector, declining rather than throwing -- and on a machine whose device
+		// has no bf16 kernel (Metal), declining at every shape.
+		short[] wb = new short[rows * cols];
+		float[] xf = new float[cols], yf = new float[rows];
+		assertThat(Gpu.matvec(wb, 0, new float[cols - 1], 0, yf, 0, rows, cols)).isFalse();
+		assertThat(Gpu.matvec(wb, 0, xf, 0, new float[rows - 1], 0, rows, cols)).isFalse();
+		assertThat(Gpu.matvec(wb, 1, xf, 0, yf, 0, rows, cols)).isFalse();
+		assertThat(Gpu.matvec(wb, 0, xf, 1, yf, 0, rows, cols)).isFalse();
+		assertThat(Gpu.matvec(wb, 0, xf, 0, yf, 1, rows, cols)).isFalse();
+		assertThat(Gpu.matvec(wb, -1, xf, 0, yf, 0, rows, cols)).isFalse();
+		assertThat(Gpu.matvec(wb, 0, xf, 0, yf, 0, 0, cols)).isFalse();
+		assertThat(Gpu.matvec(wb, 0, xf, 0, yf, 0, rows, 0)).isFalse();
+		assertThat(yf).containsOnly(0.0f);
 	}
 
 	@Test

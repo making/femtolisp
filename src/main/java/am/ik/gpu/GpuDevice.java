@@ -65,6 +65,17 @@ sealed interface GpuDevice permits CudaGemm, MetalGemm {
 	 */
 	boolean supportsDouble();
 
+	/**
+	 * Whether a bfloat16 matrix -- a {@code short[]} of bf16 bit patterns, the top
+	 * sixteen bits of an f32 each -- can be the weight of {@link #gemvBf16} here.
+	 * {@code true} on CUDA; {@code false} on Metal, where the width is out of scope
+	 * ({@code .todo/490}: MSL has a {@code bfloat}, but nothing has been measured there),
+	 * so a {@code #bf16} operand is a hard decline on that backend exactly as a
+	 * {@code #d} one is.
+	 * @return {@code true} when the bfloat16 GEMV may be offered
+	 */
+	boolean supportsBfloat16();
+
 	/** Where this device's crossovers against the fastest CPU path sit. */
 	Thresholds thresholds();
 
@@ -132,6 +143,17 @@ sealed interface GpuDevice permits CudaGemm, MetalGemm {
 	boolean gemv(double[] w, int ow, double[] x, int ox, double[] y, int oy, int rows, int cols);
 
 	boolean gemvF(float[] w, int ow, float[] x, int ox, float[] y, int oy, int rows, int cols);
+
+	/**
+	 * {@link #gemvF} over a matrix STORED as bfloat16 bit patterns against an f32 vector,
+	 * into an f32 result -- the one pairing the CPU's fused kernel has (bf16 weights, f32
+	 * activations; {@code .kb/bfloat16.md}). Widening a pattern is exact, so the kernel
+	 * is {@code gemv_f32} over the widened matrix bit for bit, at half the bytes a row
+	 * streams. The same residency rule as {@link #gemv}, and a hard decline where
+	 * {@link #supportsBfloat16()} is {@code false}.
+	 * @return {@code true} when {@code y} was filled
+	 */
+	boolean gemvBf16(short[] w, int ow, float[] x, int ox, float[] y, int oy, int rows, int cols);
 
 	/**
 	 * {@code c[i] = op(a[i], b[i])} over two operands of the SAME shape -- the resident

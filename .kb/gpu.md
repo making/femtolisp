@@ -58,7 +58,7 @@ static double[] multiply(a, oA, b, oB, n, m, p)                       // and a f
 static boolean  multiply(a, oA, b, oB, out, oOut, n, m, p)            // allocates nothing
 static boolean  multiply(a, oA, strideA, b, oB, strideB, out, oOut, batch, n, m, p)
 static boolean  map(int op, ...) / bcast(int op, ...) / gather(...) / fold(int op, ...)
-static boolean  matvec(w, oW, x, oX, y, oY, rows, cols) / rngFill(...)
+static boolean  matvec(w, oW, x, oX, y, oY, rows, cols) / rngFill(...)   // w: double[], float[], or a bf16 short[] with an f32 x and y
 static void     written(Object hostArray) / materialize(Object hostArray)
 static boolean  resident(Object hostArray)
 static void     lazyResults(boolean on) / boolean lazyResultsIfWorthwhile()
@@ -240,7 +240,7 @@ the machine has (`--simd`, JIT-warm), never a flop count, and re-derived per bac
 | broadcast / axes transpose, OUTPUT elements (`MIN_STRIDED_ELEMENTS`) | **2^15** (2^17 unpooled) | **2^18** | 1.2x at 16384 is inside the measurement; 2.1x at 32768 is not |
 | axis fold, INPUT elements | **2^17**, and at least **256** output cells | **declined at every size** as a round trip | a fold with one output cell is a single-threaded device loop |
 | axis fold over a RESIDENT operand | 32 cells (one warp) | `MIN_RESIDENT_ELEMENTS` | there the CPU alternative is not a free walk but a DOWNLOAD |
-| GEMV (`vec:matvec`), `rows*cols` | **2^17** (2^20 unpooled) | **2^21** | plus the two-sight rule, which no size can answer |
+| GEMV (`vec:matvec`), `rows*cols` | **2^17** (2^20 unpooled), at `#f` AND `#bf16` | **2^21** | plus the two-sight rule, which no size can answer. Re-measured 2026-09-06 on the compensated kernels (below): bf16 1.4x at 2^17 and 2.3x at 2^18; f32 a TIE at exactly 2^17 since `.todo/480` sped the lane kernel up (10.8 us against 10.5) and 1.5x from ~2^17.75 (768x288) -- kept, because 2^18 would drop llama2's 768x288 feed-forward matrices, a measured 1.5x |
 | generator fill, elements | **2^13** | declined -- needs a `double` | 0.7-0.8x at 2^12, 1.6-1.8x at 2^13, 20-45x at 10^6 |
 | the RESIDENT tier | any size | **2^14** elements | a launch with no copy |
 | MPS instead of our kernel (`MPS_MIN_WORK`) | -- | 2^27 per matrix | 1.5x at n=512, 4.5x at n=2048; MPS carries ~35 us of object churn a call and loses below n≈448 |
@@ -303,7 +303,10 @@ spellings of one guard, one failing open. Both are now explicit refusals.
 
 ## Precision
 
-Three different breaks with the scalar defun, not the same kind.
+Three different breaks with the scalar defun, not the same kind -- and the GEMV's, which is a fourth
+row of its own ("The GEMV, and the matrix that stays": a compensated float pair at `#f` and `#bf16`,
+measured on the double-accumulated defun's bits on every row, pinned at ">99% of rows"; a double at
+`#d`; and the bf16 kernel the f32 kernel's bits over the widened matrix, exactly).
 
 **The product FUSES.** `gemm.cu` keeps ONE accumulator per output cell and walks `k` ascending across
 tiles and within each tile -- the scalar defun's order, NOT a reordering. What differs is that
@@ -386,7 +389,13 @@ matches by referent, so a lookup allocates no reference.
    re-derived at every pre-flight refresh. At a quarter of free memory (~30 GB) nothing was evicted
    before the collector got to it and the run was SLOWER with half the uploads than with none; 64 MB,
    256 MB and 1 GB were within noise of each other and 5-10% faster than no residency. **The cap keeps
-   the driver's pool recycling its warm blocks; it is not a safety margin.**
+   the driver's pool recycling its warm blocks; it is not a safety margin.** It is also NOT what
+   decides whether a model's weights stay resident: both interceptors run LAZY results, whose budget
+   is the headroom rule below, so on this box a 1.5 GB model sits resident from its second token
+   and the cliff is at ~100 GB. Measured 2026-09-06 (`.todo/490`, `ResidencyCliff.java`): forced
+   to 512 MB the same decode ran at 6.7 tok/s, BELOW `--simd` alone (7.7), because an evicted
+   matrix is a first sight again and the loop alternates between the CPU and a cold upload --
+   and the program says nothing. `.todo/716`.
 
 **Residency may slow a call by one upload but must never turn it into a decline.** The pre-flight
 evicts everything the call is not holding, trims the pool, and asks again before it would refuse.
@@ -530,18 +539,57 @@ weights are resident from their second token, and a matrix the program REWRITES 
 (llm's KV cache) is "first sight" every time and never pays the cold trip it would lose (0.87x at
 384x384 f32 cold).
 
-**The accumulator is a double at both widths.** Over 1024 rows of 768 inexact floats the double kernel
-is bit-identical on **1024 of 1024** rows, a float kernel on 268, the `--simd` lane kernel on 144 --
-the product of two floats is exact in double, so only the ORDER of a double sum separates device from
-defun. It is what lets llm's story stay byte-identical with the flag on. Pinned as a relative
-tolerance plus ">99% of rows identical".
+**The accumulator: a double at `#d`, a COMPENSATED FLOAT-FLOAT PAIR at `#f` and `#bf16`** (since
+2026-09-06, `.todo/490`; a double at every width before). The original measurement stands: over 1024
+rows of 768 inexact floats a double accumulator is bit-identical to the defun on **1024 of 1024**
+rows, a plain float one on 268, the `--simd` lane kernel on 144 -- the product of two floats is exact
+in double, so only the ORDER of a double sum separates device from defun. What moved it: **on a GB10
+one double FMA per element is a COMPUTE ceiling (~70 G/s, the card's fp64 rate), which the f32 kernel
+sat just under (232 GB/s of a 273 peak) and the bf16 kernel, with half the bytes an element, HIT at
+138 GB/s** -- and every load width from 16 to 128 bits a lane landed on the same figure
+(`Bf16KernelProbe.java`, `gemv-bf16-probe.cu`). So the f32 and bf16 kernels now keep the running sum
+the way `gemm.metal`'s `gemv_f32` always had to -- the product's rounding error recovered exactly with
+an fma, every addition a TwoSum, the warp fold pair-wise, spelled operation for operation the same
+(`gemv_ff<T>`) -- which carries ~48 bits, runs at the fp32 rate, and measured bit-identical to the
+double-accumulated oracle on EVERY row at seven shapes from 1024x1024 to 248320x1024, the bf16 one and
+the f32 one alike. Over the 508 MB Qwen head: bf16 2.22 ms (229 GB/s) against 3.67 ms on the double
+kernel, f32 unchanged at 4.28 ms where it was already at the bandwidth, and 2.5-5x at the shapes that
+sit in L2 (1024x1024 8 us against 23). It is what lets llm's story stay byte-identical with the flag
+on. Pinned as a relative tolerance plus ">99% of rows identical"; the `#d` kernel keeps its double, and
+its few-ulp story.
+
+**bfloat16 is the third matrix width of this member, and of no other** (`.todo/490`): a `#bf16` matrix
+(a `short[]` of stored patterns, two bytes an element) against an `#f` vector into an `#f` result --
+the one pairing the CPU's fused kernel has, bf16 weights against f32 activations (`.kb/bfloat16.md`).
+The kernel (`gemv_bf16`) widens each pattern in its lane loop -- one shift, exact for every pattern --
+and is otherwise `gemv_f32`, so **the bf16 kernel IS the f32 kernel over the widened matrix bit for
+bit** (`GpuTest.aBfloat16MatrixByVectorProductIsTheSingleFloatKernelOverTheWidenedMatrixBitForBit`,
+and 0 mismatching rows at every shape of the crossover probe): it joins the f32 row of the precision
+story rather than earning one, exactly as the CPU's fused kernel joined the f32 reduction contract.
+The seam is `GpuDevice.supportsBfloat16()` beside `supportsDouble()` -- `true` on CUDA, `false` on
+Metal, where the width is out of scope and `Gpu.matvec(short[], ...)` is a hard decline at every
+size -- and `gemvBf16`. `DeviceResidency` keys a `short[]` like any other host array (`width` two
+bytes; a `short[]` is never a RESULT, so never a stub, though `allocateBacking` carries the arm for
+symmetry). The interpreter arm is `LinalgGpu.matvec`'s `LispBFloat16Array` case; the compiled bridge's
+is `JvmGpuTemplate.gpuMatvecBf16`, whose `bf16Dim` reads the TWO-slot header (`[rank, hi_0, lo_0,
+...]`, data at `1 + 2 * rank`) -- the one place in that template that spells the layout, beside
+`JvmSimdVectorTemplate`'s pair. Every other pairing (a bf16 vector, a bf16 matrix against a `#d`
+vector) declines to the rung below, which computes it; `--gpu` may not turn an answer into an error.
+Shipped route, resident, GB10, 2026-09-06 (`Bf16MatvecCrossover.java` against
+`matvec-bf16-baseline.lisp` under `--simd`, one thread, Graal): the floor is ~10 us at either width up
+to 1M elements; from 6144x1024 up bf16 is bandwidth-bound and 1.9-2.9x the f32 kernel (6144x1024 20
+against 58 us, 4096x4096 125 against 268, 32000x2048 575 against 1103, 248320x1024 2216 against
+4281); against the CPU's fused bf16 kernel the device is 1.4x at 384x384, 2.3x at 512x512, 7x at
+1024x1024, 28x at 6144x1024 and 10x at the 508 MB head (2.2 against 22.6 ms). The cold trip (written
+between calls) never pays: 22 us at 384x384 against the CPU's 14. **What the width buys a decode
+step**: `examples/llm/README.md`, "bf16 weights on the device".
 
 **The seam is a CHAIN on both backends.** Interpreter: `LinalgGpu.installVec`, called from the VEC
 library's lazy-load hook after `VecSimd.install`, and it installs the write hook itself since a
 program may never reach `linalg:`. JVM: `JvmExprCompiler` routes a `vec:matvec` call site to
 `JvmSimdCompiler.compileGpuMatvec` whenever the GPU bridge was emitted -- with `--simd` or without.
-Declined: anything not a packed rank-2 matrix and a packed rank-1 vector of the same width and
-matching extent, a mixed pair, and the first sight.
+Declined: anything not a packed rank-2 matrix and a packed rank-1 vector at one of the three pairings
+above with matching extent, and the first sight.
 
 ### The collector, and the flags that do and do not help
 
@@ -697,7 +745,7 @@ protocol and the tests are shared; what is NOT shared is the width, every thresh
 
 | | CUDA | Metal |
 |---|---|---|
-| widths | `#d` and `#f` | **`#f` only** -- MSL rejects `double` outright |
+| widths | `#d` and `#f`, and `#bf16` as the GEMV's matrix | **`#f` only** -- MSL rejects `double` outright; `supportsBfloat16()` is `false` too |
 | rank-2 product | our tiled kernel | **MPS** above `2^27` per matrix, our tiled kernel below |
 | stacked product | our batched kernel | our batched kernel |
 | transposed stacked product | `ta`/`tb` on the same kernel | the same two flags, and MPS's `transposeLeft:`/`transposeRight:` above the MPS threshold |
@@ -706,7 +754,7 @@ protocol and the tests are shared; what is NOT shared is the width, every thresh
 | broadcast + axes transpose | yes | yes |
 | axis fold `:axis` | yes | **not as a round trip, measured**; over a resident operand only |
 | generator fill | yes | no -- it needs a `double` |
-| `vec:matvec` | from `2^17`, double accumulator | from `2^21`, **compensated float** accumulator |
+| `vec:matvec` | from `2^17`, a double accumulator at `#d` and the **compensated float** pair at `#f` / `#bf16` (since 2026-09-06) | from `2^21`, the **compensated float** pair, `#f` only |
 | lazy results + resident tier | on (`lazyResultsPay`) | on since the command buffers went asynchronous |
 | resident set | every operand and result | eagerly **the GEMV's matrix only**; lazily every operand and result |
 | index tier + clip norm | yes | `takeRows`/`gather`/`scatterRows`/`sumSquares` NOT members (kernels never written) |

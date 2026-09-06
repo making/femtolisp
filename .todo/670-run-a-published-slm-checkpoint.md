@@ -42,7 +42,7 @@ to 0.20x under C2 from an inlining cliff, so `.todo/488` takes its numbers under
 | `675` | read a safetensors file (+ `config.json`) | Medium | **closed** 09-06; the reader's `#bf16` destination is now pinned across the two engines that have the width (`cli/SafetensorsBfloat16CompilePathTest`) |
 | `677` | the Gated DeltaNet layer: Qwen3.5-0.8B, and every Qwen 3.5-3.8 dense model | High | **closed** 09-06: the layer and its pin (`examples/llm/deltanet.lisp`, `deltanet-check.lisp` on all four backends with and without `--simd`) landed 09-03; its "Remaining" -- the bf16 and quiet-box `tok/s` rows -- was `489`'s lane's work and is in `examples/llm/README.md`. Re-verified at the close on `40a80f91`: one 64-token answer from safetensors and GGUF at f32 and bf16, 1 and 32 threads (eight runs, token for token) |
 | `489` | the model rungs: TinyLlama / SmolLM2, Qwen3-0.6B, LFM2.5-1.2B, Qwen3.5-0.8B | **closed 09-06** | f32 and bf16 measured on six models 09-05; result and reading now in `examples/llm/README.md` and `.todo/history/2026-09.md`. The fused pairing is bf16 weights against f32 activations only, every other pairing declining to the scalar defun (`.todo/696`) |
-| `490` | bf16 on the device | High | not started; GB10 only |
+| `490` | bf16 on the device | High | **closed 09-06** on the GB10: `gemv_bf16` (the f32 kernel over the widened matrix bit for bit), both interceptors, Metal declining by `supportsBfloat16()`; the accumulator became a compensated float pair at `#f` and `#bf16` because the double FMA was a compute ceiling on this card (`.kb/gpu.md`, "The GEMV, and the matrix that stays"); the residency cap was never the constraint under the interceptors (lazy budget = the device less an eighth). Numbers: `examples/llm/README.md`, "bf16 weights on the device" |
 
 **Order: 671 -> 673 / 675 -> 674 -> 489 rung 0 at f32 -> 676 -> 678 -> 677 -> 487 -> 489 at
 bf16 -> 672 -> 490.** The point of it: 671 needs no new array type, so a BF16 checkpoint
@@ -335,7 +335,8 @@ Cited by number from other items -- **the numbering is fixed.**
   newest small models are hybrids. Gemma 4 waits until asked for.
 - **Not mixed-precision training.** `torch:` stays f32/f64; bf16 is a storage width for
   weights, and nothing here changes what an activation is.
-- **Not the device.** `--gpu` declines every new type until `.todo/490`; declining correctly
+- **Not the device, beyond the GEMV.** `--gpu` takes `vec:matvec` over bf16 weights since
+  `.todo/490` (09-06) and declines every other new type; declining correctly
   is what `.todo/483`'s exhaustive switches buy.
 - **Not fp8 / int4 on the CPU.** Measured out; re-measure only when the Vector API grows a
   dot-product or a narrower conversion, or on a host whose JIT beats 1 op/element for the

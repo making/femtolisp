@@ -616,7 +616,15 @@ final class DeviceResidency {
 		}
 	}
 
+	/**
+	 * The element width of a host array: a {@code short[]} is a bfloat16 matrix (two
+	 * bytes a pattern, {@code .kb/bfloat16.md}), a {@code float[]} single, anything else
+	 * double.
+	 */
 	private static int width(Object host) {
+		if (host instanceof short[]) {
+			return Short.BYTES;
+		}
 		return host instanceof float[] ? Float.BYTES : Double.BYTES;
 	}
 
@@ -632,14 +640,26 @@ final class DeviceResidency {
 		if (host instanceof double[] d) {
 			return (long) d.length * Double.BYTES;
 		}
+		if (host instanceof short[] b) {
+			return (long) b.length * Short.BYTES;
+		}
 		return Long.MAX_VALUE;
 	}
 
-	/** A stub's backing: the full span, with the stub's own prefix copied in. */
+	/**
+	 * A stub's backing: the full span, with the stub's own prefix copied in. A
+	 * {@code short[]} arm for symmetry only -- no member RESULTS in a bfloat16 array
+	 * ({@code .todo/490}'s GEMV writes f32), so no bfloat16 stub exists to back.
+	 */
 	private static Object allocateBacking(Object stub, long spanEnd) {
 		if (stub instanceof float[] f) {
 			float[] backing = new float[Math.toIntExact(spanEnd / Float.BYTES)];
 			System.arraycopy(f, 0, backing, 0, f.length);
+			return backing;
+		}
+		if (stub instanceof short[] b) {
+			short[] backing = new short[Math.toIntExact(spanEnd / Short.BYTES)];
+			System.arraycopy(b, 0, backing, 0, b.length);
 			return backing;
 		}
 		double[] d = (double[]) stub;

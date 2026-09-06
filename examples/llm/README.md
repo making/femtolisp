@@ -449,6 +449,42 @@ covers the nine prompt positions. TinyLlama's rows above are the raw completion 
 that reason, and its earlier "chat prompt" rows on this page should be read with it in
 mind.
 
+### bf16 weights on the device: `--gpu -w bf16`
+
+`--gpu` takes `vec:matvec` over a `#bf16` weight matrix on an NVIDIA card since
+2026-09-06 (`.todo/490`): the kernel decodes the stored patterns in its lane loop and is
+otherwise the single-float kernel, at half the bytes a resident row streams -- 2.2 ms
+against 4.3 for this model's 248320x1024 head, 229 GB/s ([the guide](../../doc/en/guides/gpu-acceleration.md)).
+Measured on the GB10 box (`628c4048` plus the item, GraalVM 25, JVM class output,
+`-Xmx16g`, `-m chat -t 0 -n 64` on the cat prompt from the BF16 GGUF, load average
+under 2.3 for the one-thread rows and under 1.5 for the re-check; three runs each, the
+64 tokens byte-identical across all twenty-four):
+
+| Qwen3.5-0.8B | `--simd` | `--gpu --simd` | `--simd --parallel`, 16 threads | `--gpu --simd --parallel`, 16 |
+| --- | --- | --- | --- | --- |
+| `-w f32` | 5.9 / 6.3 / 6.3 | 11.1 / 11.4 / 11.5 | 16.9 / 17.0 / 17.3 | 10.8 / 11.5 / 11.5 |
+| `-w bf16` | 7.7 / 7.7 / 7.8 | 11.3 / 11.6 / 11.9 | 18.3 / 18.5 / 19.1 | 11.2 / 11.3 / 11.4 |
+
+Three readings. **The device leg is not GEMV-bound**: bf16 and f32 land on the same 11.5
+tok/s with the flag, though the device streams half the bytes -- the whole model's GEMVs
+are ~7 ms of an 86 ms token there (1.5 GB at 229 GB/s), and what remains is this
+model's Gated DeltaNet recurrence, the norms, the 248k-way argmax and ~170 device round
+trips a token. **`--simd --parallel` still wins on this box** (18.5 against 11.6), for the
+reason the stories15M table below gives: the parallel workers and the driver compete for
+the cores, and under the flag the sixteen threads bought nothing. The width's own lever is
+intact on the CPU legs (1.2x on one thread, 1.1x on sixteen), as the table above found on
+the other box. **And the residency budget was never the constraint.** Under the
+interceptors the library keeps results on the device and its budget is the headroom
+rule -- everything the card has less an eighth -- so this 1.5 GB model sits resident from
+its second token; the 1 GB eager cap `.todo/490` was filed against applies only to an
+embedder that leaves lazy results off. Forced below the model through the package-private
+seam (`.todo/artefacts/123-gpu-acceleration/ResidencyCliff.java`): a 512 MB budget --
+above the largest matrix, below the model -- decodes at **6.7-6.8 tok/s, BELOW `--simd`'s
+7.7**, and 256 MB or 64 MB at 5.8-5.9, because every evicted matrix is a first sight again
+on its next token (declined to the CPU) and an upload on the one after, so the loop
+alternates between the CPU rate and a cold trip. Nothing in the output says so; that is
+`.todo/716`.
+
 ## The layer table
 
 The one thing here that is not `run.c`: the forward pass is a **table of layer
@@ -641,7 +677,8 @@ the one GEMV per token it moves pays the GPU's idle-clock penalty after the
 2.7 ms of CPU work between tokens ([the guide](../../doc/en/guides/gpu-acceleration.md#on-apple-silicon)). The `--simd` kernel's deliberately pinned
 128-bit accumulation (one chain per row, so results agree bit for bit with the
 WASM `f32x4` kernels on every host) is what the device does NOT reproduce -- it
-accumulates in double, like the scalar `vec.lisp` definition, and lands on that
+keeps a compensated pair of single floats (a double until 2026-09-06), which carries
+the bits of the scalar `vec.lisp` definition's double accumulation, and lands on that
 definition's bits instead.
 
 The interpreter's `--simd` needs the native binary or

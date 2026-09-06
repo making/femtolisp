@@ -417,6 +417,21 @@ final class LinalgGpuKernels {
 	 * @return a fresh {@code rows} result, or {@code null}
 	 */
 	static float @Nullable [] matvec(float[] w, float[] x, int rows, int cols) {
+		float[] out = new float[rows];
+		return Gpu.matvec(w, 0, x, 0, out, 0, rows, cols) ? out : null;
+	}
+
+	/**
+	 * The bfloat16 sibling of {@link #matvec(float[], float[], int, int)}: a matrix of
+	 * bf16 bit patterns against an f32 vector, into an f32 result -- the fused pairing
+	 * ({@code .kb/bfloat16.md}), on the device ({@code .todo/490}).
+	 * @param w the matrix's stored patterns, row-major
+	 * @param x the vector
+	 * @param rows rows of the matrix
+	 * @param cols columns of the matrix
+	 * @return the product, or {@code null} when the device declined
+	 */
+	static float @Nullable [] matvec(short[] w, float[] x, int rows, int cols) {
 		float[] out = resultF(rows);
 		return Gpu.matvec(w, 0, x, 0, out, 0, rows, cols) ? out : null;
 	}

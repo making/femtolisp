@@ -194,4 +194,14 @@ public final class GpuThresholds {
 		return device != null && device.supportsDouble();
 	}
 
+	/**
+	 * Whether a {@code #bf16} matrix can be the weight of a device GEMV here
+	 * ({@code .todo/490}): {@code true} on CUDA, {@code false} on Metal.
+	 * @return {@code true} when the bfloat16 GEMV is live here
+	 */
+	public static boolean supportsBfloat16() {
+		GpuDevice device = Gpu.device();
+		return device != null && device.supportsBfloat16();
+	}
+
 }

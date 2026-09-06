@@ -297,6 +297,14 @@ class LinalgGpuDeclineTest {
 					""".formatted(type, type);
 			assertThat(eval(program, true)).as(type).isEqualTo(eval(program, false));
 		}
+		// And the bfloat16 pairing (.todo/490): a #bf16 matrix against an #f vector,
+		// below the threshold, prints the defun's #f result with the flag and without.
+		String bf16 = """
+				(defparameter *w* (make-array '(16 16) :element-type 'bfloat16 :initial-element 0.375))
+				(defparameter *x* (linalg:cos (linalg:arange 1 17 :element-type 'single-float)))
+				(list (vec:matvec *w* *x*) (vec:matvec *w* *x*))
+				""";
+		assertThat(eval(bf16, true)).as("bfloat16").isEqualTo(eval(bf16, false));
 	}
 
 	@Test

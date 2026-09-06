@@ -113,7 +113,7 @@ carry this item.
 | `487` | conversion and bulk width change: the bits pair, `coerce`, reading a bf16 file | Medium |
 | `488` | the fused bf16 GEMV / dot kernels -- where the 1.6x comes from | DONE 2026-09-05 |
 | `489` | the goal: a 1B-class model on rontolisp | DONE 2026-09-06 |
-| `490` | bf16 on the device: `gemv_bf16`, the residency cap, the precision row | High |
+| `490` | bf16 on the device: `gemv_bf16`, the residency cap, the precision row | DONE 2026-09-06 |
 
 Order: 483 first (a pure refactor that makes every later site a compile error rather than a
 silent misroute), then 484, then 485 and 486 in either order, then 487, then 488, then 489.

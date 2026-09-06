@@ -801,7 +801,7 @@ class JvmLinalgGpuAccelCompilerTest {
 	void theDeviceIsAskedOnTheSecondSightAndTheLaneKernelOnTheFirst() throws Exception {
 		// .kb/vec.md's f32 reduction probe as a matrix row: the defun (double
 		// accumulation, narrowed) prints 16778240 and the lane kernel 16778176. The
-		// device accumulates in double and answers the DEFUN's figure, and only from the
+		// device's compensated accumulator answers the DEFUN's figure, and only from the
 		// second sight of the matrix on -- so the chain is legible: (lane device).
 		// .todo/480 gave the lane rung four independent accumulators above 32 columns,
 		// so at 1024 columns it groups as sixteen lanes and answers 16778176 where it
@@ -822,6 +822,88 @@ class JvmLinalgGpuAccelCompilerTest {
 		assertThat(run(compileWithVec(program, false, true))).as("--simd").isEqualTo("(16778176 16778176)");
 		assertThat(run(compileWithVec(program, true, false))).as("--gpu").isEqualTo("(16778240 16778240)");
 		assertThat(run(compileWithVec(program, false, false))).as("scalar").isEqualTo("(16778240 16778240)");
+	}
+
+	// --- the bfloat16 matrix-by-vector product (.todo/490) ---------------------------
+
+	static boolean takesBf16Matvec() {
+		return takesMatvec() && am.ik.gpu.GpuThresholds.supportsBfloat16();
+	}
+
+	/**
+	 * {@link #exactMatvec} at the fused pairing -- a {@code #bf16} matrix of exact +1 /
+	 * -1 entries (filled by hand: {@code linalg:} declines the width) against an
+	 * {@code #f} index ramp, twice -- so the compiled bridge's two-slot bf16 header read
+	 * ({@code JvmGpuTemplate.bf16Dim}) is exercised against the defun.
+	 */
+	private static String exactBf16Matvec(int side) {
+		return """
+				(defparameter *w* (make-array '(%d %d) :element-type 'bfloat16))
+				(dotimes (i %d)
+				  (dotimes (j %d)
+				    (setf (aref *w* i j) (if (> (sin (+ (* i %d) j 1)) 0) 1.0 -1.0))))
+				(defparameter *x* (linalg:arange 0 %d :element-type 'single-float))
+				(vec:matvec *w* *x*)
+				(print (linalg:to-list (vec:matvec *w* *x*)))
+				""".formatted(side, side, side, side, side, side);
+	}
+
+	@Test
+	@EnabledIf("takesBf16Matvec")
+	void theBfloat16MatrixByVectorProductMatchesTheScalarReferenceOnceResident() throws Exception {
+		// The accepted call lands on the defun's bits, and the compiled class runs its
+		// OWN embedded copy of the library (its hit count is not this JVM's), so the
+		// test below -- the defun's figure on the second sight -- is what
+		// says the bridge's bf16 arm really reached the device.
+		String program = exactBf16Matvec(matvecSide());
+		assertThat(run(compileWithVec(program, true, false))).isEqualTo(run(compileWithVec(program, false, false)));
+	}
+
+	@Test
+	@EnabledIf("takesBf16Matvec")
+	void theBfloat16DeviceRungIsAskedOnTheSecondSightAndTheFusedLaneKernelOnTheFirst() throws Exception {
+		// The f32 probe above with the matrix at bf16: the fused lane kernel is the f32
+		// kernel over the widened matrix (16778176), the device kernel accumulates in
+		// double like the defun (16778240), so the chain reads (lane device) here too.
+		int rows = (int) Math.max(128, (am.ik.gpu.GpuThresholds.matvecMinElements() + 1023) / 1024);
+		String program = """
+				(defparameter *w* (make-array '(%d 1024) :element-type 'bfloat16 :initial-element 0.0))
+				(setf (aref *w* 0 0) 4096.0)
+				(dotimes (j 1023) (setf (aref *w* 0 (+ j 1)) 1.0))
+				(defparameter *x* (linalg:ones '(1024) :element-type 'single-float))
+				(setf (aref *x* 0) 4096.0)
+				(defun probe () (round (aref (vec:matvec *w* *x*) 0)))
+				(print (list (probe) (probe)))
+				""".formatted(rows);
+		assertThat(run(compileWithVec(program, true, true))).as("--gpu --simd").isEqualTo("(16778176 16778240)");
+		assertThat(run(compileWithVec(program, false, true))).as("--simd").isEqualTo("(16778176 16778176)");
+		assertThat(run(compileWithVec(program, true, false))).as("--gpu").isEqualTo("(16778240 16778240)");
+		assertThat(run(compileWithVec(program, false, false))).as("scalar").isEqualTo("(16778240 16778240)");
+	}
+
+	@Test
+	void aDeclinedBfloat16MatrixByVectorProductRunsTheSameProgramToTheSameOutputOnAnyMachine() throws Exception {
+		// Below the threshold, and at the two pairings the device does not carry (a bf16
+		// or a double vector against a bf16 matrix) above it: the defun's output, with
+		// the flag and without, on every machine.
+		for (String program : new String[] { """
+				(defparameter *w* (make-array '(16 16) :element-type 'bfloat16 :initial-element 0.375))
+				(defparameter *x* (linalg:cos (linalg:arange 1 17 :element-type 'single-float)))
+				(print (list (vec:matvec *w* *x*) (vec:matvec *w* *x*)))
+				""", """
+				(defparameter *w* (make-array '(512 512) :element-type 'bfloat16 :initial-element 0.375))
+				(defparameter *x* (make-array 512 :element-type 'bfloat16 :initial-element 1.5))
+				(print (list (aref (vec:matvec *w* *x*) 0) (aref (vec:matvec *w* *x*) 511)))
+				""", """
+				(defparameter *w* (make-array '(512 512) :element-type 'bfloat16 :initial-element 0.375))
+				(defparameter *x* (linalg:ones '(512)))
+				(print (list (aref (vec:matvec *w* *x*) 0) (aref (vec:matvec *w* *x*) 511)))
+				""" }) {
+			assertThat(run(compileWithVec(program, true, false))).as(program)
+				.isEqualTo(run(compileWithVec(program, false, false)));
+			assertThat(run(compileWithVec(program, true, true))).as(program + " --simd")
+				.isEqualTo(run(compileWithVec(program, false, true)));
+		}
 	}
 
 	@Test

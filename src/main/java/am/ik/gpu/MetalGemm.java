@@ -680,6 +680,15 @@ final class MetalGemm implements GpuDevice {
 		return false;
 	}
 
+	/**
+	 * Always {@code false}: the bfloat16 GEMV is a CUDA member only ({@code .todo/490}
+	 * kept Apple out of scope, as the rest of {@code .todo/482} did).
+	 */
+	@Override
+	public boolean supportsBfloat16() {
+		return false;
+	}
+
 	/** Whether a matrix at or above {@link #MPS_MIN_WORK} goes to MPS. For the tests. */
 	boolean mpsEnabled() {
 		return this.mps;
@@ -786,6 +795,12 @@ final class MetalGemm implements GpuDevice {
 	/** The matrix-by-vector product at {@code double} is a hard decline like the rest. */
 	@Override
 	public boolean gemv(double[] w, int ow, double[] x, int ox, double[] y, int oy, int rows, int cols) {
+		return false;
+	}
+
+	/** And over a bfloat16 matrix: no kernel here ({@link #supportsBfloat16()}). */
+	@Override
+	public boolean gemvBf16(short[] w, int ow, float[] x, int ox, float[] y, int oy, int rows, int cols) {
 		return false;
 	}
 

@@ -302,14 +302,23 @@ public final class LinalgGpu {
 	 * since a matrix-by-vector product pays only over a RESIDENT matrix, only once the
 	 * same matrix has been offered before and not written since (the library's rule,
 	 * {@code .kb/gpu.md}); everything else declines to the {@code --simd} lane kernel or
-	 * the scalar defun. The kernel accumulates in double and narrows on the store, which
-	 * is the defun's rule: at {@code #f} it lands on the defun's own bits in practice and
-	 * closer to them than the lane kernel does; at {@code #d} it is the product's few-ulp
-	 * story. Neither is asserted as byte-identity.
+	 * the scalar defun. The kernel lands on the defun's widen-accumulate-narrow bits in
+	 * practice -- a double accumulator at {@code #d}, a compensated float pair at
+	 * {@code #f} and {@code #bf16} ({@code .kb/gpu.md}) -- and closer to them than the
+	 * lane kernel does; at {@code #d} it is the product's few-ulp story. Neither is
+	 * asserted as byte-identity.
+	 *
+	 * <p>
+	 * The widths pair as the CPU's fused kernels pair them ({@code .kb/bfloat16.md}): a
+	 * {@code #d} or {@code #f} matrix against a vector of ITS width, and a {@code #bf16}
+	 * matrix against an {@code #f} vector into an {@code #f} result -- bf16 weights, f32
+	 * activations, the one pairing a decode loop has ({@code .todo/490}). Any other pair
+	 * declines to the rung below, which is what keeps {@code --gpu} unable to turn an
+	 * answer into an error.
 	 */
 	private static @Nullable LispVal matvec(List<LispVal> args) {
-		if (!(args.get(0) instanceof LispFloatArray w) || !(args.get(1) instanceof LispFloatArray x)
-				|| w.getClass() != x.getClass() || w.rank() != 2 || x.rank() != 1) {
+		if (!(args.get(0) instanceof LispFloatArray w) || !(args.get(1) instanceof LispFloatArray x) || w.rank() != 2
+				|| x.rank() != 1) {
 			return null;
 		}
 		int rows = w.dims()[0];
@@ -320,15 +329,26 @@ public final class LinalgGpu {
 		int[] dims = { rows };
 		return switch (w) {
 			case LispSingleFloatArray single -> {
-				float[] y = LinalgGpuKernels.matvec(single.storage(), floats(x), rows, cols);
+				if (!(x instanceof LispSingleFloatArray vx)) {
+					yield null;
+				}
+				float[] y = LinalgGpuKernels.matvec(single.storage(), vx.storage(), rows, cols);
 				yield y == null ? null : new LispSingleFloatArray(y, dims);
 			}
 			case LispDoubleFloatArray m -> {
-				double[] y = LinalgGpuKernels.matvec(m.storage(), doubles(x), rows, cols);
+				if (!(x instanceof LispDoubleFloatArray vx)) {
+					yield null;
+				}
+				double[] y = LinalgGpuKernels.matvec(m.storage(), vx.storage(), rows, cols);
 				yield y == null ? null : new LispDoubleFloatArray(y, dims);
 			}
-			// The device carries no bfloat16 kernel; the rung below answers.
-			case LispBFloat16Array ignored -> null;
+			case LispBFloat16Array b -> {
+				if (!(x instanceof LispSingleFloatArray vx)) {
+					yield null;
+				}
+				float[] y = LinalgGpuKernels.matvec(b.storage(), vx.storage(), rows, cols);
+				yield y == null ? null : new LispSingleFloatArray(y, dims);
+			}
 		};
 	}
 

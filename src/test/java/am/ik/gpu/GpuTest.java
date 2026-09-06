@@ -915,13 +915,12 @@ class GpuTest {
 
 	@Test
 	void aSingleFloatMatrixByVectorProductLandsOnTheDoubleAccumulatedOracle() {
-		// The kernel accumulates in double at f32 too, so every product of two floats is
-		// exact in it and only the ORDER of a double sum separates it from the scalar
-		// defun's widen-accumulate-narrow rule -- which moves the narrowed float only
-		// when
-		// the sum lies within ~1e-16 of a rounding boundary: measured, never over 1024
-		// rows. A float accumulator (the lane kernel's width) lands 2.6e-7 away and on
-		// about a quarter of the rows, so the near-identity below is the contract's pin.
+		// The kernel keeps a compensated float-float accumulator at f32 (a double until
+		// .todo/490, when the double FMA measured as this card's compute ceiling), which
+		// carries ~48 bits and lands on the scalar defun's widen-accumulate-narrow bits
+		// wherever a double would: measured, on every one of 1024 rows. A plain float
+		// accumulator (the lane kernel's width) lands 2.6e-7 away and on about a quarter
+		// of the rows, so the near-identity below is the contract's pin.
 		int rows = 512, cols = 768;
 		float[] w = new float[rows * cols], x = new float[cols], y = new float[rows], oracle = new float[rows];
 		for (int i = 0; i < w.length; i++) {
@@ -1030,6 +1029,152 @@ class GpuTest {
 		assertThat(Gpu.matvec(w, 0, x, 0, y, 1, rows, cols)).isFalse();
 		assertThat(Gpu.matvec(w, 0, x, 0, y, 0, 0, cols)).isFalse();
 		assertThat(y).containsOnly(0.0);
+		// The bfloat16 form, the same way round: accepted on the second sight of its own
+		// matrix, and every malformed call declined (.todo/490).
+		short[] wb = new short[rows * cols], baseWb = new short[rows * cols];
+		float[] xf = new float[cols], yf = new float[rows], baseYf = new float[rows];
+		assertThat(Gpu.matvec(baseWb, 0, xf, 0, baseYf, 0, rows, cols)).isFalse();
+		assertThat(Gpu.matvec(baseWb, 0, xf, 0, baseYf, 0, rows, cols))
+			.as("a %d x %d bfloat16 GEMV must be accepted here on the second sight", rows, cols)
+			.isTrue();
+		assertThat(Gpu.matvec(wb, 0, xf, 0, yf, 0, 64, 64)).isFalse();
+		assertThat(Gpu.matvec(wb, 0, new float[cols - 1], 0, yf, 0, rows, cols)).isFalse();
+		assertThat(Gpu.matvec(wb, 0, xf, 0, new float[rows - 1], 0, rows, cols)).isFalse();
+		assertThat(Gpu.matvec(wb, 1, xf, 0, yf, 0, rows, cols)).isFalse();
+		assertThat(Gpu.matvec(wb, 0, xf, 1, yf, 0, rows, cols)).isFalse();
+		assertThat(Gpu.matvec(wb, 0, xf, 0, yf, 1, rows, cols)).isFalse();
+		assertThat(Gpu.matvec(wb, 0, xf, 0, yf, 0, 0, cols)).isFalse();
+		assertThat(yf).containsOnly(0.0f);
+	}
+
+	// --- the bfloat16 matrix-by-vector product (.todo/490) ---------------------------
+	// bf16 weights against f32 activations -- the CPU's fused pairing (.kb/bfloat16.md)
+	// -- on the device. The kernel decodes each pattern in its lane loop and is otherwise
+	// gemv_f32, so it is pinned as an EQUIVALENCE, the f32 kernel over the widened
+	// matrix bit for bit, and inherits that kernel's relation to the double-accumulated
+	// oracle rather than earning a precision row of its own.
+
+	/**
+	 * The bfloat16 pattern nearest {@code value}, rounded to nearest even
+	 * ({@code am.ik.rontolisp.BFloat16}'s rule, spelled here so this package stays
+	 * import-free).
+	 */
+	private static short bf16(float value) {
+		int bits = Float.floatToRawIntBits(value);
+		return (short) ((bits + 0x7fff + ((bits >>> 16) & 1)) >>> 16);
+	}
+
+	/** The f32 value a bfloat16 pattern denotes: exact, one shift. */
+	private static float widen(short pattern) {
+		return Float.intBitsToFloat(pattern << 16);
+	}
+
+	@Test
+	@ResourceLock(DEVICE_MEMORY)
+	void aBfloat16MatrixByVectorProductIsTheSingleFloatKernelOverTheWidenedMatrixBitForBit() {
+		DeviceResidency residency = Gpu.residency();
+		GpuDevice device = Gpu.device();
+		assumeTrue(residency != null && device != null && device.supportsBfloat16(),
+				"the bfloat16 GEMV is the CUDA backend's");
+		Gpu.releaseResident();
+		int rows = 512, cols = 768;
+		short[] w = new short[rows * cols];
+		float[] widened = new float[rows * cols], x = new float[cols], y = new float[rows], yF = new float[rows];
+		for (int i = 0; i < w.length; i++) {
+			w[i] = bf16((float) Math.sin(i * 0.37));
+			widened[i] = widen(w[i]);
+		}
+		for (int j = 0; j < cols; j++) {
+			x[j] = (float) Math.cos(j * 0.11);
+		}
+		// The first sight of either matrix declines, nothing moves, nothing is resident.
+		assertThat(Gpu.matvec(w, 0, x, 0, y, 0, rows, cols)).isFalse();
+		assertThat(Gpu.matvec(widened, 0, x, 0, yF, 0, rows, cols)).isFalse();
+		assertThat(y).containsOnly(0.0f);
+		assertThat(Gpu.residentBytes()).isZero();
+		// The second: both taken, and the bf16 kernel IS the f32 kernel over the widened
+		// matrix -- every row bit for bit, NaN-safe equality included.
+		assertThat(Gpu.matvec(w, 0, x, 0, y, 0, rows, cols)).isTrue();
+		assertThat(Gpu.matvec(widened, 0, x, 0, yF, 0, rows, cols)).isTrue();
+		assertThat(y).isEqualTo(yF);
+		// The bf16 copy is resident at TWO bytes an element (the f32 one at four).
+		assertThat(Gpu.residentBytes()).isGreaterThanOrEqualTo((long) rows * cols * (Short.BYTES + Float.BYTES));
+		// And the f32 kernel's relation to the double-accumulated oracle is inherited:
+		// the contract's own pin, ">99% of rows identical" plus a relative bound.
+		float[] oracle = new float[rows];
+		double scale = 0;
+		for (int r = 0; r < rows; r++) {
+			double acc = 0;
+			for (int j = 0; j < cols; j++) {
+				acc += (double) widened[r * cols + j] * x[j];
+			}
+			oracle[r] = (float) acc;
+			scale = Math.max(scale, Math.abs(acc));
+		}
+		int identical = 0;
+		for (int r = 0; r < rows; r++) {
+			assertThat(y[r]).as("row %d", r).isCloseTo(oracle[r], within((float) (scale * 1e-6)));
+			if (y[r] == oracle[r]) {
+				identical++;
+			}
+		}
+		assertThat(identical).as("rows bit-identical to the double-accumulated oracle").isGreaterThan(rows * 99 / 100);
+		// The third sight is a hit.
+		long hits = residency.hits();
+		java.util.Arrays.fill(y, 0.0f);
+		assertThat(Gpu.matvec(w, 0, x, 0, y, 0, rows, cols)).isTrue();
+		assertThat(residency.hits()).isGreaterThan(hits);
+		assertThat(y).isEqualTo(yF);
+		// Written: the short[] copy is dropped like any other, the next sight is a first
+		// sight and declines, and the one after uploads the NEW patterns.
+		w[0] = bf16(100.0f);
+		widened[0] = widen(w[0]);
+		Gpu.written(w);
+		Gpu.written(widened);
+		assertThat(Gpu.matvec(w, 0, x, 0, y, 0, rows, cols)).isFalse();
+		assertThat(Gpu.matvec(widened, 0, x, 0, yF, 0, rows, cols)).isFalse();
+		assertThat(Gpu.matvec(w, 0, x, 0, y, 0, rows, cols)).isTrue();
+		assertThat(Gpu.matvec(widened, 0, x, 0, yF, 0, rows, cols)).isTrue();
+		assertThat(y).isEqualTo(yF);
+		assertThat(y[0]).isNotEqualTo(oracle[0]);
+	}
+
+	@Test
+	void everyBfloat16MatrixByVectorOperandIsReadFromItsOwnOffset() {
+		GpuDevice device = Gpu.device();
+		assumeTrue(device != null && device.supportsBfloat16(), "the bfloat16 GEMV is the CUDA backend's");
+		// The compiled representation's bfloat16 header is TWO slots a dimension
+		// (.kb/bfloat16.md): the matrix's elements start at 5, the f32 vector's at 2,
+		// and the f32 result's header must survive. Small integers, exact at bf16.
+		int rows = 400, cols = 400;
+		short[] w = new short[5 + rows * cols];
+		float[] x = new float[2 + cols], y = new float[2 + rows];
+		w[0] = 2;
+		w[1] = (short) (rows >>> 16);
+		w[2] = (short) rows;
+		w[3] = (short) (cols >>> 16);
+		w[4] = (short) cols;
+		x[0] = 1;
+		x[1] = cols;
+		y[0] = 1;
+		y[1] = rows;
+		for (int i = 0; i < rows * cols; i++) {
+			w[5 + i] = bf16((i % 11) - 5);
+		}
+		for (int j = 0; j < cols; j++) {
+			x[2 + j] = (j % 3) - 1;
+		}
+		assertThat(Gpu.matvec(w, 5, x, 2, y, 2, rows, cols)).isFalse();
+		assertThat(Gpu.matvec(w, 5, x, 2, y, 2, rows, cols)).isTrue();
+		assertThat(y[0]).isEqualTo(1.0f);
+		assertThat(y[1]).isEqualTo(rows);
+		for (int r = 0; r < rows; r++) {
+			float acc = 0;
+			for (int j = 0; j < cols; j++) {
+				acc += widen(w[5 + r * cols + j]) * x[2 + j];
+			}
+			assertThat(y[2 + r]).as("row %d", r).isEqualTo(acc);
+		}
 	}
 
 	@Test

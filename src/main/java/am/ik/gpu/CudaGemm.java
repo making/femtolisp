@@ -186,10 +186,18 @@ final class CudaGemm implements GpuDevice {
 
 	/**
 	 * The GEMV behind {@code vec:matvec} ({@code .todo/475}): one warp per row over a
-	 * row-major matrix, accumulating in double at both widths. The one member whose worth
-	 * is decided by residency rather than size -- see {@link #gemv}.
+	 * row-major matrix, accumulating in double at {@code #d} and in a compensated float
+	 * pair at {@code #f} ({@code gemm.cu}). The one member whose worth is decided by
+	 * residency rather than size -- see {@link #gemv}.
 	 */
 	static final String KERNEL_GEMV_F64 = "gemv_f64", KERNEL_GEMV_F32 = "gemv_f32";
+
+	/**
+	 * The bfloat16 GEMV ({@code .todo/490}): {@link #KERNEL_GEMV_F32} over a matrix
+	 * stored as bf16 bit patterns, decoded in the lane loop -- the same compensated
+	 * accumulator, half the bytes a row streams.
+	 */
+	static final String KERNEL_GEMV_BF16 = "gemv_bf16";
 
 	/**
 	 * Threads per block for the GEMV: eight warps, so eight rows per block. The kernel is
@@ -420,6 +428,8 @@ final class CudaGemm implements GpuDevice {
 
 	private final MemorySegment gemvF32;
 
+	private final MemorySegment gemvBf16;
+
 	private final String description;
 
 	/**
@@ -497,8 +507,8 @@ final class CudaGemm implements GpuDevice {
 			MemorySegment gemmF32, MemorySegment gemmBatchedF64, MemorySegment gemmBatchedF32,
 			MemorySegment gemmBatchedF32T4, MemorySegment gemmBatchedF32T8, int multiprocessors, MemorySegment mapF64,
 			MemorySegment mapF32, MemorySegment[] strided, MemorySegment[] resident, MemorySegment[] fused,
-			MemorySegment gemvF64, MemorySegment gemvF32, boolean pooled, MemorySegment memoryPool,
-			MemorySegment bounce, long syncFlopCeiling, String description) {
+			MemorySegment gemvF64, MemorySegment gemvF32, MemorySegment gemvBf16, boolean pooled,
+			MemorySegment memoryPool, MemorySegment bounce, long syncFlopCeiling, String description) {
 		this.driver = driver;
 		this.device = device;
 		this.context = context;
@@ -517,6 +527,7 @@ final class CudaGemm implements GpuDevice {
 		this.fused = fused;
 		this.gemvF64 = gemvF64;
 		this.gemvF32 = gemvF32;
+		this.gemvBf16 = gemvBf16;
 		this.pooled = pooled;
 		this.memoryPool = memoryPool;
 		this.bounce = bounce;
@@ -694,6 +705,12 @@ final class CudaGemm implements GpuDevice {
 						"cuModuleGetFunction " + KERNEL_GEMV_F32 + ": " + driver.errorString(status));
 			}
 			MemorySegment gemvF32 = functionOut.get(P, 0);
+			status = driver.moduleGetFunction(functionOut, module, arena.allocateFrom(KERNEL_GEMV_BF16));
+			if (status != CuResult.SUCCESS) {
+				return unwind(driver, device, true, module,
+						"cuModuleGetFunction " + KERNEL_GEMV_BF16 + ": " + driver.errorString(status));
+			}
+			MemorySegment gemvBf16 = functionOut.get(P, 0);
 			MemorySegment pool = MemorySegment.NULL;
 			boolean pooled = pooledAllocationWorks(driver, arena);
 			if (pooled) {
@@ -729,7 +746,7 @@ final class CudaGemm implements GpuDevice {
 			String description = describe(driver, arena, device) + (pooled ? "" : ", unpooled allocation");
 			return new Probe(new CudaGemm(driver, device, context, module, f64, f32, batchedF64, batchedF32,
 					batchedF32T4, batchedF32T8, multiprocessors, mapF64, mapF32, strided, resident, fused, gemvF64,
-					gemvF32, pooled, pool, bounce, ceiling, description), description);
+					gemvF32, gemvBf16, pooled, pool, bounce, ceiling, description), description);
 		}
 		catch (Throwable ex) {
 			// Anything at all: a descriptor defect, a JVM that forbids native access, a
@@ -883,6 +900,12 @@ final class CudaGemm implements GpuDevice {
 	 */
 	@Override
 	public boolean supportsDouble() {
+		return true;
+	}
+
+	/** {@code true}: {@link #KERNEL_GEMV_BF16} is in the module. */
+	@Override
+	public boolean supportsBfloat16() {
 		return true;
 	}
 
@@ -1771,6 +1794,9 @@ final class CudaGemm implements GpuDevice {
 	 * The heap segment over a host array or a backing, which is always one of the two.
 	 */
 	private static MemorySegment heap(Object host) {
+		if (host instanceof short[] b) {
+			return MemorySegment.ofArray(b);
+		}
 		return host instanceof float[] f ? MemorySegment.ofArray(f) : MemorySegment.ofArray((double[]) host);
 	}
 
@@ -2562,28 +2588,50 @@ final class CudaGemm implements GpuDevice {
 	 */
 	@Override
 	public boolean gemv(double[] w, int ow, double[] x, int ox, double[] y, int oy, int rows, int cols) {
-		return gemv(this.gemvF64, MemorySegment.ofArray(w), w, ow, MemorySegment.ofArray(x), x, ox,
+		return gemv(this.gemvF64, MemorySegment.ofArray(w), w, ow, Double.BYTES, MemorySegment.ofArray(x), x, ox,
 				MemorySegment.ofArray(y), y, oy, rows, cols, Double.BYTES);
 	}
 
 	/**
-	 * The single-float sibling of {@link #gemv}. The kernel still accumulates in double,
-	 * which is what keeps it on the scalar defun's bits in practice ({@code gemm.cu}).
+	 * The single-float sibling of {@link #gemv}. The kernel keeps a compensated
+	 * float-float accumulator, which is what keeps it on the scalar defun's bits in
+	 * practice at the fp32 rate ({@code gemm.cu}).
 	 * @return {@code true} when {@code y} was filled
 	 */
 	@Override
 	public boolean gemvF(float[] w, int ow, float[] x, int ox, float[] y, int oy, int rows, int cols) {
-		return gemv(this.gemvF32, MemorySegment.ofArray(w), w, ow, MemorySegment.ofArray(x), x, ox,
+		return gemv(this.gemvF32, MemorySegment.ofArray(w), w, ow, Float.BYTES, MemorySegment.ofArray(x), x, ox,
 				MemorySegment.ofArray(y), y, oy, rows, cols, Float.BYTES);
 	}
 
-	private boolean gemv(MemorySegment kernel, MemorySegment w, Object wh, int ow, MemorySegment x, Object xh, int ox,
-			MemorySegment y, Object yh, int oy, int rows, int cols, int width) {
+	/**
+	 * The bfloat16 sibling of {@link #gemvF} ({@code .todo/490}): the matrix is a
+	 * {@code short[]} of bf16 bit patterns, two bytes an element, and the vector and the
+	 * result are f32. The kernel widens each pattern in the lane loop (one shift, exact)
+	 * and is otherwise {@code gemv_f32} -- the same compensated accumulator, the same
+	 * order -- so it lands where the f32 kernel lands over the widened matrix, bit for
+	 * bit; what changes is that a resident row streams half the bytes. The same residency
+	 * rule.
+	 * @return {@code true} when {@code y} was filled
+	 */
+	@Override
+	public boolean gemvBf16(short[] w, int ow, float[] x, int ox, float[] y, int oy, int rows, int cols) {
+		return gemv(this.gemvBf16, MemorySegment.ofArray(w), w, ow, Short.BYTES, MemorySegment.ofArray(x), x, ox,
+				MemorySegment.ofArray(y), y, oy, rows, cols, Float.BYTES);
+	}
+
+	/**
+	 * The shared GEMV route. {@code widthW} is the matrix's element width and
+	 * {@code width} the vector's and the result's: equal at f32 and f64, two against four
+	 * for the bfloat16 matrix.
+	 */
+	private boolean gemv(MemorySegment kernel, MemorySegment w, Object wh, int ow, int widthW, MemorySegment x,
+			Object xh, int ox, MemorySegment y, Object yh, int oy, int rows, int cols, int width) {
 		if (!this.usable) {
 			return false;
 		}
-		long wBytes = (long) rows * cols * width, xBytes = (long) cols * width, yBytes = (long) rows * width;
-		long offW = (long) ow * width, offX = (long) ox * width, offY = (long) oy * width;
+		long wBytes = (long) rows * cols * widthW, xBytes = (long) cols * width, yBytes = (long) rows * width;
+		long offW = (long) ow * widthW, offX = (long) ox * width, offY = (long) oy * width;
 		long[] buffers = { 0, 0, 0 }, owned = { 0, 0, 0 };
 		try (Arena arena = Arena.ofConfined()) {
 			if (!enter()) {
