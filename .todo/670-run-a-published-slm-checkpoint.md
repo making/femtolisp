@@ -199,7 +199,7 @@ six models at both widths, the reading beside the prediction in `489`, the summa
 | A-2 | `712` `-m chat` with no template answers a different question | Low | Cost twelve discarded timed runs and left a suspect pair of rows on develop. A runs every future rung, so A pays again until it is fixed. One condition plus a failing test on the checked-in `stories260K` |
 | A-3 | `675` read a safetensors checkpoint | Medium | **done 09-06**: nothing was left to BUILD -- `487` landed all five bullets of the `#bf16` target on 09-05 -- and what the audit found missing was a PIN. Every bf16 pin was one engine each (`make-array` with a runtime designator, the bulk `read-sequence`, and the reader itself interpreted only), so the reader COMPOSED of them could have diverged between `java -jar` and a compiled `.class` with nothing to catch it. `cli/SafetensorsBfloat16CompilePathTest` runs one program both ways over a three-dtype fixture and compares bit patterns. No lane code was written, so neither JIT cliff was in the path |
 | A-4 | `677` the Gated DeltaNet layer | High | **done 09-06**: nothing was left to BUILD -- the two "Remaining" bullets were `489`'s rows (in the README since `b87aed25`) and `678`'s run (closed 09-05), so rule 3 sorts both as done-elsewhere, not blocked. The close re-ran the model on `40a80f91` (safetensors and GGUF, f32 and bf16, 1 and 32 threads: one text, eight runs; 1.87 -> 2.54-2.63 tok/s on one thread and 6.39 -> 8.11-8.61 on 32, idle loadavg 1.5 with the parallel rows over the previous run's decaying workers -- a ratio check, not a replacement for the README's quieter window) and the `deltanet` slice of `ExamplesE2eTest` (12 legs green). The dorian checkpoint inventory moved here with sizes and digests (rule 10) |
-| A-5 | `711` what a directory rename breaks outside its own diff | Medium | The `.kb` card owed from `708`'s account. Last deliberately: its value does NOT decay, because `708` holds its evidence durably, so it loses nothing by waiting behind work that does. **708 closed 09-06; its account is `git show 97c85518~:.todo/708-...md`** and `711` now carries that command |
+| A-5 | `711` what a directory rename breaks outside its own diff | Medium | **done 09-06**: the card is `.kb/directory-rename.md`, indexed from `.kb/README.md`. Every claim was re-measured against the tree rather than copied out of `708`, which is how the card's own closing paragraph earned its subject -- `708`'s "18 directory-local `.gitignore` files" is **17**, and the 18 counts the ROOT one, the single file the card does not apply to. Two mechanics `708` did not have: `git mv` on the DIRECTORY carries untracked files along, so the exposure needs a PER-FILE rename; and the residue reports as one collapsed `?? old/` line unless `git status --porcelain` is given `-uall` |
 
 **`489` closed 09-06 (A-1)**: the child table above and `482`'s carry the closure; the
 sweep found no item gated on the capability rather than the number (rule 11) and none of
@@ -294,8 +294,11 @@ Cited by number from other items -- **the numbering is fixed.**
     only on the box that makes it -- untracking DELETES the file for every puller who had
     it. Full account, with the other three things that rename broke outside its own diff:
     `.todo/708` (closed 09-06 --
-    `git show 97c85518~:.todo/708-the-formatter-corpus-walks-agent-worktrees.md`), and the
-    card owed from it is `.todo/711`.
+    `git show 97c85518~:.todo/708-the-formatter-corpus-walks-agent-worktrees.md`). **The
+    card is `.kb/directory-rename.md`** (`711`, closed 09-06), and it carries the two
+    mechanics this rule did not: the exposure needs a PER-FILE rename, because `git mv` on
+    the DIRECTORY takes untracked files with it, and the check needs `-uall` or the residue
+    is one collapsed `?? old/` line.
 
 ## What is deliberately not in the plan
 
