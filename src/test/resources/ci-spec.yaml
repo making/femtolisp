@@ -347,6 +347,51 @@ cases:
       (231 #(1 231 3))
       (UNSIGNED-BYTE 8)
       #(1732584193 4023233417 2225363975 255870178 1578413049 1761846468 178639645 2993401642)
+  - name: subseq-of-an-adjustable-packed-vector
+    # subseq of a SIMPLE packed vector (no fill pointer / adjustability) already keeps
+    # the packed element type on every backend (packed-integer-vectors above); an
+    # adjustable / fill-pointer packed vector is the general boxed representation
+    # instead (.kb/adjustable-arrays.md), and subseq's general-array arm used to build a
+    # plain simple-vector for it regardless of the width it remembers -- CLHS says
+    # subseq answers a sequence of the SAME KIND. The interpreter fix (.todo/698) makes
+    # every width -- (unsigned-byte 8), single-float, double-float -- come back packed,
+    # for the simple case too (a packed float subseq threw outright on the interpreter
+    # before this, since it had no arm for a packed float array at all). The JVM/WASM
+    # compilers still build a general vector here (%array-alike has no packed-float
+    # arm, and the general LispArray copy loop does not consult the source's packed
+    # width): tracked as a follow-up, not fixed alongside the interpreter.
+    source: |
+      (let ((sq698-b (make-array 4 :element-type '(unsigned-byte 8) :fill-pointer 0 :adjustable t)))
+        (vector-push-extend 65 sq698-b)
+        (vector-push-extend 66 sq698-b)
+        (print (type-of (subseq sq698-b 0 2)))
+        (print (rontolisp:octets-to-string (subseq sq698-b 0 (fill-pointer sq698-b)))))
+      (let ((sq698-s (make-array 4 :element-type 'single-float :fill-pointer 0 :adjustable t)))
+        (vector-push-extend 1.0 sq698-s)
+        (vector-push-extend 2.0 sq698-s)
+        (print (type-of (subseq sq698-s 0 2))))
+      (let ((sq698-d (make-array 3 :element-type 'double-float :initial-element 1.5d0)))
+        (print (type-of (subseq sq698-d 0 2))))
+      (print (rontolisp:octets-to-string (vector 65 66 67)))
+    expected: |
+      (SIMPLE-ARRAY (UNSIGNED-BYTE 8) (2))
+      "AB"
+      (SIMPLE-ARRAY SINGLE-FLOAT (2))
+      (SIMPLE-ARRAY DOUBLE-FLOAT (2))
+      "ABC"
+    expectedByBackend:
+      jvm: |
+        (SIMPLE-VECTOR 2)
+        "AB"
+        (SIMPLE-VECTOR 2)
+        (SIMPLE-VECTOR 2)
+        "ABC"
+      wasm: |
+        (SIMPLE-VECTOR 2)
+        "AB"
+        (SIMPLE-VECTOR 2)
+        (SIMPLE-VECTOR 2)
+        "ABC"
   - name: make-array-element-type-deftype-alias
     source: |
       (deftype mae-octet () '(unsigned-byte 8))

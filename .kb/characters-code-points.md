@@ -143,6 +143,18 @@ point its bits assemble, since a CHARACTER admits any code point 0..`#x10FFFF` i
 non-overlong, non-truncated input -- a malformed byte's lenient answer does not generally re-encode
 to the same bytes. **Encode is total** over every code point with no malformed case at all.
 
+**The interpreter's native `%octets-to-string` used to reject any argument that was not
+literally a `LispIntVector`, while the compiled backends' fallback fell through the
+prelude's own `length`/`aref` loop and so tolerated a general (boxed) array too** --
+exactly what a general array's `subseq` answered before the packed-width fix
+(`Environment.packedCopyForElementType`, `.todo/698`), which is how the asymmetry
+surfaced: the same program crashed on the interpreter and quietly decoded on the JVM and
+WASM. `Environment.asOctetVector` closed it by widening the native mirror to accept any
+rank-1 array of integers, matching the Lisp source's own acceptance -- only a genuinely
+non-array argument still signals. `%octets-to-string-strict` is unaffected: answering
+`nil` for anything that is not a packed byte vector (rather than a general array too) is
+its designed fast-path-declines contract, not the asymmetry.
+
 **Framing is not decoding, and the round-trip pair cannot replace a length classifier.**
 `encode(decode(x)) = x` looks like a byte-count-free way to ask "how many of these bytes are safe to
 act on now" (a streaming printer holding back an incomplete tail, or a decoder dropping one) -- it
