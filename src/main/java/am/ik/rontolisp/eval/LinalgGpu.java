@@ -290,10 +290,17 @@ public final class LinalgGpu {
 	 * the one way to a packed array's storage on this backend -- reports reads
 	 * ({@code .kb/gpu.md}, "The two seams, and what must report through them"). The
 	 * interceptor itself hands the device {@code storage()}, which does not.
+	 *
+	 * <p>
+	 * The third thing installed here speaks rather than listens: the exit report that
+	 * names a residency budget too small for what the program keeps coming back to, the
+	 * one shape of run in which this flag is a LOSS ({@link LinalgGpuKernels}). It prints
+	 * nothing on a run whose working set fits.
 	 */
 	private static void hooks() {
 		FloatArrayAccessHook.install(LinalgGpuKernels::written, LinalgGpuKernels::materialize);
 		LinalgGpuKernels.lazyResults();
+		LinalgGpuKernels.reportResidencyPressure();
 	}
 
 	/**

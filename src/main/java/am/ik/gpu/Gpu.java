@@ -729,6 +729,62 @@ public final class Gpu {
 	}
 
 	/**
+	 * A one-line account of a residency budget that turned out to be BELOW what the
+	 * program keeps coming back to, or {@code null} while it is holding -- which is the
+	 * answer on a machine with no device, before the probe, and on every run whose
+	 * working set fits.
+	 *
+	 * <p>
+	 * A cache too small for a program's working set does not merely lose the saving: an
+	 * array it evicts is a first sight again on its next pass, so a member that uploads
+	 * only on a second sight declines it, the CPU runs that pass, and the pass after pays
+	 * a cold upload. Measured on a 1.5 GB model with the budget forced to 512 MB, the
+	 * decode ran BELOW the same program with no device at all -- and nothing in the run
+	 * said so. This is what says so; {@link DeviceResidency#pressureReport()} has the
+	 * rule and the counts. Never runs the probe.
+	 * @return the line to print, or {@code null} when there is nothing to report
+	 */
+	public static @Nullable String residencyPressure() {
+		GpuDevice device = probed;
+		return device == null ? null : device.residency().pressureReport();
+	}
+
+	/**
+	 * Asks for {@link #residencyPressure}'s line, if there is one to make, to be printed
+	 * to standard error at process exit, behind {@code prefix} -- the one thing in this
+	 * library that speaks, and only when an embedder asks it to. An embedder that wants
+	 * the numbers somewhere else calls {@link #residencyPressure} itself and prints
+	 * nothing here.
+	 *
+	 * <p>
+	 * Idempotent: the hook is registered once however many times this is called, so an
+	 * interceptor may ask on every install. Never runs the probe (the hook asks at exit,
+	 * by which time the run either probed or did not), and never throws -- a VM already
+	 * shutting down, or one that forbids the hook, simply gets no report.
+	 * @param prefix what to write in front of the line, e.g. {@code "--gpu: "}
+	 */
+	public static synchronized void reportResidencyPressure(String prefix) {
+		if (reporting) {
+			return;
+		}
+		reporting = true;
+		try {
+			Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+				String line = residencyPressure();
+				if (line != null) {
+					System.err.println(prefix + line);
+				}
+			}, "gpu-residency-report"));
+		}
+		catch (Throwable ex) {
+			// A diagnostic is never a reason to fail: no report, and the program's own
+			// output is untouched.
+		}
+	}
+
+	private static boolean reporting;
+
+	/**
 	 * Bytes held by resident copies right now, or {@code 0}. Package-private and for the
 	 * tests, which assert the cache is bounded and that a release empties it.
 	 * @return the resident total, in bytes

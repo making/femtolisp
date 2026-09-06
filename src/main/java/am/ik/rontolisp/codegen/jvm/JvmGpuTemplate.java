@@ -65,6 +65,13 @@ final class JvmGpuTemplate {
 		// the wish must not run the probe, and it does not: it is applied when the
 		// probe runs.
 		Gpu.lazyResultsIfWorthwhile();
+		// And the one thing the library says out loud, asked for here because a compiled
+		// program has no CLI to say it for it: at exit, one line naming a residency
+		// budget that turned out to be below what this program keeps coming back to --
+		// the run in which --gpu is a LOSS against not passing it, and which otherwise
+		// looks like an ordinary slow run (.kb/gpu.md, "A budget below the working
+		// set"). Silent on every run whose working set fits.
+		Gpu.reportResidencyPressure("--gpu: ");
 	}
 
 	/**

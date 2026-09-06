@@ -6,7 +6,9 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import org.jspecify.annotations.Nullable;
@@ -131,6 +133,28 @@ import org.jspecify.annotations.Nullable;
  * ({@link #producedSinceCollection}), so a live set that genuinely exceeds the budget
  * does not collect on every call. {@code .kb/gpu.md}, "The collector, and the flags that
  * do and do not help", has the measurement.
+ *
+ * <h2>A budget below the working set, and how the cache knows</h2>
+ *
+ * A cache whose budget cannot hold what the program keeps coming back to does not merely
+ * lose its saving: it makes the device SLOWER than not using one. An evicted matrix is a
+ * first sight again on its next pass -- declined by the members that upload only on a
+ * second sight, run on the CPU, marked -- and uploaded on the pass after, so the loop
+ * alternates between the CPU's rate and a cold trip. Measured on a 1.5 GB model with the
+ * budget forced to 512 MB, that decode ran BELOW the same program with no device at all
+ * ({@code .kb/gpu.md}, "Device residency"). Nothing about the run says so, which is what
+ * {@link #pressureReport()} is for.
+ *
+ * <p>
+ * The signal is not the eviction count: a dead activation is evicted and never asked for
+ * again, which is the mode working as designed. It is the RE-UPLOAD -- an array uploaded
+ * again after the cache let it go for SPACE. So every entry the LRU or the pool's
+ * pressure path evicts leaves its key in {@link #evictedForSpace} (weakly, bounded to
+ * {@link #EVICTED_KEYS}), a {@link #put} that finds its host there counts a re-upload,
+ * and an array WRITTEN after its eviction is struck out again -- a rewritten array (the
+ * KV cache) is a fresh upload by design and no evidence of anything. The report is made
+ * when a whole budget's worth has been re-uploaded, which no run whose working set fits
+ * ever reaches.
  *
  * <h2>Cost on the read and write paths</h2>
  *
@@ -287,6 +311,35 @@ final class DeviceResidency {
 	 * to collect first; cleared by {@link #evictOverBudget}.
 	 */
 	private boolean collectionWanted;
+
+	/**
+	 * The arrays the cache has let go of for SPACE -- the LRU against the budget
+	 * ({@link #evict}) and the pool's pressure path ({@link #evictSome}) -- held by the
+	 * very {@link Key}s their entries were under, so nothing here keeps an array alive
+	 * and a collected one is struck out by {@link #expunge}. A {@link #put} whose host is
+	 * in this set is a RE-UPLOAD: the program came back for bytes the budget threw away
+	 * (class comment). Insertion-ordered and bounded to {@link #EVICTED_KEYS}, the oldest
+	 * going first -- a program whose evicted set is larger than that is not the one this
+	 * measures.
+	 */
+	private final LinkedHashSet<Object> evictedForSpace = new LinkedHashSet<>();
+
+	/**
+	 * Whether {@link #evictedForSpace} holds anything: the gate {@link #written} reads
+	 * without the monitor, so that an array rewritten while the cache happens to be EMPTY
+	 * is still struck out. Read only when {@link #occupied} is already false, which is
+	 * the path that does no work anyway.
+	 */
+	private volatile boolean spaceEvicted;
+
+	/** How many arrays {@link #evictedForSpace} remembers at once. */
+	private static final int EVICTED_KEYS = 4096;
+
+	/** Entries let go of for space, and the bytes they held; see the class comment. */
+	private long evictions, evictedBytes;
+
+	/** Uploads of an array this cache had evicted for space, and their bytes. */
+	private long reuploads, reuploadedBytes;
 
 	/**
 	 * How much of the budget must have been PUT since the last collection before another
@@ -683,6 +736,11 @@ final class DeviceResidency {
 	 */
 	synchronized void put(Object host, long offset, long bytes, long pointer, boolean dirty) {
 		expunge();
+		if (this.spaceEvicted && this.evictedForSpace.remove(new Lookup(host))) {
+			this.reuploads++;
+			this.reuploadedBytes += bytes;
+			this.spaceEvicted = !this.evictedForSpace.isEmpty();
+		}
 		Entry previous = this.entries.remove(new Lookup(host));
 		if (previous != null) {
 			if (previous.dirty && previous.offset == offset && previous.bytes == bytes) {
@@ -807,10 +865,15 @@ final class DeviceResidency {
 	 * queued. The caller has {@linkplain #claim materialized} the array first, so the
 	 * entry is clean by the time it is dropped; a dirty one that reaches here anyway (a
 	 * caller that did not) is flushed rather than lost.
+	 *
+	 * <p>
+	 * An EMPTY cache still has to be told, if anything has been evicted for space: the
+	 * array's next upload would otherwise be read as the program coming back for bytes
+	 * the budget threw away, when it is carrying new ones.
 	 * @param host the host array that was written
 	 */
 	void written(Object host) {
-		if (!this.occupied || recent(this.recentlyDropped, this.droppedCursor, host)) {
+		if ((!this.occupied && !this.spaceEvicted) || recent(this.recentlyDropped, this.droppedCursor, host)) {
 			return;
 		}
 		synchronized (this) {
@@ -818,6 +881,11 @@ final class DeviceResidency {
 			if (entry != null) {
 				drop(host, entry);
 				this.occupied = !this.entries.isEmpty();
+			}
+			// A rewritten array's next upload carries bytes the device never had, so it
+			// is no evidence that the budget is too small (class comment).
+			if (this.spaceEvicted && this.evictedForSpace.remove(new Lookup(host))) {
+				this.spaceEvicted = !this.evictedForSpace.isEmpty();
 			}
 			rememberDropped(host);
 		}
@@ -879,6 +947,7 @@ final class DeviceResidency {
 			}
 			this.entries.remove(victim.getKey());
 			drop(((Key) victim.getKey()).get(), victim.getValue());
+			evicted(victim.getKey(), victim.getValue());
 		}
 	}
 
@@ -909,9 +978,33 @@ final class DeviceResidency {
 			}
 			this.entries.remove(victim.getKey());
 			drop(((Key) victim.getKey()).get(), victim.getValue());
+			evicted(victim.getKey(), victim.getValue());
 		}
 		this.occupied = !this.entries.isEmpty();
 		return before - this.bytes;
+	}
+
+	/**
+	 * Remembers that an entry was let go of for SPACE, so that a later upload of the same
+	 * array can be told from a first one (class comment). A MARK holds no device memory
+	 * and is no eviction; neither is a drop for any other reason -- a write, a release, a
+	 * collected array -- and none of them reaches here.
+	 * @param key the entry's key, weakly holding the host array
+	 * @param entry the entry evicted
+	 */
+	private void evicted(Object key, Entry entry) {
+		if (entry.pointer == 0) {
+			return;
+		}
+		this.evictions++;
+		this.evictedBytes += entry.bytes;
+		this.evictedForSpace.add(key);
+		this.spaceEvicted = true;
+		if (this.evictedForSpace.size() > EVICTED_KEYS) {
+			Iterator<Object> eldest = this.evictedForSpace.iterator();
+			eldest.next();
+			eldest.remove();
+		}
 	}
 
 	/**
@@ -1018,6 +1111,9 @@ final class DeviceResidency {
 				any = true;
 			}
 			anyBacking |= this.backings.remove(key) != null;
+			if (this.evictedForSpace.remove(key)) {
+				this.spaceEvicted = !this.evictedForSpace.isEmpty();
+			}
 		}
 		if (any) {
 			this.occupied = !this.entries.isEmpty();
@@ -1066,6 +1162,67 @@ final class DeviceResidency {
 	/** Lookups that missed since the process started; for the tests. */
 	synchronized long misses() {
 		return this.misses;
+	}
+
+	/** Entries let go of for space since the process started; for the tests. */
+	synchronized long evictions() {
+		return this.evictions;
+	}
+
+	/** The bytes those evictions held; for the tests. */
+	synchronized long evictedBytes() {
+		return this.evictedBytes;
+	}
+
+	/**
+	 * Uploads of an array this cache had evicted for space -- the cliff's own count
+	 * (class comment); for the tests.
+	 * @return how many arrays were sent up again after an eviction
+	 */
+	synchronized long reuploads() {
+		return this.reuploads;
+	}
+
+	/** The bytes those re-uploads carried; for the tests. */
+	synchronized long reuploadedBytes() {
+		return this.reuploadedBytes;
+	}
+
+	/**
+	 * A one-line account of a budget that turned out to be BELOW what the program keeps
+	 * coming back to, or {@code null} while it is holding -- the surface
+	 * {@link Gpu#residencyPressure()} answers with, and the only place any of these
+	 * counts is spelled out for a person.
+	 *
+	 * <p>
+	 * The test is a whole BUDGET's worth of arrays uploaded again after this cache
+	 * evicted them for space. A run whose working set fits never re-uploads anything at
+	 * all, so the threshold is not a tuning: it is the smallest evidence that cannot be
+	 * one array unlucky at one peak, and it is reached within a pass or two of a decode
+	 * loop whose weights do not fit.
+	 * @return the line, or {@code null} when the budget is holding
+	 */
+	synchronized @Nullable String pressureReport() {
+		if (this.budget <= 0 || this.reuploadedBytes <= this.budget) {
+			return null;
+		}
+		return "the device residency budget (" + size(this.budget) + ") is below this program's working set: "
+				+ size(this.reuploadedBytes) + " went up again after being evicted (" + this.reuploads + " re-uploads; "
+				+ this.evictions + " evictions of " + size(this.evictedBytes) + "; " + this.hits + " hits, "
+				+ this.misses + " misses; " + size(this.bytes)
+				+ " resident). An array evicted for space is uploaded again on its next use, which can make the run"
+				+ " slower than the same program with no device at all.";
+	}
+
+	/** A byte count as a person reads one; the report's only formatting. */
+	private static String size(long bytes) {
+		if (bytes >= 1L << 30) {
+			return String.format(Locale.ROOT, "%.1f GB", bytes / (double) (1L << 30));
+		}
+		if (bytes >= 1L << 20) {
+			return (bytes >> 20) + " MB";
+		}
+		return (bytes >> 10) + " KB";
 	}
 
 }

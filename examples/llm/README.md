@@ -501,8 +501,11 @@ seam (`.todo/artefacts/123-gpu-acceleration/ResidencyCliff.java`): a 512 MB budg
 above the largest matrix, below the model -- decodes at **6.7-6.8 tok/s, BELOW `--simd`'s
 7.7**, and 256 MB or 64 MB at 5.8-5.9, because every evicted matrix is a first sight again
 on its next token (declined to the CPU) and an upload on the one after, so the loop
-alternates between the CPU rate and a cold trip. Nothing in the output says so; that is
-`.todo/716`.
+alternates between the CPU rate and a cold trip. **A run in that state now says so**: one
+line on standard error when it ends, naming the budget, what went up again after being
+evicted and the hit and miss counts, on the interpreter and the compiled class alike
+(`.kb/gpu.md`, "A budget below the working set"). Nothing is printed while the budget
+holds, which on this box is every run.
 
 ## The layer table
 

@@ -141,6 +141,17 @@ final class LinalgGpuKernels {
 		Gpu.lazyResultsIfWorthwhile();
 	}
 
+	/**
+	 * Asks the library to say so at exit if the residency budget turned out to be below
+	 * the program's working set -- the one run in which {@code --gpu} makes a program
+	 * SLOWER than not passing it, and which otherwise looks like an ordinary slow run
+	 * ({@code .kb/gpu.md}, "A budget below the working set"). Nothing is printed when the
+	 * budget held, which is every run on a machine whose device fits the model.
+	 */
+	static void reportResidencyPressure() {
+		Gpu.reportResidencyPressure("--gpu: ");
+	}
+
 	/** What was found, or why nothing was -- the text the CLI reports. */
 	static String description() {
 		try {

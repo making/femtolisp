@@ -37,11 +37,11 @@ download is an `IllegalStateException`.
 
 | class | what it owns |
 |---|---|
-| `am.ik.gpu.Gpu` | the whole public surface: `available`, `description`, the `worth*` predicates, the members, `written` / `materialize` / `lazyResults` |
+| `am.ik.gpu.Gpu` | the whole public surface: `available`, `description`, the `worth*` predicates, the members, `written` / `materialize` / `lazyResults`, the residency-pressure report |
 | `am.ik.gpu.GpuDevice` | the sealed seam over the two backends: `supportsDouble`, `thresholds`, `lazyResultsPay`, the members |
 | `am.ik.gpu.CudaGemm` / `CudaDriver` / `CuResult` | the CUDA half: probe, context and module lifetime, members, pinned bounce buffer; the FFM binding; the status table |
 | `am.ik.gpu.MetalGemm` / `MetalDriver` | the Apple half: probe, MSL library, MPS, buffer pool, members; the binding, one handle per selector SHAPE |
-| `am.ik.gpu.DeviceResidency` | weakly-keyed identity LRU from host array to device copy, dirty/clean state, flush and free queues, stub backings |
+| `am.ik.gpu.DeviceResidency` | weakly-keyed identity LRU from host array to device copy, dirty/clean state, flush and free queues, stub backings, the re-upload counters behind the pressure report |
 | `am.ik.rontolisp.FloatArrayAccessHook` | the interpreter's two seams: every packed-array store and every read of packed storage reports here first |
 | `eval.LinalgGpu` / `LinalgGpuKernels` | the interpreter's interceptor, and the ONE reference to `am.ik.gpu` from `eval` so `-Pweb` can cut it |
 | `codegen.jvm.JvmGpuTemplate` / `JvmGpuRuntimeBuilder` / `JvmLinalgGpu` | the compiled call site's glue; the blob; which members the bridge claims |
@@ -62,6 +62,8 @@ static boolean  matvec(w, oW, x, oX, y, oY, rows, cols) / rngFill(...)   // w: d
 static void     written(Object hostArray) / materialize(Object hostArray)
 static boolean  resident(Object hostArray)
 static void     lazyResults(boolean on) / boolean lazyResultsIfWorthwhile()
+static String   residencyPressure()      // null unless the budget is below the working set
+static void     reportResidencyPressure(String prefix)   // ... and print it at exit
 // resident-operand only, declined at any size otherwise:
 zip / scale / where / adamStep / copy / takeRows / gather / scatterRows / sumSquares
 // the FUSED tier: one pass each where torch.lisp composed a chain
@@ -394,11 +396,53 @@ matches by referent, so a lookup allocates no reference.
    is the headroom rule below, so on this box a 1.5 GB model sits resident from its second token
    and the cliff is at ~100 GB. Measured 2026-09-06 (`.todo/490`, `ResidencyCliff.java`): forced
    to 512 MB the same decode ran at 6.7 tok/s, BELOW `--simd` alone (7.7), because an evicted
-   matrix is a first sight again and the loop alternates between the CPU and a cold upload --
-   and the program says nothing. `.todo/716`.
+   matrix is a first sight again and the loop alternates between the CPU and a cold upload.
+   The run SAYS so since `.todo/716` -- below.
 
 **Residency may slow a call by one upload but must never turn it into a decline.** The pre-flight
 evicts everything the call is not holding, trims the pool, and asks again before it would refuse.
+
+### A budget below the working set is the one thing the library says out loud
+
+That cliff is the single shape in which `--gpu` is a LOSS against not passing it, and until
+`.todo/716` it was indistinguishable from an ordinary slow run: every counter that proves it was
+inside `DeviceResidency` and nothing read them. The surface is `Gpu.residencyPressure()` -- one line
+or `null` -- and `Gpu.reportResidencyPressure(prefix)`, which registers ONE shutdown hook that prints
+it to `System.err` behind the caller's prefix. Both interceptors ask for it with `"--gpu: "`:
+`LinalgGpu.hooks()` on the interpreter, `JvmGpuTemplate.gpuKernels` (the emitted `_gpuInit`) on the
+JVM class output, which is why a compiled program says it too with no CLI in the picture. The library
+is otherwise silent, and stays silent for any embedder that does not ask.
+
+**The signal is the RE-UPLOAD, not the eviction.** A dead activation is evicted and never asked for
+again -- the lazy mode working as designed, and the reason an eviction count would cry wolf on every
+training step. So every entry the LRU (`evict`) or the pool's pressure path (`evictSome`) lets go of
+leaves its `Key` in `evictedForSpace` (weak, bounded to 4096, struck out by `expunge` with its
+array), a `put` that finds its host there counts a re-upload, and `written` strikes an array out
+again -- a rewritten matrix (the KV cache) is a fresh upload by design and evidence of nothing. The
+pre-flight's `evictAll` is deliberately NOT counted: that is one call needing the whole device, not a
+working set that does not fit. The report is made once `reuploadedBytes > budget` -- a whole budget's
+worth sent up again, which a run whose working set fits never reaches -- and a budget of 0 (before
+the first pre-flight derives one) never reports.
+
+Verified 2026-09-06 on the GB10 with `stories15M` (60 MB of f32 weights) and
+`ResidencyCliff.java`, which drives BOTH halves (it looks for `RontoLispGpuGpu` and for
+`am.ik.gpu.Gpu`, so the interpreter runs out of the exec jar) and announces the budget in force:
+
+| leg | derived budget (~93 GB) | forced to 48 MB |
+|---|---|---|
+| interpreter | 33.8 tok/s, silent | 22.2 tok/s, the line |
+| JVM class output | 369.9 tok/s, silent | 188.2 tok/s, the line |
+
+```
+--gpu: the device residency budget (48 MB) is below this program's working set: 63 MB went up again
+after being evicted (34 re-uploads; 428 evictions of 67 MB; 273 hits, 279 misses; 47 MB resident).
+```
+
+**Not built, and why**: a matrix evicted for BUDGET and offered again could be taken COLD rather than
+declined -- the cold trip was 10.9 ms against the CPU's 22.6 for this head -- but that measurement is
+on UNIFIED memory, where an upload is a memcpy, and it reverses the two-sight rule's premise. It
+needs a discrete card to measure on, and this project has none. No knob either: the budget stays
+derived, and the surface exists so that a user can see the shortfall before anyone adds one.
 
 ### The two seams, and what must report through them
 
