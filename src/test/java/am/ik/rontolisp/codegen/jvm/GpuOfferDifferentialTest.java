@@ -127,6 +127,26 @@ class GpuOfferDifferentialTest {
 	}
 
 	/**
+	 * The column count of every {@code vec:matvec} matrix below -- {@link #MATVEC_ROWS}
+	 * carries the safety factor, so this can be any size the shapes stay square-ish at.
+	 */
+	private static final int MATVEC_COLS = 64;
+
+	/**
+	 * The rows of the smallest matrix {@code vec:matvec}'s own threshold
+	 * ({@code am.ik.gpu.GpuThresholds#matvecMinElements}) accepts at {@link #MATVEC_COLS}
+	 * columns, doubled -- a FIFTH tier {@link #BIG} does not cover, since a GEMV pays
+	 * only over a RESIDENT matrix rather than by element count alone.
+	 */
+	private static final int MATVEC_ROWS = matvecRows();
+
+	private static int matvecRows() {
+		long threshold = offeredSize(am.ik.gpu.GpuThresholds.matvecMinElements());
+		long rows = (2 * threshold + MATVEC_COLS - 1) / MATVEC_COLS;
+		return (int) Math.max(64, rows);
+	}
+
+	/**
 	 * One operand of a case. Held as a SPEC rather than an array so that both paths
 	 * encode their own from it and cannot be handed different numbers; the same instance
 	 * used twice in one case encodes to the same array on each side, which is what makes
@@ -364,6 +384,19 @@ class GpuOfferDifferentialTest {
 		cases.add(transpose("a repeated axis is not a permutation", a, new Axes(0, 0, 1)));
 		cases.add(transpose("too few axes for the rank", a, new Axes(1, 0)));
 		cases.add(transpose("below the threshold, over a fresh operand", new Operand(4, 4), new Axes(1, 0)));
+		// vec:matvec, the one member outside linalg: -- accepted only on the SECOND
+		// offer of its matrix (am.ik.gpu.DeviceResidency#offeredBefore), so
+		// assertAgree calls each of these twice and the pairing decides whether the
+		// SECOND call accepts or declines just as the first always does.
+		Operand matrix = new Operand(MATVEC_ROWS, MATVEC_COLS);
+		Operand vector = new Operand(MATVEC_COLS);
+		cases.add(matvec("a double matrix against a double vector", matrix.asDouble(), vector.asDouble()));
+		cases.add(matvec("a single matrix against a single vector", matrix.asSingle(), vector.asSingle()));
+		cases.add(matvec("a bfloat16 matrix against a single vector", matrix.asBfloat16(), vector.asSingle()));
+		cases.add(matvec("a bfloat16 matrix against a bfloat16 vector declines", matrix.asBfloat16(),
+				vector.asBfloat16()));
+		cases.add(matvec("a bfloat16 matrix against a double vector declines", matrix.asBfloat16(), vector.asDouble()));
+		cases.add(matvec("a mixed single/double pair declines", matrix.asSingle(), vector.asDouble()));
 		return cases;
 	}
 
@@ -405,6 +438,19 @@ class GpuOfferDifferentialTest {
 		return new Case(LispNames.LINALG_TRANSPOSE, false, true, why, args, args);
 	}
 
+	/**
+	 * {@code (vec:matvec w x)}, the one member here NOT in {@code linalg:} -- both
+	 * {@link #interceptor} and {@link #bridge} key off the member name to reach it, since
+	 * it is qualified under {@link LispNames#VEC_PKG} and carries no
+	 * {@link JvmLinalgGpu#kernelKey} entry of its own ({@code JvmLinalgGpu}'s own
+	 * javadoc: its call site is {@link JvmSimdCompiler}'s, not
+	 * {@link JvmLinalgKernelCompiler}'s).
+	 */
+	private static Case matvec(String why, Operand w, Operand x) {
+		List<Object> args = List.of(w, x);
+		return new Case(LispNames.VEC_MATVEC, false, false, why, args, args);
+	}
+
 	// --- running one case on each path
 	// ---------------------------------------------------
 
@@ -420,8 +466,22 @@ class GpuOfferDifferentialTest {
 		for (int i = 0; i < compiledArgs.length; i++) {
 			compiledArgs[i] = toCompiled(boundary.compiled().get(i), single, compiledOperands);
 		}
-		LispVal fromInterpreter = interceptor(boundary.member(), boundary.internal()).body().apply(lispArgs);
-		Object fromCompiled = invoke(bridge(boundary.member(), boundary.extended(), compiledArgs.length), compiledArgs);
+		LispFunction lispMember = interceptor(boundary.member(), boundary.internal());
+		Method compiledMember = bridge(boundary.member(), boundary.extended(), compiledArgs.length);
+		if (LispNames.VEC_MATVEC.equals(boundary.member())) {
+			// vec:matvec accepts a matrix only on its SECOND offer -- the same span,
+			// unwritten since (am.ik.gpu.DeviceResidency#offeredBefore) -- so the
+			// FIRST call is itself a boundary this differential must not skip past:
+			// both paths must decline it, or one is uploading (or refusing) on a
+			// sight the other is not.
+			LispVal firstLisp = lispMember.body().apply(lispArgs);
+			Object firstCompiled = invoke(compiledMember, compiledArgs);
+			assertThat(firstLisp).as("the FIRST sight of the matrix, interpreter: %s", what)
+				.isInstanceOf(LispNil.class);
+			assertThat(firstCompiled).as("the FIRST sight of the matrix, compiled: %s", what).isNull();
+		}
+		LispVal fromInterpreter = lispMember.body().apply(lispArgs);
+		Object fromCompiled = invoke(compiledMember, compiledArgs);
 		boolean interpreterAccepted = !(fromInterpreter instanceof LispNil);
 		assertThat(fromCompiled != null).as("accepted, on the compiled path: %s", what).isEqualTo(interpreterAccepted);
 		if (!interpreterAccepted) {
@@ -440,8 +500,11 @@ class GpuOfferDifferentialTest {
 	 * which no accepted member ever answers.
 	 */
 	private static LispFunction interceptor(String member, boolean internal) {
-		String qualified = internal ? PackageRegistry.qualifyInternal(LispNames.LINALG_PKG, member)
-				: PackageRegistry.qualify(LispNames.LINALG_PKG, member);
+		// vec:matvec is the one member here qualified under VEC_PKG rather than
+		// LINALG_PKG (LispNames.VEC_MATVEC, .kb/gpu.md).
+		String pkg = LispNames.VEC_MATVEC.equals(member) ? LispNames.VEC_PKG : LispNames.LINALG_PKG;
+		String qualified = internal ? PackageRegistry.qualifyInternal(pkg, member)
+				: PackageRegistry.qualify(pkg, member);
 		return (LispFunction) java.util.Objects.requireNonNull(interpreterOffers().lookupFunctionOrNull(qualified),
 				() -> qualified + " is not installed");
 	}
@@ -458,7 +521,9 @@ class GpuOfferDifferentialTest {
 			for (String name : JvmLinalgGpu.qualifiedMembers()) {
 				env.defineFunction(name, sentinel(name));
 			}
-			LinalgGpu.install(env, new LispEvaluator(new PrintStream(OutputStream.nullOutputStream())));
+			LispEvaluator evaluator = new LispEvaluator(new PrintStream(OutputStream.nullOutputStream()));
+			LinalgGpu.install(env, evaluator);
+			LinalgGpu.installVec(env, evaluator);
 			interpreterOffers = env;
 			return env;
 		}
@@ -480,7 +545,13 @@ class GpuOfferDifferentialTest {
 	 * a name this test spelled out.
 	 */
 	private static Method bridge(String member, boolean extended, int arity) {
-		String key = extended ? JvmLinalgGpu.extendedKernelKey(member) : JvmLinalgGpu.kernelKey(member);
+		// vec:matvec carries no JvmLinalgGpu#kernelKey entry of its own (its call site
+		// is JvmSimdCompiler's), so its ops key comes straight from the same
+		// JvmGpuRuntimeBuilder table JvmLinalgGpu's OWN kernel maps point into for
+		// every %-prefixed member (WHERE, ADAM_STEP, ...) -- not a name this test
+		// invented.
+		String key = LispNames.VEC_MATVEC.equals(member) ? JvmGpuRuntimeBuilder.MATVEC
+				: (extended ? JvmLinalgGpu.extendedKernelKey(member) : JvmLinalgGpu.kernelKey(member));
 		assertThat(key).as("the compiled bridge claims %s", member).isNotNull();
 		// The ops key IS the bridge method's name for most members and its name without
 		// the gpu prefix for the handful named by a JvmGpuRuntimeBuilder constant
@@ -615,18 +686,25 @@ class GpuOfferDifferentialTest {
 	}
 
 	/**
-	 * The COMPILED side of a bfloat16 operand. The JVM backend's packed representation
-	 * for this width is not this test's to invent -- it is the backend item's -- so this
-	 * says so instead of guessing a header layout that would then have to be unpicked.
-	 * The harness is width-general as of 2026-09-03 and the arm is reachable; the arm's
-	 * other half is what is missing.
+	 * The COMPILED side of a bfloat16 operand: a {@code short[]} through
+	 * {@link JvmPackedFloatWidth#BFLOAT16}, the one place that knows the width's header
+	 * layout ({@code [rank, hi_0, lo_0, ..., hi_{rank-1}, lo_{rank-1}, e_0, ...]}) --
+	 * built from that enum rather than a header this test would otherwise have to invent
+	 * and then have unpicked.
 	 * @param o the operand
-	 * @return never returns
+	 * @return the packed {@code short[]}
 	 */
-	private static Object packedBf16(Operand o) {
-		throw new UnsupportedOperationException(
-				"a compiled bfloat16 operand needs the JVM backend's packed representation for the width,"
-						+ " which does not exist yet; a boundary case must not name FloatWidth.BFLOAT16 until it does");
+	private static short[] packedBf16(Operand o) {
+		int[] dims = o.dims();
+		int[] header = JvmPackedFloatWidth.BFLOAT16.headerWords(dims);
+		short[] packed = new short[header.length + count(dims)];
+		for (int k = 0; k < header.length; k++) {
+			packed[k] = (short) header[k];
+		}
+		for (int i = 0; i < count(dims); i++) {
+			packed[header.length + i] = (short) BFloat16.bits(element(i));
+		}
+		return packed;
 	}
 
 	private static double[] packedD(Operand o) {
