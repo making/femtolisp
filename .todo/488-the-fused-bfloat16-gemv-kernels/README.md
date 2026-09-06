@@ -249,6 +249,14 @@ the shapes measured here* until someone widens it.
   different things about every future width, so the question is worth one experiment: run
   the parallel f32 arm at a shape small enough to be unambiguously resident (256x256, say)
   and see whether it still lands on 41-42.
+
+  **Run 2026-09-06, `.todo/702`: neither.** 256x256 lands at 13 Gelem/s, BELOW 41-42 and
+  below its own serial rate -- a machinery effect (too few leaves for the thread count at
+  this row count), not a resident match to the plateau. And 1024x1024 through 2048x2048
+  land at 48-69 Gelem/s, WELL ABOVE 41-42 -- so the 41-42 seen at both 1024x1024 and
+  4096x4096 above was two points on a hump landing near each other, not one ceiling
+  (memory or machinery) binding both. Full sweep:
+  `.todo/702-the-parallel-cap-is-the-machinery-or-memory-one-run-decides/README.md`.
 - **On `dorian` the analogous figure is per-MODEL, not per-box.** Measured on a quiet
   machine 2026-09-05 at 32 threads: TinyLlama-1.1B 39 GB/s, Qwen3.5-0.8B 29, Qwen3-0.6B
   22 -- and the ordering was predicted from access shape (plain-llama's big matvecs above
