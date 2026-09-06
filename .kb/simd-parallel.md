@@ -66,7 +66,17 @@ which row cannot change a bit** and every byte-identity statement in `.kb/linalg
   The 41-42 `.todo/488` measured at both 1024x1024 and 4096x4096 was two points on that
   hump landing near each other, not one bandwidth ceiling binding both -- see
   `.todo/artefacts/702-the-parallel-cap-is-the-machinery-or-memory-one-run-decides/README.md` for
-  the full sweep and the leaf/grain arithmetic behind the 256x256 undershoot.
+  the full sweep and the leaf/grain arithmetic behind the 256x256 undershoot. **The hump
+  also has a TROUGH in the middle of it, and it is thread-count-dependent, not
+  shape-alone**: `.todo/702` measured its 25-28 Gelem/s dip at 3072x3072 under
+  `RONTOLISP_THREADS=20` (this box's default at the time); `.todo/713`'s finer sweep
+  (2026-09-06, same box) found a broad 2560-3456 trough -- not a spike at 3072 -- that
+  tracks the matrix's TOTAL BYTE SIZE (~26-50 MB, confirmed non-square, both dimensions
+  independently) rather than either dimension or a leaf-count quantization, deepens from
+  threads=12 up through 20 and is essentially absent at 8-10, and is **invisible at this
+  box's CURRENT default** (`.todo/697` halved the default to 10 the same day, after
+  `.todo/702`'s own measurement) -- see
+  `.todo/artefacts/713-the-3072x3072-parallel-gemv-dip-todo-702-left-open/README.md`.
 - **`--gpu --simd --parallel` is slower than either alone on llm** -- correct and pinned,
   documented as not a win. The interpreter gains nothing on llm either.
 - GEMM: the row split buys 5.6-7.6x, but a tuned threaded BLAS still wins 1.3-3.8x, so `--blas`
