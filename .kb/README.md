@@ -46,6 +46,7 @@ last read the file, and nothing fails -- these files have no tests.
 - [clos.md](clos.md) -- static CLOS subset: registry, dispatcher generation, initialization protocol, runtime `typep`
 - [characters-code-points.md](characters-code-points.md) -- character = Unicode code point on every backend
 - [string-index-cost.md](string-index-cost.md) -- a character index costs the same wherever it lands; the per-string cursor
+- [string-accumulate-cost.md](string-accumulate-cost.md) -- building one string out of N pieces costs the total length, not the sum of the prefixes
 - [hash-tables.md](hash-tables.md) -- per-backend representation, `equalp` key fold, depth cap and work budget
 - [array-literals.md](array-literals.md) -- an array literal is a constructor, not a constant; rank-0 arrays; when `:element-type` specializes
 - [quoted-data.md](quoted-data.md) -- a quoted datum is one shared constant per quote site on all four backends

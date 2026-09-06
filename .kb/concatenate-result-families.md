@@ -112,6 +112,14 @@ the scan, and wrapping those would call a helper the gate did not inject.
   `(unsigned-byte N)` list and each packed float NAME -- no spec-shape reading, and the
   float names come from the same `packedFloatElementTypeCodes()` the helper's arms do. A
   `#'concatenate` reference therefore gates BOTH helpers in.
+- **The wrapper mirrors `expand`'s VALUES, not its shape, and must not FOLD** -- it is the
+  arm `apply` reaches with a runtime argument list, so its argument count is the DATA's and
+  not the program text's. Its string arm sizes the result once (`mapcar` normalize, a
+  `reduce` for the total, `make-string`, a second `reduce` carrying the write offset into
+  `replace`) and its list arm folds from the RIGHT (`:from-end t`); both used to fold left
+  through `%string-concat` / `append`, which cost the sum of the prefixes
+  (`.kb/string-accumulate-cost.md`). The call-position `stringChain` above keeps its binary
+  chain on purpose, because there the argument count is written in the source.
 - `LispMacroExpander.expandComputedCoerce` dispatches on the designator's head over the same
   families, each arm the SAME body the literal path emits, plus `t` as identity.
 - `NoGcWasmCompiler.compileConcatenate` builds strings in linear memory, never through
