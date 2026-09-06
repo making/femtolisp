@@ -63,7 +63,8 @@ mode is `chat`, template is `nil` -- and it is checked nowhere.
 ## Testing
 
 The new failing test, plus `ExamplesE2eTest -Drontolisp.examples.only=llm/` -- and read its
-SKIP COUNT against the prior run's, not just its total (`.todo/708`).
+SKIP COUNT against the prior run's, not just its total (`.todo/708`, closed 09-06 --
+`git show 97c85518~:.todo/708-the-formatter-corpus-walks-agent-worktrees.md`).
 
 ## Done means
 

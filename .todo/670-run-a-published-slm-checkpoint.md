@@ -105,20 +105,27 @@ artefacts out -- see rule 12.
 
 ## The certification record
 
-**Head certified: `d4225aa5`.** Both boxes green there: GB10 full suite 10607 / 0 / 0 with
-231 reports, native `CiSpecE2eTest` 2000 / 0 / 0; dorian full suite 0 failures with 231
-reports. Rule 8 decides when that lapses.
+**Head certified: `0e65326b`.** GB10 full suite green there: 10066 / 0 / 0 with **232**
+reports. The previous certification was `d4225aa5` (both boxes: GB10 10607 / 0 / 0 and
+dorian 0 failures, 231 reports each), and the report count moved by exactly the one test
+class added since -- `PackedFloatReachabilityTest`. The totals moved because 708 landed and
+the corpus stopped counting other agents' worktrees; that is the fix, not a regression.
+Rule 8 decides when a certification lapses.
 
 **What a run certifies is failures, errors and the REPORT-FILE COUNT -- never the totals.**
 A differing report count means a class was DROPPED rather than skipped, which no skip
 accounting reveals.
 
-Three things a reader needs before comparing any two runs, **all measured and all recorded
-in full in `.todo/708`** (rule 9 -- go there, do not re-derive them here):
+Three things a reader needs before comparing any two runs. 708 closed 2026-09-06, so its
+full account is recoverable only as
+`git show 97c85518~:.todo/708-the-formatter-corpus-walks-agent-worktrees.md`; what survives
+it lives here:
 
-1. **Totals are not comparable across boxes** until 708 lands: `LispFormatterTest` walks
-   `Path.of(".")` and formats every `.lisp` under `.claude/worktrees/`, so one term of the
-   comparison is how many agents ran on that box recently.
+1. **Totals ARE comparable across boxes as of `0e65326b`.** `LispFormatterTest` walked
+   `Path.of(".")` and formatted every `.lisp` under `.claude/worktrees/`, so one term of
+   the comparison used to be how many agents had run on that box recently. The walk now
+   excludes `/.claude/` and `repositoryCorpusStaysWithinASmallFactorOfTrackedSources` pins
+   it. **A total taken before `0e65326b` is still not comparable to one taken after.**
 2. **Skips ARE comparable**, and the 09-03 accounting of them was wrong by SELECTION, not
    arithmetic: diffing both complete censuses gives seventeen differing classes netting
    exactly 87. Contamination does not reach skips.
@@ -166,7 +173,7 @@ six models at both widths, the reading beside the prediction in `489`, the summa
 | A-2 | `712` `-m chat` with no template answers a different question | Low | Cost twelve discarded timed runs and left a suspect pair of rows on develop. A runs every future rung, so A pays again until it is fixed. One condition plus a failing test on the checked-in `stories260K` |
 | A-3 | `675` read a safetensors checkpoint | Medium | Unblocked: the `#bf16` target was waiting on `487`, which closed 09-05. Read the two JIT cliffs the item points at before writing lane code -- `488`'s C2 inlining cliff, and `672`'s finding that Graal 25 does not intrinsify the int-to-double lane conversion |
 | A-4 | `677` the Gated DeltaNet layer | High | Runs from both formats already and the bf16 `tok/s` leg is unblocked, so the remaining work is this layer's own |
-| A-5 | `711` what a directory rename breaks outside its own diff | Medium | The `.kb` card owed from `708`'s account. Last deliberately: its value does NOT decay, because `708` holds its evidence durably, so it loses nothing by waiting behind work that does |
+| A-5 | `711` what a directory rename breaks outside its own diff | Medium | The `.kb` card owed from `708`'s account. Last deliberately: its value does NOT decay, because `708` holds its evidence durably, so it loses nothing by waiting behind work that does. **708 closed 09-06; its account is `git show 97c85518~:.todo/708-...md`** and `711` now carries that command |
 
 **`489` closed 09-06 (A-1)**: the child table above and `482`'s carry the closure; the
 sweep found no item gated on the capability rather than the number (rule 11) and none of
@@ -177,7 +184,7 @@ the "blocked by 489" style dependency lines rule 1 asks about -- every other ref
 
 | # | item | difficulty | why here, why now |
 | --- | --- | --- | --- |
-| B-1 | `708` the formatter corpus walks `.claude/worktrees/` | Low | Two blocks of this file say "do not compare totals until 708 lands". One filter line plus a pin; it lifts the standing caveat off every future certification. Do #3 (25 stale worktrees) is cleanup, NOT part of the fix -- the fix must work with them present |
+| B-1 | `708` the formatter corpus walks `.claude/worktrees/` | Low | **done 09-06** (`0e65326b`): the walk excludes `/.claude/` and `repositoryCorpusStaysWithinASmallFactorOfTrackedSources` pins the corpus to a small factor of `git ls-files`. The standing caveat is lifted -- see the certification record above. Do #3 (25 stale worktrees) was cleanup and stays undone |
 | B-2 | `702` is the parallel cap machinery or memory | Low | One benchmark on a cleared GB10. `489`'s knee-invariance already answers it at a second width, so this is no longer sole evidence -- but it is the only leg with NO model in it. Needs a verified-quiet box: load < 1.5, checked, not assumed |
 | B-3 | `707` `coerce` / `concatenate` drop a packed FLOAT element type | Medium | A live correctness defect at all three float widths, on the width chain B owns |
 | B-4 | `710` a closed item's artefacts and an open item share one namespace | Medium | The path-citation link check FIRST -- it is what makes the rename safe and earns its place alone. **Fold in the live duplicate: `338-ansi-conformance-the-ranked-gap.md` and `338-string-concat-renders-through-the-value-printer.md` are both open on one number**; `.todo/.history.md` says the later commit's side renumbers |
@@ -260,7 +267,9 @@ Cited by number from other items -- **the numbering is fixed.**
     for untracked files at the OLD path before the next `git add`.** And the fix is free
     only on the box that makes it -- untracking DELETES the file for every puller who had
     it. Full account, with the other three things that rename broke outside its own diff:
-    `.todo/708`, and the card owed from it is `.todo/711`.
+    `.todo/708` (closed 09-06 --
+    `git show 97c85518~:.todo/708-the-formatter-corpus-walks-agent-worktrees.md`), and the
+    card owed from it is `.todo/711`.
 
 ## What is deliberately not in the plan
 

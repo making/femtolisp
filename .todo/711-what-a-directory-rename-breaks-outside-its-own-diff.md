@@ -7,7 +7,11 @@ was correct. It then broke four separate things, **every one of them outside the
 paths, every one silent, and none visible in the rename's own diff** -- so no review of
 that diff could have found any of them.
 
-**The full account is in `.todo/708`. This item does not restate it** (standing rule 9);
+**The full account is in `.todo/708`, which CLOSED 2026-09-06.** Its content is not lost
+and is not to be re-derived -- read it with
+`git show 97c85518~:.todo/708-the-formatter-corpus-walks-agent-worktrees.md`, and the row
+recording that is in `.todo/history/2026-09.md`. **This item does not restate it**
+(standing rule 9);
 it exists because the account is currently the incident, and what the tree needs is the
 check that survives the incident. 708's own fix is one filter line in
 `LispFormatterTest`; that is B-1 and is not this.
