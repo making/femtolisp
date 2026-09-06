@@ -196,6 +196,21 @@ class JvmSimdParallelCompilerTest {
 	}
 
 	@Test
+	void theEmittedPoolDefaultsToHalfTheBoxToo() throws Exception {
+		// The pool a compiled program carries is this template's bytecode, embedded
+		// verbatim, and it sizes itself the way the interpreter's twin does
+		// (SimdParallelTest#theDefaultThreadCountIsHalfTheBoxAndNeverFillsIt): half the
+		// processors, never below two, never the whole box.
+		Method defaults = JvmSimdVectorTemplate.class.getDeclaredMethod("parallelDefaultThreads");
+		defaults.setAccessible(true);
+		int cpus = Runtime.getRuntime().availableProcessors();
+		assertThat((int) defaults.invoke(null)).isEqualTo(Math.min(cpus, Math.max(2, cpus / 2)));
+		if (cpus >= 4) {
+			assertThat((int) defaults.invoke(null)).isLessThan(cpus);
+		}
+	}
+
+	@Test
 	void parallelWithoutSimdIsRefusedBecauseThereIsNothingToSplit() {
 		assertThatThrownBy(() -> new JvmLispCompiler("Test", false, OptimizeLevel.NONE, false, false, false, true))
 			.isInstanceOf(IllegalArgumentException.class)

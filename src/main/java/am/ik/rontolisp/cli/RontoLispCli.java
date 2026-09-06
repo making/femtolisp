@@ -357,7 +357,7 @@ public final class RontoLispCli {
 		evaluator.setDistClient(dists);
 		requireSimdForParallel(simd, parallel);
 		if (simd) {
-			enableSimd(evaluator);
+			enableSimd(evaluator, parallel);
 		}
 		if (blas) {
 			enableBlas(evaluator);
@@ -405,9 +405,26 @@ public final class RontoLispCli {
 	// `java -jar` does not, so probe and fall back to the scalar reference with a
 	// note instead of failing. One probe covers both: the two kernel classes live in
 	// the same incubator module.
-	private static void enableSimd(LispEvaluator evaluator) {
+	//
+	// --parallel changes the calculus: it is asked for only by someone about to run
+	// something large enough to be worth splitting across threads, and without the
+	// module that "acceleration" is threads racing the scalar defun -- a ~100x
+	// slowdown from the native kernel that reads as a hang under a long program's own
+	// output, with the warning below as the only tell (.todo/700 lost an hour to it,
+	// the warning scrolled off under an LLM decode loop's load line). Unlike the
+	// compiled .class output (JvmSimdModuleFallbackTest), which may run on a different,
+	// module-equipped machine LATER and so must keep degrading, the interpreter knows
+	// RIGHT NOW whether the module is there: refuse instead of degrading.
+	private static void enableSimd(LispEvaluator evaluator, boolean parallel) {
 		if (VecSimd.available()) {
 			evaluator.setSimd(true);
+		}
+		else if (parallel) {
+			throw new UnsupportedOperationException(
+					"--simd --parallel: jdk.incubator.vector is unavailable, so --parallel would only split"
+							+ " the scalar vec:/linalg: kernels across threads instead of accelerating them -- a"
+							+ " slowdown, not a speedup; re-run with `java --add-modules jdk.incubator.vector -jar"
+							+ " ...`, or use the native binary.");
 		}
 		else {
 			warn("--simd: jdk.incubator.vector is unavailable, running the scalar vec:/linalg: kernels; "
@@ -490,7 +507,7 @@ public final class RontoLispCli {
 		evaluator.setDistClient(dists);
 		requireSimdForParallel(simd, parallel);
 		if (simd) {
-			enableSimd(evaluator);
+			enableSimd(evaluator, parallel);
 		}
 		if (blas) {
 			enableBlas(evaluator);
@@ -1126,12 +1143,15 @@ public final class RontoLispCli {
 		this.out.println("                     every other kernel, every reduction included, stays on the");
 		this.out.println("                     calling thread. The rows are independent chains, so the");
 		this.out.println("                     results are bit-identical to --simd alone. RONTOLISP_THREADS");
-		this.out.println("                     sets the thread count (the caller included; default: the");
-		this.out.println("                     available processors; 1 = serial); the workers are daemon");
+		this.out.println("                     sets the thread count (the caller included; default: half");
+		this.out.println("                     the available processors; 1 = serial); the workers are daemon");
 		this.out.println("                     threads that spin ~1 ms between calls before sleeping, so a");
 		this.out.println("                     loop of products keeps them busy. Interpreter (incl. the");
 		this.out.println("                     native binary) and JVM (.class) only -- WASM has no threads.");
-		this.out.println("                     Needs --simd: without it there is nothing to split.");
+		this.out.println("                     Needs --simd: without it there is nothing to split. On the");
+		this.out.println("                     interpreter/REPL, a java -jar without jdk.incubator.vector");
+		this.out.println("                     refuses rather than splitting the scalar fallback across");
+		this.out.println("                     threads -- that would be a slowdown, not a speedup.");
 		this.out.println("  --blas             Route the linalg: matrix product to a tuned CBLAS from the OS");
 		this.out.println("                     Interpreter (incl. the native binary) and JVM (.class) only --");
 		this.out.println("                     WASM has no foreign function interface. macOS finds Accelerate");
