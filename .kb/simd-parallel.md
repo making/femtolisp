@@ -52,7 +52,17 @@ which row cannot change a bit** and every byte-identity statement in `.kb/linalg
   bumps the epoch then scans and unparks.
 - **The yield matters as much as the spin**: `Thread.yield()` every 64 spins (19 pure spinners on
   a 20-core box crowd out the caller, the JIT and the GC).
-- Expected 1.7-5.6x per GEMV, ~1.8x whole-program on a decode loop; ceiling is memory bandwidth.
+- Expected 1.7-5.6x per GEMV, ~1.8x whole-program on a decode loop. **"Ceiling is memory
+  bandwidth" holds only once the matrix is unambiguously larger than cache** -- a
+  `.todo/702` size sweep on GB10 (2026-09-06) found the f32 parallel arm's rate is a hump,
+  not a flat ceiling: 13 Gelem/s at 256x256 (below even the serial rate -- too few leaves
+  for the thread count, a machinery effect), 48-69 Gelem/s at 1024-2048x1024-2048
+  (cache-resident, well above the ~42 Gelem/s `.todo/488` had called "this box's
+  ceiling"), and back down to 41-44 only at 4096x4096 (67 MB, certainly out of cache).
+  The 41-42 `.todo/488` measured at both 1024x1024 and 4096x4096 was two points on that
+  hump landing near each other, not one bandwidth ceiling binding both -- see
+  `.todo/702-the-parallel-cap-is-the-machinery-or-memory-one-run-decides/README.md` for
+  the full sweep and the leaf/grain arithmetic behind the 256x256 undershoot.
 - **`--gpu --simd --parallel` is slower than either alone on llm** -- correct and pinned,
   documented as not a win. The interpreter gains nothing on llm either.
 - GEMM: the row split buys 5.6-7.6x, but a tuned threaded BLAS still wins 1.3-3.8x, so `--blas`
