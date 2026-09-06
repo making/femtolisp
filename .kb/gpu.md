@@ -704,6 +704,29 @@ a COLUMN bound and not a row bound: one member, two kinds of bound, on four back
 that can express the same bound by allocating what it uses. **A bound that one operand of the pair
 cannot spell is a bound in the wrong place.** The `vec:` surface is unchanged.
 
+**A `--gpu` step is mostly NATIVE time, so a percentage taken off JFR's execution samples is a
+percentage of the wrong denominator** (2026-09-06, `.todo/476`; GB10, `gpt-book-shapes-fast.lisp`
+compiled `--gpu --simd`, 0.69 s a step, `settings=profile`). `jdk.ExecutionSample` sees only threads
+in the JAVA state; a thread inside a downcall is seen by `jdk.NativeMethodSample` instead. Here that
+is **217 execution samples against 1471 native ones** -- 2.2 s of Java in 31.6 s of sampled thread
+time, **7%** -- with 1127 of the native ones in `cuCtxSynchronize`, 197 in `cuMemAllocAsync` and 114
+in `cuLaunchKernel`. So an "8% of the step" read off the execution samples alone is half a percent of
+the step, and `.todo/476` was filed on exactly that error. **Quote the two sample sets together or
+neither.** Same run, C2 (`-XX:-UseJVMCICompiler`): 279 and 1463, the same shape.
+
+**The downcall handles stay INSTANCE fields, measured** (2026-09-06, `.todo/476`, refused; the
+five-arm probe is `.todo/artefacts/476-ffm-downcalls-through-a-non-constant-method-handle/`). Two
+million calls of `cuDriverGetVersion`, steady state: a `static final` handle is 8.9-9.1 ns on Graal,
+9.44 on C2 and 2082 in a native image; `CudaDriver`'s own shape -- a `final` INSTANCE field whose
+receiver is reachable from a `static final` -- is **8.3-8.9 / 10.13 / 2083**. Graal constant-folds
+the chain (`Gpu.Probe.DEVICE` -> `CudaGemm.driver` -> the handle), so the item's premise is false on
+this box's default JIT; C2 pays 0.7 ns a call, which is 0.07 ms of a 690 ms step even at 10^5 driver
+calls; and in a native image no arm can be a constant, because the handle is created at run time and
+AOT code was compiled before it existed. `Invokers.checkCustomized` is now **1 sample of 1688** on
+Graal (inside warm-up) and **0** on C2, against the 79 of ~1000 the item was filed on.
+`eval/LinalgBlasKernels`, which the item said held its CBLAS handles "the same way", has held them
+`static final` all along.
+
 **The seam is a CHAIN on both backends.** Interpreter: `LinalgGpu.installVec`, called from the VEC
 library's lazy-load hook after `VecSimd.install`, and it installs the write hook itself since a
 program may never reach `linalg:`. JVM: `JvmExprCompiler` routes a `vec:matvec` call site to
@@ -1293,8 +1316,15 @@ Each is a measured decline, and each needs this file's numbers before it is revi
   to the lane kernel at every size. The first sight of a big matrix used ONCE is left on the table
   deliberately.
 - **No zero-copy route, and no staged UPLOAD.** Measure with FRESH arrays before touching either half.
-- **The per-call cost of an FFM downcall inside a native image is still unexplained**; the generic
-  `MethodHandle` invoker under every downcall is the suspect.
+- **No `static final` downcall handles** (2026-09-06, `.todo/476`, refused on the numbers in
+  "The downcall handles stay INSTANCE fields, measured" above). Revisit only with a profile that
+  quotes BOTH JFR sample sets.
+- **The per-call cost of an FFM downcall inside a native image is MEASURED and unattributed**: 2.08
+  us against the JVM's 8.9, 230x, on the same binary whose downcall-free control loop is only 9x
+  the JVM's (2026-09-06, `.todo/476`'s probe). It is not the handle's constancy (all four holdings
+  agree to 2%) and it is not the thread transition (`critical(true)`, the fastest arm on both JITs,
+  is the SLOWEST here). What it is, and which per-call threshold calibrated on the JVM's 9 ns is
+  wrong in the binary because of it, is `.todo/727`.
 - **No per-device collection policy.** It becomes a `GpuDevice` question only if the two backends'
   collection requests ever want different answers.
 - **No Q4_0 / Q4_K weight width** (`.todo/718`, 2026-09-06 -- a refusal, recorded as one). The

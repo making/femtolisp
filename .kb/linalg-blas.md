@@ -29,7 +29,9 @@ WASM has no FFM, so `--blas` with a `.wasm` output is a hard error, not a silent
 - **`linalg:dot`** in its three matrix shapes: matrix x matrix (`cblas_dgemm`/`cblas_sgemm`), matrix x vector and vector x matrix (`cblas_dgemv`/`cblas_sgemv`, the second with `CblasTrans`). `linalg:matmul` at rank <= 2 and `linalg:solve` accelerate TRANSITIVELY.
 - **`vec:matvec`** / **`vec:matvec-into`**: one `cblas_?gemv`, `alpha = 1`, `beta = 0`, `CblasNoTrans` — the half that reaches the shipped numeric examples (`simd-dot`, `simd-gemv`, `tiny-llm`, `llm`).
 - Declined, memory-bound: `linalg:sum`, vector-vector `linalg:dot` / `vec:dot`, `axpy`, every element-wise `vec:` kernel, `vec:mean` / `vec:norm`.
-- **`worth(n, m, p)` = `n*m*p >= 64`** (a critical downcall floors at ~30 ns).
+- **`worth(n, m, p)` = `n*m*p >= 64`** (a critical downcall floors at ~30 ns -- **a JVM number**:
+  the same downcall measures 2.1 us inside a NATIVE IMAGE, 230x, so the crossover this constant
+  encodes is not the binary's. Measured 2026-09-06, unattributed, `.todo/727`).
 - The stacked rank-3 product (`linalg::%la-matmul-nd`) is a SEPARATE interception, taken by `--simd` and `--gpu` but not here — see "Unfinished".
 - `Linker.Option.critical(true)` takes heap `MemorySegment`s, so `MemorySegment.ofArray(a).asSlice(off * 8)` costs no copy but reaches no safepoint. **`2*n*m*p <= 2^32` goes critical, above that operands stage in a confined arena**; a gemv is always critical.
 
