@@ -90,10 +90,13 @@ public final class Gpu {
 	 * is unambiguous rather than where it first appears.
 	 *
 	 * <p>
-	 * {@code --blas} puts the same predicate at 64 rather than 131072, because a critical
-	 * downcall into a CPU library floors at 30 ns and a GPU round trip at 15 us -- three
-	 * orders of magnitude of fixed cost, and hence three orders of magnitude of
-	 * threshold. See {@code .kb/gpu.md} for the measurement.
+	 * {@code --blas} puts the same predicate at 64 rather than 131072 on the JVM, because
+	 * a critical downcall into a CPU library floors at 30 ns there and a GPU round trip
+	 * at 15 us -- three orders of magnitude of fixed cost, and hence three orders of
+	 * magnitude of threshold. Inside a native image every FFM downcall costs 2-7 us
+	 * (SubstrateVM interprets the handle chain), so {@code --blas} moves to 2^15 / 2^17
+	 * there while THIS threshold holds: a member here is a handful of driver calls on top
+	 * of a 15 us floor, measured level with the JVM's at n=64. See {@code .kb/gpu.md}.
 	 */
 	static final long POOLED_MIN_WORK = 1L << 17;
 

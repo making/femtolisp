@@ -22,8 +22,8 @@ are each 100% BF16 in `model.safetensors`; no current small model is f16.
 | --- | --- | --- |
 | **bf16** | THE width. 1.5-2.1x f32 on one thread (Graal / C2), 1.6x on 20; widening exact; every checkpoint is in it | `.todo/482` (483-490) |
 | **IEEE f16** | not a width -- a **load-time conversion** into `#f` / `#bf16`. A fused f16 GEMV is 0.30-0.58x on either JIT | `.todo/671` |
-| **Q8_0** (32 int8 + a scale) | a **read-only weight matrix** type with an integer-dot GEMV: 1.4-1.6x f32 on one thread under Graal and 1.7-1.9x under C2, 2.2-3.3x on 20, a quarter of f32's bytes | `.todo/672`, `.todo/706`, both closed |
-| **Q4_0 / Q4_K** | not a CPU item: the nibble unpack is ALU-bound at 5.7 GB/s (1.1x f32 for 8.5% error). **Refused on the device too** (2026-09-06, `718`, on a decode profile, not a pointer) -- and its re-open trigger (a) has since FIRED, `723` and `725` having taken the forward 45 -> 18.5 ms while the GEMV held at 6.7 | `.kb/gpu.md`, "What is deliberately NOT here" -- the refusal, the fired trigger and the arithmetic; the re-measurement is `.todo/726` |
+| **Q8_0** (32 int8 + a scale) | a **read-only weight matrix** type with an integer-dot GEMV: 1.4-1.6x f32 on one thread under Graal and 1.7-1.9x under C2, 2.2-3.3x on 20, a quarter of f32's bytes. Measured 0.50-0.58 of the bf16 kernel ON THE DEVICE, where `--gpu` still declines it | CPU: `.todo/672`, `.todo/706`, both closed. Device: `.todo/728`, open |
+| **Q4_0 / Q4_K** | not a CPU item: the nibble unpack is ALU-bound at 5.7 GB/s (1.1x f32 for 8.5% error). **Refused on the device too, twice** -- `718` on a decode profile, then `726` (2026-09-07) on kernels measured at the forward's own shapes after the fired trigger. Q4_0 alone is 1.37-1.44x; BEHIND `728`'s Q8_0 its increment is 1.4-1.8 ms at 8.5% error against 0.75%, so the refusal's reason is now ORDER, not size | `.kb/gpu.md`, "No Q4_0 / Q4_K weight width" -- the arithmetic and the new trigger (re-measure once `728` ships); the kernel rows are `.todo/artefacts/123-gpu-acceleration/README.md`, "The Q4 ceiling, measured" |
 
 Two facts under all four: **the width is bandwidth, not fitting** -- 4.4 GB of f32 fits an
 8 GB laptop -- and **every kernel number is JIT-dependent**: the spike's fused kernel fell
@@ -104,12 +104,14 @@ artefacts out -- see rule 12.
 
 **dorian certifies `4a0c8f5e9`** at the close of A's six-item lane: 10133 / 0 / 0 / 283
 skipped with **237** reports, exit 0 -- the run was taken at `53077edd2` and certifies the
-head by rule 8, `git diff --stat` over `src/` being empty. **GB10 certifies `9b10e4f0f`** at
-the close of B's three-item lane: 10125 / 0 / 0 / 189 skipped with **237** reports, exit 0,
-`GpuTest` included. Both were taken by the ORCHESTRATOR on `develop`, not from any lane's
-worktree (rule 4) -- a lane's combination exists nowhere else. The two heads are days of work
-apart and are NOT one certification; jointly they establish that no box is red, and dorian
-cannot verify B's `am.ik.gpu` / `eval/LinalgGpu*` / `codegen/jvm/JvmGpuTemplate` drift at all.
+head by rule 8, `git diff --stat` over `src/` being empty. **GB10 certifies `b6d0ea513`** at
+the close of B's two-item lane: 10128 / 0 / 0 / 189 skipped with **237** reports, exit 0,
+`GpuTest` included (59 tests, 560.7 s). That run was taken AT `b6d0ea513` -- the merge before
+it was "Already up to date" -- so rule 8's argument was not needed on this side. Both were
+taken by the ORCHESTRATOR on `develop`, not from any lane's worktree (rule 4) -- a lane's
+combination exists nowhere else. The two heads are a lane apart and are NOT one
+certification; jointly they establish that no box is red, and dorian cannot verify B's
+`am.ik.gpu` / `eval/LinalgGpu*` / `codegen/jvm/JvmGpuTemplate` drift at all.
 
 **What a run certifies is failures, errors and the report-file SET -- never the totals.** The
 count walked 232 -> 234 -> 235 -> 237 on dorian while reading 237 on GB10, and the arithmetic
@@ -120,7 +122,11 @@ diffs against a list known to be SHARED, so a name that leaves is attributable t
 to the change and never to the boxes having always differed. Both lists, and the prediction
 of a non-empty diff that this measurement overturned, are
 `.todo/artefacts/670-run-a-published-slm-checkpoint/`; each certification writes its own
-beside them.
+beside them. `report-classes-gb10-b6d0ea513.txt` is the third, and it is byte-identical to
+BOTH earlier lists -- GB10's own previous one and dorian's -- across a lane that changed
+`am.ik.gpu`, `eval/LinalgBlas*` and a test class. **A shared list held across a change to the
+classes it names is the first evidence the discipline has produced rather than assumed**; the
+count moving while the set does not is now twice-observed and once-contradicted-nowhere.
 
 Three things a reader needs before comparing two runs:
 
@@ -257,62 +263,64 @@ it the other way round moves the lane's own headline for the wrong reason.
 
 ### Orchestrator B -- GB10, the device
 
-B's previous lane closed `723`, `725` and `476`. **Its subject was the device arm's HOST
-floor, and it halved the arm twice without touching a kernel**: 51 -> 25 -> 18.5 ms a
-forward, so the arm that trailed `--simd --parallel` by 1.9x now leads it (21.6). `723`
-hoisted the residency guard out of the typed loops and un-narrowed a conv kernel the loader
-had cast to the weight width the file stores at F32; `725` grew the KV cache with the
-position reached, which took the per-token upload from 102 MB to 0.74 and moved the CPU arm
-as well (90.6 -> 78.4 ms on one `--simd` thread). What outlived them:
+B's previous lane closed `726` and `727`. **Its subject was a cost neither item was filed
+about, and both closed by naming one**: `726` re-took the Q4 refusal as a measurement instead
+of a byte ratio, and `727` found the 2 us that `.kb/gpu.md` had called unexplained since
+`123`. Neither shipped a kernel or a width. What outlived them:
 
-- **A profile names the COST correctly and the CAUSE only as a guess.** `718` was right to
-  the millisecond about all three DeltaNet functions and wrong about both of its "probably
-  because"s; the real causes took a minute to find with a flag that prints the declining
-  form (`-Drontolisp.debug.typedlooptrace=true`, which `723` added).
-- **A bound one operand of the pair cannot spell is a bound in the wrong place.** `725`
-  DECLINED the row-count argument on `vec:matvec` the item proposed -- the value cache is
-  transposed and wants a COLUMN bound -- and bounded both products from the caller instead,
-  leaving the library surface unchanged.
-- **`476` closed as a REFUSAL that its own ordering produced.** Taken last, against the
-  corrected step, its "~8% of a step" turned out to be 8% of the JAVA half of a step that is
-  93% native: `jdk.ExecutionSample` never sees a thread inside a downcall. Measured in
-  isolation the mechanism is 0.7 ns a call on C2 and nothing at all on Graal, which folds
-  the whole receiver chain, and `LinalgBlasKernels` had been `static final` all along.
-  **Read `ExecutionSample` and `NativeMethodSample` together or a native-heavy arm reads as
-  a Java profile.**
-- `722` stopped being a prediction and became a bill: eleven lines of `ci-spec` from `723`,
-  touching nothing the component path is suspected of, trapped the whole corpus -- before
-  AND after `693`'s adapter fix landed with thirty corpus lines of its own that passed.
+- **A refusal re-taken on a measurement can survive and still move.** `726` kept Q4 refused
+  and changed the REASON from size to ORDER: measured cold at the forward's own seven shapes,
+  Q8_0 is 0.50-0.58 of the shipped `gemv_bf16` and Q4_0 is 0.24-0.33, and the forward is
+  linear in kernel time (256-64 slope, two rounds). So Q4 alone is 1.37-1.44x -- but BEHIND a
+  Q8_0 that already has its type, reader, quantizer, CPU kernel and publisher file, its
+  increment is 1.4-1.8 ms at 8.5% error against 0.75%. **The cheaper width was in front of the
+  one being argued about, and only a measurement at the real shapes could see it.**
+- **A kernel that misses bandwidth is not always the weight side.** `726`'s f32-`x` kernels
+  fell short because of the `x` STRIDE (one lane per block reads `x` at 128 B), not the
+  weight layout; the integer-dot shape the CPU contract already computes was fastest at every
+  shape. The probe reproduced the in-situ `nsys` number, which is what makes the rest of it
+  admissible.
+- **`727` refuted its own framing twice over.** The 2 us is not the boundary and not
+  `libcuda`: `getpid()` costs 1.86 us, and the SAME address through SubstrateVM's
+  `@InvokeCFunctionPointer` is 10.7 ns in the SAME image. It is
+  `Target_java_lang_invoke_LambdaForm.forceInterpretation()` returning `true` -- a run-time
+  handle has no AOT body, so every call is interpreted name by name with boxed arguments.
+  **~1.7 us + ~0.4 us per argument** predicts all five shapes we issue.
+- **A threshold is a property of the RUNTIME, not of the kernel.** `--blas`'s `MIN_WORK = 64`
+  was picked on JVM numbers and was simply wrong in the binary, where an 8x8 `vec:matvec`
+  costs 7.4 us against the lane kernel's 0.6. It is now `2^15` (gemm) / `2^17` (gemv) under
+  `imagecode` and 64 on the JVM. **The 727 that looked like a curiosity was shipping a
+  mis-set threshold the whole time**, and no test could see it because every test ran on the
+  JVM.
 
-Everything that lane filed is B's own and is in the table below; what went to A was `722`'s
-invoice, recorded there.
+Everything that lane filed is B's own -- `728`, `729`, `730` -- and `730` is not workable by
+a lane at all: it is written, and posting it is a public action for a person.
 
-**The current lane is the device pool, and the device pool is nearly empty.** Both items are
-High. They do NOT stand in each other's denominator -- B-1's arithmetic is the JVM class
-output, B-2 is the native binary only -- so for the first time the order is by which one can
-be finished rather than by which moves the other's number.
+**The device pool refilled itself, and that is this lane's design result.** Last lane's
+paragraph predicted the partition would stop covering the pool after `726` and `727` drained
+it. It did not: **both closers filed a device successor**, so device-to-B holds for one more
+round without the aarch64/x64 axis being needed yet. That is evidence about the PREDICTION,
+not a reprieve -- an open-ended item (`727`) refills reliably and a bounded one does not, so
+the axis question is deferred by luck and should still be settled with A rather than waited
+on. Both items are High. As last lane, they do NOT stand in each other's denominator: B-1 is
+the JVM class output, B-2 is the native binary only.
 
 | # | item | difficulty | why here, why now |
 | --- | --- | --- | --- |
-| B-1 | `726` Q4 on the device: the refusal's trigger (a) has fully fired | High | FIRST because it is a promise already written down and its arithmetic is already assembled: the same 6.73 ms bf16 GEMV is 36% of an 18.5 ms arm where it was 15% of a 45 ms one, so the Q4 ceiling moved from "under 10%" to ~26%. **A refusal computed as a share decays when the denominator does** -- which is exactly why `718` wrote the trigger down instead of closing the question, and why the two items that fired it were not about Q4 at all. It is also the only item in the lane on the checkpoint path. **"Still refused" is as good a close as a build**; `718`'s was |
-| B-2 | `727` an FFM downcall costs 2.1 us inside a native image, 230x the JVM | High | Second because the mechanism is inside SubstrateVM rather than inside this repo, so the honest first step is finding out what the 2 us IS before deciding whether we can spend it -- open-ended, and it does not decay. It is B's for a narrow reason only, that its probe binds `libcuda.so.1`; what it COSTS is every FFM surface the native binary has, `--gpu`, `--blas` and `objc:` alike, including a `LinalgBlasKernels.MIN_WORK` threshold chosen on JVM numbers and possibly ~70x wrong in the binary. It is the cost `.kb/gpu.md` has called unexplained since `123`, and `476` is what narrowed it: handle constancy is ruled out, and the control row (the same loop without the call, 32.8 ns against the JVM's 3.6) is what makes it a downcall finding rather than a slow-binary one |
+| B-1 | `728` Q8_0 GEMV on the device | High | FIRST because it is the only item in the lane on the checkpoint path, and because `726` did not merely rank it -- it measured the exact number it is worth (2.7-3.4 ms off a 16.7 ms forward, 1.20-1.25x) at the shapes the forward launches. Everything but the device seam exists: the type, the GGUF reader, the quantizer, the scalar oracle, the CPU kernel, and the publisher's own `Qwen3.5-0.8B-Q8_0.gguf`, whose every GEMV `--gpu` currently declines to the CPU lane -- so today the device arm of that file IS the CPU arm. **The completion test is that decline disappearing**, and the error budget is `672`'s 7.6e-3, already accepted |
+| B-2 | `729` the binary's downcalls through SubstrateVM's own AOT route | High | Second because it is open-ended and does not decay, and because `727` left it with the measurement done and the COST accepted rather than the design: 10.7 ns against 2-7 us on the same address in the same image, ~5 ms of a decode forward's ~1300 driver calls, and a `--blas` floor that only exists to pay for it. What is unsettled is the SHAPE -- a `-Pnative` source set substituting the binding halves of `am.ik.gpu.CudaDriver`, `eval/LinalgBlasKernels` and `am.ik.objc`, one interface method per shape across 45 CUDA + 6 BLAS + the objc table, against core libraries that import nothing. **The honest first step is deciding whether that seam is payable, and "not worth it" is a close**; `726` and `718` both closed that way |
 
-**Not in this lane, and why.** `514` (`LinalgGpuTest` never finishes on an Apple silicon
-Mac) is the one device item NEITHER orchestrator can take: it wants a Metal box, and GB10 is
-CUDA on aarch64 Linux. Parking it is not a deferral under rule 3 -- no box in this plan can
-even fail it. `684` and `696` stay A's for their x64 halves.
-
-**The partition has stopped covering the pool, and that is this design's result.** Device to
-B and GPU-free to A was exact while the device sub-pool held items; after B-1 and B-2 it
-holds `514`, which no box can run, and nothing else. **What B draws from once it is drained
-is not one lane's decision.** The obvious next axis is the other thing the boxes do not
-share -- aarch64 against x64 -- which is what leaves `684` and `696` each with a half on the
-wrong box. It belongs beside `.todo/709`: co-signed, not adopted unilaterally.
+**Not in this lane, and why.** `730` (report the two SVM findings upstream) is Low and
+finished as writing; what remains is a person posting it, so no lane can close it. `514`
+(`LinalgGpuTest` never finishes on an Apple silicon Mac) is still the one device item NEITHER
+orchestrator can take: it wants a Metal box, and GB10 is CUDA on aarch64 Linux. Parking it is
+not a deferral under rule 3 -- no box in this plan can even fail it. `684` and `696` stay A's
+for their x64 halves.
 
 **The one decision still open, and not either lane's to take alone: `.todo/709` is an
 explicit DRAFT and needs co-signing or cutting by both orchestrators.** It is process, so
 one side adopting it unilaterally is the failure it is written about. It has now outlived
-four full lanes, which is evidence about the item rather than about its subject. It is also
+five full lanes, which is evidence about the item rather than about its subject. It is also
 where the general reading disciplines belong -- diff the lists rather than reasoning about
 which terms ought to differ; a sum that closes is not evidence about its terms; relay a
 census with its total AND its class count -- **there or nowhere**.
@@ -404,6 +412,7 @@ Cited by number from other items -- **the numbering is fixed.**
   exhaustive switches buy.
 - **Not fp8 / int4 anywhere.** On the CPU, measured out; re-measure only when the Vector
   API grows a dot-product or a narrower conversion, or on a host whose JIT beats 1
-  op/element for the unpack. On the device the `718` refusal stands, but **its trigger (a)
-  has fired** and the re-measurement is the lane's B-1 (`.todo/726`); the arithmetic is
-  `.kb/gpu.md`'s row, not this file's.
+  op/element for the unpack. On the device the refusal now stands on `726`'s own kernel
+  measurements rather than on `718`'s share arithmetic, and its trigger is `728` shipping;
+  the numbers are `.kb/gpu.md`'s row, not this file's. **Q8_0 on the device is IN the plan**
+  and is the lane's B-1.

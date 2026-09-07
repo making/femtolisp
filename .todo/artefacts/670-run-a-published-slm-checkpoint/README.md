@@ -27,3 +27,16 @@ So the count now closes as a SET EQUALITY rather than as an arithmetic, which is
 than what the discipline was written to get: the next run on either box compares against a
 list known to be shared, and any name that leaves is attributable to the box or to the
 change, never to the two boxes having been different all along.
+
+## `report-classes-gb10-b6d0ea513.txt` (2026-09-07)
+
+GB10's certification at the close of B's `726` / `727` lane: 10128 / 0 / 0 / 189 skipped,
+237 reports, exit 0, `GpuTest` included (59 tests, 560.7 s). Run taken AT `b6d0ea513` on
+`develop` by the orchestrator; the merge before it was "Already up to date", so rule 8's
+file-set argument was not needed.
+
+**The list is byte-identical to both earlier ones** -- GB10's own `9b10e4f0f` and dorian's
+`4a0c8f5e9` -- across a lane that changed `am.ik.gpu/Gpu.java`,
+`eval/LinalgBlas{,Kernels}.java` and `eval/LinalgBlasDeclineTest.java`. That is the first
+time the shared-list claim has been tested by a change to the classes it names rather than
+merely restated, and it held.
