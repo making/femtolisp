@@ -594,6 +594,44 @@ and a Q4_0 GEMV kernel measured at this model's shapes would take 4.5-5.1 ms off
 `--gpu` today declines to the CPU one and all; Q4_0 stays refused behind it, with the
 arithmetic in `.kb/gpu.md`, "What is deliberately NOT here".
 
+### Q8_0 weights on the device: `--gpu` over the Q8_0 GGUF
+
+`--gpu` takes `vec:matvec` over a `rontolisp:quantized-matrix` on an NVIDIA card since
+2026-09-07 (`.todo/728`): the kernel streams ggml's 34-byte blocks as the file holds them,
+with the activation quantized on the host by the CPU kernel's own rule, and -- unlike the
+f32 and bf16 kernels, which land on the portable definition's bits in practice -- it IS
+those bits, on every row, because the width's CPU contract is bit-for-bit and the device
+kernel keeps to it (`.kb/quantized-matrix.md`). Measured on the GB10 box (GraalVM 25,
+JVM class output, `-Xmx16g`, `-m chat -t 0 -n 64`, the cat prompt, ggml-org's
+`Qwen3.5-0.8B-Q8_0.gguf`; `-w bf16` on the command line as for the bf16 rows, which a
+quantized matrix ignores; three runs each, the 64 tokens byte-identical across all twelve):
+
+| Qwen3.5-0.8B | `--simd` | `--gpu --simd` | `--simd --parallel`, 16 threads | `--gpu --simd --parallel`, 16 |
+| --- | --- | --- | --- | --- |
+| `Q8_0` file | 9.8 / 9.8 / 9.8 | 35.7 / 34.7 / 34.7 | 34.4 / 35.1 / 38.2 | 39.2 / 37.2 / 36.1 |
+
+**The forward** (the 256-minus-64 method above, `--gpu --simd`, one thread, two rounds):
+**13.9 / 13.9 ms a forward over the Q8_0 file against 16.7 / 16.7 over the BF16 file at
+`-w bf16` -- 1.20x, 2.75 ms, what `.todo/726` predicted for the width (2.7-3.4)** -- printed
+57.4 / 57.2 tok/s at `-n 256` against 50.5 / 50.9, 35.7 / 35.5 at `-n 64` against 34.2 /
+34.9, and the Q8_0 file loads in 1.3 s against 2.1 (0.83 GB of blocks read into place). The
+device-side GEMV a forward is 5.3 ms against bf16's 7.7 (`.kb/gpu.md`; the 270 MB head at
+190 GB/s). **The tokens**: the Q8_0 file's 64 and 256 positions are byte-identical between
+`--gpu --simd` and `--simd`, and round to round; the Q8_0 and BF16 files part at position
+40 (two widths, as `.todo/672` recorded on the raw completion).
+
+**What the run found in this file** (2026-09-07): `split-gated-q`, which splits Qwen3.5's
+`attn_q` (`query | gate` per head) into `:wq` and `:gate`, rebuilt the halves with
+`make-array` at the SOURCE's element type -- for a quantized source that is a general
+array, whose `vec:matvec` is the boxed defun -- so every `wq` and `gate` GEMV of the Q8_0
+file ran on the defun on both arms: 5.6 tok/s at `--simd` and 2-4 under the flag, where
+the residency guard on every boxed element read made the device arm the SLOWER one. The
+Q8_0 halves are now split by byte span (`split-gated-q-blocks`: a row is whole blocks, and
+each head's query rows and gate rows are contiguous), through a scratch file rather than
+`rontolisp:dequantize` / `quantize` because this program also compiles to WASM, where those
+two names are refused at compile time. The `--simd` column above is the CPU arm after that
+fix (9.7-9.8 against the bf16 file's 9.0).
+
 ## The layer table
 
 The one thing here that is not `run.c`: the forward pass is a **table of layer

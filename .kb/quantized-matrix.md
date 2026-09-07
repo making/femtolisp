@@ -3,8 +3,8 @@
 **Invariant: `rontolisp:quantized-matrix` holds a ggml `Q8_0` tensor's bytes VERBATIM, is
 immutable and dequantizes on read, and `vec:matvec` over it computes ggml's integer-dot
 shape with a result that is the scalar `vec.lisp` defun's BIT FOR BIT on every backend
-that carries the type, with or without `--simd` / `--parallel`.** Interpreter and JVM;
-both WASM backends refuse it by name. `.todo/672`.
+that carries the type, with or without `--simd` / `--parallel` / `--gpu`.** Interpreter and
+JVM; both WASM backends refuse it by name. `.todo/672`; the device kernel `.todo/728`.
 
 ## The type
 - Root `LispQuantizedMatrix(QuantizedFormat format, int[] dims, byte[] blocks)`, a permit of
@@ -21,9 +21,10 @@ both WASM backends refuse it by name. `.todo/672`.
   (`.kb/packed-integer-vectors.md`), which would make this type twice the f32 matrix it
   exists to shrink. On the JVM a bare `byte[]` is also the free `instanceof` discriminator.
 - JVM representation: `[format:int LE][rank:int][dim_k:int...]` then the blocks, data offset
-  `8 + 4 * rank`. Two places spell it: `JvmQuantizedMatrixRuntimeBuilder` (the `_qm*`
-  helpers) and `JvmSimdVectorTemplate.qmOff/qmDim`. Ints, so no 32767 cap
-  (`JvmQuantizedMatrixTest`, the 40000-row and 40000-column shapes).
+  `8 + 4 * rank`. Three places spell it: `JvmQuantizedMatrixRuntimeBuilder` (the `_qm*`
+  helpers), `JvmSimdVectorTemplate.qmOff/qmDim` and `JvmGpuTemplate.qmOff/qmDim` (the
+  `--gpu` bridge's arm). Ints, so no 32767 cap (`JvmQuantizedMatrixTest`, the 40000-row and
+  40000-column shapes).
 - Surface: `aref`/`row-major-aref` answer `q * d` as a double (exact: 8 bits x 11 bits);
   `(setf aref)` signals "immutable"; `array-dimensions`/`-rank`/`-total-size`/`-dimension`
   work; `array-element-type` answers the format symbol `Q8-0` (what `vec.lisp` and
@@ -99,14 +100,36 @@ and 0 in the kernel -- finite inputs only, as for every `vec:` member.
 - Bit-identity is between OUR defun and OUR kernels. ggml's `Q8_0 x Q8_0` kernel quantizes
   the activation in f32 and folds in f32 in its own order, so the two implementations agree
   on the ARGMAX most of the time and not on the bits (below).
+- **The device kernel is the same bits** (`--gpu`, CUDA only, `.todo/728`; `.kb/gpu.md`, "The
+  GEMV, and the matrix that stays"): `gemm.cu`'s `gemv_q8_0` takes a rank-2 matrix against
+  an `#f` vector -- the f32 pairing -- with the activation quantized on the host by step 1
+  (`Gpu.quantizeActivationQ8`, the THIRD transcription of that rule beside
+  `VecSimdKernels.quantizeActivationF` and `JvmSimdVectorTemplate`'s, pinned block for block
+  in `GpuDeclineTest`) and uploaded in place of the f32 vector, eight threads a row each
+  owning one lane's columns of a block, the four f32 chains walked in block order with
+  `__fmul_rn` / `__fadd_rn`, the fold by two shuffles. Pinned as raw-bit EQUALITY on every
+  row against a transcription of steps 1-3 (`GpuTest`) and as equal program output under
+  every flag combination (`LinalgGpuTest`, `JvmLinalgGpuAccelCompilerTest`); `examples/llm`
+  over the Q8_0 GGUF prints the same 256 tokens with the flag on and off. A `#d` vector,
+  rank 1 and Metal decline to the rung below, never signal. What it buys: 13.9 ms a forward
+  against 16.7 at bf16 on the GB10 (1.20x), the device streaming the 34-byte blocks at 190
+  GB/s.
 - Interpreter chain: `VecSimd` answers a `LispQuantizedMatrix` in `matvec`/`matvec-into`
   BEFORE `array(...)`, declining any pairing without a kernel (rank 1, mixed destination
   width, a short x) to the defun; every other member hands a quantized argument to the
-  defun. `LinalgBlas`/`LinalgGpu` decline it by their `instanceof LispFloatArray` guards.
+  defun. `LinalgBlas` declines it by its `instanceof LispFloatArray` guard; `LinalgGpu.matvec`
+  takes the rank-2-against-`#f` pairing ahead of the lane kernel (`matvecQuantized`).
+  `PackedBuffer.load` reports a `read-sequence` into the blocks to the write hook, as every
+  bulk write does, so a re-read matrix is a first sight again on the device.
 - JVM chain: `JvmSimdCompiler.emitLaneWidthGuard`'s FIRST arm, `QUANTIZED_OPERAND` (matvec
   0, matvec-into 1): weight `byte[]` and the other array operands all `float[]` or all
   `double[]`, else fallback to the defun; then the bf16 arm, then the two-width test. The
-  bridge stays total. `compileMatvecChain`'s device/library rungs decline a `byte[]`.
+  bridge stays total. `compileMatvecChain`'s device rung takes the allocating form's
+  `byte[]` against a `float[]` ahead of that arm (`JvmGpuTemplate.gpuMatvecQ8`); the library
+  rung declines a `byte[]`. Under `--gpu` the compiled `rontolisp:quantize` reads its source
+  through `_gpuMaterialize` first -- a device result's host array is a stub
+  (`JvmQuantizedMatrixCompiler`; found by the reader corpus of
+  `JvmLinalgGpuAccelCompilerTest`, which now has a `quantize` line).
 - `--parallel` splits rows as for every GEMV; the activation is quantized once, before.
 
 ## The gate on the JVM
@@ -125,8 +148,13 @@ four wrappers on the reference for the same reason.
   (`UnsupportedFloatWidth.refuseQuantized`); `make-quantized-matrix` and the two accessors a
   CALL-TIME signal with the same sentence (a spliced library's dead arm);
   `quantized-matrix-p` -> `(progn x nil)`. `--no-gc`: all four names refused at compile time.
-  Pinned by `WasmLispCompilerTest` / `NoGcWasmCompilerTest`; ci-spec `refusedOn`.
-- `--gpu`/`--blas`: silent decline. `rontolisp:jvm-export`: not a boundary type.
+  Pinned by `WasmLispCompilerTest` / `NoGcWasmCompilerTest`; ci-spec `refusedOn`. A program
+  that compiles to WASM as well (`examples/llm`) therefore cannot NAME `quantize` /
+  `dequantize` even in a guarded arm -- its Q8_0 split goes through a scratch file instead
+  (`split-gated-q-blocks`; a row slice without one is `.todo/732`).
+- `--blas`: silent decline. `--gpu`: the rank-2-against-`#f` GEMV is taken on CUDA (the
+  defun's bits, above); every other pairing and Metal decline silently.
+  `rontolisp:jvm-export`: not a boundary type.
 
 ## What it costs (2026-09-06, GB10, `.todo/706-.../README.md`)
 One thread, 4096x4096, against the shipped f32 GEMV, two passes of the harness: **Graal
@@ -162,5 +190,11 @@ Record and ids: `.todo/672-.../README.md`.
 `--simd` == `--parallel` at both widths, the declines, `linalg:row`), `eval/VecSimdQ8KernelsTest`
 and `codegen/jvm/JvmSimdVectorTemplateQ8Test` (kernels against the defun transcribed, bits),
 `codegen/jvm/JvmQuantizedMatrixTest` (both backends, the header past 32767, the gate),
-`GgufLibraryTest` (the synthetic Q8_0 tensor), ci-spec standalone `quantized-matrix`.
-Bench: `eval/Q8GemvBench`, `codegen/jvm/Q8TemplateGemvBench`, `.todo/672-.../bench.sh`.
+`GgufLibraryTest` (the synthetic Q8_0 tensor), ci-spec standalone `quantized-matrix`. The
+device: `am/ik/gpu/GpuTest` (the kernel against the contract transcribed, every row's bits,
+the two-sight rule, offsets, the leak run), `am/ik/gpu/GpuDeclineTest` (the host quantizer
+block for block, the declines, the PTX entry -- every machine), `eval/LinalgGpuTest`,
+`codegen/jvm/JvmLinalgGpuAccelCompilerTest` and `GpuOfferDifferentialTest` (the interceptors:
+equal output under every flag, the residency hit / resident bytes as the proof it ran).
+Bench: `eval/Q8GemvBench`, `codegen/jvm/Q8TemplateGemvBench`, `.todo/672-.../bench.sh`; the
+device kernel's shapes `.todo/artefacts/123-gpu-acceleration/Q8ExactKernelProbe.java`.

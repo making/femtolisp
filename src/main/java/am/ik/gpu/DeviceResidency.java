@@ -671,12 +671,17 @@ final class DeviceResidency {
 
 	/**
 	 * The element width of a host array: a {@code short[]} is a bfloat16 matrix (two
-	 * bytes a pattern, {@code .kb/bfloat16.md}), a {@code float[]} single, anything else
-	 * double.
+	 * bytes a pattern, {@code .kb/bfloat16.md}), a {@code byte[]} a Q8_0 quantized
+	 * matrix's blocks (one byte, {@code .kb/quantized-matrix.md}: its extent is a byte
+	 * count, since an element has no slot of its own), a {@code float[]} single, anything
+	 * else double.
 	 */
 	private static int width(Object host) {
 		if (host instanceof short[]) {
 			return Short.BYTES;
+		}
+		if (host instanceof byte[]) {
+			return Byte.BYTES;
 		}
 		return host instanceof float[] ? Float.BYTES : Double.BYTES;
 	}
@@ -696,13 +701,17 @@ final class DeviceResidency {
 		if (host instanceof short[] b) {
 			return (long) b.length * Short.BYTES;
 		}
+		if (host instanceof byte[] q) {
+			return q.length;
+		}
 		return Long.MAX_VALUE;
 	}
 
 	/**
-	 * A stub's backing: the full span, with the stub's own prefix copied in. A
-	 * {@code short[]} arm for symmetry only -- no member RESULTS in a bfloat16 array
-	 * ({@code .todo/490}'s GEMV writes f32), so no bfloat16 stub exists to back.
+	 * A stub's backing: the full span, with the stub's own prefix copied in. The
+	 * {@code short[]} and {@code byte[]} arms are for symmetry only -- no member RESULTS
+	 * in a bfloat16 or a quantized array ({@code .todo/490}'s and {@code .todo/728}'s
+	 * GEMVs write f32), so no stub of either width exists to back.
 	 */
 	private static Object allocateBacking(Object stub, long spanEnd) {
 		if (stub instanceof float[] f) {
@@ -713,6 +722,11 @@ final class DeviceResidency {
 		if (stub instanceof short[] b) {
 			short[] backing = new short[Math.toIntExact(spanEnd / Short.BYTES)];
 			System.arraycopy(b, 0, backing, 0, b.length);
+			return backing;
+		}
+		if (stub instanceof byte[] q) {
+			byte[] backing = new byte[Math.toIntExact(spanEnd)];
+			System.arraycopy(q, 0, backing, 0, q.length);
 			return backing;
 		}
 		double[] d = (double[]) stub;

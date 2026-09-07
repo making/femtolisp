@@ -305,6 +305,14 @@ class LinalgGpuDeclineTest {
 				(list (vec:matvec *w* *x*) (vec:matvec *w* *x*))
 				""";
 		assertThat(eval(bf16, true)).as("bfloat16").isEqualTo(eval(bf16, false));
+		// And the Q8_0 pairing (.todo/728): a quantized matrix against an #f vector,
+		// below the threshold, prints the defun's #f result with the flag and without.
+		String q8 = """
+				(defparameter *w* (rontolisp:quantize (linalg:reshape (linalg:sin (linalg:arange 1 513 :element-type 'single-float)) '(16 32)) 'q8-0))
+				(defparameter *x* (linalg:cos (linalg:arange 1 33 :element-type 'single-float)))
+				(list (vec:matvec *w* *x*) (vec:matvec *w* *x*))
+				""";
+		assertThat(eval(q8, true)).as("q8-0").isEqualTo(eval(q8, false));
 	}
 
 	@Test

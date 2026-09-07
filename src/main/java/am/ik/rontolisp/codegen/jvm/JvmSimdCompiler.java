@@ -99,7 +99,10 @@ final class JvmSimdCompiler {
 	 * then be of ONE width, all {@code float[]} or all {@code double[]}: the kernel takes
 	 * an f32 or an f64 activation and writes a destination of the same width, and a mixed
 	 * destination is a shape only the defun computes. A member absent from this map
-	 * declines a {@code byte[]} in every position.
+	 * declines a {@code byte[]} in every position. The device rung of
+	 * {@link #compileMatvecChain} takes the allocating form's {@code byte[]} against a
+	 * {@code float[]} ahead of this arm ({@code JvmGpuTemplate.gpuMatvec},
+	 * {@code .todo/728}) and answers the same bits.
 	 */
 	private static final Map<String, Integer> QUANTIZED_OPERAND = Map.of(LispNames.VEC_MATVEC, 0,
 			LispNames.VEC_MATVEC_INTO, 1);

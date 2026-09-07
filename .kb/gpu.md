@@ -308,7 +308,9 @@ spellings of one guard, one failing open. Both are now explicit refusals.
 Three different breaks with the scalar defun, not the same kind -- and the GEMV's, which is a fourth
 row of its own ("The GEMV, and the matrix that stays": a compensated float pair at `#f` and `#bf16`,
 measured on the double-accumulated defun's bits on every row, pinned at ">99% of rows"; a double at
-`#d`; and the bf16 kernel the f32 kernel's bits over the widened matrix, exactly).
+`#d`; the bf16 kernel the f32 kernel's bits over the widened matrix, exactly; and the Q8_0 kernel
+the scalar defun's bits, exactly -- the one accelerated member of the flag pinned as EQUALITY on
+inexact input, since its CPU contract already was).
 
 **The product FUSES.** `gemm.cu` keeps ONE accumulator per output cell and walks `k` ascending across
 tiles and within each tile -- the scalar defun's order, NOT a reordering. What differs is that
@@ -633,6 +635,53 @@ against 58 us, 4096x4096 125 against 268, 32000x2048 575 against 1103, 248320x10
 between calls) never pays: 22 us at 384x384 against the CPU's 14. **What the width buys a decode
 step**: `examples/llm/README.md`, "bf16 weights on the device".
 
+**Q8_0 is the fourth matrix width, and the one member of the flag that is the scalar defun's BITS**
+(`.todo/728`, 2026-09-07): a `rontolisp:quantized-matrix` -- ggml's 34-byte blocks verbatim in a
+`byte[]`, `.kb/quantized-matrix.md` -- against an `#f` vector into an `#f` result, the pairing the
+CPU's integer-dot kernel has at f32. That kernel's contract is bit-for-bit with the defun (four f32
+lane accumulators walked over the blocks in order, folded `(acc0 + acc2) + (acc1 + acc3)`), and
+`gemv_q8_0` spells exactly that: the activation is quantized on the HOST by the contract's rule
+(`Gpu.quantizeActivationQ8`, the third transcription of it beside the interpreter's and the compiled
+template's, pinned on every machine by `GpuDeclineTest`) and uploaded in place of the f32 vector as
+`[nb doubles sx][cols int8, each block's 32 in thread order]` -- no launch of its own: a quantize
+kernel ahead of every GEMV measured +4.2 us on the stream, the host quantizer 0.7-2.5 us a call --
+and the kernel runs EIGHT threads a row, one lane a thread (thread `4h + i` owns lane `i`'s columns
+`4k + i`, `k` in `[4h, 4h + 4)`, four sign-extending byte loads at stride 4 since a 34-byte block is
+only 2-byte aligned, one xor-4 shuffle joining the halves), each thread's f32 chain in block order
+with `__fmul_rn` / `__fadd_rn` (no FMA whatever the toolchain), the scale product
+`f32(f64(d) * sx)` computed once a block a row and shuffled round the octet. So the device joins the
+CPU kernel's EQUALITY pin rather than the f32 row's tolerance: `GpuTest` asserts every row's raw
+bits against a transcription of the contract at two shapes (rows not a multiple of 32, a block count
+not a multiple of the unroll), both interceptor suites assert the program's print equal under
+`--gpu`, `--gpu --simd`, `--simd` and neither, and `examples/llm` over the Q8_0 GGUF prints the same
+256 tokens with the flag on and off. **The seam**: `GpuDevice.supportsQuantized()` beside
+`supportsBfloat16()` (`true` on CUDA, `false` on Metal, where `Gpu.matvec(byte[], ...)` is a hard
+decline), `gemvQ8`, `DeviceResidency` keying a `byte[]` at width ONE (its extent is a byte count;
+never a result, never a stub), `LinalgGpu.matvec`'s `LispQuantizedMatrix` case ahead of the
+`LispFloatArray` decline, `JvmGpuTemplate.gpuMatvecQ8` reading the int header (`qmOff` / `qmDim`,
+the third place that spells it) ahead of `compileMatvecChain`'s lane arm, and the interpreter's
+`PackedBuffer.load` reporting a `read-sequence` into the blocks to the write hook as every bulk write
+is. The element threshold counts elements (`worthMatvec`), `cols` must be whole blocks, a `#d`
+vector and a rank-1 matrix decline to the rung below. **The activation buffer is kept across calls**
+(`CudaGemm.q8Activation`, grown when a wider vector comes, never freed): an allocation and a free a
+call are two driver round trips a decode step need not pay, and every upload into it is
+stream-ordered behind the launch that last read it. **Measured** (GB10, `Q8ExactKernelProbe.java`,
+cold from DRAM at Qwen3.5-0.8B's seven shapes, weighted by launch count): 5.2-5.4 ms of GEMV a
+forward against bf16's 7.7 (0.69; the probe's warp-per-row Q8_0 fold, which is NOT the contract's
+bits, 4.6) -- 190 GB/s at the 270 MB head against the bf16 kernel's 230 at twice the bytes -- and
+the rejected shapes: four threads a row is starved (0.5 of the bandwidth at the head, 7.7 ms), a 4x4
+transpose-reduce over shuffles costs 15% more instructions for the same bits (5.5 ms), `__dp4a`
+over the packed lane buys nothing over the four multiplies (5.4). **The forward** (same box,
+`examples/llm` over ggml-org's Q8_0 GGUF at `--gpu --simd`, one thread, the 256-minus-64 method,
+two rounds): **13.9 / 13.9 ms a forward against 16.7 / 16.7 at `-w bf16` over the BF16 file --
+1.20x, 2.75 ms, the arithmetic of `.todo/726` (2.7-3.4 predicted) to the tenth** -- 57.2-57.4 tok/s
+printed at 256 against 50.5-50.9, and the model loads in 1.3 s against 2.1. What that run also found:
+`examples/llm`'s `split-gated-q` (Qwen3.5's `attn_q` is `query | gate` per head) rebuilt the halves
+with `make-array` at the source's element type, which for a quantized source is a GENERAL array, so
+every `wq` / `gate` GEMV of the Q8_0 file ran the boxed defun on both arms (5.6 tok/s at `--simd`,
+2-4 under the flag); it now splits the blocks by byte span (`split-gated-q-blocks`), and the CPU arm
+reads 9.7 tok/s. A row slice of a quantized matrix without a scratch file is `.todo/732`.
+
 **What the decode step waits on once the GEMV is on the device** (2026-09-06, `.todo/718`; GB10,
 JVM class output, Qwen3.5-0.8B from the BF16 GGUF at `-w bf16`; `nsys` per forward pass and JFR per
 function through `decode-per-token.py` / `decode-jfr-agg.py`). A steady forward pass is **45-46 ms
@@ -738,8 +787,8 @@ Graal (inside warm-up) and **0** on C2, against the 79 of ~1000 the item was fil
 library's lazy-load hook after `VecSimd.install`, and it installs the write hook itself since a
 program may never reach `linalg:`. JVM: `JvmExprCompiler` routes a `vec:matvec` call site to
 `JvmSimdCompiler.compileGpuMatvec` whenever the GPU bridge was emitted -- with `--simd` or without.
-Declined: anything not a packed rank-2 matrix and a packed rank-1 vector at one of the three pairings
-above with matching extent, and the first sight.
+Declined: anything not a rank-2 matrix (packed, or a Q8_0 quantized one) and a packed rank-1 vector
+at one of the four pairings above with matching extent, and the first sight.
 
 ### The collector, and the flags that do and do not help
 
@@ -1390,9 +1439,17 @@ Each is a measured decline, and each needs this file's numbers before it is revi
   (the Q8_0 kernel 3.4-4.0 ms against Q4_0's 1.6-2.3), ~12% of the forward, for the 8.5%-error
   width against the 0.75% one, plus the format's CPU arms. ggml-org's Qwen3.5-0.8B set is BF16,
   Q8_0 and plain Q4_0 (no K-quants), which drops the super-block readers from THIS model's cost
-  but not from the width's. **New trigger: re-take after `.todo/728` ships, against that increment**;
-  it flips when a model whose bf16 GEMV time is the MAJORITY of its forward exercises the device
-  (this one's is 40%; the rest is the Gated DeltaNet host loops and 157 launch round trips), or on
+  but not from the width's. **`.todo/728` shipped on 2026-09-07 and the increment was re-taken
+  against the SHIPPED Q8_0 kernel** ("The GEMV, and the matrix that stays", the Q8_0 paragraph):
+  the device kernel that is the CPU contract's bits costs 5.2-5.4 ms of GEMV a forward, not the
+  probe's 3.5-4.4 (a warp-per-row fold, which the contract forbids), and the forward went
+  16.7 -> 13.9 ms (1.20x, as predicted). A Q4_0 kernel holding the same bit contract would carry
+  the same per-block shape -- one lane a thread, the f32 chain in block order -- at half the weight
+  bytes, so its increment over the shipped kernel is bounded by the byte ratio, ~2.7 ms of the 13.9
+  (a ~11 ms forward, 1.25x) and in practice less, for the 8.5%-error width against the 0.75% one,
+  plus the format's CPU arms on every backend and its readers. **Trigger unchanged**: it flips
+  when a model whose bf16 GEMV time is the MAJORITY of its forward exercises the device (this
+  one's is 40%; the rest is the Gated DeltaNet host loops and 157 launch round trips), or on
   trigger (b) -- a discrete card with its own memory joining the two calibration machines, where
   the upload IS the cost and residency the win, and this paragraph is unified-memory arithmetic.
   The CPU half stays where `.todo/670` left it.

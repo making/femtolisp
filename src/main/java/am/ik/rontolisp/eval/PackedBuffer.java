@@ -124,7 +124,10 @@ record PackedBuffer(LispVal value, int width, int size) {
 					};
 				}
 			}
-			case LispQuantizedMatrix qm -> bytes.get(qm.blocks(), start, n);
+			// The blocks are the device's residency key too (.todo/728): the read is
+			// reported like any other bulk write, so a matrix re-read after a GEMV is a
+			// first sight again and never a stale copy.
+			case LispQuantizedMatrix qm -> bytes.get((byte[]) FloatArrayAccessHook.written(qm.blocks()), start, n);
 			default -> throw new IllegalStateException();
 		}
 	}

@@ -529,6 +529,19 @@ class LinalgGpuTest {
 						(defparameter *w* (make-array '(512 512) :element-type 'bfloat16 :initial-element 0.375))
 						(defparameter *x* (linalg:ones '(512)))
 						(list (aref (vec:matvec *w* *x*) 0) (aref (vec:matvec *w* *x*) 511))
+						""",
+				// A Q8_0 matrix against a #d vector above the threshold, and a rank-1
+				// quantized "matrix" (one row) against an #f vector: the device carries
+				// the rank-2-against-f32 pairing only (.todo/728), the defun the rest.
+				"""
+						(defparameter *w* (rontolisp:quantize (linalg:reshape (linalg:sin (linalg:arange 1 262145 :element-type 'single-float)) '(512 512)) 'q8-0))
+						(defparameter *x* (linalg:cos (linalg:arange 0 512)))
+						(list (aref (vec:matvec *w* *x*) 0) (aref (vec:matvec *w* *x*) 511))
+						""",
+				"""
+						(defparameter *w* (rontolisp:quantize (linalg:sin (linalg:arange 1 262145 :element-type 'single-float)) 'q8-0))
+						(defparameter *x* (linalg:cos (linalg:arange 0 262144 :element-type 'single-float)))
+						(list (aref (vec:matvec *w* *x*) 0) (aref (vec:matvec *w* *x*) 0))
 						""" }) {
 			assertThat(outcome(form, true, false)).as(form).isEqualTo(outcome(form, false, false));
 			assertThat(outcome(form, true, true)).as(form + " --simd").isEqualTo(outcome(form, false, true));
@@ -597,6 +610,52 @@ class LinalgGpuTest {
 		assertThat(eval(program, false, false, true).print()).as("--simd").isEqualTo("(16778176 16778176)");
 		assertThat(eval(program, true, false, false).print()).as("--gpu").isEqualTo("(16778240 16778240)");
 		assertThat(eval(program, false, false, false).print()).as("scalar").isEqualTo("(16778240 16778240)");
+	}
+
+	// --- the Q8_0 matrix-by-vector product (.todo/728) --------------------------------
+
+	private static boolean takesQuantizedMatvec() {
+		return takesMatvec() && am.ik.gpu.GpuThresholds.supportsQuantized();
+	}
+
+	/**
+	 * A Q8_0 matrix ({@code rontolisp:quantize} of an INEXACT {@code #f} matrix) against
+	 * an inexact {@code #f} vector, twice: unlike the other widths this one is pinned as
+	 * the defun's bits on any input ({@code .kb/quantized-matrix.md}), so the operands
+	 * need not be exact.
+	 */
+	private static String quantizedMatvec(int side) {
+		return """
+				(defparameter *w* (rontolisp:quantize (linalg:reshape (linalg:sin (linalg:arange 1 %d :element-type 'single-float)) '(%d %d)) 'q8-0))
+				(defparameter *x* (linalg:cos (linalg:arange 0 %d :element-type 'single-float)))
+				(vec:matvec *w* *x*)
+				(vec:matvec *w* *x*)
+				"""
+			.formatted(side * side + 1, side, side, side);
+	}
+
+	@Test
+	void theQuantizedMatrixByVectorProductIsTheDefunsBitsOnceResident() {
+		assumeThat(takesQuantizedMatvec()).as("this device carries the Q8_0 GEMV").isTrue();
+		// The contract is EQUALITY under every flag: the device rung, the lane kernel
+		// and the defun are one value, bit for bit, on inexact inputs.
+		String program = quantizedMatvec(matvecSide());
+		String defun = eval(program, false, false, false).print();
+		assertThat(eval(program, true, false, false).print()).as("--gpu").isEqualTo(defun);
+		assertThat(eval(program, true, false, true).print()).as("--gpu --simd").isEqualTo(defun);
+		assertThat(eval(program, false, false, true).print()).as("--simd").isEqualTo(defun);
+	}
+
+	@Test
+	void theQuantizedMatrixByVectorProductReallyRanOnTheDeviceOnTheSecondSight() {
+		assumeThat(takesQuantizedMatvec()).as("this device carries the Q8_0 GEMV").isTrue();
+		// No printed value can say it ran -- that is the contract -- so the residency
+		// hit count does: the second sight uploads the blocks, the third finds them.
+		String program = quantizedMatvec(matvecSide()) + "(vec:matvec *w* *x*)\n";
+		long hits = am.ik.gpu.GpuThresholds.residencyHits();
+		LispVal result = eval(program, true);
+		assertThat(am.ik.gpu.GpuThresholds.residencyHits()).isGreaterThan(hits);
+		assertThat(result).isInstanceOf(LispSingleFloatArray.class);
 	}
 
 	/** What a program prints, or the error it signals, under the given flags. */

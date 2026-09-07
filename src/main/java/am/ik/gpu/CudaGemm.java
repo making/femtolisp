@@ -200,6 +200,17 @@ final class CudaGemm implements GpuDevice {
 	static final String KERNEL_GEMV_BF16 = "gemv_bf16";
 
 	/**
+	 * The Q8_0 GEMV ({@code .todo/728}): {@code vec:matvec} over ggml's blocks as stored,
+	 * against an activation quantized on the host by the CPU contract's rule, computing
+	 * the scalar defun's bits -- eight threads a row, one lane a thread
+	 * ({@code gemm.cu}).
+	 */
+	static final String KERNEL_GEMV_Q8 = "gemv_q8_0";
+
+	/** Threads per row of {@link #KERNEL_GEMV_Q8}: one per lane, twice over. */
+	private static final int GEMV_Q8_THREADS_PER_ROW = 8;
+
+	/**
 	 * Threads per block for the GEMV: eight warps, so eight rows per block. The kernel is
 	 * memory-bound and one warp reads one row with coalesced loads, so the block shape
 	 * decides nothing but the grid size.
@@ -430,6 +441,20 @@ final class CudaGemm implements GpuDevice {
 
 	private final MemorySegment gemvBf16;
 
+	private final MemorySegment gemvQ8;
+
+	/**
+	 * The device buffer the Q8_0 GEMV's quantized activation is uploaded into
+	 * ({@link #gemvQ8}): kept across calls and grown when a wider vector comes, never
+	 * freed, like {@link #bounce} -- a decode step issues one GEMV after another and an
+	 * allocation and a free a call are two driver round trips it need not pay. Sound
+	 * because every upload into it is stream-ordered behind the launch that last read it.
+	 * Zero until the first call; {@code q8ActivationCapacity} is its byte size.
+	 */
+	private long q8Activation;
+
+	private long q8ActivationCapacity;
+
 	private final String description;
 
 	/**
@@ -507,7 +532,7 @@ final class CudaGemm implements GpuDevice {
 			MemorySegment gemmF32, MemorySegment gemmBatchedF64, MemorySegment gemmBatchedF32,
 			MemorySegment gemmBatchedF32T4, MemorySegment gemmBatchedF32T8, int multiprocessors, MemorySegment mapF64,
 			MemorySegment mapF32, MemorySegment[] strided, MemorySegment[] resident, MemorySegment[] fused,
-			MemorySegment gemvF64, MemorySegment gemvF32, MemorySegment gemvBf16, boolean pooled,
+			MemorySegment gemvF64, MemorySegment gemvF32, MemorySegment gemvBf16, MemorySegment gemvQ8, boolean pooled,
 			MemorySegment memoryPool, MemorySegment bounce, long syncFlopCeiling, String description) {
 		this.driver = driver;
 		this.device = device;
@@ -528,6 +553,7 @@ final class CudaGemm implements GpuDevice {
 		this.gemvF64 = gemvF64;
 		this.gemvF32 = gemvF32;
 		this.gemvBf16 = gemvBf16;
+		this.gemvQ8 = gemvQ8;
 		this.pooled = pooled;
 		this.memoryPool = memoryPool;
 		this.bounce = bounce;
@@ -711,6 +737,12 @@ final class CudaGemm implements GpuDevice {
 						"cuModuleGetFunction " + KERNEL_GEMV_BF16 + ": " + driver.errorString(status));
 			}
 			MemorySegment gemvBf16 = functionOut.get(P, 0);
+			status = driver.moduleGetFunction(functionOut, module, arena.allocateFrom(KERNEL_GEMV_Q8));
+			if (status != CuResult.SUCCESS) {
+				return unwind(driver, device, true, module,
+						"cuModuleGetFunction " + KERNEL_GEMV_Q8 + ": " + driver.errorString(status));
+			}
+			MemorySegment gemvQ8 = functionOut.get(P, 0);
 			MemorySegment pool = MemorySegment.NULL;
 			boolean pooled = pooledAllocationWorks(driver, arena);
 			if (pooled) {
@@ -746,7 +778,7 @@ final class CudaGemm implements GpuDevice {
 			String description = describe(driver, arena, device) + (pooled ? "" : ", unpooled allocation");
 			return new Probe(new CudaGemm(driver, device, context, module, f64, f32, batchedF64, batchedF32,
 					batchedF32T4, batchedF32T8, multiprocessors, mapF64, mapF32, strided, resident, fused, gemvF64,
-					gemvF32, gemvBf16, pooled, pool, bounce, ceiling, description), description);
+					gemvF32, gemvBf16, gemvQ8, pooled, pool, bounce, ceiling, description), description);
 		}
 		catch (Throwable ex) {
 			// Anything at all: a descriptor defect, a JVM that forbids native access, a
@@ -906,6 +938,12 @@ final class CudaGemm implements GpuDevice {
 	/** {@code true}: {@link #KERNEL_GEMV_BF16} is in the module. */
 	@Override
 	public boolean supportsBfloat16() {
+		return true;
+	}
+
+	/** {@code true}: {@link #KERNEL_GEMV_Q8} is in the module. */
+	@Override
+	public boolean supportsQuantized() {
 		return true;
 	}
 
@@ -1797,6 +1835,9 @@ final class CudaGemm implements GpuDevice {
 		if (host instanceof short[] b) {
 			return MemorySegment.ofArray(b);
 		}
+		if (host instanceof byte[] q) {
+			return MemorySegment.ofArray(q);
+		}
 		return host instanceof float[] f ? MemorySegment.ofArray(f) : MemorySegment.ofArray((double[]) host);
 	}
 
@@ -2618,6 +2659,119 @@ final class CudaGemm implements GpuDevice {
 	public boolean gemvBf16(short[] w, int ow, float[] x, int ox, float[] y, int oy, int rows, int cols) {
 		return gemv(this.gemvBf16, MemorySegment.ofArray(w), w, ow, Short.BYTES, MemorySegment.ofArray(x), x, ox,
 				MemorySegment.ofArray(y), y, oy, rows, cols, Float.BYTES);
+	}
+
+	/**
+	 * The Q8_0 sibling of {@link #gemvF} ({@code .todo/728}): the matrix is a
+	 * {@code byte[]} of ggml's blocks, 34 bytes a block of 32 columns, and the vector and
+	 * the result are f32. The kernel computes {@code vec::%matvec-quantized}'s bits
+	 * exactly ({@code gemm.cu}; the contract is {@code .kb/quantized-matrix.md}'s), so
+	 * this width joins the CPU kernel's bit-for-bit pin rather than the f32 row's
+	 * tolerance. The activation is quantized here on the HOST, by the contract's own rule
+	 * ({@link Gpu#quantizeActivationQ8}), and uploaded in place of the f32 vector: what
+	 * the device reads is a fifth of the vector's bytes, and no launch of its own is
+	 * spent on it. The same residency rule for the matrix, whose span is its BYTE count
+	 * (an element has no slot of its own).
+	 * @return {@code true} when {@code y} was filled
+	 */
+	@Override
+	public boolean gemvQ8(byte[] w, int ow, float[] x, int ox, float[] y, int oy, int rows, int cols) {
+		if (!this.usable) {
+			return false;
+		}
+		int nb = cols / Gpu.Q8_BLOCK;
+		long wBytes = (long) rows * nb * Gpu.Q8_BLOCK_BYTES, yBytes = (long) rows * Float.BYTES;
+		long offW = ow, offY = (long) oy * Float.BYTES;
+		long[] buffers = { 0, 0, 0 }, owned = { 0, 0, 0 };
+		try (Arena arena = Arena.ofConfined()) {
+			if (!enter()) {
+				return false;
+			}
+			buffers[0] = this.residency.lookup(w, offW, wBytes);
+			// The residency rule (gemv): the first sight of a matrix declines and marks,
+			// at no cost to the device -- so nothing below runs for it.
+			if (buffers[0] == 0 && !this.residency.offeredBefore(w, offW, wBytes)) {
+				settle();
+				return false;
+			}
+			if (!settle()) {
+				return false;
+			}
+			// The activation, quantized on the host from wherever its bytes are: a result
+			// the device still holds the only copy of comes home first.
+			byte[] packed = Gpu.quantizeActivationQ8((float[]) materialize(x), ox, cols);
+			long activation = q8ActivationBuffer(arena, packed.length);
+			if (activation == 0) {
+				return false;
+			}
+			buffers[1] = activation;
+			if (!allocate(arena, buffers, owned, wBytes, 0, yBytes)) {
+				return false;
+			}
+			boolean sync = 2L * rows * cols >= this.syncFlopCeiling;
+			if (!stage(buffers, owned, 0, w, MemorySegment.ofArray(w), offW, wBytes)
+					|| !upload(activation, MemorySegment.ofArray(packed), 0, packed.length)
+					|| !launchGemvQ8(arena, buffers, rows, cols, sync)) {
+				return false;
+			}
+			return finish(MemorySegment.ofArray(y), offY, buffers, owned, 2, y, yBytes);
+		}
+		catch (Throwable ex) {
+			return false;
+		}
+		finally {
+			release(owned);
+		}
+	}
+
+	/**
+	 * The kept activation buffer ({@link #q8Activation}), at least {@code bytes} long, or
+	 * {@code 0} when the device would not give it -- grown by freeing and allocating
+	 * afresh, which is safe for the same reason an upload into it is: the free is
+	 * stream-ordered behind the last launch that read it.
+	 */
+	private long q8ActivationBuffer(Arena arena, long bytes) throws Throwable {
+		if (this.q8ActivationCapacity >= bytes) {
+			return this.q8Activation;
+		}
+		if (this.q8Activation != 0) {
+			free(this.q8Activation);
+			this.q8Activation = 0;
+			this.q8ActivationCapacity = 0;
+		}
+		MemorySegment out = arena.allocate(L);
+		int status = this.pooled ? this.driver.memAllocAsync(out, bytes) : this.driver.memAlloc(out, bytes);
+		if (status != CuResult.SUCCESS) {
+			fail(status);
+			return 0;
+		}
+		this.q8Activation = out.get(L, 0);
+		this.q8ActivationCapacity = bytes;
+		return this.q8Activation;
+	}
+
+	/** One launch of {@link #KERNEL_GEMV_Q8}: eight threads a row, 32 rows a block. */
+	private boolean launchGemvQ8(Arena arena, long[] buffers, int rows, int cols, boolean sync) throws Throwable {
+		MemorySegment w = arena.allocate(L), x = arena.allocate(L), y = arena.allocate(L);
+		w.set(L, 0, buffers[0]);
+		x.set(L, 0, buffers[1]);
+		y.set(L, 0, buffers[2]);
+		MemorySegment r = arena.allocate(I), c = arena.allocate(I);
+		r.set(I, 0, rows);
+		c.set(I, 0, cols);
+		MemorySegment parameters = arena.allocate(P, 5);
+		parameters.setAtIndex(P, 0, w);
+		parameters.setAtIndex(P, 1, x);
+		parameters.setAtIndex(P, 2, y);
+		parameters.setAtIndex(P, 3, r);
+		parameters.setAtIndex(P, 4, c);
+		int rowsPerBlock = GEMV_BLOCK / GEMV_Q8_THREADS_PER_ROW;
+		int status = this.driver.launchKernel(this.gemvQ8, (rows + rowsPerBlock - 1) / rowsPerBlock, 1, 1, GEMV_BLOCK,
+				1, 1, 0, MemorySegment.NULL, parameters, MemorySegment.NULL);
+		if (status != CuResult.SUCCESS) {
+			return fail(status);
+		}
+		return awaitLaunched(sync);
 	}
 
 	/**

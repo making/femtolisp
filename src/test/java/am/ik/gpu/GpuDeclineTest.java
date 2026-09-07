@@ -283,6 +283,12 @@ class GpuDeclineTest {
 		assertThat(resource("gemm.cu")).contains("__uint_as_float(((unsigned) p) << 16)")
 			.contains("gemv_ff<unsigned short>(W, x, y, rows, cols)")
 			.contains("gemv_ff<float>(W, x, y, rows, cols)");
+		// And the Q8_0 one (.todo/728), which is the CPU contract's bits: the source
+		// spells the pinned f32 step with the _rn intrinsics (no FMA whatever the
+		// toolchain) and the defun's fold.
+		assertThat(ptx).contains(".visible .entry " + CudaGemm.KERNEL_GEMV_Q8);
+		assertThat(resource("gemm.cu")).contains("__fadd_rn(acc, __fmul_rn(__int2float_rn(s), p))")
+			.contains("__double2float_rn(__dmul_rn((double) __half2float(__ushort_as_half(d)), sx))");
 		// The resident tier's eight, and the mirrors it added: the four maps past the
 		// libm ones and the five comparison masks.
 		for (String kernel : CudaGemm.KERNELS_RESIDENT) {
@@ -339,6 +345,8 @@ class GpuDeclineTest {
 		assertThat(Gpu.matvec(wf, 0, xf, 0, yf, 0, 64, 64)).isFalse();
 		short[] wb = new short[64 * 64];
 		assertThat(Gpu.matvec(wb, 0, xf, 0, yf, 0, 64, 64)).isFalse();
+		byte[] wq = new byte[64 * 2 * 34];
+		assertThat(Gpu.matvec(wq, 0, xf, 0, yf, 0, 64, 64)).isFalse();
 		assertThat(y).containsOnly(0.0);
 		assertThat(yf).containsOnly(0.0f);
 	}
@@ -375,6 +383,98 @@ class GpuDeclineTest {
 		assertThat(Gpu.matvec(wb, 0, xf, 0, yf, 0, 0, cols)).isFalse();
 		assertThat(Gpu.matvec(wb, 0, xf, 0, yf, 0, rows, 0)).isFalse();
 		assertThat(yf).containsOnly(0.0f);
+		// The Q8_0 form (.todo/728): the same conditions over a byte[] of blocks -- whose
+		// extent is a BYTE count, rows * cols / 32 * 34 -- plus a column count that is
+		// not whole blocks, declining rather than throwing; and on a device without the
+		// kernel (Metal), at every shape.
+		byte[] wq = new byte[rows * (cols / 32) * 34];
+		assertThat(Gpu.matvec(wq, 0, new float[cols - 1], 0, yf, 0, rows, cols)).isFalse();
+		assertThat(Gpu.matvec(wq, 0, xf, 0, new float[rows - 1], 0, rows, cols)).isFalse();
+		assertThat(Gpu.matvec(wq, 1, xf, 0, yf, 0, rows, cols)).isFalse();
+		assertThat(Gpu.matvec(wq, 0, xf, 1, yf, 0, rows, cols)).isFalse();
+		assertThat(Gpu.matvec(wq, 0, xf, 0, yf, 1, rows, cols)).isFalse();
+		assertThat(Gpu.matvec(wq, -1, xf, 0, yf, 0, rows, cols)).isFalse();
+		assertThat(Gpu.matvec(wq, 0, xf, 0, yf, 0, 0, cols)).isFalse();
+		assertThat(Gpu.matvec(wq, 0, xf, 0, yf, 0, rows, 0)).isFalse();
+		assertThat(Gpu.matvec(new byte[wq.length - 1], 0, xf, 0, yf, 0, rows, cols)).isFalse();
+		assertThat(Gpu.matvec(new byte[rows * 8 * 34], 0, new float[250], 0, yf, 0, rows, 250)).isFalse();
+		assertThat(yf).containsOnly(0.0f);
+	}
+
+	@Test
+	void theQuantizedActivationIsTheCpuContractsQuantizerBlockForBlock() {
+		// The host half of the Q8_0 GEMV (.todo/728), on every machine: what the device
+		// is handed is the CPU contract's activation (.kb/quantized-matrix.md) -- amax
+		// over |x| with a strict > (a NaN never raises it), sx = amax / 127 in double,
+		// q = rint(x / sx) half to even, all zero where sx is -- packed as nb
+		// little-endian doubles then the quants with each block's 32 in the kernel's
+		// thread order: word t holds columns 4 * (4 * (t >> 2) + m) + (t & 3).
+		int cols = 128, nb = cols / 32;
+		float[] x = new float[3 + cols];
+		for (int j = 0; j < 32; j++) {
+			x[3 + j] = (float) Math.sin(j * 0.7) * 3.0f;
+		}
+		// Block 1: sx exactly 1 (amax 127), so the ties are exact and rint's half-to-even
+		// shows: 2.5 -> 2, 3.5 -> 4, -2.5 -> -2, -0.5 -> 0.
+		x[3 + 32] = 127.0f;
+		x[3 + 33] = 2.5f;
+		x[3 + 34] = 3.5f;
+		x[3 + 35] = -2.5f;
+		x[3 + 36] = -0.5f;
+		x[3 + 37] = -127.0f;
+		// Block 2: all zero.
+		// Block 3: a NaN among finite values, which the strict compare skips.
+		x[3 + 96] = Float.NaN;
+		x[3 + 97] = 5.0f;
+		x[3 + 98] = -1.25f;
+		byte[] packed = Gpu.quantizeActivationQ8(x, 3, cols);
+		assertThat(packed).hasSize(nb * 8 + cols);
+		for (int b = 0; b < nb; b++) {
+			double amax = 0.0;
+			for (int k = 0; k < 32; k++) {
+				double v = Math.abs((double) x[3 + b * 32 + k]);
+				if (v > amax) {
+					amax = v;
+				}
+			}
+			double sx = amax / 127.0;
+			long bits = 0;
+			for (int k = 0; k < 8; k++) {
+				bits |= (packed[b * 8 + k] & 0xffL) << (8 * k);
+			}
+			assertThat(Double.longBitsToDouble(bits)).as("sx of block %d", b).isEqualTo(sx);
+			for (int t = 0; t < 8; t++) {
+				for (int m = 0; m < 4; m++) {
+					int column = 4 * (4 * (t >> 2) + m) + (t & 3);
+					int expected = sx == 0.0 ? 0 : (int) Math.rint(x[3 + b * 32 + column] / sx);
+					assertThat((int) packed[nb * 8 + b * 32 + 4 * t + m]).as("block %d word %d byte %d", b, t, m)
+						.isEqualTo(expected);
+				}
+			}
+		}
+		// The ties, spelled out; a NaN quantizes to 0 (rint's NaN cast to int).
+		assertThat(Double.longBitsToDouble(((long) packed[8] & 0xff) | ((long) packed[9] & 0xff) << 8
+				| ((long) packed[10] & 0xff) << 16 | ((long) packed[11] & 0xff) << 24 | ((long) packed[12] & 0xff) << 32
+				| ((long) packed[13] & 0xff) << 40 | ((long) packed[14] & 0xff) << 48
+				| ((long) packed[15] & 0xff) << 56))
+			.isEqualTo(1.0);
+		int block1 = nb * 8 + 32;
+		// Column c of a block sits at word (c & 3) + 4 * ((c >> 2) >> 2), byte (c >> 2) &
+		// 3.
+		assertThat(packed[block1 + 4 * (1 + 0) + 0]).isEqualTo((byte) 2); // column 1: 2.5
+		assertThat(packed[block1 + 4 * (2 + 0) + 0]).isEqualTo((byte) 4); // column 2: 3.5
+		assertThat(packed[block1 + 4 * (3 + 0) + 0]).isEqualTo((byte) -2); // column 3:
+																			// -2.5
+		assertThat(packed[block1 + 4 * (0 + 0) + 1]).isEqualTo((byte) 0); // column 4:
+																			// -0.5
+		assertThat(packed[block1 + 4 * (1 + 0) + 1]).isEqualTo((byte) -127); // column 5
+		int block2 = nb * 8 + 64;
+		for (int k = 0; k < 32; k++) {
+			assertThat(packed[block2 + k]).isEqualTo((byte) 0);
+		}
+		int block3 = nb * 8 + 96;
+		assertThat(packed[block3]).as("a NaN quantizes to 0").isEqualTo((byte) 0);
+		assertThat(packed[block3 + 4 * 1]).as("column 1 of block 3 is the amax, 127").isEqualTo((byte) 127);
 	}
 
 	@Test

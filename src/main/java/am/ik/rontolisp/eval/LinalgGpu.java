@@ -7,6 +7,7 @@ import java.util.function.Function;
 
 import am.ik.rontolisp.FloatArrayAccessHook;
 import am.ik.rontolisp.LispBFloat16Array;
+import am.ik.rontolisp.LispQuantizedMatrix;
 import am.ik.rontolisp.LispCons;
 import am.ik.rontolisp.LispDouble;
 import am.ik.rontolisp.LispDoubleFloatArray;
@@ -319,11 +320,18 @@ public final class LinalgGpu {
 	 * The widths pair as the CPU's fused kernels pair them ({@code .kb/bfloat16.md}): a
 	 * {@code #d} or {@code #f} matrix against a vector of ITS width, and a {@code #bf16}
 	 * matrix against an {@code #f} vector into an {@code #f} result -- bf16 weights, f32
-	 * activations, the one pairing a decode loop has ({@code .todo/490}). Any other pair
-	 * declines to the rung below, which is what keeps {@code --gpu} unable to turn an
-	 * answer into an error.
+	 * activations, the one pairing a decode loop has ({@code .todo/490}). The fourth
+	 * matrix width is the Q8_0 {@code rontolisp:quantized-matrix} against an {@code #f}
+	 * vector ({@code .todo/728}), and it alone is the defun's BITS on the device
+	 * ({@code .kb/quantized-matrix.md}): the kernel computes the integer-dot contract
+	 * exactly, so the interpreter's answer is the same with the flag and without. Any
+	 * other pair declines to the rung below, which is what keeps {@code --gpu} unable to
+	 * turn an answer into an error.
 	 */
 	private static @Nullable LispVal matvec(List<LispVal> args) {
+		if (args.get(0) instanceof LispQuantizedMatrix qm) {
+			return matvecQuantized(qm, args.get(1));
+		}
 		if (!(args.get(0) instanceof LispFloatArray w) || !(args.get(1) instanceof LispFloatArray x) || w.rank() != 2
 				|| x.rank() != 1) {
 			return null;
@@ -355,6 +363,29 @@ public final class LinalgGpu {
 				}
 				float[] y = LinalgGpuKernels.matvec(b.storage(), vx.storage(), rows, cols);
 				yield y == null ? null : new LispSingleFloatArray(y, dims);
+			}
+		};
+	}
+
+	/**
+	 * The quantized arm of {@link #matvec}: a rank-2 Q8_0 matrix against an {@code #f}
+	 * vector of its column count, above the element threshold -- the pairing the CPU's
+	 * integer-dot kernel has at f32. Rank 1 and a {@code #d} vector decline, as the lane
+	 * kernel declines them, to the rung below.
+	 */
+	private static @Nullable LispVal matvecQuantized(LispQuantizedMatrix qm, LispVal xv) {
+		if (qm.rank() != 2 || !(xv instanceof LispSingleFloatArray x) || x.rank() != 1) {
+			return null;
+		}
+		int rows = qm.rows();
+		int cols = qm.cols();
+		if (x.dims()[0] != cols || !LinalgGpuKernels.worthMatvec(rows, cols)) {
+			return null;
+		}
+		return switch (qm.format()) {
+			case Q8_0 -> {
+				float[] y = LinalgGpuKernels.matvec(qm.blocks(), x.storage(), rows, cols);
+				yield y == null ? null : new LispSingleFloatArray(y, new int[] { rows });
 			}
 		};
 	}

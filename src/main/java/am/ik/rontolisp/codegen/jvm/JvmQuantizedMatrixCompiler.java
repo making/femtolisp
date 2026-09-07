@@ -1,6 +1,8 @@
 package am.ik.rontolisp.codegen.jvm;
 
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 
 import am.ik.jvm.ConstantPool.ClassConstant;
 import am.ik.jvm.ConstantPool.MethodrefConstant;
@@ -72,14 +74,28 @@ final class JvmQuantizedMatrixCompiler {
 			case LispNames.QUANTIZED_SCALE_INTERNAL -> JvmQuantizedMatrixRuntimeBuilder.SCALE;
 			default -> throw new IllegalStateException(member);
 		};
+		// rontolisp:quantize READS its source's storage in bulk, behind every element
+		// reader's back: under --gpu that source may be a result the device still holds
+		// the only copy of (a stub, .kb/gpu.md "Lazy results"), so the call site hands
+		// the helper what _gpuMaterialize answers, as every bulk reader does.
 		call(args, ctx, className, helper, arity == 3 ? JvmQuantizedMatrixRuntimeBuilder.TERNARY_DESC
-				: JvmQuantizedMatrixRuntimeBuilder.BINARY_DESC);
+				: JvmQuantizedMatrixRuntimeBuilder.BINARY_DESC, LispNames.QUANTIZE.equals(member));
 	}
 
 	private static void call(List<LispVal> args, JvmLispCompiler.Ctx ctx, String className, String helper,
 			String desc) {
+		call(args, ctx, className, helper, desc, false);
+	}
+
+	private static void call(List<LispVal> args, JvmLispCompiler.Ctx ctx, String className, String helper, String desc,
+			boolean materializeFirst) {
 		for (int i = 1; i < args.size(); i++) {
 			JvmExprCompiler.compileExpr(args.get(i), ctx, className);
+			Map<String, MethodrefConstant> gpuOps = ctx.gpuOps;
+			if (i == 1 && materializeFirst && gpuOps != null) {
+				ctx.emit(Opcode.INVOKESTATIC);
+				ctx.emitU2(Objects.requireNonNull(gpuOps.get(JvmGpuRuntimeBuilder.MATERIALIZE)).index());
+			}
 		}
 		ClassConstant selfClass = ctx.cp.addClass(ctx.cp.addUtf8(className));
 		MethodrefConstant ref = ctx.cp.addMethodref(selfClass,

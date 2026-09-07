@@ -689,6 +689,12 @@ final class MetalGemm implements GpuDevice {
 		return false;
 	}
 
+	/** Always {@code false}: the Q8_0 GEMV is a CUDA member only ({@code .todo/728}). */
+	@Override
+	public boolean supportsQuantized() {
+		return false;
+	}
+
 	/** Whether a matrix at or above {@link #MPS_MIN_WORK} goes to MPS. For the tests. */
 	boolean mpsEnabled() {
 		return this.mps;
@@ -801,6 +807,12 @@ final class MetalGemm implements GpuDevice {
 	/** And over a bfloat16 matrix: no kernel here ({@link #supportsBfloat16()}). */
 	@Override
 	public boolean gemvBf16(short[] w, int ow, float[] x, int ox, float[] y, int oy, int rows, int cols) {
+		return false;
+	}
+
+	/** And over a Q8_0 matrix: no kernel here ({@link #supportsQuantized()}). */
+	@Override
+	public boolean gemvQ8(byte[] w, int ow, float[] x, int ox, float[] y, int oy, int rows, int cols) {
 		return false;
 	}
 

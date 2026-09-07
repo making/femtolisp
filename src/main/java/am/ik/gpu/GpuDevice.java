@@ -76,6 +76,16 @@ sealed interface GpuDevice permits CudaGemm, MetalGemm {
 	 */
 	boolean supportsBfloat16();
 
+	/**
+	 * Whether a Q8_0 quantized matrix -- a {@code byte[]} of ggml's 34-byte blocks, a
+	 * binary16 scale then 32 int8 quants, row-major -- can be the weight of
+	 * {@link #gemvQ8} here. {@code true} on CUDA; {@code false} on Metal, where the width
+	 * is out of scope as bfloat16 is ({@code .todo/728}), so a quantized operand is a
+	 * hard decline on that backend exactly as a {@code #bf16} one is.
+	 * @return {@code true} when the Q8_0 GEMV may be offered
+	 */
+	boolean supportsQuantized();
+
 	/** Where this device's crossovers against the fastest CPU path sit. */
 	Thresholds thresholds();
 
@@ -154,6 +164,20 @@ sealed interface GpuDevice permits CudaGemm, MetalGemm {
 	 * @return {@code true} when {@code y} was filled
 	 */
 	boolean gemvBf16(short[] w, int ow, float[] x, int ox, float[] y, int oy, int rows, int cols);
+
+	/**
+	 * {@code y = W x} over a Q8_0 quantized matrix -- ggml's blocks verbatim, 34 bytes a
+	 * block of 32 columns, {@code rows * cols / 32} of them from byte {@code ow} of
+	 * {@code w} -- against an f32 vector into an f32 result: the integer-dot GEMV of
+	 * {@code .kb/quantized-matrix.md}, and BIT FOR BIT the scalar defun's and the CPU
+	 * kernel's value ({@code .todo/728}). The activation is quantized on the host by the
+	 * contract's rule ({@link Gpu#quantizeActivationQ8}) and the kernel walks the four
+	 * f32 lane accumulators in the defun's order ({@code gemm.cu}). The same residency
+	 * rule as {@link #gemv}, and a hard decline where {@link #supportsQuantized()} is
+	 * {@code false}.
+	 * @return {@code true} when {@code y} was filled
+	 */
+	boolean gemvQ8(byte[] w, int ow, float[] x, int ox, float[] y, int oy, int rows, int cols);
 
 	/**
 	 * {@code c[i] = op(a[i], b[i])} over two operands of the SAME shape -- the resident

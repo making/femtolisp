@@ -324,6 +324,10 @@ final class JvmGpuTemplate {
 	 * array's header is TWO slots a dimension ({@code [rank, hi_0, lo_0, ...]}, data at
 	 * {@code 1 + 2 * rank}) -- read here by {@link #bf16Dim}, the one place in this
 	 * template that spells the layout, beside {@code JvmSimdVectorTemplate}'s own pair.
+	 * And a Q8_0 quantized {@code byte[]} matrix against a {@code float[]} vector
+	 * ({@code .todo/728}), whose int header {@link #qmDim} / {@link #qmOff} read -- the
+	 * third place that spells it, after {@code JvmQuantizedMatrixRuntimeBuilder} and
+	 * {@code JvmSimdVectorTemplate} ({@code .kb/quantized-matrix.md}).
 	 * @param w the matrix
 	 * @param x the vector
 	 * @return the packed result, or {@code null} when the device declined it
@@ -331,6 +335,9 @@ final class JvmGpuTemplate {
 	static @Nullable Object gpuMatvec(@Nullable Object w, @Nullable Object x) {
 		if (w instanceof short[] bw) {
 			return gpuMatvecBf16(bw, x);
+		}
+		if (w instanceof byte[] qw) {
+			return gpuMatvecQ8(qw, x);
 		}
 		if (!(w instanceof double[]) && !(w instanceof float[])) {
 			return null;
@@ -382,6 +389,47 @@ final class JvmGpuTemplate {
 	 */
 	private static int bf16Dim(short[] a, int i) {
 		return ((a[1 + 2 * i] & 0xffff) << 16) | (a[2 + 2 * i] & 0xffff);
+	}
+
+	/**
+	 * The Q8_0 arm of {@link #gpuMatvec}: a rank-2 quantized {@code byte[]} matrix
+	 * against a {@code float[]} vector, into a {@code float[]} result that is the lane
+	 * kernel's bits. The header's format code must be Q8_0's ({@code 1}); a
+	 * {@code double[]} vector declines to the lane kernel, which computes it.
+	 */
+	private static @Nullable Object gpuMatvecQ8(byte[] w, @Nullable Object x) {
+		if (!(x instanceof float[] fx) || w.length < 16 || qmInt(w, 0) != QM_FORMAT_Q8_0 || qmInt(w, 4) != 2
+				|| rank(fx) != 1) {
+			return null;
+		}
+		int rows = qmDim(w, 0);
+		int cols = qmDim(w, 1);
+		if (rows < 1 || cols < 1 || cols % 32 != 0 || dim(fx, 0) != cols || !Gpu.worthMatvec(rows, cols)) {
+			return null;
+		}
+		if (!Gpu.available()) {
+			return null;
+		}
+		float[] y = newVecF(rows);
+		return Gpu.matvec(w, qmOff(w), fx, 2, y, 2, rows, cols) ? y : null;
+	}
+
+	/** The compiled quantized matrix header's format code for Q8_0. */
+	private static final int QM_FORMAT_Q8_0 = 1;
+
+	/** A little-endian int of the compiled quantized matrix's header. */
+	private static int qmInt(byte[] a, int off) {
+		return (a[off] & 0xff) | (a[off + 1] & 0xff) << 8 | (a[off + 2] & 0xff) << 16 | (a[off + 3] & 0xff) << 24;
+	}
+
+	/** Where a compiled quantized matrix's blocks start: {@code 8 + 4 * rank}. */
+	private static int qmOff(byte[] a) {
+		return 8 + 4 * qmInt(a, 4);
+	}
+
+	/** Dimension {@code k} of a compiled quantized matrix. */
+	private static int qmDim(byte[] a, int k) {
+		return qmInt(a, 8 + 4 * k);
 	}
 
 	/**

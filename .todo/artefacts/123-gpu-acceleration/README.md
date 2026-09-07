@@ -106,6 +106,7 @@ warm-up, and the sub-millisecond rows still move by ~20% run to run.
 | `decode-per-token.py` | (2026-09-06, todo-718) where a DECODE STEP goes on the device side: buckets an `nsys` sqlite export of an `examples/llm` run per forward pass -- the classifier-head launch is the boundary -- into kernel time by grid, copies by size and CUDA API time on the calling thread, medians over the steady forwards plus the whole timeline (usage in the header). Answer for Qwen3.5-0.8B at bf16: 7.5 ms of kernels and 11.9 ms of driver calls in a 45 ms forward, 102 MB of KV cache going up every token. Python, no GPU code of its own. |
 | `decode-jfr-agg.py` | (2026-09-06, todo-718) the HOST side of the same step: aggregates a JFR recording of the run (record at ONE thread, print with `--stack-depth 64`) by category -- residency guards, driver waits, lane kernels, Lisp loops -- and by the innermost Lisp function. Answer: under the flag 40% of the main thread's decode window is `materialize` / `written`, called per store from the typed loop over the DeltaNet state, so the three mixer functions cost ~30 ms a forward against 6.8 without the flag. Not a GPU program. |
 | `gemv-q4-probe.cu` + `Q4KernelProbe.java` | (2026-09-07, todo-726) the Q4 ceiling MEASURED instead of scaled from bytes: Q4_0 and Q8_0 GEMV kernels over ggml's own block layouts (16-bit loads, `L` lanes a block; a `_split` re-pack as the layout upper bound; `_dp` = the integer-dot shape over a Q8-quantized activation, `__dp4a`) against the shipped `gemv_bf16` / `gemv_f32`, as device-side kernel time (CUDA events) cold from DRAM -- the launch rotated over >= 256 MB of copies, since a decode step streams the whole model through the 24 MB L2 every token -- at the seven shapes a Qwen3.5-0.8B forward launches and with their counts, so the last table is GEMV ms a FORWARD at each width. Answer: bf16 7.6 / 7.0 ms (cold median / min; in situ 6.74), Q8_0 0.50-0.58 of it, Q4_0 0.24-0.33; the f32-x kernels lose to the x-side stride, the `_dp` ones reach 200-220 GB/s at the head. The write-up is "The Q4 ceiling, measured" below. |
+| `gemv-q8-exact-probe.cu` + `Q8ExactKernelProbe.java` | (2026-09-07, todo-728) the Q8_0 GEMV that is the CPU CONTRACT's bits (`.kb/quantized-matrix.md`: the activation quantized per block in double, four exact integer lane sums a block, four f32 accumulators walked over the blocks in order, folded `(acc0 + acc2) + (acc1 + acc3)`), as six candidate kernels each pinned BIT FOR BIT against a Java transcription of the contract at every shape, timed by `Q4KernelProbe`'s cold method against the shipped `gemv_bf16` and `gemv-q4-probe.cu`'s `gemv_q8_0_dp4` (a warp fold, NOT the contract's bits), plus a device-side activation quantizer timed alone and back to back with the GEMV. Answer: eight threads a row with one lane a thread (`_b8`) at 5.3 ms of GEMV a forward against bf16's 7.7 and the free fold's 4.6; four threads a row is starved, a 4x4 transpose-reduce costs 15% more, `__dp4a` buys nothing, and a quantize launch of its own costs +4.2 us on the stream -- so the host quantizes (0.7-2.5 us a call). Shipped as `gemm.cu`'s `gemv_q8_0`; the write-up is "The exact Q8_0 kernel, measured" below. |
 | `AccelerateProbe.java` | no GPU at all: a tuned BLAS is plain C, costs no dependency, and unlike Metal it has a double. How fast is it, is one PRESENT, and is the one that is present actually TUNED? Walks a candidate list (Accelerate, NVPL, OpenBLAS, MKL, distro `libblas`), identifies what it bound and prints a verdict against measured throughput. Runs on either machine -- the probe that reframes the Apple plan, and the one that stopped it being reframed the same way on Linux. |
 
 ## Running them
@@ -921,6 +922,63 @@ behind it: its increment over Q8_0 is 1.4-1.8 ms a forward at the 8.5%-error wid
 increment; it flips on a model whose bf16 GEMV is the majority of its forward (this one's is 40%),
 or on a discrete card. ggml-org's Qwen3.5-0.8B set is BF16 / Q8_0 / plain Q4_0 -- no K-quants --
 which is one reader fewer for this model and none fewer for the width.
+
+### The exact Q8_0 kernel, measured (2026-09-07, todo-728)
+
+`726` measured the Q8_0 ceiling with `gemv_q8_0_dp4`, a warp-per-row fold over `__dp4a` -- and the
+width's CPU contract forbids that fold: the defun and the `--simd` kernel are ONE value, with four
+f32 lane accumulators walked over the blocks in order, and a device kernel that joined the f32 row's
+tolerance instead would have put the first `--gpu` exception into `.kb/quantized-matrix.md`'s
+invariant and cost llm's story its byte-identity under the flag. So the question `728` had to settle
+first was whether a kernel that keeps the contract's four sequential chains a row still streams. It
+does, at 0.87 of the free fold's rate. `gemv-q8-exact-probe.cu` / `Q8ExactKernelProbe.java`, GB10,
+develop `23e90a21`, the same cold method and the same seven shapes as `726`, every candidate
+checked raw-bit-equal on every row against the contract transcribed (`contract()` in the Java):
+
+```
+ms of GEMV a FORWARD (157 launches), cold median / cold min:
+bf16 (shipped)               7.70 / 6.92
+q8_0_dp4 (726's, NOT the bits) 4.63 / 3.84
+q8_0_x4   4 threads a row, 4x4 transpose-reduce over shuffles     8.35 / 7.48   bit-identical
+q8_0_x4r  x4, the scale product by every thread (fp64 per thread) 7.74 / 6.93   bit-identical
+q8_0_b4   4 threads a row, one lane a thread, no integer shuffle  7.73 / 6.95   bit-identical
+q8_0_x8   8 threads a row, 4x4 transpose-reduce                   5.47 / 4.93   bit-identical
+q8_0_b8d  b8 with the lane packed and one __dp4a                  5.36 / 4.68   bit-identical
+q8_0_b8   8 threads a row, one lane a thread, one xor-4 shuffle   5.32 / 4.66   bit-identical  <- shipped
+quantize  a launch of its own, hot, x 157                         1.04 / 0.84   (+4.2 us back to back with the GEMV)
+
+per shape, b8 cold median (us) / GB/s, against bf16 and dp4:
+248320x1024  1417 / 191   bf16 2207   dp4 1258
+6144x1024      44 / 153        60        38
+3584x1024      26 / 150        40        24
+1024x3584      31 / 127        41        25
+1024x2048      20 / 109        26        16
+2048x1024      17 / 128        26        16
+512x1024        9 /  59        10         8
+```
+
+Three readings. (1) **Four threads a row cannot stream** at any shape (x4, x4r, b4 all sit at bf16's
+time with half the bytes): the per-thread chain is 8-16 loads deep before the next block's can issue,
+and 4 x rows threads is a quarter of what the head needs to hide DRAM latency; eight a row is the
+minimum, and it is the same x8 -> b8 difference of one lane a thread that removes the 4x4 transpose
+(seven shuffles a block a thread) for the same bits. (2) **The instruction count is not the wall once
+the loads are wide enough**: b8d packs the lane into a word and folds it with one `__dp4a` and is no
+faster than b8's four multiplies, so what separates b8 from dp4 (0.87) is the byte loads at stride 4
+against dp4's 16-bit words and the per-thread chain, not the ALU. (3) **The activation must not be a
+launch**: a `quantize_q8_0` kernel is 5-7 us of event time alone and +4.2 us on the stream back to
+back with the GEMV -- 0.7-1.1 ms a forward for 157 of them, plus the launch call on the host -- where
+the contract's quantizer on the host is 0.72 / 1.42 / 2.47 us at 1024 / 2048 / 3584 columns under
+Graal (1.7 / 3.5 / 6.0 under C2), ~0.16 ms a forward, and it REPLACES the f32 vector's upload rather
+than adding to it (the packed buffer is a fifth of the vector's bytes). The scale product
+`f32(f64(d) * sx)` is one fp64 multiply a block a row, computed by one thread of the eight and shuffled,
+since GB10's fp64 rate is a ceiling the bf16 kernel already hit once (`490`).
+
+**In situ** (`examples/llm/README.md`, "Q8_0 weights on the device"): 13.9 ms a forward over the
+Q8_0 GGUF against 16.7 over the BF16 one, 1.20x -- `726`'s prediction for the width to the tenth --
+with the 256 tokens byte-identical between the device arm and the CPU arm. Finding on the way: the
+model's `split-gated-q` rebuilt Qwen3.5's `attn_q` halves as general arrays from a quantized source,
+so the Q8_0 file's `wq` / `gate` GEMVs had been running the boxed defun on every arm (5.6 tok/s at
+`--simd`); split by byte span now, 9.7.
 
 ### The GEMV on Metal (2026-08-22, todo-477), same machine
 

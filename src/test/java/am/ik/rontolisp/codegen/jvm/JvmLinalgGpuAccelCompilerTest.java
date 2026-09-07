@@ -189,6 +189,34 @@ class JvmLinalgGpuAccelCompilerTest {
 		}
 	}
 
+	/**
+	 * Runs a {@code --gpu} class in a loader of its own and answers the bytes its
+	 * EMBEDDED library holds resident when it ends -- the one observable that says a
+	 * matrix reached the device through the compiled bridge when the accepted answer is,
+	 * by contract, the defun's own bits ({@code .todo/728}).
+	 */
+	private long embeddedResidentBytes(byte[] classBytes) throws Exception {
+		Path classFile = this.tempDir.resolve("Test.class");
+		Files.write(classFile, classBytes);
+		try (URLClassLoader loader = new URLClassLoader(new URL[] { this.tempDir.toUri().toURL() },
+				ClassLoader.getSystemClassLoader())) {
+			Class<?> clazz = loader.loadClass("Test");
+			Method main = clazz.getMethod("main", String[].class);
+			PrintStream oldOut = System.out;
+			System.setOut(new PrintStream(new ByteArrayOutputStream()));
+			try {
+				main.invoke(null, (Object) new String[0]);
+			}
+			finally {
+				System.setOut(oldOut);
+			}
+			Class<?> gpu = loader.loadClass(JvmGpuRuntimeBuilder.GPU_PREFIX + "Gpu");
+			Method resident = gpu.getDeclaredMethod("residentBytes");
+			resident.setAccessible(true);
+			return (long) resident.invoke(null);
+		}
+	}
+
 	@Test
 	@EnabledIf("aDeviceIsAvailable")
 	void theEmbeddedLibraryFindsTheDeviceThisMachineHas() throws Exception {
@@ -902,6 +930,74 @@ class JvmLinalgGpuAccelCompilerTest {
 		assertThat(run(compileWithVec(program, false, false))).as("scalar").isEqualTo("(16778240 16778240)");
 	}
 
+	// --- the Q8_0 matrix-by-vector product (.todo/728) --------------------------------
+
+	static boolean takesQuantizedMatvec() {
+		return takesMatvec() && am.ik.gpu.GpuThresholds.supportsQuantized();
+	}
+
+	/**
+	 * A Q8_0 matrix ({@code rontolisp:quantize} of an inexact {@code #f} matrix, which is
+	 * also what turns the compiled type's gate on) against an inexact {@code #f} vector,
+	 * twice; the second product printed. The pin is the defun's bits on any input
+	 * ({@code .kb/quantized-matrix.md}), so nothing here need be exact.
+	 */
+	private static String quantizedMatvec(int side) {
+		return """
+				(defparameter *w* (rontolisp:quantize (linalg:reshape (linalg:sin (linalg:arange 1 %d :element-type 'single-float)) '(%d %d)) 'q8-0))
+				(defparameter *x* (linalg:cos (linalg:arange 0 %d :element-type 'single-float)))
+				(vec:matvec *w* *x*)
+				(print (linalg:to-list (vec:matvec *w* *x*)))
+				"""
+			.formatted(side * side + 1, side, side, side);
+	}
+
+	@Test
+	@EnabledIf("takesQuantizedMatvec")
+	void theQuantizedMatrixByVectorProductIsTheScalarReferencesBitsOnceResident() throws Exception {
+		// EQUALITY under every flag: the bridge's byte[] arm, the lane kernel and the
+		// defun are one value on inexact inputs, which is the contract of the width.
+		String program = quantizedMatvec(matvecSide());
+		String defun = run(compileWithVec(program, false, false));
+		assertThat(run(compileWithVec(program, true, false))).as("--gpu").isEqualTo(defun);
+		assertThat(run(compileWithVec(program, true, true))).as("--gpu --simd").isEqualTo(defun);
+		assertThat(run(compileWithVec(program, false, true))).as("--simd").isEqualTo(defun);
+	}
+
+	@Test
+	@EnabledIf("takesQuantizedMatvec")
+	void theQuantizedDeviceRungReallyReachedTheDeviceOnTheSecondSight() throws Exception {
+		// The class's own embedded library holds the blocks resident when the program
+		// ends -- the only matrix above the threshold in it is the quantized one, so
+		// resident bytes say the bridge's byte[] arm (and its 8 + 4 * rank header read)
+		// reached the device, where no printed value can.
+		int side = matvecSide();
+		long resident = embeddedResidentBytes(compileWithVec(quantizedMatvec(side), true, false));
+		assertThat(resident).isGreaterThanOrEqualTo((long) side * (side / 32) * 34);
+	}
+
+	@Test
+	void aDeclinedQuantizedMatrixByVectorProductRunsTheSameProgramToTheSameOutputOnAnyMachine() throws Exception {
+		// Below the threshold, and at the pairing the device does not carry (a #d vector)
+		// above it: the defun's output with the flag and without, on every machine.
+		for (String program : new String[] {
+				"""
+						(defparameter *w* (rontolisp:quantize (linalg:reshape (linalg:sin (linalg:arange 1 513 :element-type 'single-float)) '(16 32)) 'q8-0))
+						(defparameter *x* (linalg:cos (linalg:arange 1 33 :element-type 'single-float)))
+						(print (list (vec:matvec *w* *x*) (vec:matvec *w* *x*)))
+						""",
+				"""
+						(defparameter *w* (rontolisp:quantize (linalg:reshape (linalg:sin (linalg:arange 1 262145 :element-type 'single-float)) '(512 512)) 'q8-0))
+						(defparameter *x* (linalg:cos (linalg:arange 0 512)))
+						(print (list (aref (vec:matvec *w* *x*) 0) (aref (vec:matvec *w* *x*) 511)))
+						""" }) {
+			assertThat(run(compileWithVec(program, true, false))).as(program)
+				.isEqualTo(run(compileWithVec(program, false, false)));
+			assertThat(run(compileWithVec(program, true, true))).as(program + " --simd")
+				.isEqualTo(run(compileWithVec(program, false, true)));
+		}
+	}
+
 	@Test
 	void aDeclinedBfloat16MatrixByVectorProductRunsTheSameProgramToTheSameOutputOnAnyMachine() throws Exception {
 		// Below the threshold, and at the two pairings the device does not carry (a bf16
@@ -1094,6 +1190,7 @@ class JvmLinalgGpuAccelCompilerTest {
 				(format t "into-result ~a~%%" (vec:sum *r4*))
 				(format t "chain ~a~%%" (linalg:sum (linalg:add (linalg:add *a* *row*) *row*)))
 				(format t "transpose ~a~%%" (linalg:sum (linalg:transpose (linalg:add *a* *row*) '(1 0))))
+				(format t "quantize ~a ~a~%%" (aref (rontolisp:quantize (linalg:add *a* *row*) 'q8-0) 3 4) (array-dimensions (rontolisp:quantize *r* 'q8-0)))
 				"""
 			.formatted(n + 1, type, side, side, side + 1, type, side, n + 1, type, type, side, file, n, type, file);
 	}
@@ -1105,7 +1202,7 @@ class JvmLinalgGpuAccelCompilerTest {
 		Path file = this.tempDir.resolve("lazy.bin");
 		String program = residencyReaders(side, TYPE, file.toString());
 		String oracle = run(compileWithVec(program, false, false));
-		assertThat(oracle).contains("aref ").contains("write-sequence ").contains("transpose ");
+		assertThat(oracle).contains("aref ").contains("write-sequence ").contains("transpose ").contains("quantize ");
 		assertThat(run(compileWithVec(program, true, false))).as("--gpu").isEqualTo(oracle);
 		assertThat(run(compileWithVec(program, true, true))).as("--gpu --simd")
 			.isEqualTo(run(compileWithVec(program, false, true)));
