@@ -619,22 +619,32 @@ f32 and bf16 kernels, which land on the portable definition's bits in practice -
 those bits, on every row, because the width's CPU contract is bit-for-bit and the device
 kernel keeps to it (`.kb/quantized-matrix.md`). Measured on the GB10 box (GraalVM 25,
 JVM class output, `-Xmx16g`, `-m chat -t 0 -n 64`, the cat prompt, ggml-org's
-`Qwen3.5-0.8B-Q8_0.gguf`; `-w bf16` on the command line as for the bf16 rows, which a
-quantized matrix ignores; three runs each, the 64 tokens byte-identical across all twelve):
+`Qwen3.5-0.8B-Q8_0.gguf` against its `-BF16.gguf` at `-w bf16` -- the flag is on the
+command line for both and a quantized matrix ignores it; three runs each, the two files
+interleaved; **the first table on this page printed by the 2026-09-07 harness**, so its
+figures are generated tokens over the forwards that generated them, the average then the
+second half in parentheses, and do not compare with the older tables above):
 
-| Qwen3.5-0.8B | `--simd` | `--gpu --simd` | `--simd --parallel`, 16 threads | `--gpu --simd --parallel`, 16 |
+| Qwen3.5-0.8B, `-n 64` | `--simd` | `--gpu --simd` | `--simd --parallel`, 16 threads | `--gpu --simd --parallel`, 16 |
 | --- | --- | --- | --- | --- |
-| `Q8_0` file | 9.8 / 9.8 / 9.8 | 35.7 / 34.7 / 34.7 | 34.4 / 35.1 / 38.2 | 39.2 / 37.2 / 36.1 |
+| `Q8_0` file | 14.0 (14.0) / 14.1 (14.2) / 13.8 (13.9) | 61.0 (63.8) / 56.4 (60.1) / 59.0 (60.8) | 58.8 (60.8) / 52.8 (53.4) / 53.2 (53.9) | 56.3 (57.9) / 57.2 (58.7) / 57.1 (58.7) |
+| `BF16` file, `-w bf16` | 13.3 (13.4) / 13.3 (13.3) / 13.2 (13.2) | 57.5 (59.3) / 57.9 (59.1) / 54.1 (53.8) | 45.6 (46.4) / 45.8 (46.4) / 45.8 (46.2) | 58.1 (60.4) / 56.9 (58.7) / 55.1 (59.0) |
 
-**The forward** (the 256-minus-64 method above, `--gpu --simd`, one thread, two rounds):
-**13.9 / 13.9 ms a forward over the Q8_0 file against 16.7 / 16.7 over the BF16 file at
-`-w bf16` -- 1.20x, 2.75 ms, what `.todo/726` predicted for the width (2.7-3.4)** -- printed
-57.4 / 57.2 tok/s at `-n 256` against 50.5 / 50.9, 35.7 / 35.5 at `-n 64` against 34.2 /
-34.9, and the Q8_0 file loads in 1.3 s against 2.1 (0.83 GB of blocks read into place). The
-device-side GEMV a forward is 5.3 ms against bf16's 7.7 (`.kb/gpu.md`; the 270 MB head at
-190 GB/s). **The tokens**: the Q8_0 file's 64 and 256 positions are byte-identical between
-`--gpu --simd` and `--simd`, and round to round; the Q8_0 and BF16 files part at position
-40 (two widths, as `.todo/672` recorded on the raw completion).
+**The forward.** Steady, at `-n 256` on `--gpu --simd`, one thread, two rounds: the
+second half's rate is **64.9 / 64.9 tok/s over the Q8_0 file against 57.1 / 56.1 over the
+BF16 one -- 15.4 ms a forward against 17.5-17.8, 1.14-1.16x**. By the 256-minus-64 method
+above, which subtracts everything a run pays once (the load, the JIT's warm-up, the
+prompt, the context creation and the weight upload), the increment a forward is **13.9 /
+13.9 ms against 16.7 / 16.7 -- 1.20x, 2.75 ms, what `.todo/726` predicted for the width
+(2.7-3.4 ms)** -- and the device-side GEMV a forward is 5.3 ms against bf16's 7.7
+(`.kb/gpu.md`; the 270 MB head at 190 GB/s). The Q8_0 file loads in 1.3 s against 2.1 (0.83
+GB of blocks read into place). On the CPU arms the width is level with bf16 on one thread
+(14.0 against 13.3) and 1.15-1.3x on sixteen (53-61 against 46), where the quarter-size
+bytes pay (`.kb/quantized-matrix.md`, "What it costs"). **The tokens**: the Q8_0 file's 64
+and 256 positions are byte-identical between `--gpu --simd` and `--simd`, on one thread and
+sixteen, and round to round -- the flag changes no bit at this width -- and the Q8_0 and
+BF16 files part at position 40 (two widths, as `.todo/672` recorded on the raw
+completion).
 
 **What the run found in this file** (2026-09-07): `split-gated-q`, which splits Qwen3.5's
 `attn_q` (`query | gate` per head) into `:wq` and `:gate`, rebuilt the halves with
@@ -645,8 +655,9 @@ the residency guard on every boxed element read made the device arm the SLOWER o
 Q8_0 halves are now split by byte span (`split-gated-q-blocks`: a row is whole blocks, and
 each head's query rows and gate rows are contiguous), through a scratch file rather than
 `rontolisp:dequantize` / `quantize` because this program also compiles to WASM, where those
-two names are refused at compile time. The `--simd` column above is the CPU arm after that
-fix (9.7-9.8 against the bf16 file's 9.0).
+two names are refused at compile time (`.todo/732` is the slice without the file). The
+`--simd` column above is the CPU arm after that fix (9.7 printed by the old harness, against
+5.6 before it).
 
 ## The layer table
 

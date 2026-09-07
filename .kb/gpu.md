@@ -674,8 +674,10 @@ transpose-reduce over shuffles costs 15% more instructions for the same bits (5.
 over the packed lane buys nothing over the four multiplies (5.4). **The forward** (same box,
 `examples/llm` over ggml-org's Q8_0 GGUF at `--gpu --simd`, one thread, the 256-minus-64 method,
 two rounds): **13.9 / 13.9 ms a forward against 16.7 / 16.7 at `-w bf16` over the BF16 file --
-1.20x, 2.75 ms, the arithmetic of `.todo/726` (2.7-3.4 predicted) to the tenth** -- 57.2-57.4 tok/s
-printed at 256 against 50.5-50.9, and the model loads in 1.3 s against 2.1. What that run also found:
+1.20x, 2.75 ms, the arithmetic of `.todo/726` (2.7-3.4 predicted) to the tenth**; the steady rate
+the 2026-09-07 harness prints (the second half of a 256-position run) is 64.9 / 64.9 tok/s
+against 57.1 / 56.1 -- 15.4 ms against 17.5-17.8, 1.14-1.16x once the per-token host work is in
+the clock -- and the model loads in 1.3 s against 2.1. What that run also found:
 `examples/llm`'s `split-gated-q` (Qwen3.5's `attn_q` is `query | gate` per head) rebuilt the halves
 with `make-array` at the source's element type, which for a quantized source is a GENERAL array, so
 every `wq` / `gate` GEMV of the Q8_0 file ran the boxed defun on both arms (5.6 tok/s at `--simd`,
