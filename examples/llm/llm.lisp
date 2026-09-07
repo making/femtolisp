@@ -1568,6 +1568,9 @@
                       :fill-pointer 0
                       :adjustable t))
          (start nil)
+         ;; the clock reading after each SAMPLED position, so the rate below can
+         ;; be taken over any suffix of the run
+         (stamps (make-array 64 :fill-pointer 0 :adjustable t))
          (pos 0)
          ;; positions the model itself sampled -- NOT positions spent feeding
          ;; the prompt (or the chat template) back in. A rate over zero
@@ -1580,8 +1583,14 @@
     (unless (or (eql token (tokenizer:bos-id tk)) (string= *mode* "chat"))
       (push-token-bytes pending tk token nil)
       (print-complete pending))
+    ;; the clock starts in front of the first forward the model SAMPLES from, so
+    ;; the rate printed below is generated tokens over the forward passes that
+    ;; generated them. Starting it at the end of the first iteration whatever
+    ;; that iteration was left the prompt's own forwards inside the clock and
+    ;; outside the count: a 21-id chat prompt printed 64 tokens over 84 forwards,
+    ;; 0.76 of the rate the loop was decoding at.
     (loop while (< pos steps)
-          do
+          do (unless (or start rest) (setq start (get-internal-real-time)))
             (let* ((logits (forward model state token pos))
                    (prompted rest)
                    (next (if rest (pop rest) (sample logits n))))
@@ -1594,19 +1603,30 @@
               ;; a stop token ends the answer -- when the model produced it; the
               ;; prompt's own <|im_end|> is just the prompt
               (when (and (not prompted) (member next stops)) (return))
-              (unless prompted (setq generated (+ generated 1)))
+              (unless prompted
+                (setq generated (+ generated 1))
+                (vector-push-extend (get-internal-real-time) stamps))
               ;; run.c echoes the prompt as it is consumed; a chat template is
               ;; not part of the answer, so -m chat prints the answer alone
               (unless (and prompted (string= *mode* "chat"))
                 (push-token-bytes pending tk next token)
                 (print-complete pending)
                 (finish-output))
-              (setq token next)
-              (unless start (setq start (get-internal-real-time)))))
+              (setq token next)))
     (terpri)
     (when (and start (> generated 0))
-      (format *error-output* "achieved tok/s: ~,2f~%"
-       (/ (* generated 1000.0) (max 1 (- (get-internal-real-time) start)))))))
+      (let ((end (aref stamps (- generated 1))))
+        (format *error-output* "achieved tok/s: ~,2f"
+                (/ (* generated 1000.0) (max 1 (- end start))))
+        ;; the head of a run is 1.5-2x slow while the JIT warms -- and under
+        ;; --gpu it also pays the context creation and the weight upload -- which
+        ;; the average above carries and a longer run dilutes. The second half is
+        ;; the steady rate, which is what a comparison between two runs wants.
+        (when (>= generated 4)
+          (let* ((half (floor generated 2)) (tail (- generated half)))
+            (format *error-output* " (last ~a: ~,2f)" tail
+             (/ (* tail 1000.0) (max 1 (- end (aref stamps (- half 1))))))))
+        (format *error-output* "~%")))))
 
 ;;; --- main ------------------------------------------------------------------------
 
