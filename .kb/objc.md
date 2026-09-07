@@ -85,6 +85,12 @@ pointers are refused by name.
   to add; the JVM registers nothing, so `java -jar` is where a program discovers what it sends.
   **A new selector in `appkit.lisp`, `metal.lisp`, the `examples/macos` programs the test names, or
   the docs is a row in `ObjcNativeImageForeignConfigTest`'s table.**
+- In the native binary every send through that table is INTERPRETED by SubstrateVM's method-handle
+  interpreter -- a handle created at run time has no AOT code, ~1.7 us a call plus ~0.4 us per
+  argument on top of `invokeWithArguments`' own boxing (`.kb/gpu.md`, "An FFM downcall inside a native
+  image costs", `.todo/727`; measured on Linux/aarch64 through the same SVM path, not on macOS). A
+  per-frame loop of sends is where it would show; nothing in `appkit.lisp` / `metal.lisp` is
+  calibrated against the JVM's send cost, so there is no threshold here to re-derive.
 - `foreign.upcalls` is the project's first such section. `ObjcClasses` defines a class at run time
   (`objc_allocateClassPair` + `class_addMethod` + `objc_registerClassPair`) whose IMPs are upcall
   stubs from a CLOSED shape set -- `v@:`, `v@:@`, `v@:@@`, `B@:@`, `@@:@`, `q@:@` -- one static

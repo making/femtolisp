@@ -29,9 +29,16 @@ WASM has no FFM, so `--blas` with a `.wasm` output is a hard error, not a silent
 - **`linalg:dot`** in its three matrix shapes: matrix x matrix (`cblas_dgemm`/`cblas_sgemm`), matrix x vector and vector x matrix (`cblas_dgemv`/`cblas_sgemv`, the second with `CblasTrans`). `linalg:matmul` at rank <= 2 and `linalg:solve` accelerate TRANSITIVELY.
 - **`vec:matvec`** / **`vec:matvec-into`**: one `cblas_?gemv`, `alpha = 1`, `beta = 0`, `CblasNoTrans` — the half that reaches the shipped numeric examples (`simd-dot`, `simd-gemv`, `tiny-llm`, `llm`).
 - Declined, memory-bound: `linalg:sum`, vector-vector `linalg:dot` / `vec:dot`, `axpy`, every element-wise `vec:` kernel, `vec:mean` / `vec:norm`.
-- **`worth(n, m, p)` = `n*m*p >= 64`** (a critical downcall floors at ~30 ns -- **a JVM number**:
-  the same downcall measures 2.1 us inside a NATIVE IMAGE, 230x, so the crossover this constant
-  encodes is not the binary's. Measured 2026-09-06, unattributed, `.todo/727`).
+- **`worth(n, m, p)` = `n*m*p >= 64` on the JVM; inside a NATIVE IMAGE gemm needs 2^15 and gemv
+  (`worthGemv`) 2^17** (`LinalgBlasKernels.minWork`, keyed on `org.graalvm.nativeimage.imagecode`;
+  pinned by `LinalgBlasDeclineTest`). The JVM's 64 is a 30 ns critical-downcall floor; the image's
+  `cblas_dgemv` costs 6.4 us and `cblas_dgemm` 7.2 (SubstrateVM interprets the handle chain,
+  `.kb/gpu.md`, `.todo/727`), and against the same binary's `--simd` lane kernel (GB10, OpenBLAS at
+  one thread, 2026-09-07) gemm is level at 24x24x24 (8.7 against 9.2 us) and 1.9x ahead at 32
+  (19.3 against 10.0); gemv is 2x BEHIND at 128x128 (6.7 against 13.4), crosses between 192 and 256
+  (11.2/12.9, 21.0/15.7) and is 1.5x ahead at 384 (39.1 against 25.8). Before this the binary paid
+  7.4 us for every 8x8 `vec:matvec` the lane kernel did in 0.6 -- the flag as a silent slowdown.
+  Two thresholds because a gemv is memory-bound and the lane kernel is near bandwidth there.
 - The stacked rank-3 product (`linalg::%la-matmul-nd`) is a SEPARATE interception, taken by `--simd` and `--gpu` but not here — see "Unfinished".
 - `Linker.Option.critical(true)` takes heap `MemorySegment`s, so `MemorySegment.ofArray(a).asSlice(off * 8)` costs no copy but reaches no safepoint. **`2*n*m*p <= 2^32` goes critical, above that operands stage in a confined arena**; a gemv is always critical.
 
@@ -39,7 +46,7 @@ WASM has no FFM, so `--blas` with a `.wasm` output is a hard error, not a silent
 
 **Rule: marker symbols.** "Found a CBLAS" is not the predicate: netlib's REFERENCE implementation exports the same symbols and is ~1.6x SLOWER than `--simd`, and Debian's `libblas.so.3` is an `update-alternatives` symlink. Accepted only if Accelerate (by framework path) or exporting a symbol the reference lacks: `openblas_get_config`, `mkl_get_version` / `MKL_Get_Version`, `bli_info_get_version_str`, `ATL_buildinfo`, `nvpl_blas_get_version`, `armpl_get_version`. `RONTOLISP_BLAS` overrides both search and check; `RONTOLISP_BLAS_VERBOSE=1` prints what was bound.
 
-The candidate list, marker list, thread-query table, `MIN_WORK`, `CRITICAL_FLOP_CEILING`, `BARRIER_WORK` and `BARRIER_CALLS` are MIRRORED in `eval/LinalgBlasKernels` and `codegen/jvm/JvmBlasTemplate` (the template's bytes stand alone once embedded, so it cannot call the eval class). **Change them together.**
+The candidate list, marker list, thread-query table, `MIN_WORK`, `CRITICAL_FLOP_CEILING`, `BARRIER_WORK` and `BARRIER_CALLS` are MIRRORED in `eval/LinalgBlasKernels` and `codegen/jvm/JvmBlasTemplate` (the template's bytes stand alone once embedded, so it cannot call the eval class). **Change them together.** The one deliberate asymmetry is the native-image pair `NATIVE_IMAGE_MIN_GEMM_WORK` / `NATIVE_IMAGE_MIN_GEMV_WORK`, which only the eval class carries: an emitted class runs on a JVM by construction, so the template never meets the image's floor.
 
 ## Contract 1: precision
 

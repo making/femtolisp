@@ -114,10 +114,30 @@ final class LinalgBlasKernels {
 	private static final String ACCELERATE_MARK = "Accelerate.framework";
 
 	/**
-	 * Below this many multiply-adds a product declines: the fixed cost of a critical
-	 * downcall is ~30 ns, which a plain scalar triple loop beats up to about 4x4x4.
+	 * Below this many multiply-adds a product declines on the JVM: the fixed cost of a
+	 * critical downcall is ~30 ns there, which a plain scalar triple loop beats up to
+	 * about 4x4x4. {@code JvmBlasTemplate} mirrors this value and only this one -- the
+	 * template runs on a JVM by construction, never inside a native image.
 	 */
 	private static final long MIN_WORK = 64;
+
+	/**
+	 * The thresholds inside a NATIVE IMAGE, where the same downcall costs 6-7 us rather
+	 * than 30 ns: SubstrateVM interprets the method-handle chain under every FFM downcall
+	 * it did not see at build time ({@code LambdaForm.interpretName}), at ~1.7 us a call
+	 * plus ~0.4 us per argument -- and a {@code cblas_?gemm} has fourteen. Measured
+	 * against the {@code --simd} lane kernel on the same binary (GB10, OpenBLAS at one
+	 * thread): gemm is level at 24x24x24 and the library is 1.9x ahead at 32x32x32; gemv
+	 * crosses between 192x192 and 256x256 and is 1.5x ahead at 362x362. Both sit where
+	 * the win is unambiguous rather than where it first appears. The floor is
+	 * SubstrateVM's, not this class's, so the fix is the threshold and not the call.
+	 */
+	static final long NATIVE_IMAGE_MIN_GEMM_WORK = 1L << 15;
+
+	static final long NATIVE_IMAGE_MIN_GEMV_WORK = 1L << 17;
+
+	/** Whether this process is a native image, whose downcall floor is 200x the JVM's. */
+	private static final boolean NATIVE_IMAGE = System.getProperty("org.graalvm.nativeimage.imagecode") != null;
 
 	/**
 	 * Above this many flops ({@code 2*n*m*p}) the operands are staged in a confined arena
@@ -389,11 +409,35 @@ final class LinalgBlasKernels {
 	}
 
 	/**
-	 * Whether an {@code n x m} by {@code m x p} product is big enough to be worth a
-	 * library call at all.
+	 * Whether an {@code n x m} by {@code m x p} matrix product is big enough to be worth
+	 * a library call at all, in THIS runtime.
 	 */
 	static boolean worth(long n, long m, long p) {
-		return n * m * p >= MIN_WORK;
+		return n * m * p >= minWork(NATIVE_IMAGE, false);
+	}
+
+	/**
+	 * Whether a {@code rows x cols} matrix-by-vector product is big enough to be worth a
+	 * library call at all, in THIS runtime. A separate question from {@link #worth}
+	 * inside a native image: a gemv is memory-bound and the lane kernel is close to
+	 * bandwidth there, so the same fixed cost takes four times the work to amortize.
+	 */
+	static boolean worthGemv(long rows, long cols) {
+		return rows * cols >= minWork(NATIVE_IMAGE, true);
+	}
+
+	/**
+	 * The minimum work a library call must carry, by runtime and by product kind. Exposed
+	 * so the pair a native image applies can be pinned from a JVM test.
+	 * @param nativeImage whether the runtime is a native image
+	 * @param gemv {@code true} for a matrix-by-vector product, {@code false} for gemm
+	 * @return the threshold in multiply-adds
+	 */
+	static long minWork(boolean nativeImage, boolean gemv) {
+		if (!nativeImage) {
+			return MIN_WORK;
+		}
+		return gemv ? NATIVE_IMAGE_MIN_GEMV_WORK : NATIVE_IMAGE_MIN_GEMM_WORK;
 	}
 
 	/** How many threads the bound library reported, or 0 when it would not say. */

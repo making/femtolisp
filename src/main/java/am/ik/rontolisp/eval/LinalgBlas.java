@@ -236,7 +236,7 @@ public final class LinalgBlas {
 		}
 		int rows = w.dims()[0];
 		int cols = w.dims()[1];
-		return x.dims()[0] == cols && LinalgBlasKernels.worth(rows, cols, 1) ? w : null;
+		return x.dims()[0] == cols && LinalgBlasKernels.worthGemv(rows, cols) ? w : null;
 	}
 
 	/**
@@ -263,7 +263,7 @@ public final class LinalgBlas {
 		if (a.rank() == 2 && b.rank() == 1) {
 			int rows = a.dims()[0];
 			int cols = a.dims()[1];
-			if (cols != b.dims()[0] || !LinalgBlasKernels.worth(rows, cols, 1)) {
+			if (cols != b.dims()[0] || !LinalgBlasKernels.worthGemv(rows, cols)) {
 				return null;
 			}
 			return gemv(a, b, rows, cols, rows, false);
@@ -272,7 +272,7 @@ public final class LinalgBlas {
 			// A row vector times a matrix contracts b's FIRST axis, which is b^T x.
 			int rows = b.dims()[0];
 			int cols = b.dims()[1];
-			if (a.dims()[0] != rows || !LinalgBlasKernels.worth(rows, cols, 1)) {
+			if (a.dims()[0] != rows || !LinalgBlasKernels.worthGemv(rows, cols)) {
 				return null;
 			}
 			return gemv(b, a, rows, cols, cols, true);

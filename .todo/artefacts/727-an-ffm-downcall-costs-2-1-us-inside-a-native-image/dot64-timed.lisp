@@ -1,0 +1,7 @@
+(linalg:seed 7)
+(let ((a (linalg:randn '(64 64))) (b (linalg:randn '(64 64))) (s 0.0))
+  (dotimes (i 500) (setf s (+ s (linalg:sum (linalg:dot a b)))))
+  (let ((t0 (get-internal-real-time)))
+    (dotimes (i 5000) (setf s (+ s (linalg:sum (linalg:dot a b)))))
+    (format t "5000 dots: ~a ms, ~,2f us each (~a)~%" (- (get-internal-real-time) t0)
+            (/ (* 1000.0 (- (get-internal-real-time) t0)) 5000) s)))

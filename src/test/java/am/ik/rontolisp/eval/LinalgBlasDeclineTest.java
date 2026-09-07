@@ -49,6 +49,22 @@ class LinalgBlasDeclineTest {
 	}
 
 	@Test
+	void theWorkThresholdIsTheRuntimesAndNotTheJvms() {
+		// A native image pays 6-7 us per downcall where the JVM pays 30 ns, so the
+		// crossover against the lane kernel is not the same number: 4x4x4 on the JVM,
+		// 32x32x32 (gemm) and 362x362 (gemv) in the binary. Both pairs are pinned from
+		// here because only the JVM pair is observable on the machine running this test.
+		assertThat(LinalgBlasKernels.minWork(false, false)).isEqualTo(64);
+		assertThat(LinalgBlasKernels.minWork(false, true)).isEqualTo(64);
+		assertThat(LinalgBlasKernels.minWork(true, false)).isEqualTo(1L << 15);
+		assertThat(LinalgBlasKernels.minWork(true, true)).isEqualTo(1L << 17);
+		assertThat(LinalgBlasKernels.worth(4, 4, 4)).isTrue();
+		assertThat(LinalgBlasKernels.worth(3, 4, 4)).isFalse();
+		assertThat(LinalgBlasKernels.worthGemv(8, 8)).isTrue();
+		assertThat(LinalgBlasKernels.worthGemv(7, 9)).isFalse();
+	}
+
+	@Test
 	void everyDowncallShapeIsRegisteredForTheNativeImage() {
 		// Binds the six handles against a lookup that finds everything -- they are made,
 		// never called -- so the shapes are recorded on a machine with no CBLAS too.

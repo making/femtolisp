@@ -1326,12 +1326,35 @@ Each is a measured decline, and each needs this file's numbers before it is revi
 - **No `static final` downcall handles** (2026-09-06, `.todo/476`, refused on the numbers in
   "The downcall handles stay INSTANCE fields, measured" above). Revisit only with a profile that
   quotes BOTH JFR sample sets.
-- **The per-call cost of an FFM downcall inside a native image is MEASURED and unattributed**: 2.08
-  us against the JVM's 8.9, 230x, on the same binary whose downcall-free control loop is only 9x
-  the JVM's (2026-09-06, `.todo/476`'s probe). It is not the handle's constancy (all four holdings
-  agree to 2%) and it is not the thread transition (`critical(true)`, the fastest arm on both JITs,
-  is the SLOWEST here). What it is, and which per-call threshold calibrated on the JVM's 9 ns is
-  wrong in the binary because of it, is `.todo/727`.
+- **An FFM downcall inside a native image costs ~1.7 us plus ~0.4 us per argument, and it is
+  SubstrateVM's method-handle INTERPRETER** (2026-09-07, `.todo/727`; GB10, GraalVM 25.0.4; probes
+  and tables in `.todo/artefacts/727-an-ffm-downcall-costs-2-1-us-inside-a-native-image/`). `perf`
+  over the binary: 98% of the calling thread is in the image's own code, 0.06% in libcuda -- the
+  top symbols are `LambdaForm::interpretName`, `MethodHandleUtils::cast`,
+  `MethodHandleIntrinsicImpl::execute`, `MethodHandle::invokeBasic`, `Util_..._MethodHandle::convertArgs`
+  / `invokeInternal` (a `DirectMethodHandle` goes through a REFLECTION accessor), `Class::searchFields`
+  and `DowncallLinker::invokeInterpBindings` (the JDK's interpreted binding path). The cause is in
+  `svm.jar`'s `Target_java_lang_invoke_LambdaForm.forceInterpretation() { return true; }` -- "we do not
+  want invokers for lambda forms to be generated at runtime" -- so a handle that did not exist at build
+  time is interpreted Name by Name, boxing every argument. It is not libcuda (`abs` from libc costs the
+  same 2.15 us; `getpid()` with no argument 1.86 us) and not the transition (SVM's own
+  `@InvokeCFunctionPointer` to the same address is **10.7 ns**, 3.2 without a transition). The shapes
+  this library issues: `cuCtxSetCurrent` 2.1 us, `cuMemcpyHtoD` 2.9, `cuLaunchKernel` (11 arguments)
+  6.2; `cblas_dgemv` 6.4, `cblas_dgemm` 7.2 -- against 7-17 ns on the JVM. **It cannot be made a
+  constant**: a holder initialised at build time (address-first `downcallHandle(FunctionDescriptor)`,
+  no pointer in the heap) makes the image build FAIL in `PolymorphicSignatureWrapperMethod.buildGraph`
+  ("unexpected input could not be handled: linkToNative") -- the AOT method-handle inliner has no case
+  for a downcall, and it is a crash rather than a fallback.
+- **The device thresholds HOLD in the binary; `--blas`'s did not** (same date). A 64x64x64 product with
+  its result read back is 63 us a call in the binary against 30 on the JVM -- the driver side is the
+  same (13.6 against 15.1 us; nsys), the host side 49 against 15, of which the member's 5.65 driver
+  calls' interpretation is ~19 by the per-shape floors -- so at `POOLED_MIN_WORK` the device is still
+  2.4x ahead of the binary's own lane kernel (152 us) and the constant is unchanged. `--blas`'s
+  `MIN_WORK` = 64 encoded a 30 ns floor and made every `vec:matvec` below ~200x200 and every
+  `linalg:dot` below 24x24x24 SLOWER under the flag in the binary (7.4 us a gemv call against a 0.6 us
+  lane kernel): it is now 2^15 (gemm) / 2^17 (gemv) inside an image, `.kb/linalg-blas.md`. What would
+  take the floor itself out is SVM's `CFunctionPointer` route, `.todo/729`; the upstream report is
+  `.todo/730`.
 - **No per-device collection policy.** It becomes a `GpuDevice` question only if the two backends'
   collection requests ever want different answers.
 - **No Q4_0 / Q4_K weight width** (`.todo/718`, 2026-09-06 -- a refusal, recorded as one). The
