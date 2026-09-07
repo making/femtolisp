@@ -2,9 +2,9 @@
 
 Suite: `ca06bd919661af162c67407c9d994e881870bdb3`
 
-**9,261 / 18,053 tests pass (51.3%)** -- 2,789 fail, 6,003 signal an error.
+**9,262 / 18,053 tests pass (51.3%)** -- 2,788 fail, 6,003 signal an error.
 
-7 top-level forms could not be read, 1,939 could not be evaluated, 3 did not terminate; every test those forms would have defined is missing from the counts above.
+7 top-level forms could not be read, 1,938 could not be evaluated, 4 did not terminate; every test those forms would have defined is missing from the counts above.
 
 | chapter | tests | pass | fail | error | pass rate | top-level forms lost |
 |---|---:|---:|---:|---:|---:|---:|
@@ -25,15 +25,15 @@ Suite: `ca06bd919661af162c67407c9d994e881870bdb3`
 | pathnames | 214 | 97 | 26 | 91 | 45.3% | 17 |
 | printer | 494 | 193 | 123 | 178 | 39.1% | 102 |
 | rctest | 0 | 0 | 0 | 0 | 0.0% | 18 |
-| reader | 570 | 58 | 287 | 225 | 10.2% | 29 |
-| sequences | 2,455 | 1,849 | 147 | 459 | 75.3% | 848 |
+| reader | 569 | 58 | 286 | 225 | 10.2% | 30 |
+| sequences | 2,456 | 1,850 | 147 | 459 | 75.3% | 847 |
 | streams | 722 | 188 | 85 | 449 | 26.0% | 98 |
 | strings | 495 | 252 | 94 | 149 | 50.9% | 31 |
 | structures | 960 | 374 | 178 | 408 | 39.0% | 45 |
 | symbols | 1,135 | 767 | 293 | 75 | 67.6% | 26 |
 | system-construction | 58 | 22 | 4 | 32 | 37.9% | 35 |
 | types-and-classes | 613 | 260 | 239 | 114 | 42.4% | 30 |
-| **total** | **18,053** | **9,261** | **2,789** | **6,003** | **51.3%** | **1,949** |
+| **total** | **18,053** | **9,262** | **2,788** | **6,003** | **51.3%** | **1,949** |
 
 ## Most frequent failure reasons
 
@@ -42,7 +42,7 @@ Suite: `ca06bd919661af162c67407c9d994e881870bdb3`
 | 370 | `IllegalArgumentException: X expects keyword arguments :X, got: :X` |
 | 299 | `IllegalArgumentException: X expects keyword arguments :test/:test-not/:key, got: :X` |
 | 233 | `The variable *MINI-UNIVERSE* is unbound` |
-| 230 | `Function expects 1 argument, got 2` |
+| 229 | `Function expects 1 argument, got 2` |
 | 217 | `The function MAKE-PACKAGE is undefined` |
 | 200 | `The variable *UNIVERSE* is unbound` |
 | 153 | `X: there is no class named X` |
