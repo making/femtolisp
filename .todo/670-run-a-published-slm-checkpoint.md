@@ -22,8 +22,8 @@ are each 100% BF16 in `model.safetensors`; no current small model is f16.
 | --- | --- | --- |
 | **bf16** | THE width. 1.5-2.1x f32 on one thread (Graal / C2), 1.6x on 20; widening exact; every checkpoint is in it | `.todo/482` (483-490) |
 | **IEEE f16** | not a width -- a **load-time conversion** into `#f` / `#bf16`. A fused f16 GEMV is 0.30-0.58x on either JIT | `.todo/671` |
-| **Q8_0** (32 int8 + a scale) | a **read-only weight matrix** type with an integer-dot GEMV: 1.4-1.6x f32 on one thread under Graal and 1.7-1.9x under C2, 2.2-3.3x on 20, a quarter of f32's bytes. Measured 0.50-0.58 of the bf16 kernel ON THE DEVICE, where `--gpu` still declines it | CPU: `.todo/672`, `.todo/706`, both closed. Device: `.todo/728`, open |
-| **Q4_0 / Q4_K** | not a CPU item: the nibble unpack is ALU-bound at 5.7 GB/s (1.1x f32 for 8.5% error). **Refused on the device too, twice** -- `718` on a decode profile, then `726` (2026-09-07) on kernels measured at the forward's own shapes after the fired trigger. Q4_0 alone is 1.37-1.44x; BEHIND `728`'s Q8_0 its increment is 1.4-1.8 ms at 8.5% error against 0.75%, so the refusal's reason is now ORDER, not size | `.kb/gpu.md`, "No Q4_0 / Q4_K weight width" -- the arithmetic and the new trigger (re-measure once `728` ships); the kernel rows are `.todo/artefacts/123-gpu-acceleration/README.md`, "The Q4 ceiling, measured" |
+| **Q8_0** (32 int8 + a scale) | a **read-only weight matrix** type with an integer-dot GEMV: 1.4-1.6x f32 on one thread under Graal and 1.7-1.9x under C2, 2.2-3.3x on 20, a quarter of f32's bytes. On the device since 2026-09-07 (`.todo/728`, closed): the kernel is the CPU contract's BITS, 5.3 ms of GEMV a forward against bf16's 7.7, the forward 13.9 ms against 16.7 (1.20x), the tokens byte-identical with the flag on and off | CPU: `.todo/672`, `.todo/706`, both closed. Device: `.todo/728`, closed; the row slice without a scratch file `.todo/732` |
+| **Q4_0 / Q4_K** | not a CPU item: the nibble unpack is ALU-bound at 5.7 GB/s (1.1x f32 for 8.5% error). **Refused on the device too, twice** -- `718` on a decode profile, then `726` (2026-09-07) on kernels measured at the forward's own shapes after the fired trigger. Q4_0 alone is 1.37-1.44x; BEHIND `728`'s Q8_0 (shipped 2026-09-07 as the contract's bits, which the free warp fold the 1.4-1.8 was scaled from is not) its increment is bounded by the byte ratio, ~2.7 ms of a 13.9 ms forward, at 8.5% error against 0.75%, so the refusal's reason is now ORDER, not size | `.kb/gpu.md`, "No Q4_0 / Q4_K weight width" -- the arithmetic and the new trigger (re-measure once `728` ships); the kernel rows are `.todo/artefacts/123-gpu-acceleration/README.md`, "The Q4 ceiling, measured" |
 
 Two facts under all four: **the width is bandwidth, not fitting** -- 4.4 GB of f32 fits an
 8 GB laptop -- and **every kernel number is JIT-dependent**: the spike's fused kernel fell
@@ -413,6 +413,8 @@ Cited by number from other items -- **the numbering is fixed.**
 - **Not fp8 / int4 anywhere.** On the CPU, measured out; re-measure only when the Vector
   API grows a dot-product or a narrower conversion, or on a host whose JIT beats 1
   op/element for the unpack. On the device the refusal now stands on `726`'s own kernel
-  measurements rather than on `718`'s share arithmetic, and its trigger is `728` shipping;
-  the numbers are `.kb/gpu.md`'s row, not this file's. **Q8_0 on the device is IN the plan**
-  and is the lane's B-1.
+  measurements rather than on `718`'s share arithmetic; `728` shipped on 2026-09-07 and the
+  refusal was re-taken against the SHIPPED kernel (the increment is bounded by the byte
+  ratio, ~2.7 ms of a 13.9 ms forward; `.kb/gpu.md`, "No Q4_0 / Q4_K weight width"), the
+  numbers being that file's row, not this one's. **Q8_0 on the device is DONE** (the lane's
+  B-1).
