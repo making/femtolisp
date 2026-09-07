@@ -64,9 +64,10 @@ The flat model renders CL's directory keywords as the text CL prints: `:up`/`:ba
   at all. Decomposition is the exact INVERSE of construction; only an EXACT `*` is a
   keyword (`"a*"` stays a string, as SBCL).
 - **`**/` is ONE matcher token, separator included** — `%wild-inferiors-at` is the single
-  spelling, read by `%wild-match`, `%wild-captures` AND `translate-pathname`'s substitution
-  scan, so the three cannot disagree. The trailing `/` belongs to the token because it
-  matches ZERO levels as well as many; it contributes ONE capture (`""` when none).
+  spelling, read by `%wild-match` and `%wild-captures` — and through them, per component,
+  by `translate-pathname` — so the three cannot disagree. The trailing `/` belongs to the
+  token because it matches ZERO levels as well as many; it contributes ONE capture (`""`
+  when none).
 - Building a wild pathname is filesystem-INDEPENDENT; only `directory`'s WALK touches
   `%list-directory` (`.kb/directory-listing.md`).
 
@@ -83,11 +84,17 @@ All prelude Lisp, so the four backends run ONE definition each.
   predicate and matcher cannot disagree. `enough-namestring` is the INVERSE of
   `merge-pathnames` and answers a STRING. `host-namestring` is `""`, written
   `(progn (namestring x) "")` so the designator is still validated.
-- `translate-pathname` — `%wild-captures`, the CAPTURING twin of `%wild-match` (`:no-match`
-  is the failure answer; `*` is tried SHORTEST first), substituting left to right over the
-  FLAT namestring, so a `*` may span `/`. **Trap: substitution is POSITIONAL, not
-  component-wise** — SBCL answers `"x/b-y.c"` for `(translate-pathname "a/b.c" "*/*.*"
-  "x/*-y.*")` where this answers `"x/a-y.b"`.
+- `translate-pathname` — a port of SBCL's `translate-component` / `translate-directories`
+  over `%pathname-split`, `%path-dir-parts`, `%wild-component-p`, `%wild-match` and
+  `%wild-captures` (the CAPTURING twin of `%wild-match`: `:no-match` is the failure answer;
+  `*` is tried SHORTEST first). The three namestrings are split into directory list + name +
+  type and matched/substituted COMPONENT by component: `*`/`?` never span a `/`, `**`
+  consumes a RUN of source directory levels (captured with a trailing `/`, written back
+  normalized), and a component's captures feed only that component's TO wildcards. Answers
+  are pinned against SBCL 2.6.5. LITE edges (documented on the reference page, not
+  signalled): a TO wildcard with no capture left substitutes `""`, adjacent wildcards in one
+  component consume one capture apiece, and an unpaired `**` is not checked. The `:no-match`
+  answer of `%wild-captures` is the error signal here — keep it.
 - `rename-file` — prelude Lisp over `%rename-file`: interpreter and JVM rename for real,
   both WASM backends lower to a call-time signal (`LispMacroExpander.renameFileStub`).
   Truename values 2 and 3 are not returned.

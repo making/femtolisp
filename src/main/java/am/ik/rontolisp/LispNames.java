@@ -3954,13 +3954,15 @@ public final class LispNames {
 	/**
 	 * The {@code translate-pathname} built-in: matches {@code source} against
 	 * {@code from-wildcard} and substitutes the pieces its wildcards captured into
-	 * {@code to-wildcard}, in order. Wildcards are the ones the rest of the pathname
-	 * family understands -- {@code *} (any run of characters), {@code ?} (one character)
-	 * and {@code **}{@code /} (zero or more whole directory levels) over the FLAT
-	 * namestring, so a plain {@code *} may span {@code /} where a structured
-	 * implementation would stop at a directory boundary. A {@code **}{@code /} in the
-	 * to-wildcard consumes ONE capture and writes it back verbatim, separator included. A
-	 * source that does not match {@code from-wildcard} is an error, as it is in CL.
+	 * {@code to-wildcard}, COMPONENT-wise -- directory to directory, name to name, type
+	 * to type -- so each to component receives the captures of its own from component.
+	 * Wildcards are the ones the rest of the pathname family understands -- {@code *} and
+	 * {@code ?} within one component (a {@code *} does NOT span a directory boundary),
+	 * and a {@code **}{@code /} directory segment consuming a RUN of source directories
+	 * as ONE capture, which a {@code **}{@code /} in the to-wildcard writes back
+	 * verbatim. A NIL FROM component matches anything and captures the whole source
+	 * component; an absent TO component is filled from the source, as SBCL's merge does.
+	 * A source that does not match {@code from-wildcard} is an error, as it is in CL.
 	 */
 	public static final String TRANSLATE_PATHNAME = "TRANSLATE-PATHNAME";
 

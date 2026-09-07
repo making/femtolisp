@@ -8595,12 +8595,31 @@ class LispEvaluatorTest {
 
 	@Test
 	void translatePathnameSubstitutesTheCapturedWildcards() {
-		// Every expectation checked against SBCL 2.2.9 on the same forms.
+		// Every expectation checked against SBCL 2.6.5 on the same forms. Matching and
+		// substitution are COMPONENT-wise: DIRECTORY to DIRECTORY, NAME to NAME, TYPE to
+		// TYPE (the todo-447 fix -- a to-wildcard with FEWER wildcards than the
+		// from-wildcard used to take the wrong ones).
 		assertThat(eval("(translate-pathname \"d/a.txt\" \"d/*.*\" \"e/*.*\")").print()).isEqualTo("#P\"e/a.txt\"");
 		assertThat(eval("(translate-pathname \"src/foo.lisp\" \"src/*.lisp\" \"build/*.fasl\")").print())
 			.isEqualTo("#P\"build/foo.fasl\"");
 		assertThat(eval("(namestring (translate-pathname \"a/b.c\" \"*/*.*\" \"x/*-y.*\"))"))
-			.isEqualTo(new LispString("x/a-y.b"));
+			.isEqualTo(new LispString("x/b-y.c"));
+		// The to NAME receives the from NAME's capture even when the to DIRECTORY holds
+		// no wildcard at all.
+		assertThat(eval("(namestring (translate-pathname \"a/b.c\" \"*/*.*\" \"x/*.*\"))"))
+			.isEqualTo(new LispString("x/b.c"));
+		// A * matches WITHIN one component, so it cannot span a directory boundary.
+		assertThatThrownBy(() -> eval("(translate-pathname \"x/y/a.txt\" \"*/a.txt\" \"z/a.txt\")"))
+			.isInstanceOf(LispEvalException.class)
+			.hasMessageContaining("does not match");
+		// An absent to COMPONENT is filled from the source, as SBCL's merge does.
+		assertThat(eval("(namestring (translate-pathname \"d/a.txt\" \"d/*.*\" \"*.*\"))"))
+			.isEqualTo(new LispString("d/a.txt"));
+		assertThat(eval("(namestring (translate-pathname \"d/a.txt\" \"d/*.*\" \"e/*\"))"))
+			.isEqualTo(new LispString("e/a.txt"));
+		// A NIL DIRECTORY component matches any directory and captures it whole.
+		assertThat(eval("(namestring (translate-pathname \"a/b.c\" \"*.*\" \"*/*.*\"))"))
+			.isEqualTo(new LispString("a/b.c"));
 		assertThatThrownBy(() -> eval("(translate-pathname \"d/a.txt\" \"e/*.*\" \"f/*.*\")"))
 			.isInstanceOf(LispEvalException.class)
 			.hasMessageContaining("does not match");

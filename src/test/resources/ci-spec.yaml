@@ -8211,7 +8211,7 @@ cases:
       (T "")
       "c.lisp"
       #P"build/foo.fasl"
-      "x/a-y.b"
+      "x/b-y.c"
       :NO-MATCH
       #P"d/a.txt"
       :SIGNALLED

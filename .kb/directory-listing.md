@@ -53,8 +53,8 @@ each name BARE with a trailing `/` when itself a directory.
   A `**` component contributes the base BEFORE descending (`:wild-inferiors` matches zero levels).
 - `uiop:directory-files`' optional PATTERN is a wildcard NAMESTRING, not a pathname object; omitted
   it is `*wild-file-for-directory*`; a pattern with a DIRECTORY component is an error, as in UIOP.
-- Limit: `translate-pathname` substitutes captures POSITIONALLY, so an asymmetric wildcard pair
-  diverges from SBCL (`.kb/pathnames.md`).
+- `translate-pathname` matches and substitutes COMPONENT-WISE as SBCL does; only the LITE
+  edges there diverge (`.kb/pathnames.md`).
 
 ## `make-pathname` / `pathname-name` / `pathname-type`
 `make-pathname` is prelude Lisp (no Java `Environment` entry), so all four backends run ONE

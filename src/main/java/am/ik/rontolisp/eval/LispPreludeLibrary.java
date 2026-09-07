@@ -688,10 +688,11 @@ public final class LispPreludeLibrary {
 				  (progn (namestring %hns-path) ""))
 				""");
 		// %wild-inferiors-at: the ONE spelling of "a wild-inferiors segment starts here",
-		// read by %wild-match, %wild-captures and translate-pathname's substitution scan.
-		// The token is THREE characters -- ** plus the separator -- because it matches
-		// ZERO levels as well as many, and only swallowing the separator lets
-		// "/a/**/*.lisp" match "/a/c.lisp" the way CL does.
+		// read by %wild-match and %wild-captures; translate-pathname's directory matcher
+		// reads the SAME token component-wise (a component that is exactly "**", the
+		// separator belonging to it as here). The token is THREE characters -- ** plus
+		// the separator -- because it matches ZERO levels as well as many, and only
+		// swallowing the separator lets "/a/**/*.lisp" match "/a/c.lisp" the way CL does.
 		SOURCES.put(LispNames.WILD_INFERIORS_AT, """
 				(defun %wild-inferiors-at (%wia-pat %wia-p)
 				  (and (< (+ %wia-p 2) (length %wia-pat))
@@ -706,7 +707,10 @@ public final class LispPreludeLibrary {
 		// :no-match is the failure answer, which no capture list can collide with. * is
 		// tried SHORTEST first, so (translate-pathname "a/b.c" "*/*.*" "x/*.*")
 		// substitutes "b" and "c" rather than letting the first star swallow the rest,
-		// and a **/ likewise tries zero levels before one.
+		// and a **/ likewise tries zero levels before one. translate-pathname calls it
+		// WITHIN one component at a time (the run-consuming **/ branch only fires inside
+		// a pattern that still carries separators, which the component split leaves in
+		// the directory matcher's hands).
 		SOURCES.put(LispNames.WILD_CAPTURES, """
 				(defun %wild-captures (%wcp-pat %wcp-str)
 				  (let ((%wcp-pn (length %wcp-pat)) (%wcp-sn (length %wcp-str)))
@@ -736,39 +740,154 @@ public final class LispPreludeLibrary {
 				                     (t :no-match))))
 				      (m 0 0 nil))))
 				""");
-		SOURCES.put(LispNames.TRANSLATE_PATHNAME, """
-				(defun translate-pathname (%tp-source %tp-from %tp-to &rest %tp-args)
-				  (let ((%tp-caps (%wild-captures (namestring %tp-from) (namestring %tp-source))))
-				    (if (eq %tp-caps :no-match)
-				        (error "TRANSLATE-PATHNAME: ~A does not match ~A"
-				               (namestring %tp-source) (namestring %tp-from))
-				        (let* ((%tp-t (namestring %tp-to))
-				               (%tp-n (length %tp-t))
-				               (%tp-acc "")
-				               (%tp-i 0))
-				          (do () ((>= %tp-i %tp-n) (pathname %tp-acc))
-				            (let ((%tp-c (char %tp-t %tp-i)))
-				              (cond ((%wild-inferiors-at %tp-t %tp-i)
-				                     (setq %tp-acc (concatenate 'string %tp-acc
-				                                                (if %tp-caps (car %tp-caps) "")))
-				                     (setq %tp-caps (cdr %tp-caps))
-				                     (setq %tp-i (+ %tp-i 3)))
-				                    ((or (char= %tp-c #\\*) (char= %tp-c #\\?))
-				                     (setq %tp-acc (concatenate 'string %tp-acc
-				                                                (if %tp-caps (car %tp-caps) "")))
-				                     (setq %tp-caps (cdr %tp-caps))
-				                     (setq %tp-i (+ %tp-i 1)))
-				                    (t
-				                     (setq %tp-acc (concatenate 'string %tp-acc
-				                                                (subseq %tp-t %tp-i (+ %tp-i 1))))
-				                     (setq %tp-i (+ %tp-i 1))))))))))
-				""");
-		// Every rontolisp pathname is PHYSICAL: there are no logical hosts, so no
-		// translation table exists to consult and the translation is the identity --
-		// which is what CL prescribes for a physical argument. logical-pathname is the
-		// honest other half: CL requires a type-error unless the argument names a
-		// logical pathname, and here nothing can, so it always signals rather than
-		// pretending a physical namestring is a logical one.
+		// translate-pathname -- the COMPONENT-WISE translation (todo-447), a port of
+		// SBCL's translate-component / translate-directories rule onto the flat
+		// namestring model: source, from and to are split with %pathname-split +
+		// %path-dir-parts and handled DIRECTORY to DIRECTORY, NAME to NAME, TYPE to
+		// TYPE, so each to component receives the captures of its OWN from component.
+		// Per component (mirroring SBCL): a NIL or exactly-* TO component answers the
+		// source component; a TO component holding wildcards is filled from the from
+		// component's %wild-captures (an exactly-* FROM contributes the whole source
+		// component); a literal FROM answers the source when it equals it and fails
+		// otherwise; a literal TO answers itself when the source matches FROM. In the
+		// DIRECTORY: a NIL from-or-to directory takes the source's whole directory, a
+		// NIL source directory takes the TO's (minus any **), and a ** component
+		// consumes a RUN of source directories as one capture -- zero levels tried
+		// first, the %wild-inferiors-at token rendered component-wise. Lite where CL
+		// is undefined and SBCL signals: a TO component with more wildcard SLOTS than
+		// there are captures substitutes "" once the captures run out (SBCL's "not
+		// enough wildcards", ":WILD-INFERIORS not paired" and "middle of a word"
+		// errors are not reproduced), and consecutive wildcards consume one capture
+		// each rather than one share. A failed MATCH in any slot is the error every
+		// other path operator signals from.
+		SOURCES.put(LispNames.TRANSLATE_PATHNAME,
+				"""
+						(defun translate-pathname (%tp-source %tp-from %tp-to &rest %tp-args)
+						  (let* ((%tp-sp (%pathname-split (namestring %tp-source)))
+						         (%tp-fp (%pathname-split (namestring %tp-from)))
+						         (%tp-tp (%pathname-split (namestring %tp-to))))
+						    (labels ((%tp-match-dirs (%tp-f %tp-s)
+						               (cond ((null %tp-f) (if (null %tp-s) nil :no-match))
+						                     ((string= (car %tp-f) "**")
+						                      (let ((%tp-r :no-match) (%tp-s2 %tp-s) (%tp-run "") (%tp-done nil))
+						                        (do () ((or (not (eq %tp-r :no-match)) %tp-done) %tp-r)
+						                          (let ((%tp-x (%tp-match-dirs (cdr %tp-f) %tp-s2)))
+						                            (if (eq %tp-x :no-match)
+						                                (if (null %tp-s2)
+						                                    (setq %tp-done t)
+						                                    (progn
+						                                      (setq %tp-run
+						                                            (concatenate 'string %tp-run (car %tp-s2) "/"))
+						                                      (setq %tp-s2 (cdr %tp-s2))))
+						                                (setq %tp-r (cons %tp-run %tp-x)))))))
+						                     ((null %tp-s) :no-match)
+						                     (t (let ((%tp-c (%wild-captures (car %tp-f) (car %tp-s))))
+						                          (if (eq %tp-c :no-match)
+						                              :no-match
+						                              (let ((%tp-r (%tp-match-dirs (cdr %tp-f) (cdr %tp-s))))
+						                                (if (eq %tp-r :no-match)
+						                                    :no-match
+						                                    (append %tp-c %tp-r))))))))
+						             (%tp-sub (%tp-pat %tp-caps)
+						               (let ((%tp-n (length %tp-pat)) (%tp-i 0) (%tp-out "") (%tp-c %tp-caps))
+						                 (do () ((>= %tp-i %tp-n) (cons %tp-out %tp-c))
+						                   (let ((%tp-ch (char %tp-pat %tp-i)))
+						                     (if (or (char= %tp-ch #\\*) (char= %tp-ch #\\?))
+						                         (progn
+						                           (setq %tp-out
+						                                 (concatenate 'string %tp-out (if %tp-c (car %tp-c) "")))
+						                           (setq %tp-c (cdr %tp-c))
+						                           (setq %tp-i (+ %tp-i 1)))
+						                         (progn
+						                           (setq %tp-out
+						                                 (concatenate 'string %tp-out
+						                                              (subseq %tp-pat %tp-i (+ %tp-i 1))))
+						                           (setq %tp-i (+ %tp-i 1))))))))
+						             (%tp-dir (%tp-sd %tp-fd %tp-td)
+						               (cond ((string= %tp-td "") %tp-sd)
+						                     ((string= %tp-sd "")
+						                      (let ((%tp-out (if (and (> (length %tp-td) 0)
+						                                              (char= (char %tp-td 0) #\\/))
+						                                         "/" "")))
+						                        (dolist (%tp-p (%path-dir-parts %tp-td))
+						                          (unless (string= %tp-p "**")
+						                            (setq %tp-out
+						                                  (concatenate 'string %tp-out %tp-p "/"))))
+						                        %tp-out))
+						                     ((string= %tp-fd "") %tp-sd)
+						                     (t (let ((%tp-caps (%tp-match-dirs (%path-dir-parts %tp-fd)
+						                                                        (%path-dir-parts %tp-sd))))
+						                          (if (eq %tp-caps :no-match)
+						                              :no-match
+						                              (let ((%tp-out (if (or (and (> (length %tp-td) 0)
+						                                                         (char= (char %tp-td 0) #\\/))
+						                                                      (and (> (length %tp-sd) 0)
+						                                                           (char= (char %tp-sd 0) #\\/)))
+						                                                 "/" ""))
+						                                    (%tp-c %tp-caps))
+						                                (dolist (%tp-p (%path-dir-parts %tp-td))
+						                                  (let ((%tp-r (if (string= %tp-p "**")
+						                                                   (let ((%tp-run (if %tp-c (car %tp-c) "")))
+						                                                     (setq %tp-c (cdr %tp-c))
+						                                                     (if (and (> (length %tp-run) 0)
+						                                                              (char= (char %tp-run (- (length %tp-run) 1))
+						                                                                     #\\/))
+						                                                         (subseq %tp-run 0 (- (length %tp-run) 1))
+						                                                         %tp-run))
+						                                                   (let ((%tp-e (%tp-sub %tp-p %tp-c)))
+						                                                     (setq %tp-c (cdr %tp-e))
+						                                                     (car %tp-e)))))
+						                                    (when (> (length %tp-r) 0)
+						                                      (setq %tp-out
+						                                            (concatenate 'string %tp-out %tp-r "/")))))
+						                                %tp-out))))))
+						             (%tp-comp (%tp-src %tp-frm %tp-to2)
+						               (cond ((null %tp-to2) (cons %tp-src nil))
+						                     ((string= %tp-to2 "*") (cons %tp-src nil))
+						                     ((%wild-component-p %tp-to2)
+						                      (cond ((null %tp-frm)
+						                             (if (null %tp-src) (cons nil nil) (cons nil t)))
+						                            ((string= %tp-frm "*")
+						                             (cons (car (%tp-sub %tp-to2
+						                                                 (list (if (null %tp-src) "" %tp-src))))
+						                                   nil))
+						                            ((%wild-component-p %tp-frm)
+						                             (if (null %tp-src)
+						                                 (cons nil nil)
+						                                 (let ((%tp-c (%wild-captures %tp-frm %tp-src)))
+						                                   (if (eq %tp-c :no-match)
+						                                       (cons nil t)
+						                                       (cons (car (%tp-sub %tp-to2 %tp-c)) nil)))))
+						                            (t
+						                             (if (and %tp-src (string= %tp-src %tp-frm))
+						                                 (cons %tp-src nil)
+						                                 (cons nil t)))))
+						                     (t
+						                      (cond ((null %tp-frm)
+						                             (if (null %tp-src) (cons %tp-to2 nil) (cons nil t)))
+						                            ((string= %tp-frm "*") (cons %tp-to2 nil))
+						                            ((%wild-component-p %tp-frm)
+						                             (if (or (null %tp-src) (%wild-match %tp-frm %tp-src))
+						                                 (cons %tp-to2 nil)
+						                                 (cons nil t)))
+						                            (t
+						                             (if (and %tp-src (string= %tp-src %tp-frm))
+						                                 (cons %tp-to2 nil)
+						                                 (cons nil t))))))))
+						      (let* ((%tp-d (%tp-dir (first %tp-sp) (first %tp-fp) (first %tp-tp)))
+						             (%tp-n (%tp-comp (second %tp-sp) (second %tp-fp) (second %tp-tp)))
+						             (%tp-y (%tp-comp (third %tp-sp) (third %tp-fp) (third %tp-tp))))
+						        (if (or (eq %tp-d :no-match) (cdr %tp-n) (cdr %tp-y))
+						            (error "TRANSLATE-PATHNAME: ~A does not match ~A"
+						                   (namestring %tp-source) (namestring %tp-from))
+						            (let ((%tp-name (car %tp-n))
+						                  (%tp-type (car %tp-y)))
+						              (pathname (concatenate 'string %tp-d
+						                                     (if (null %tp-name) "" %tp-name)
+						                                     (if (or (null %tp-type) (string= %tp-type ""))
+						                                         ""
+						                                         (concatenate 'string "." %tp-type))))))))))
+						""");
 		SOURCES.put(LispNames.TRANSLATE_LOGICAL_PATHNAME, """
 				(defun translate-logical-pathname (%tlp-path &rest %tlp-args)
 				  (pathname %tlp-path))

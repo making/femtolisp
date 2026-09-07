@@ -3,15 +3,15 @@
 `(translate-pathname source from-wildcard to-wildcard &key)`
 
 Matches `source` against `from-wildcard`, then substitutes the pieces its
-wildcards captured into `to-wildcard`, left to right. The wildcards are the ones
-the rest of the pathname family understands: `*` (any run of characters), `?`
+wildcards captured into the wildcards of `to-wildcard`. The wildcards are the
+ones the rest of the pathname family understands: `*` (any run of characters), `?`
 (one character) and `**/` (zero or more whole directory levels). A `source` that
 does not match `from-wildcard` signals, as it does in Common Lisp.
 
 ```lisp
 (list (namestring (translate-pathname "src/foo.lisp" "src/*.lisp" "build/*.fasl"))
       (namestring (translate-pathname "a/b.c" "*/*.*" "x/*-y.*")))
-; => ("build/foo.fasl" "x/a-y.b")
+; => ("build/foo.fasl" "x/b-y.c")
 ```
 
 A `**/` is ONE wildcard, separator included: it captures the whole run of
@@ -25,11 +25,13 @@ intervening directory still translates:
 ; => ("/x/b/d/c.fasl" "/x/c.fasl")
 ```
 
-Lite: matching runs over the FLAT namestring and captures are substituted
-POSITIONALLY rather than component by component, so a plain `*` may span a `/`
-where a structured implementation would stop at a directory boundary, and a
-`to-wildcard` holding fewer wildcards than `from-wildcard` consumes the first of
-them rather than the matching component.
+Lite: the match and the substitution are component-wise -- a plain `*` or `?`
+never crosses a directory boundary, and a `**/` captures a run of whole
+directory levels -- but three diagnostics a structured implementation makes are
+not reproduced: a wildcard in `to-wildcard` with no capture left substitutes the
+empty string instead of signalling that FROM has too few wildcards for TO,
+wildcards standing next to each other in one component consume one capture
+apiece, and an unpaired `**` is not checked.
 
 ## Backend support
 

@@ -11226,7 +11226,7 @@ class WasmLispCompilerIntegrationTest {
 			""
 			"c.lisp"
 			#P"build/foo.fasl"
-			"x/a-y.b"
+			"x/b-y.c"
 			#P"d/a.txt"
 			:SIGNALLED
 			:NO-RENAME""";
