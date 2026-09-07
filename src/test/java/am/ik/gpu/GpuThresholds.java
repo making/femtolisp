@@ -204,4 +204,26 @@ public final class GpuThresholds {
 		return device != null && device.supportsBfloat16();
 	}
 
+	/**
+	 * Whether a Q8_0 quantized matrix can be the weight of a device GEMV here
+	 * ({@code .todo/728}): {@code true} on CUDA, {@code false} on Metal.
+	 * @return {@code true} when the Q8_0 GEMV is live here
+	 */
+	public static boolean supportsQuantized() {
+		GpuDevice device = Gpu.device();
+		return device != null && device.supportsQuantized();
+	}
+
+	/**
+	 * {@link Gpu#quantizeActivationQ8}, for the interceptor suites' oracle of what the
+	 * device was handed.
+	 * @param x the activation
+	 * @param offsetX its first element
+	 * @param cols its length
+	 * @return the packed activation
+	 */
+	public static byte[] quantizeActivationQ8(float[] x, int offsetX, int cols) {
+		return Gpu.quantizeActivationQ8(x, offsetX, cols);
+	}
+
 }

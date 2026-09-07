@@ -20,10 +20,12 @@ import am.ik.rontolisp.LispFunction;
 import am.ik.rontolisp.LispInteger;
 import am.ik.rontolisp.LispNames;
 import am.ik.rontolisp.LispNil;
+import am.ik.rontolisp.LispQuantizedMatrix;
 import am.ik.rontolisp.LispSingleFloatArray;
 import am.ik.rontolisp.LispSymbol;
 import am.ik.rontolisp.LispVal;
 import am.ik.rontolisp.PackageRegistry;
+import am.ik.rontolisp.QuantizedFormat;
 import am.ik.rontolisp.eval.Environment;
 import am.ik.rontolisp.eval.LinalgGpu;
 import am.ik.rontolisp.eval.LispEvaluator;
@@ -158,26 +160,33 @@ class GpuOfferDifferentialTest {
 	 * {@link FloatWidth} rather than a {@code Boolean}: a boolean admits exactly two
 	 * widths, so the harness could not build the operand a bfloat16 arm needs, and that
 	 * arm sat unreachable while looking covered ({@code .kb/vec.md})
+	 * @param quantized a Q8_0 {@code rontolisp:quantized-matrix} of the same values
+	 * ({@code .todo/728}) -- not a {@link FloatWidth}, since it is not a packed float
+	 * array on either path; {@code width} is then ignored
 	 */
-	private record Operand(int[] dims, boolean resident, @Nullable FloatWidth width) {
+	private record Operand(int[] dims, boolean resident, @Nullable FloatWidth width, boolean quantized) {
 		Operand(int... dims) {
-			this(dims, false, null);
+			this(dims, false, null, false);
 		}
 
 		Operand warmed() {
-			return new Operand(this.dims, true, this.width);
+			return new Operand(this.dims, true, this.width, this.quantized);
 		}
 
 		Operand asSingle() {
-			return new Operand(this.dims, this.resident, FloatWidth.SINGLE);
+			return new Operand(this.dims, this.resident, FloatWidth.SINGLE, false);
 		}
 
 		Operand asDouble() {
-			return new Operand(this.dims, this.resident, FloatWidth.DOUBLE);
+			return new Operand(this.dims, this.resident, FloatWidth.DOUBLE, false);
 		}
 
 		Operand asBfloat16() {
-			return new Operand(this.dims, this.resident, FloatWidth.BFLOAT16);
+			return new Operand(this.dims, this.resident, FloatWidth.BFLOAT16, false);
+		}
+
+		Operand asQuantized() {
+			return new Operand(this.dims, this.resident, null, true);
 		}
 	}
 
@@ -397,6 +406,11 @@ class GpuOfferDifferentialTest {
 				vector.asBfloat16()));
 		cases.add(matvec("a bfloat16 matrix against a double vector declines", matrix.asBfloat16(), vector.asDouble()));
 		cases.add(matvec("a mixed single/double pair declines", matrix.asSingle(), vector.asDouble()));
+		// The Q8_0 pairing (.todo/728): the quantized matrix against an f32 vector is
+		// taken, against a double one declined, on both paths.
+		cases.add(matvec("a quantized matrix against a single vector", matrix.asQuantized(), vector.asSingle()));
+		cases.add(
+				matvec("a quantized matrix against a double vector declines", matrix.asQuantized(), vector.asDouble()));
 		return cases;
 	}
 
@@ -585,6 +599,9 @@ class GpuOfferDifferentialTest {
 		}
 		return switch (arg) {
 			case Operand operand -> (LispVal) encoded.computeIfAbsent(operand, o -> {
+				if (o.quantized()) {
+					return new LispQuantizedMatrix(QuantizedFormat.Q8_0, o.dims().clone(), quantizedBlocks(o, 0));
+				}
 				LispVal value = switch (o.width() != null ? o.width() : single) {
 					case SINGLE -> new LispSingleFloatArray(floats(o), o.dims().clone());
 					case DOUBLE -> new LispDoubleFloatArray(doubles(o), o.dims().clone());
@@ -618,6 +635,9 @@ class GpuOfferDifferentialTest {
 		}
 		return switch (arg) {
 			case Operand operand -> encoded.computeIfAbsent(operand, o -> {
+				if (o.quantized()) {
+					return packedQ8(o);
+				}
 				Object value = switch (o.width() != null ? o.width() : single) {
 					case SINGLE -> packedF(o);
 					case DOUBLE -> packedD(o);
@@ -703,6 +723,58 @@ class GpuOfferDifferentialTest {
 		}
 		for (int i = 0; i < count(dims); i++) {
 			packed[header.length + i] = (short) BFloat16.bits(element(i));
+		}
+		return packed;
+	}
+
+	/**
+	 * The operand's values as ggml's Q8_0 blocks ({@code quantize_row_q8_0_ref}: absmax
+	 * over 32, {@code d = amax / 127} in f32 stored as binary16, {@code roundf(x / d)}
+	 * half away from zero), from byte {@code off} -- the same bytes
+	 * {@code rontolisp:quantize} writes on either path, transcribed here so the harness
+	 * hands both paths one matrix it built itself.
+	 */
+	private static byte[] quantizedBlocks(Operand o, int off) {
+		float[] values = floats(o);
+		int blocks = values.length / 32;
+		byte[] out = new byte[off + blocks * 34];
+		for (int b = 0; b < blocks; b++) {
+			float amax = 0;
+			for (int k = 0; k < 32; k++) {
+				float v = Math.abs(values[b * 32 + k]);
+				if (v > amax) {
+					amax = v;
+				}
+			}
+			float d = amax / 127f, id = d != 0 ? 1f / d : 0f;
+			short h = Float.floatToFloat16(d);
+			out[off + b * 34] = (byte) h;
+			out[off + b * 34 + 1] = (byte) (h >> 8);
+			for (int k = 0; k < 32; k++) {
+				float v = values[b * 32 + k] * id;
+				out[off + b * 34 + 2 + k] = (byte) (v < 0 ? -Math.round(-v) : Math.round(v));
+			}
+		}
+		return out;
+	}
+
+	/**
+	 * The COMPILED side of a quantized operand: the blocks behind the int header
+	 * {@code [format = 1][rank][dims...]} at {@code 8 + 4 * rank}
+	 * ({@code .kb/quantized-matrix.md}, "JVM representation").
+	 */
+	private static byte[] packedQ8(Operand o) {
+		int[] dims = o.dims();
+		int off = 8 + 4 * dims.length;
+		byte[] packed = quantizedBlocks(o, off);
+		int[] header = new int[2 + dims.length];
+		header[0] = 1;
+		header[1] = dims.length;
+		System.arraycopy(dims, 0, header, 2, dims.length);
+		for (int k = 0; k < header.length; k++) {
+			for (int i = 0; i < 4; i++) {
+				packed[4 * k + i] = (byte) (header[k] >>> (8 * i));
+			}
 		}
 		return packed;
 	}

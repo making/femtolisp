@@ -1869,6 +1869,95 @@ public final class Gpu {
 				&& device.gemvBf16(w, offsetW, x, offsetX, y, offsetY, rows, cols);
 	}
 
+	/** Columns a Q8_0 block holds. */
+	static final int Q8_BLOCK = 32;
+
+	/** Bytes a Q8_0 block takes: a binary16 scale, then {@link #Q8_BLOCK} int8 quants. */
+	static final int Q8_BLOCK_BYTES = 34;
+
+	/**
+	 * The Q8_0 sibling of
+	 * {@link #matvec(short[], int, float[], int, float[], int, int, int)}, and the width
+	 * a published {@code Q8_0} checkpoint's weights arrive in ({@code .todo/728}): the
+	 * matrix is a {@code byte[]} of ggml's blocks VERBATIM -- per block of 32 columns a
+	 * binary16 scale then 32 int8 quants, 34 bytes, row-major, {@code rows * cols / 32}
+	 * of them from byte {@code offsetW} -- and the vector and the result are f32, the one
+	 * pairing the CPU's integer-dot kernel has ({@code .kb/quantized-matrix.md}). Unlike
+	 * the other three widths this one is the scalar defun's BITS: the activation is
+	 * quantized on the host by the contract's rule ({@link #quantizeActivationQ8}) and
+	 * the kernel walks the defun's four f32 lane accumulators over the blocks in its
+	 * order ({@code gemm.cu}), so a device that takes the call answers exactly what the
+	 * CPU kernel would have. The same residency rule (the matrix's span is its byte
+	 * count), the same element threshold, and a hard decline where the device has no such
+	 * kernel ({@link GpuDevice#supportsQuantized()}: Metal) or {@code cols} is not whole
+	 * blocks.
+	 * @param w the matrix's blocks, row-major, starting at byte {@code offsetW}
+	 * @param offsetW the index of {@code w}'s first block byte
+	 * @param x the vector, elements starting at {@code offsetX}
+	 * @param offsetX the index of {@code x}'s first element
+	 * @param y the array the {@code rows} results are written into
+	 * @param offsetY the index in {@code y} the results start at
+	 * @param rows rows of {@code w} and length of the result
+	 * @param cols columns of {@code w} and length of {@code x}, a multiple of 32
+	 * @return {@code true} when {@code y} was filled
+	 */
+	public static boolean matvec(byte[] w, int offsetW, float[] x, int offsetX, float[] y, int offsetY, int rows,
+			int cols) {
+		GpuDevice device = Probe.DEVICE;
+		return device != null
+				&& device.supportsQuantized() && cols % Q8_BLOCK == 0 && offeredMatvecQ8(extent(device, w), offsetW,
+						extent(device, x), offsetX, extent(device, y), offsetY, rows, cols)
+				&& device.gemvQ8(w, offsetW, x, offsetX, y, offsetY, rows, cols);
+	}
+
+	/**
+	 * The activation of a Q8_0 GEMV, quantized as the CPU contract quantizes it
+	 * ({@code .kb/quantized-matrix.md}, "The GEMV contract"; the third transcription of
+	 * that rule, beside the interpreter's and the compiled template's, and pinned against
+	 * one in {@code GpuDeclineTest}): per block of 32, {@code amax} over {@code |x|} with
+	 * a strict {@code >} (a NaN never raises it), {@code sx = amax / 127} IN DOUBLE,
+	 * {@code q = rint(x / sx)} (CL {@code round}: half to even), everything zero where
+	 * {@code sx} is. Packed the way {@code gemv_q8_0} reads it: {@code nb} little-endian
+	 * doubles of {@code sx}, then the {@code cols} quants with each block's 32 PERMUTED
+	 * so that word {@code t} holds thread {@code t}'s four columns
+	 * ({@code 4 * (4 * (t >> 2) + m) + (t & 3)} for {@code m} in 0..3) -- the one place
+	 * outside {@code gemm.cu} that spells that order.
+	 * @param x the activation
+	 * @param offsetX the index of its first element
+	 * @param cols its length, a multiple of 32
+	 * @return the packed buffer, {@code cols / 4 + cols} bytes
+	 */
+	static byte[] quantizeActivationQ8(float[] x, int offsetX, int cols) {
+		int nb = cols / Q8_BLOCK;
+		byte[] out = new byte[nb * Double.BYTES + cols];
+		for (int b = 0; b < nb; b++) {
+			int base = offsetX + b * Q8_BLOCK;
+			double amax = 0.0;
+			for (int k = 0; k < Q8_BLOCK; k++) {
+				double v = Math.abs((double) x[base + k]);
+				if (v > amax) {
+					amax = v;
+				}
+			}
+			double sx = amax / 127.0;
+			long bits = Double.doubleToRawLongBits(sx);
+			for (int k = 0; k < Double.BYTES; k++) {
+				out[b * Double.BYTES + k] = (byte) (bits >>> (8 * k));
+			}
+			int o = nb * Double.BYTES + b * Q8_BLOCK;
+			if (sx == 0.0) {
+				continue;
+			}
+			for (int t = 0; t < 8; t++) {
+				int lane = t & 3, half = t >> 2;
+				for (int m = 0; m < 4; m++) {
+					out[o + 4 * t + m] = (byte) (int) Math.rint(x[base + 4 * (4 * half + m) + lane] / sx);
+				}
+			}
+		}
+		return out;
+	}
+
 	// --- the resident tier (.todo/491) -------------------------------------------------
 	// Members whose CPU twin is a lane loop, which a round trip cannot beat at any size
 	// (the element-wise tier's measurement) and which are therefore offered ONLY over an
@@ -2302,6 +2391,18 @@ public final class Gpu {
 				&& (long) rows * cols <= Integer.MAX_VALUE && offsetW >= 0 && offsetX >= 0 && offsetY >= 0
 				&& offsetW + (long) rows * cols <= lengthW && offsetX + (long) cols <= lengthX
 				&& fitsResult(lengthY, offsetY, rows);
+	}
+
+	/**
+	 * {@link #offeredMatvec} for a Q8_0 matrix, whose extent is a BYTE count: the
+	 * threshold still counts elements, the span the blocks' bytes.
+	 */
+	private static boolean offeredMatvecQ8(long bytesW, int offsetW, long lengthX, int offsetX, long lengthY,
+			int offsetY, int rows, int cols) {
+		return rows > 0 && cols > 0 && cols % Q8_BLOCK == 0 && (long) rows * cols >= Probe.MATVEC_MIN_ELEMENTS
+				&& (long) rows * cols <= Integer.MAX_VALUE && offsetW >= 0 && offsetX >= 0 && offsetY >= 0
+				&& offsetW + (long) rows * (cols / Q8_BLOCK) * Q8_BLOCK_BYTES <= bytesW
+				&& offsetX + (long) cols <= lengthX && fitsResult(lengthY, offsetY, rows);
 	}
 
 	/**

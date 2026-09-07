@@ -17,6 +17,8 @@
 // bits rounds the product and the sum separately; the products that DO fuse (the GEMMs,
 // the GEMV) say so with an explicit fma(), which the flag leaves alone. See .kb/gpu.md.
 
+#include <cuda_fp16.h>  // the Q8_0 GEMV's binary16 block scale (cvt.f32.f16, exact)
+
 #define TILE 16
 
 // A TRANSPOSED OPERAND IS READ IN PLACE (2026-09-02). `ta` / `tb` say that the operand's
@@ -552,6 +554,87 @@ extern "C" __global__ void gemv_f64(const double* W, const double* x, double* y,
 // (bf16 weights, f32 activations, .kb/bfloat16.md), at half the bytes a row streams.
 extern "C" __global__ void gemv_bf16(const unsigned short* W, const float* x, float* y, int rows, int cols) {
   gemv_ff<unsigned short>(W, x, y, rows, cols);
+}
+
+// The Q8_0 GEMV (.todo/728): vec:matvec over a rontolisp:quantized-matrix -- ggml's Q8_0
+// blocks held VERBATIM, 34 bytes a block of 32 (a binary16 scale d, then 32 int8 quants),
+// row-major -- against an f32 vector into an f32 result, and it is the CPU kernel's BITS.
+// .kb/quantized-matrix.md pins vec::%matvec-quantized and the --simd kernel as ONE value:
+// the activation quantized per block of 32 (sx = amax / 127 in double, q = rint(x / sx),
+// 0 where sx is), per row and block FOUR exact integer lane sums (lane i over the columns
+// j with j mod 4 = i), per lane one f32 multiply-add of the lane sum against
+// p = f32(f64(d) * sx) -- the product in double, narrowed once, then an f32 multiply and
+// an f32 add, no FMA -- the four f32 accumulators walked over the blocks IN ORDER, and
+// the row folded (acc0 + acc2) + (acc1 + acc3). This kernel spells exactly that, so the
+// device joins that pin rather than the f32 row's tolerance: an integer sum is
+// order-free, which is what lets the columns of a lane be split across threads, and
+// the f32 chain is not, which is why a row has exactly four sequential chains.
+//
+// EIGHT THREADS A ROW, ONE LANE A THREAD: thread t = 4h + i owns lane i's columns
+// 4k + i for k in [4h, 4h + 4) -- four sign-extending byte loads at stride 4 from the
+// block (a block is 34 bytes, so only 2-byte alignment is ever guaranteed; a 32-bit load
+// of the quants would fault on every other block) -- and one xor-4 shuffle joins the two
+// halves of the lane, after which threads t and t + 4 walk the same chain. The
+// activation arrives ALREADY quantized, by the host (Gpu.quantizeActivationQ8, the
+// contract's quantizer, ~1 us a call; a launch of its own cost 4 us on the stream ahead
+// of every GEMV): X is [nb doubles: sx per block][cols int8: the quants, PERMUTED so that
+// block b's word t holds thread t's four columns] -- one aligned 32-bit load a thread a
+// block. The scale product of block b + t is computed by thread t and shuffled round the
+// eight (one double multiply a block a row rather than eight). Measured against the
+// alternatives on a GB10 (.todo/artefacts/123-gpu-acceleration/gemv-q8-exact-probe.cu,
+// Q8ExactKernelProbe.java, cold from DRAM at Qwen3.5-0.8B's seven shapes): four threads a
+// row is starved (0.5 of the bandwidth at the head), a 4x4 transpose-reduce over shuffles
+// costs 15% more instructions than this split for the same bits, and __dp4a over the
+// packed lane buys nothing over the four multiplies -- this shape reaches 190 GB/s at the
+// 270 MB head (the bf16 kernel 230 at twice the bytes; a warp-per-row fold that is NOT
+// the contract's bits 217) and 5.3 ms of GEMV a forward against bf16's 7.7.
+//
+// No early return: the quad's shuffles need every thread, so a thread past the last row
+// computes that row again and does not store it. -fmad=false and the _rn intrinsics
+// together are what make "no FMA" hold whatever the toolchain does with `a * b + c`.
+__device__ __forceinline__ float q8_scale_product(unsigned short d, double sx) {
+  return __double2float_rn(__dmul_rn((double) __half2float(__ushort_as_half(d)), sx));
+}
+
+/** Byte k of a word, sign-extended: the activation's quant at column 4k + i. */
+__device__ __forceinline__ int q8_byte(unsigned w, int k) { return ((int) (w << (24 - 8 * k))) >> 24; }
+
+extern "C" __global__ void gemv_q8_0(const unsigned char* W, const unsigned char* X, float* y, int rows, int cols) {
+  int t = threadIdx.x & 7, i = t & 3, h = t >> 2;
+  int row = (blockIdx.x * blockDim.x + threadIdx.x) >> 3;
+  bool live = row < rows;
+  if (!live) row = rows - 1;
+  int nb = cols >> 5;
+  const double* xs = (const double*) X;
+  const unsigned char* xq = X + (size_t) nb * 8;
+  const unsigned char* w = W + (size_t) row * nb * 34;
+  int octet = (threadIdx.x & 31) & ~7;
+  float acc = 0.0f;
+  int b = 0;
+  for (; b + 8 <= nb; b += 8) {
+    float pm = q8_scale_product(*(const unsigned short*) (w + (b + t) * 34), xs[b + t]);
+#pragma unroll
+    for (int k = 0; k < 8; k++) {
+      const signed char* q = (const signed char*) (w + (b + k) * 34 + 2 + 16 * h + i);
+      unsigned xv = *(const unsigned*) (xq + ((b + k) << 5) + 4 * t);
+      int s = q[0] * q8_byte(xv, 0) + q[4] * q8_byte(xv, 1) + q[8] * q8_byte(xv, 2) + q[12] * q8_byte(xv, 3);
+      s += __shfl_xor_sync(0xffffffffu, s, 4);
+      float p = __shfl_sync(0xffffffffu, pm, octet + k);
+      acc = __fadd_rn(acc, __fmul_rn(__int2float_rn(s), p));
+    }
+  }
+  for (; b < nb; b++) {
+    const signed char* q = (const signed char*) (w + b * 34 + 2 + 16 * h + i);
+    unsigned xv = *(const unsigned*) (xq + (b << 5) + 4 * t);
+    int s = q[0] * q8_byte(xv, 0) + q[4] * q8_byte(xv, 1) + q[8] * q8_byte(xv, 2) + q[12] * q8_byte(xv, 3);
+    s += __shfl_xor_sync(0xffffffffu, s, 4);
+    float p = q8_scale_product(*(const unsigned short*) (w + b * 34), xs[b]);
+    acc = __fadd_rn(acc, __fmul_rn(__int2float_rn(s), p));
+  }
+  // (acc0 + acc2) + (acc1 + acc3): thread 0 of the octet holds lane 0, thread 2 lane 2.
+  float s2 = __fadd_rn(acc, __shfl_xor_sync(0xffffffffu, acc, 2));
+  float r = __fadd_rn(s2, __shfl_xor_sync(0xffffffffu, s2, 1));
+  if (t == 0 && live) y[row] = r;
 }
 
 // The RESIDENT tier (.todo/491): the members whose CPU twin is a LANE loop and which a

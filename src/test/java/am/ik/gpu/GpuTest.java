@@ -1177,6 +1177,210 @@ class GpuTest {
 		}
 	}
 
+	// --- the Q8_0 matrix-by-vector product (.todo/728) --------------------------------
+	// ggml's blocks against an f32 activation -- the CPU's integer-dot pairing
+	// (.kb/quantized-matrix.md) -- on the device. Unlike the bf16 kernel this one is not
+	// an equivalence with gemv_f32 but the CONTRACT's own bits: the host quantizes the
+	// activation by the defun's rule and the kernel walks the defun's four f32 lane
+	// accumulators over the blocks in its order, so it is pinned as EQUALITY on every
+	// row against a transcription of that contract -- the pin the CPU kernel carries,
+	// not the f32 row's tolerance.
+
+	/**
+	 * ggml's quantize_row_q8_0_ref over the 32 columns at {@code base}, into {@code off}.
+	 */
+	private static void quantizeBlockQ8(float[] w, int base, byte[] blocks, int off) {
+		float amax = 0;
+		for (int k = 0; k < 32; k++) {
+			float v = Math.abs(w[base + k]);
+			if (v > amax) {
+				amax = v;
+			}
+		}
+		float d = amax / 127f, id = d != 0 ? 1f / d : 0f;
+		short h = Float.floatToFloat16(d);
+		blocks[off] = (byte) h;
+		blocks[off + 1] = (byte) (h >> 8);
+		for (int k = 0; k < 32; k++) {
+			float v = w[base + k] * id;
+			blocks[off + 2 + k] = (byte) (v < 0 ? -Math.round(-v) : Math.round(v));
+		}
+	}
+
+	/** A {@code rows x cols} Q8_0 matrix of inexact values, blocks from {@code off}. */
+	private static byte[] quantizedQ8(int rows, int cols, int off, double seed) {
+		byte[] blocks = new byte[off + rows * (cols / 32) * 34];
+		float[] row = new float[cols];
+		for (int r = 0; r < rows; r++) {
+			for (int j = 0; j < cols; j++) {
+				row[j] = (float) Math.sin((r * cols + j) * 0.37 + seed) * (1 + 0.5f * (float) Math.cos(j * 0.0013));
+			}
+			for (int b = 0; b < cols / 32; b++) {
+				quantizeBlockQ8(row, b * 32, blocks, off + (r * (cols / 32) + b) * 34);
+			}
+		}
+		return blocks;
+	}
+
+	/**
+	 * The contract transcribed -- what {@code vec::%matvec-quantized} and the CPU lane
+	 * kernel compute, row by row: the activation quantized per block ({@code amax / 127}
+	 * in double, {@code rint}), four exact integer lane sums a block, per lane one f32
+	 * multiply-add against {@code (float) (d * sx)}, the four accumulators walked over
+	 * the blocks in order, folded {@code (acc0 + acc2) + (acc1 + acc3)}.
+	 */
+	private static float[] contractQ8(byte[] blocks, int bo, float[] x, int xo, int rows, int cols) {
+		int nb = cols / 32;
+		short[] xq = new short[cols];
+		double[] xs = new double[nb];
+		for (int b = 0; b < nb; b++) {
+			double amax = 0.0;
+			for (int k = 0; k < 32; k++) {
+				double v = Math.abs((double) x[xo + b * 32 + k]);
+				if (v > amax) {
+					amax = v;
+				}
+			}
+			double sx = amax / 127.0;
+			xs[b] = sx;
+			for (int k = 0; k < 32; k++) {
+				xq[b * 32 + k] = sx == 0.0 ? 0 : (short) (int) Math.rint(x[xo + b * 32 + k] / sx);
+			}
+		}
+		float[] y = new float[rows];
+		for (int r = 0; r < rows; r++) {
+			float a0 = 0, a1 = 0, a2 = 0, a3 = 0;
+			for (int b = 0; b < nb; b++) {
+				int o = bo + (r * nb + b) * 34;
+				double sw = Float.float16ToFloat((short) ((blocks[o] & 0xFF) | (blocks[o + 1] << 8)));
+				float p = (float) (sw * xs[b]);
+				int s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+				for (int k = 0; k < 8; k++) {
+					int j = b * 32 + 4 * k;
+					s0 += blocks[o + 2 + 4 * k] * xq[j];
+					s1 += blocks[o + 3 + 4 * k] * xq[j + 1];
+					s2 += blocks[o + 4 + 4 * k] * xq[j + 2];
+					s3 += blocks[o + 5 + 4 * k] * xq[j + 3];
+				}
+				a0 = a0 + (float) s0 * p;
+				a1 = a1 + (float) s1 * p;
+				a2 = a2 + (float) s2 * p;
+				a3 = a3 + (float) s3 * p;
+			}
+			y[r] = (a0 + a2) + (a1 + a3);
+		}
+		return y;
+	}
+
+	@Test
+	@ResourceLock(DEVICE_MEMORY)
+	void aQuantizedMatrixByVectorProductIsTheCpuKernelsBitsOnEveryRow() {
+		DeviceResidency residency = Gpu.residency();
+		GpuDevice device = Gpu.device();
+		assumeTrue(residency != null && device != null && device.supportsQuantized(),
+				"the Q8_0 GEMV is the CUDA backend's");
+		Gpu.releaseResident();
+		// Two shapes: rows not a multiple of the 32 a block covers (the tail threads that
+		// recompute the last row and do not store), and a block count that is not a
+		// multiple of the eight the kernel unrolls (its tail loop).
+		for (int[] shape : new int[][] { { 1000, 1024 }, { 256, 1152 } }) {
+			int rows = shape[0], cols = shape[1], nb = cols / 32;
+			byte[] w = quantizedQ8(rows, cols, 0, rows * 0.01);
+			float[] x = new float[cols], y = new float[rows];
+			for (int j = 0; j < cols; j++) {
+				x[j] = (float) Math.cos(j * 0.11) * (1 + 0.3f * (float) Math.sin(j * 0.017));
+			}
+			float[] expected = contractQ8(w, 0, x, 0, rows, cols);
+			// The first sight declines, nothing moves.
+			long resident = Gpu.residentBytes();
+			assertThat(Gpu.matvec(w, 0, x, 0, y, 0, rows, cols)).as("%dx%d first sight", rows, cols).isFalse();
+			assertThat(y).containsOnly(0.0f);
+			assertThat(Gpu.residentBytes()).isEqualTo(resident);
+			// The second: taken, and every row is the contract's bits -- raw-bit equality
+			// (Arrays.equals on floats), which -0.0 and a NaN payload would fail.
+			assertThat(Gpu.matvec(w, 0, x, 0, y, 0, rows, cols)).as("%dx%d second sight", rows, cols).isTrue();
+			assertThat(y).as("%dx%d", rows, cols).isEqualTo(expected);
+			// The blocks are resident at ONE byte an element-and-a-sixteenth: the span is
+			// the byte count.
+			assertThat(Gpu.residentBytes()).isGreaterThanOrEqualTo(resident + (long) rows * nb * 34);
+			// The third sight is a hit, and a different activation is a different exact
+			// answer.
+			long hits = residency.hits();
+			for (int j = 0; j < cols; j++) {
+				x[j] = (float) Math.sin(j * 0.23) - 0.5f;
+			}
+			expected = contractQ8(w, 0, x, 0, rows, cols);
+			assertThat(Gpu.matvec(w, 0, x, 0, y, 0, rows, cols)).isTrue();
+			assertThat(residency.hits()).isGreaterThan(hits);
+			assertThat(y).isEqualTo(expected);
+			// Written: the byte[] copy is dropped like any other, the next sight is a
+			// first sight and declines, and the one after uploads the NEW blocks.
+			w[2] = (byte) (w[2] == 100 ? 99 : 100);
+			Gpu.written(w);
+			expected = contractQ8(w, 0, x, 0, rows, cols);
+			assertThat(Gpu.matvec(w, 0, x, 0, y, 0, rows, cols)).isFalse();
+			assertThat(Gpu.matvec(w, 0, x, 0, y, 0, rows, cols)).isTrue();
+			assertThat(y).isEqualTo(expected);
+		}
+	}
+
+	@Test
+	void everyQuantizedMatrixByVectorOperandIsReadFromItsOwnOffset() {
+		GpuDevice device = Gpu.device();
+		assumeTrue(device != null && device.supportsQuantized(), "the Q8_0 GEMV is the CUDA backend's");
+		// The compiled representation's header is 8 + 4 * rank bytes ahead of the blocks
+		// (.kb/quantized-matrix.md): the blocks start at 16, the f32 vector's elements
+		// at 2, and the f32 result's header must survive.
+		int rows = 400, cols = 384;
+		byte[] w = quantizedQ8(rows, cols, 16, 7.0);
+		w[0] = 1;
+		w[4] = 2;
+		w[8] = (byte) rows;
+		w[9] = (byte) (rows >> 8);
+		w[12] = (byte) cols;
+		w[13] = (byte) (cols >> 8);
+		float[] x = new float[2 + cols], y = new float[2 + rows];
+		x[0] = 1;
+		x[1] = cols;
+		y[0] = 1;
+		y[1] = rows;
+		for (int j = 0; j < cols; j++) {
+			x[2 + j] = (float) Math.cos(j * 0.31);
+		}
+		float[] expected = contractQ8(w, 16, x, 2, rows, cols);
+		assertThat(Gpu.matvec(w, 16, x, 2, y, 2, rows, cols)).isFalse();
+		assertThat(Gpu.matvec(w, 16, x, 2, y, 2, rows, cols)).isTrue();
+		assertThat(y[0]).isEqualTo(1.0f);
+		assertThat(y[1]).isEqualTo(rows);
+		assertThat(Arrays.copyOfRange(y, 2, 2 + rows)).isEqualTo(expected);
+	}
+
+	@Test
+	@ResourceLock(DEVICE_MEMORY)
+	void aRunOfQuantizedMatrixByVectorProductsFreesEveryBufferItAllocates() {
+		// The Q8_0 route keeps ONE activation buffer across calls and allocates a result
+		// a call: the steady state after the first accepted call holds the resident
+		// blocks, that buffer and a result, and the drift over a thousand calls is the
+		// same loose bound every leak test here uses.
+		GpuDevice gemm = Gpu.device();
+		assumeTrue(gemm != null && gemm.supportsQuantized(), "the Q8_0 GEMV is the CUDA backend's");
+		Gpu.releaseResident();
+		int rows = 512, cols = 512;
+		byte[] w = quantizedQ8(rows, cols, 0, 1.0);
+		float[] x = new float[cols], y = new float[rows];
+		for (int j = 0; j < cols; j++) {
+			x[j] = (float) Math.sin(j * 0.13);
+		}
+		assertThat(gemm.gemvQ8(w, 0, x, 0, y, 0, rows, cols)).isFalse();
+		assertThat(gemm.gemvQ8(w, 0, x, 0, y, 0, rows, cols)).isTrue();
+		long before = driftSample(gemm);
+		assertThat(before).isGreaterThan(0);
+		for (int i = 0; i < 1000; i++) {
+			assertThat(gemm.gemvQ8(w, 0, x, 0, y, 0, rows, cols)).isTrue();
+		}
+		assertThat(Math.abs(before - driftSample(gemm))).isLessThan(driftBound(gemm));
+	}
+
 	@Test
 	@ResourceLock(DEVICE_MEMORY)
 	void aRunOfMatrixByVectorProductsFreesEveryBufferItAllocates() {

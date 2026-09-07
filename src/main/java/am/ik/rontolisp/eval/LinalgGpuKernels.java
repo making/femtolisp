@@ -448,6 +448,21 @@ final class LinalgGpuKernels {
 	}
 
 	/**
+	 * The Q8_0 sibling of {@link #matvec(float[], float[], int, int)}: ggml's blocks
+	 * against an f32 vector, into an f32 result that is the CPU kernel's bits
+	 * ({@code .kb/quantized-matrix.md}), on the device ({@code .todo/728}).
+	 * @param w the matrix's blocks, row-major
+	 * @param x the vector
+	 * @param rows rows of the matrix
+	 * @param cols columns of the matrix, a multiple of 32
+	 * @return the product, or {@code null} when the device declined
+	 */
+	static float @Nullable [] matvec(byte[] w, float[] x, int rows, int cols) {
+		float[] out = resultF(rows);
+		return Gpu.matvec(w, 0, x, 0, out, 0, rows, cols) ? out : null;
+	}
+
+	/**
 	 * {@code a x b} for a row-major {@code n x m} by {@code m x p} double-float pair, or
 	 * {@code null} when the device declined it.
 	 * @param a the left operand, row-major
