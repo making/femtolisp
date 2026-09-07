@@ -135,6 +135,7 @@ last read the file, and nothing fails -- these files have no tests.
 - [wasm-gc-strings.md](wasm-gc-strings.md) -- GC-backend strings as `$str_bytes` arrays
 - [wasm-gc-final-types.md](wasm-gc-final-types.md) -- every emitted wasm-GC type must be `sub final`
 - [wasm-gc-heap-pregrow.md](wasm-gc-heap-pregrow.md) -- `_start` pre-grows the engine's GC heap with one dropped allocation
+- [wasm-landing-pad-refresh.md](wasm-landing-pad-refresh.md) -- a `try_table` landing pad refreshes every local before it reads one: Cranelift passes a local into the pad as a pre-call exceptional-edge argument, stale after a copying collection
 - [wasm-bignum.md](wasm-bignum.md) -- exact integers in three tiers (i31, `TYPE_BIGNUM`, `TYPE_BIGINT`)
 - [wasm-int-fusion.md](wasm-int-fusion.md) -- integer expression-tree fusion keeping raw i64
 - [wasm-counted-loops.md](wasm-counted-loops.md) -- a loop induction variable as a bare `i64` counter

@@ -59,12 +59,7 @@
   ;; the call-time refusal WasmArrayCompiler emits, so a program that never asks
   ;; for the width compiles and runs there exactly as before (.kb/bfloat16.md,
   ;; "Refusing a width").
-  ;; The arms are ordered as %la-etype's are, narrowest width first. That order is
-  ;; ALSO what the ci-spec corpus currently needs on the WASM COMPONENT backend:
-  ;; with the single-float arm first that corpus traps on a ref.cast far away from
-  ;; here, which is a layout-sensitive defect of that backend (.todo/722) and not a
-  ;; property of this defun -- any edit near this size can trip it, so reordering
-  ;; these arms is neither the cause nor the cure.
+  ;; The arms are ordered as %la-etype's are, narrowest width first.
   (cond
    ((eq element-type 'bfloat16)
     (make-array dims :element-type 'bfloat16 :initial-element init))
