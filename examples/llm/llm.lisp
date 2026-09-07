@@ -331,6 +331,16 @@
   ;; Qwen3 / 3.5: an empty think block is how the template turns thinking off
   "<|im_start|>user~%~a<|im_end|>~%<|im_start|>assistant~%<think>~%~%</think>~%~%")
 
+(defparameter *chatml-smollm2*
+  ;; SmolLM2-Instruct's own tokenizer_config.json chat_template
+  ;; unconditionally opens with this system turn whenever the first message
+  ;; is not already one -- confirmed byte-identical to llama.cpp's own
+  ;; rendering of the checkpoint's template (.todo/701). *chatml* (no system
+  ;; turn) is what LFM2.5's own template renders for the same one-user-turn
+  ;; case, so the two families need separate constants despite sharing every
+  ;; other token.
+  "<|im_start|>system~%You are a helpful AI assistant named SmolLM, trained by Hugging Face<|im_end|>~%<|im_start|>user~%~a<|im_end|>~%<|im_start|>assistant~%")
+
 (defparameter *architectures*
   (list (list "llama") ; Llama 2, TinyLlama, and karpathy's stories*.bin
         (list "qwen3"
@@ -1647,10 +1657,11 @@
                      (load-hf-tokenizer dir (getf model :tokenizer)))
                     (t nil)) (load-tokenizer *tokenizer* (getf model :vocab))))
          (template
-          ;; the family's, or ChatML for a checkpoint whose vocabulary has
-          ;; its turn marker (SmolLM2 is model_type llama, and llama has none)
+          ;; the family's, or SmolLM2's ChatML-with-system-turn for a
+          ;; checkpoint whose vocabulary has its turn marker (SmolLM2 is
+          ;; model_type llama, and llama has none)
           (or (getf model :chat)
-              (and (tokenizer:token-id tk "<|im_start|>") *chatml*)))
+              (and (tokenizer:token-id tk "<|im_start|>") *chatml-smollm2*)))
          (prompt
           (cond ((and (string= *mode* "chat") template)
                  (format nil template *prompt*))

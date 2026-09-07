@@ -192,11 +192,15 @@ rendered string, and on a RAW completion -- no chat template on either side,
 GGUF, token for token (`.todo/677`); the Q8_0 file agrees with it for 60 tokens
 and then picks a different word (two Q8_0 kernels are two fold orders of the
 same 7.6e-3 quantization error, and this one is the scalar defun's bits, not
-ggml's; the method, the ids and the numbers are in `.todo/672`'s record). Its
-`-m chat` is not `llama-cli`'s: the two harnesses render "thinking off"
-differently (`llama-cli --reasoning-budget 0` still opens a `[Start thinking]`
-block on this model), which is a question about the two template strings
-(`.todo/701`), not about the arithmetic.
+ggml's; the method, the ids and the numbers are in `.todo/672`'s record).
+`-m chat`'s rendered prompt is byte-identical to `llama-cli`'s own served
+prompt for the same checkpoint (`.todo/701`, diffed against a Python `jinja2`
+rendering of `tokenizer_config.json`'s `chat_template` and against
+`llama-cli`'s served prompt directly): `llama-cli --reasoning-budget 0` still
+opens a `[Start thinking]` block on this model because that flag is a
+generation-time token budget, not the template's `enable_thinking` switch --
+`llama-cli --reasoning off` is what maps to it, and with that flag the two
+prompts match token for token, empty `<think>` block included.
 
 Measured on the same box as the TinyLlama rows, JVM class output, f32 weights
 (the load line: 7.1-7.6 s for 1.75 GB of bf16 into 3 GB, of which
@@ -346,8 +350,11 @@ so it was answering a different prompt. With no template at all
 --min-p 0` against `Llama Qwen3-0.6B-BF16.gguf -t 0 -n 64 -i "Once upon a
 time"`) `llama.cpp` and this file print the same 64 tokens: `Once upon a time,
 there were 3000 people in a town. The number of people who are in the town is
-3000. ...`; in chat mode `llama-cli` still thinks out loud on this model where
-we do not, the harness difference `.todo/701` measures. Measured on dorian (JVM class output, f32 weights, develop
+3000. ...`; in chat mode `llama-cli --reasoning-budget 0` still thinks out
+loud on this model, but that flag does not turn the template's
+`enable_thinking` off -- `llama-cli --reasoning off` does, and with it the
+served prompt matches this file's rendered one token for token, empty
+`<think>` block included (`.todo/701`). Measured on dorian (JVM class output, f32 weights, develop
 `2275c000`, GraalVM 25.0.4, no other rontolisp run on the box -- its steady
 co-tenants, a `clickhouse-server` at ~17% of a core and a `mysqld`, keep the
 idle 1-minute load average at 0.3-0.9; the `loadavg` column is that figure
@@ -408,13 +415,23 @@ are `model_type` `llama` -- GQA, `rope_theta` 100000, tied embeddings -- so the 
 runs them unchanged; what they bring is the GPT-2-style byte-level BPE
 `tokenizer.json` above (the `:smollm` scanner, digits split one at a time)
 and a ChatML chat template that the family row does not carry, so `-m chat`
-uses ChatML whenever the vocabulary has `<|im_start|>`. From the BF16
-safetensors, greedy:
+uses ChatML whenever the vocabulary has `<|im_start|>`. **That fallback used to
+render `*chatml*` -- no system turn at all** -- but the checkpoint's own
+`tokenizer_config.json` chat template unconditionally opens with
+`<|im_start|>system\nYou are a helpful AI assistant named SmolLM, trained by
+Hugging Face<|im_end|>\n` whenever the first message is not already one, so
+every SmolLM2-Instruct chat answer was missing its system turn. `.todo/701`'s
+diff against the checkpoint's own template (Python `jinja2` over
+`tokenizer_config.json`, and the identical field inside the GGUF; both agree
+with `llama.cpp`'s own served prompt) is what found it; the fallback now
+renders `*chatml-smollm2*`, which carries the system turn, and `llama.cpp` and
+this file produce the same 64 tokens greedy from the checkpoint's own BF16
+safetensors and F16 GGUF alike:
 
 ```bash
 java --add-modules jdk.incubator.vector Llama SmolLM2-135M-Instruct -m chat -t 0 -n 64 \
   -i "Tell me a short story about a cat."
-# One of the most beloved and beloved cats in the world is Luna, a gentle and curious feline with a heart of gold. ...
+# Once upon a time, there was a cat named Whiskers. Whiskers was a curious and playful cat who loved to
 java --add-modules jdk.incubator.vector Llama SmolLM2-135M -t 0 -n 48 -i "Once upon a time"
 # Once upon a time, there was a little girl named Lily. She lived in a big house with her family, ...
 ```
