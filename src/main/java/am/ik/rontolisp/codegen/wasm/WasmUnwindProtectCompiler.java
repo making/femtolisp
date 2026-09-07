@@ -19,11 +19,15 @@ import am.ik.wasm.Type;
  * Layout, outermost first: {@code block $done (result (ref null eq))} holds the whole
  * form's value; an optional {@code block $tramp (result (ref null eq))} is the
  * return-exit trampoline (emitted only when an enclosing {@code %block} exists, i.e. a
- * {@code return} could escape); {@code block $u (result exnref)} is the exception landing
- * pad of a {@code try_table (catch_all_ref $u)} over the protected form. On normal
+ * {@code return} could escape); then every live local is pushed onto the operand stack
+ * ({@link WasmLandingPad}); {@code block $u (result (ref null eq))} is the
+ * {@code $lisp-cond} landing pad of a {@code try_table (catch $lisp-cond $u)} over the
+ * protected form, joined -- in a program that lowers cross-lambda exits -- by a
+ * {@code block $bx} landing for the block-exit tag, both funnelling into a
+ * {@code block $rethrow (result i32)} whose value names the tag to rethrow on. On normal
  * completion the value is stashed in a local, the cleanups run and a {@code br $done}
- * skips both landing pads. On an exception the landing runs the cleanups with the caught
- * {@code exnref} beneath the stack and rethrows it with {@code throw_ref} (a cleanup that
+ * skips the landing pads. On an exception the landing stashes the payload, pops the kept
+ * locals back, runs the cleanups and rethrows the payload on its tag (a cleanup that
  * itself throws replaces the pending unwind -- the CL "newer exit wins"). On an escaped
  * {@code return} the trampoline landing receives the return value, runs the cleanups and
  * branches onward to the next escaped scope's trampoline (or the target {@code %block}),
@@ -76,18 +80,57 @@ final class WasmUnwindProtectCompiler {
 			ctx.wasmCtrlDepth++;
 			trampolineDepth = ctx.wasmCtrlDepth;
 		}
-		// block $u (result exnref) -- the exception landing pad.
+		// The landing-pad discipline (WasmLandingPad): every live local rides the
+		// operand stack across the protected body, pushed inside the innermost block
+		// enclosing each landing pad (a catch branch unwinds the stack to its target
+		// block's entry height, so values pushed INSIDE the landing block are gone, and
+		// values pushed outside an enclosing block are unreachable from within it), and
+		// the pads pop them back before reading anything.
+		//
+		// One landing block per tag the program can throw: $lisp-cond always, and the
+		// block-exit tag when a cross-lambda exit is lowered. Both pads refresh the
+		// locals and funnel into one copy of the cleanups through block $rethrow, whose
+		// i32 result says which tag to rethrow on -- the payload (an eqref) is what
+		// crosses, so no exnref needs stashing; rethrowing the payload on its own tag
+		// is what every catcher observes anyway.
+		boolean twoTags = ctx.blockExitTag;
+		int rethrowDepth = -1;
+		int blockExitDepth = -1;
+		int keptForBlockExit = 0;
+		if (twoTags) {
+			ctx.writer.write(Instruction.BLOCK);
+			ctx.writer.write(Type.I32);
+			ctx.wasmCtrlDepth++;
+			rethrowDepth = ctx.wasmCtrlDepth;
+			keptForBlockExit = WasmLandingPad.keepLocalsAlive(ctx);
+			ctx.writer.write(Instruction.BLOCK);
+			ctx.writer.writeRefType(true, Type.EQ.code());
+			ctx.wasmCtrlDepth++;
+			blockExitDepth = ctx.wasmCtrlDepth;
+		}
+		int kept = WasmLandingPad.keepLocalsAlive(ctx);
+		// Allocated AFTER the pushes: a slot among the kept ones would be popped back
+		// over the payload just stashed in it.
+		int payloadSlot = ctx.allocTemp();
+		// block $u (result (ref null eq)) -- the $lisp-cond landing pad.
 		ctx.writer.write(Instruction.BLOCK);
-		ctx.writer.write(Type.EXNREF.code());
+		ctx.writer.writeRefType(true, Type.EQ.code());
 		ctx.wasmCtrlDepth++;
 		int landingDepth = ctx.wasmCtrlDepth;
-		// try_table (result (ref null eq)) (catch_all_ref $u). Catch labels are
-		// resolved without the try_table's own label, so label 0 is block $u here.
+		// try_table (result (ref null eq)) (catch $lisp-cond $u) [(catch $block-exit
+		// $bx)]. Catch labels are resolved without the try_table's own label, so label 0
+		// is block $u here and $bx (one level out) is label 1.
 		ctx.writer.write(Instruction.TRY_TABLE);
 		ctx.writer.writeRefType(true, Type.EQ.code());
-		ctx.writer.writeUnsignedLeb128(1);
-		ctx.writer.write(Instruction.CATCH_ALL_REF);
+		ctx.writer.writeUnsignedLeb128(twoTags ? 2 : 1);
+		ctx.writer.write(Instruction.CATCH);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TAG_LISP_COND);
 		ctx.writer.writeUnsignedLeb128(ctx.wasmCtrlDepth - landingDepth);
+		if (twoTags) {
+			ctx.writer.write(Instruction.CATCH);
+			ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TAG_BLOCK_EXIT);
+			ctx.writer.writeUnsignedLeb128(ctx.wasmCtrlDepth - blockExitDepth);
+		}
 		ctx.wasmCtrlDepth++;
 		ctx.unwindScopes.push(new WasmLispCompiler.UnwindScope(cleanups, ctx.blockMarkers.size(), trampolineDepth));
 		// State-machine mode: the protected form is a spine child; a suspension inside
@@ -97,7 +140,8 @@ final class WasmUnwindProtectCompiler {
 		ctx.unwindScopes.pop();
 		ctx.wasmCtrlDepth--;
 		ctx.writer.write(Instruction.END); // try_table
-		// Normal exit: stash the value, run the cleanups, skip the landing pads.
+		// Normal exit: stash the value, run the cleanups, skip the landing pads (the br
+		// discards the kept locals).
 		ctx.writer.write(Instruction.SET_LOCAL);
 		ctx.writer.writeUnsignedLeb128(resultSlot);
 		compileCleanups(cleanups, ctx);
@@ -105,12 +149,50 @@ final class WasmUnwindProtectCompiler {
 		ctx.writer.writeUnsignedLeb128(resultSlot);
 		ctx.writer.write(Instruction.BR, ctx.wasmCtrlDepth - doneDepth);
 		ctx.wasmCtrlDepth--;
-		ctx.writer.write(Instruction.END); // block $u
-		// Exception landing: the caught exnref is on the stack; run the cleanups over
-		// it and rethrow. A throw from a cleanup propagates outward instead (it cannot
+		ctx.writer.write(Instruction.END); // block $u -- the payload is on the stack
+		// $lisp-cond landing: stash the payload, refresh the locals, then the cleanups
+		// and the rethrow. A throw from a cleanup propagates outward instead (it cannot
 		// re-enter this scope's try_table, which is already exited).
-		compileCleanups(cleanups, ctx);
-		ctx.writer.write(Instruction.THROW_REF);
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(payloadSlot);
+		WasmLandingPad.refreshLocals(ctx, kept);
+		if (twoTags) {
+			ctx.writer.write(Instruction.I32_CONST);
+			ctx.writer.writeSignedLeb128(0);
+			ctx.writer.write(Instruction.BR, ctx.wasmCtrlDepth - rethrowDepth);
+			ctx.wasmCtrlDepth--;
+			ctx.writer.write(Instruction.END); // block $bx -- the payload is on the stack
+			ctx.writer.write(Instruction.SET_LOCAL);
+			ctx.writer.writeUnsignedLeb128(payloadSlot);
+			WasmLandingPad.refreshLocals(ctx, keptForBlockExit);
+			ctx.writer.write(Instruction.I32_CONST);
+			ctx.writer.writeSignedLeb128(1);
+			ctx.wasmCtrlDepth--;
+			ctx.writer.write(Instruction.END); // block $rethrow -- the tag kind is on the
+												// stack
+			compileCleanups(cleanups, ctx);
+			ctx.writer.write(Instruction.IF, WasmLispCompiler.BLOCKTYPE_EMPTY);
+			ctx.wasmCtrlDepth++;
+			ctx.writer.write(Instruction.GET_LOCAL);
+			ctx.writer.writeUnsignedLeb128(payloadSlot);
+			ctx.writer.write(Instruction.THROW);
+			ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TAG_BLOCK_EXIT);
+			ctx.writer.write(Instruction.ELSE);
+			ctx.writer.write(Instruction.GET_LOCAL);
+			ctx.writer.writeUnsignedLeb128(payloadSlot);
+			ctx.writer.write(Instruction.THROW);
+			ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TAG_LISP_COND);
+			ctx.wasmCtrlDepth--;
+			ctx.writer.write(Instruction.END); // if
+			ctx.writer.write(Instruction.UNREACHABLE);
+		}
+		else {
+			compileCleanups(cleanups, ctx);
+			ctx.writer.write(Instruction.GET_LOCAL);
+			ctx.writer.writeUnsignedLeb128(payloadSlot);
+			ctx.writer.write(Instruction.THROW);
+			ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TAG_LISP_COND);
+		}
 		if (needTrampoline) {
 			ctx.wasmCtrlDepth--;
 			ctx.writer.write(Instruction.END); // block $tramp

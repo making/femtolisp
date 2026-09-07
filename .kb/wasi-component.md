@@ -18,23 +18,21 @@ blobs (`import-block.bin`, `mem.wasm`, `adapter.wasm`) load from classpath resou
 `.../codegen/wasm/component/`, registered in `resource-config.json`. **The blobs are
 generated** from `src/wasm-component/` -- follow its `README.md`.
 
-## A layout-sensitive `ref.cast` trap at `ci-spec` size (2026-09-06, unfixed)
-**This backend, and only this backend, traps on the whole `ci-spec` corpus for some byte
-layouts of the program's own core module.** The trap is `wasm trap: cast failure` inside a
-`gguf:read` call 3587 lines into a 3590-line run; Preview 1, the interpreter, the JVM and the
-native binary all run the same corpus to completion, and `--optimize` changes nothing. What
-decides it is the shape of an UNRELATED function: reordering two arms of
-`linalg::%la-make`'s `cond` -- same code, same size -- flips it either way, and so does
-deleting one case from the corpus. The adapter core modules are byte-identical between a
-passing and a trapping build, so the narrowing and `WasmBodyFolder` are ruled out; only the
-program's own core module differs, and the trapping one is the SMALLER of the two.
-
-Two consequences for anyone editing a spliced library:
-- **A `cast failure` from a case you did not touch is probably this**, not your change.
-  `.todo/722` carries the full measurement table, what is ruled out, and the reproducer.
-- **Reproduce it in a FRESH directory.** The identical module passes in a directory left over
-  from an earlier run, because a corpus case counts directory entries. `CiSpecE2eTest` uses a
-  temp dir, so CI sees it and a careless manual re-run does not.
+## The `ref.cast` trap at `ci-spec` size was a landing pad reading a moved object (fixed 2026-09-07)
+From 2026-09-06 the whole `ci-spec` corpus trapped `cast failure` inside `gguf:read`'s
+`with-open-file` cleanup on this backend for some code sizes and not others: reordering two
+arms of `linalg::%la-make`, adding one case, even the number of entries in the working
+directory flipped it. It looked like this backend's because only this backend's I/O path
+put a collection inside the throwing call: the pre-grow scales with code bytes, so every
+size change moved the collection, and the module was correct all along. The cause --
+Cranelift handing the landing pad a wasm local as an exceptional-edge argument evaluated
+before the call, so a copying collection during the call left it stale -- is in
+`.kb/wasm-landing-pad-refresh.md` with the 30-line wat that reproduces it on any wasm-GC
+engine build, and the backend now refreshes every local at the top of every landing pad.
+A `cast failure` from a case you did not touch is still worth a `-C collector=drc` run
+first, but a green `drc` now means a NEW stale-reference path, not this one; run it in a
+FRESH directory (`CiSpecE2eTest` does), because a corpus case counts directory entries and
+a leftover one shifts every collection.
 
 ## The fixed surface is fixed only WITHOUT `--optimize`
 With `--optimize` the adapter is narrowed to the preview1 entry points the core still imports

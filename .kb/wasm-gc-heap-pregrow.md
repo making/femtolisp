@@ -8,9 +8,13 @@ array. Size follows the program (`WasmLispCompiler.gcHeapPregrowBytes`):
 **serve** mode, always `GC_HEAP_PREGROW_SERVE_BYTES` (1 MiB). Emitted at Pass 2b in
 `WasmLispCompiler.compile`, pinned by `WasmGcHeapPregrowTest`.
 
-**The size is a CORRECTNESS matter on wasmtime 47** — lowering the floor, ceiling or
-factor is a correctness change, not a performance knob, until the collector bug below is
-fixed.
+**The size is a performance knob** (again, since 2026-09-07): from 2026-08-16 to that date
+it was held to be a correctness matter, because a `cast failure` that a larger heap made
+disappear was read as the collector losing a reference. The defect was Cranelift's
+frontend handing a landing pad a pre-collection reference, and the heap size only decided
+whether a collection fell inside the throwing call; the wasm backend now sidesteps it
+structurally (`.kb/wasm-landing-pad-refresh.md`), so the floor, ceiling and factor may move
+on measurement alone.
 
 - Why: wasmtime's copying collector grows only when a SINGLE allocation cannot fit in the
   space a collection frees (`collect_and_maybe_grow_gc_heap`,
@@ -29,14 +33,17 @@ emission sites take it — the Preview 1 / `--no-wasi` memory section and the co
 `mem` import minimum (which drives `WasmComponentBuilder.memModuleFor`). The bump sites
 are unguarded, so it must be right up front. Pinned by `WasmLinearMemoryHeadroomTest`.
 
-## The copying collector loses a reference with no headroom
-On **wasmtime 47.0.3**, with too little headroom a boxed local's cell reads back as
-another cell and the next use traps uncatchably (`wasm trap: cast failure`), no condition
-any handler can see. Always lands during a NON-LOCAL EXIT, so adding one form anywhere
-hides it. Green under `-C collector=drc` and `-O gc-heap-initial-size=33554432`; traps
-under the default `-C collector=copying` — that pair of runs is the whole diagnosis. Not
-the heap moving, not Cranelift. Not the module's fault: wasm-GC references cannot be
-stored anywhere the collector does not trace.
+## The `cast failure` that a bigger heap hid was not the collector's
+On **wasmtime 47.0.3** a boxed local's cell read back as another cell during a NON-LOCAL
+EXIT and the next unbox trapped uncatchably (`wasm trap: cast failure`); green under
+`-C collector=drc` or a larger `-O gc-heap-initial-size`, trapping under the default
+copying collector. That pair of runs says "a moved object was read through a stale
+reference", not whose fault it is: the reference was a wasm local that Cranelift's frontend
+passed into the landing pad as an exceptional-edge argument evaluated before the throwing
+call, outside every stack map (`.kb/wasm-landing-pad-refresh.md`, with the 30-line wat).
+`drc` never moves, so it cannot show it; a bigger heap only moves the collection out of
+that call. The backend's landing pads no longer read locals that way, and the size here
+went back to being about pause time.
 
 ## Why serve is different
 `_start` runs **once per INSTANCE**, and a served component is instantiated many times
@@ -46,6 +53,4 @@ stored anywhere the collector does not trace.
 the reuse count every real host uses (+30% native / +27% clack over 16 MiB), ~2% mean
 throughput on a never-retired instance; dropping it entirely is worse except at reuse=1.
 wasmCloud pools the heap mapping, so the reuse=1 column bounds the SHAPE of the cost, not
-its size — measure the host. The correctness caveat applies here too: nothing measured
-has hit the bug, but if one does, weigh `-C collector=drc` on the host rather than raising
-the constant.
+its size — measure the host.

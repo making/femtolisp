@@ -687,8 +687,10 @@ JVM class output, Qwen3.5-0.8B from the BF16 GGUF at `-w bf16`; `nsys` per forwa
 function through `decode-per-token.py` / `decode-jfr-agg.py`). A steady forward pass is **45-46 ms
 under `--gpu --simd` at one thread or sixteen, against 24 under `--simd --parallel` and 81 under
 `--simd`** -- the difference of a 128- and a 64-token run, so the JIT warm-up and the prompt are out
-(the printed `tok/s` is 64 sampled tokens over 84 forwards INCLUDING the warm-up, 1.7-2x below these;
-`.todo/724`). Of the device arm's 45: **the kernels are 7.5 ms** -- 229 launches; 6.8 of bf16 GEMV
+(every printed `tok/s` in this file and in that README was measured before 2026-09-07, when the
+harness divided 64 sampled tokens by the clock of 84 forwards INCLUDING the warm-up, 1.7-2x below
+these; it now clocks only the positions it counts and prints the second half's steady rate beside
+the average -- `examples/llm/README.md`, the note under "A Hugging Face checkpoint"). Of the device arm's 45: **the kernels are 7.5 ms** -- 229 launches; 6.8 of bf16 GEMV
 (the head 2.2, w1/w3 1.6, w2/wo 1.3, wqkv 1.0, the rest 0.7) and 0.7 of f32 GEMV over the KV cache --
 every one on the critical path, since the next host form reads the result and `materialize` waits for
 it. **The driver API on the calling thread is 11.9 ms**: 7.9 in `cuMemcpyDtoH` (229 downloads, the

@@ -111,8 +111,9 @@ final class WasmAsyncEmit {
 		else {
 			ctx.closureEnvSlot = -1;
 		}
-		Set<String> capturedVars = FreeVarAnalyzer.findCapturedVars(bodyExprs, new HashSet<>(paramNames),
-				proto.functions.keySet());
+		Set<String> capturedVars = WasmLandingPad.regionAssignedVars(bodyExprs, new HashSet<>(paramNames));
+		capturedVars
+			.addAll(FreeVarAnalyzer.findCapturedVars(bodyExprs, new HashSet<>(paramNames), proto.functions.keySet()));
 		ctx.boxedVars = capturedVars;
 		compileGuardedProgn(bodyExprs, ctx);
 		bodyWriter.write(Instruction.END);

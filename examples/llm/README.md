@@ -73,6 +73,21 @@ model runs the same way with `stories260K.bin -z tok512.bin`.
 
 ## A Hugging Face checkpoint
 
+**Every `tok/s` figure on this page was printed before 2026-09-07, by a harness that put
+the prompt's forward passes in the clock and not in the count, so each sits BELOW the rate
+its loop was decoding at.** `achieved tok/s` used to start its clock at the end of the
+first loop iteration -- a prompt position, in every run with a prompt -- and divide by it
+the positions the model SAMPLED. The 21-id chat prompt of the tables below makes 64 tokens
+over 84 forward passes, 0.76 of the forward rate; TinyLlama's raw 5-id "Once upon a time"
+0.94 of it. The head of a run is 1.5-2x slow while the JIT warms besides (and under
+`--gpu` pays the context creation and the weight upload), which a 64-token average carries
+and a longer run dilutes. Since 2026-09-07 the clock starts in front of the first forward
+the model samples from -- generated tokens over the forwards that generated them -- and a
+second figure beside it, `(last N: ...)`, is the rate over the run's second half, which is
+the steady one. **The numbers below are left as they were measured**: within a table every
+row was printed the same way on the same prompt, so they compare with each other -- not
+with a forward rate, and not across tables whose prompt lengths differ.
+
 The positional checkpoint may also be the DIRECTORY a Hugging Face model page
 downloads to -- `config.json` beside `model.safetensors` (or the sharded
 `model.safetensors.index.json`) -- read by the shipped
@@ -461,12 +476,12 @@ on every model; that is the reader (BF16 file bits into a `#bf16` array in one
 `read-sequence`), not the kernels. The full per-thread tables with spreads are in
 `.todo/489`.
 
-One trap in the harness: `-m chat` on a model whose row carries no chat template
-(TinyLlama-Chat is `model_type` `llama`, and the `llama` row has none) does not fail
--- it feeds the raw prompt, the model answers EOS at once, and the printed tok/s
-covers the nine prompt positions. TinyLlama's rows above are the raw completion for
-that reason, and its earlier "chat prompt" rows on this page should be read with it in
-mind.
+One trap in the harness, since closed twice over: `-m chat` on a model whose row carries
+no chat template (TinyLlama-Chat is `model_type` `llama`, and the `llama` row has none)
+used not to fail -- it fed the raw prompt, the model answered EOS at once, and the printed
+tok/s covered the nine prompt positions. It is a usage error now, and a run that samples
+nothing prints no rate at all. TinyLlama's rows above are the raw completion for that
+reason, and its earlier "chat prompt" rows on this page should be read with it in mind.
 
 ### bf16 weights on the device: `--gpu -w bf16`
 
@@ -522,12 +537,13 @@ an admitted form. **The device arm edges past `--simd --parallel` on this model 
 result**, and a narrower weight width could still only shrink the 6.8 ms of GEMV -- 27% of
 the shorter forward rather than 15% of the long one -- which is the arithmetic Q4 on the
 device stays refused against (`.kb/gpu.md`, "What is deliberately NOT here").
-**The printed rate understates the forward rate**: `achieved tok/s` divides the 64
-sampled tokens by the clock of 84 forward passes -- the 21-id chat prompt runs through the
-same loop, in the clock and not in the count -- and the first ten of them are 1.5-2x slow
-while the JIT warms, so 19.3 printed is 41 forwards a second steady and 11.0 is 22
-(`.todo/724`); the rows on this page are the printed figure and compare with each other,
-not with a forward rate. **The two arms are now level on this box, the device one
+**The rate printed for the rows above understates the forward rate**: the harness of the
+day divided the 64 sampled tokens by the clock of 84 forward passes -- the 21-id chat
+prompt ran through the same loop, in the clock and not in the count -- and the first ten
+of them are 1.5-2x slow while the JIT warms, so 19.3 printed is 41 forwards a second
+steady and 11.0 is 22. That is the bias the note at the top of this section describes and
+the harness has not had since 2026-09-07; the rows here are the printed figure of the day
+and compare with each other, not with a forward rate. **The two arms are now level on this box, the device one
 marginally ahead** (25.8 against 25.3 printed; 25.0 against 26.7 ms a forward) -- where
 before `.todo/723` `--simd --parallel` won 1.9x. Sixteen threads still buy the device arm
 almost nothing (26.2 against 25.8), for the reason the stories15M table below gives: the
