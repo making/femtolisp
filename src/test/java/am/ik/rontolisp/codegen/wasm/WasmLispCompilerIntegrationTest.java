@@ -4283,6 +4283,78 @@ class WasmLispCompilerIntegrationTest {
 	}
 
 	@Test
+	void landingPadsReadFreshReferencesAfterACollectionDuringTheUnwind() throws Exception {
+		// .kb/wasm-landing-pad-refresh.md: a local read in a handler-case clause, an
+		// unwind-protect cleanup, or after a catch used to reach the landing pad as a
+		// Cranelift exceptional-edge ARGUMENT -- evaluated before the throwing call --
+		// whenever the protected body had calls both before and inside a loop with a
+		// two-way merge. A collection during that call moved the object and the pad read
+		// the pre-move reference (a cast failure in the whole-corpus run, "stale" here:
+		// eq against the same object through a global). 5M conses exceed every pregrow
+		// size, so the collection during lp-churn is certain. The fourth probe assigns
+		// the variable INSIDE the body: the pad must see the assignment, not the entry
+		// snapshot, which is what boxes such a variable.
+		String source = """
+				(defvar *lp-saved* nil)
+				(defvar *lp-cleanup* nil)
+				(defun lp-nop (x) x)
+				(defun lp-churn ()
+				  (dotimes (i 5000000) (cons i i))
+				  (error "lp-boom"))
+				(defun lp-churn-throw ()
+				  (dotimes (i 5000000) (cons i i))
+				  (throw 'lp-tag nil))
+				(defun lp-handler-case ()
+				  (let ((s (list 1 2)))
+				    (setq *lp-saved* s)
+				    (handler-case
+				        (progn
+				          (lp-nop nil)
+				          (dolist (x '(1 2 3)) (lp-nop (if (evenp x) x nil)))
+				          (lp-churn))
+				      (error (e) (if (eq s *lp-saved*) "fresh" "stale")))))
+				(defun lp-unwind-protect ()
+				  (let ((s (list 1 2)))
+				    (setq *lp-saved* s)
+				    (handler-case
+				        (unwind-protect
+				            (progn
+				              (lp-nop nil)
+				              (dolist (x '(1 2 3)) (lp-nop (if (evenp x) x nil)))
+				              (lp-churn))
+				          (setq *lp-cleanup* (if (eq s *lp-saved*) "fresh" "stale")))
+				      (error (e) *lp-cleanup*))))
+				(defun lp-catch ()
+				  (let ((s (list 1 2)))
+				    (setq *lp-saved* s)
+				    (catch 'lp-tag
+				      (lp-nop nil)
+				      (dolist (x '(1 2 3)) (lp-nop (if (evenp x) x nil)))
+				      (lp-churn-throw))
+				    (if (eq s *lp-saved*) "fresh" "stale")))
+				(defun lp-assigned-inside ()
+				  (let ((s nil))
+				    (handler-case
+				        (unwind-protect
+				            (progn
+				              (lp-nop nil)
+				              (setq s (list 3 4))
+				              (setq *lp-saved* s)
+				              (dolist (x '(1 2 3)) (lp-nop (if (evenp x) x nil)))
+				              (lp-churn))
+				          (setq *lp-cleanup* (if (eq s *lp-saved*) "fresh" "stale")))
+				      (error (e) *lp-cleanup*))))
+				(print (lp-handler-case))
+				(print (lp-unwind-protect))
+				(print (lp-catch))
+				(print (lp-assigned-inside))
+				""";
+		String expected = "\"fresh\"\n\"fresh\"\n\"fresh\"\n\"fresh\"";
+		assertThat(compileAndRunEh(source)).isEqualTo(expected);
+		assertThat(compileAndRunComponent(source)).isEqualTo(expected);
+	}
+
+	@Test
 	void uiopImageQuitEndsTheProcessWithItsCode() throws Exception {
 		// quit is the HOST's exit on both wasm backends -- wasi_snapshot_preview1's
 		// proc_exit here, wit-imported wasi:cli/exit@0.3.0's exit-with-code under

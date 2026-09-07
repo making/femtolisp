@@ -869,6 +869,15 @@ cases:
           (print tl-acc)
           (dotimes (i 3) (setq tl-acc (+ tl-acc 1)))
           (print tl-acc)))
+      (defun tl-silu (v)
+        (dotimes (c (length v))
+          (let ((u (aref v c))) (setf (aref v c) (/ u (+ 1.0 (exp (- u))))))))
+      (let ((tl-x (make-array 4 :element-type 'single-float :initial-element 0.0)))
+        (dotimes (i 4) (setf (aref tl-x i) (- i 2.0)))
+        (tl-silu tl-x)
+        (print (round (* 100000 (aref tl-x 0))))
+        (print (dotimes (i (length tl-x) i) (setf (aref tl-x i) (+ (aref tl-x i) (length tl-x)))))
+        (print (round (* 100000 (aref tl-x 3)))))
     expected: |
       875
       4049
@@ -891,6 +900,9 @@ cases:
       41.0
       6.0
       9.0
+      -23841
+      4
+      473106
   - name: fused-comparisons-and-raw-leaf-stores
     source: |
       (print (< 9223372036854775807 (+ 9223372036854775807 1)))
@@ -10270,6 +10282,70 @@ cases:
   # when the protected region begins, and entering a handler discards them (on the
   # JVM the compiler spills them around the region). The float case keeps a raw
   # two-slot double there, and the return abandons them altogether.
+  - name: landing-pads-read-fresh-references-after-a-collection
+    # .kb/wasm-landing-pad-refresh.md: the reference a handler-case clause, an
+    # unwind-protect cleanup or the code after a catch reads must be the one the
+    # collector left behind, not the one the throwing call was entered with. 5M conses
+    # exceed every wasm GC pre-grow size, so a collection during lp-churn is certain.
+    source: |
+      (defvar *lp-saved* nil)
+      (defvar *lp-cleanup* nil)
+      (defun lp-nop (x) x)
+      (defun lp-churn ()
+        (dotimes (i 5000000) (cons i i))
+        (error "lp-boom"))
+      (defun lp-churn-throw ()
+        (dotimes (i 5000000) (cons i i))
+        (throw 'lp-tag nil))
+      (defun lp-handler-case ()
+        (let ((s (list 1 2)))
+          (setq *lp-saved* s)
+          (handler-case
+              (progn
+                (lp-nop nil)
+                (dolist (x '(1 2 3)) (lp-nop (if (evenp x) x nil)))
+                (lp-churn))
+            (error (e) (if (eq s *lp-saved*) "fresh" "stale")))))
+      (defun lp-unwind-protect ()
+        (let ((s (list 1 2)))
+          (setq *lp-saved* s)
+          (handler-case
+              (unwind-protect
+                  (progn
+                    (lp-nop nil)
+                    (dolist (x '(1 2 3)) (lp-nop (if (evenp x) x nil)))
+                    (lp-churn))
+                (setq *lp-cleanup* (if (eq s *lp-saved*) "fresh" "stale")))
+            (error (e) *lp-cleanup*))))
+      (defun lp-catch ()
+        (let ((s (list 1 2)))
+          (setq *lp-saved* s)
+          (catch 'lp-tag
+            (lp-nop nil)
+            (dolist (x '(1 2 3)) (lp-nop (if (evenp x) x nil)))
+            (lp-churn-throw))
+          (if (eq s *lp-saved*) "fresh" "stale")))
+      (defun lp-assigned-inside ()
+        (let ((s nil))
+          (handler-case
+              (unwind-protect
+                  (progn
+                    (lp-nop nil)
+                    (setq s (list 3 4))
+                    (setq *lp-saved* s)
+                    (dolist (x '(1 2 3)) (lp-nop (if (evenp x) x nil)))
+                    (lp-churn))
+                (setq *lp-cleanup* (if (eq s *lp-saved*) "fresh" "stale")))
+            (error (e) *lp-cleanup*))))
+      (print (lp-handler-case))
+      (print (lp-unwind-protect))
+      (print (lp-catch))
+      (print (lp-assigned-inside))
+    expected: |
+      "fresh"
+      "fresh"
+      "fresh"
+      "fresh"
   - name: handler-case-in-argument-position
     source: |
       (defun ci-hc-arg-risky (x) (if (= x 2) (error "boom") x))

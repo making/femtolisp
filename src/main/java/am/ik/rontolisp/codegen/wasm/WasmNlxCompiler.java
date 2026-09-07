@@ -142,7 +142,6 @@ final class WasmNlxCompiler {
 
 	private static void emitCatch(List<LispVal> parts, WasmLispCompiler.Ctx ctx, boolean eqTags) {
 		LispVal idForm = parts.get(1);
-		int payloadSlot = ctx.allocTemp();
 		// Snapshot the block-instance id (a user catch's tag) into a dedicated local
 		// BEFORE the protected region, and compare the landing against the snapshot
 		// instead of re-reading the (boxed) id variable after the unwind. The id is
@@ -165,6 +164,13 @@ final class WasmNlxCompiler {
 		ctx.writer.writeRefType(true, Type.EQ.code());
 		ctx.wasmCtrlDepth++;
 		int doneDepth = ctx.wasmCtrlDepth;
+		// The landing-pad discipline (WasmLandingPad): the live locals -- the tag
+		// snapshot among them -- ride the operand stack beneath block $h and the pad
+		// pops them back before it reads anything.
+		int kept = WasmLandingPad.keepLocalsAlive(ctx);
+		// Allocated AFTER the push: a slot among the kept ones would be popped back over
+		// the payload just stashed in it.
+		int payloadSlot = ctx.allocTemp();
 		// block $h (result (ref null eq)) -- the landing pad, receiving the payload cons.
 		ctx.writer.write(Instruction.BLOCK);
 		ctx.writer.writeRefType(true, Type.EQ.code());
@@ -203,6 +209,7 @@ final class WasmNlxCompiler {
 		ctx.writer.write(Instruction.END); // block $h -- the payload cons is on the stack
 		ctx.writer.write(Instruction.SET_LOCAL);
 		ctx.writer.writeUnsignedLeb128(payloadSlot);
+		WasmLandingPad.refreshLocals(ctx, kept);
 		// car(payload) is the block-instance id (an i31) for %nlx-catch and the (tag)
 		// wrapper cons for catch; either way, when it is ours deliver cdr(payload).
 		if (eqTags) {

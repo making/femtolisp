@@ -3622,9 +3622,11 @@ public final class WasmLispCompiler implements LispCompiler {
 			// (.kb/declarations-type-checks.md).
 			funcCtx.declaredArrays = WasmArrayCompiler.functionBodyDeclaredKinds(defun.bodyExprs, funcCtx);
 
-			// Determine which params are captured by nested lambdas
+			// Determine which params are captured by nested lambdas, or assigned inside
+			// a landing-pad region (WasmLandingPad): either way they live in a cell.
 			Set<String> capturedVars = FreeVarAnalyzer.findCapturedVars(defun.bodyExprs,
 					new HashSet<>(defun.paramNames), functions.keySet());
+			capturedVars.addAll(WasmLandingPad.regionAssignedVars(defun.bodyExprs, new HashSet<>(defun.paramNames)));
 			funcCtx.boxedVars = capturedVars;
 			// Box captured params
 			for (String paramName : defun.paramNames) {
@@ -3826,6 +3828,7 @@ public final class WasmLispCompiler implements LispCompiler {
 			Set<String> lambdaLocalVars = new HashSet<>(lambda.paramNames);
 			Set<String> capturedVars = FreeVarAnalyzer.findCapturedVars(lambda.bodyExprs, lambdaLocalVars,
 					functions.keySet());
+			capturedVars.addAll(WasmLandingPad.regionAssignedVars(lambda.bodyExprs, lambdaLocalVars));
 			lambdaCtx.boxedVars = capturedVars;
 			// Box captured params of this lambda
 			for (String paramName : lambda.paramNames) {
