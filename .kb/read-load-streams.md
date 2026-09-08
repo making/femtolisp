@@ -370,7 +370,10 @@ answer.
 
 - **The HANDLE is a declared slot, not machinery**: `equal` on two instances is structural over
   DECLARED slots and CL's `equal` on streams is `eq`, so with the kind alone declared any two file
-  streams would compare `equal`. The price is a printed form carrying a backend-local number.
+  streams would compare `equal`. The number is nevertheless backend-local, so the layout is kind
+  `OPAQUE` and a stream PRINTS as the plain `#<STREAM>` on every backend — the handle never reaches
+  the output (`.kb/emitted-output-determinism.md`, `.kb/instance-syntax.md`). A test that must tell
+  two streams apart uses `equal` in-program (see `StreamHandleConcurrencySupport`), not the text.
 - **The KIND is a keyword** (`LispLayout.Kinds`): `:FILE`, `:STRING-INPUT`, `:STRING-OUTPUT`,
   `:SOCKET`, `:SOCKET-SERVER`, `:BODY`, `:STANDARD`. Compared with `equal`, not `eq`.
 - **`*error-output*` holds one** (`:STANDARD` over reserved handle 2). `*standard-output*` /

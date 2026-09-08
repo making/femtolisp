@@ -8,6 +8,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
+import am.ik.rontolisp.LispFunction;
+import am.ik.rontolisp.LispLambda;
 import am.ik.rontolisp.LispNil;
 import am.ik.rontolisp.LispVal;
 import am.ik.rontolisp.reader.LispReader;
@@ -42,13 +44,17 @@ class GeomKernelsTest {
 	}
 
 	private String print(String input, boolean kernels) {
+		return value(input, kernels).print();
+	}
+
+	private LispVal value(String input, boolean kernels) {
 		LispEvaluator evaluator = new LispEvaluator(new PrintStream(new ByteArrayOutputStream()));
 		evaluator.setGeomKernels(kernels);
 		LispVal result = LispNil.INSTANCE;
 		for (LispVal expr : LispReader.readAllFromString(input)) {
 			result = evaluator.eval(expr);
 		}
-		return result.print();
+		return result;
 	}
 
 	private String textFile(String name, String content) {
@@ -67,11 +73,13 @@ class GeomKernelsTest {
 	@Test
 	void theNativesAreInstalledOverTheDefunsAndNotQuietlyDeclining() {
 		// A decline is invisible in a value comparison -- every case below would pass
-		// with the natives never firing. The two paths are told apart by the FUNCTION
-		// value: the native is a built-in, the defun a lambda.
-		String probe = "(let ((s (geom:box 2))) (geom:mesh s) (princ-to-string #'geom:read-obj))";
-		assertThat(print(probe, true)).contains("#<function GEOM:READ-OBJ");
-		assertThat(print(probe, false)).doesNotContain("#<function GEOM:READ-OBJ");
+		// with the natives never firing. The two paths are told apart by the TYPE of the
+		// FUNCTION value: the native is a built-in LispFunction, the defun a LispLambda
+		// -- NOT by the printed text, which both answer as #<function GEOM:READ-OBJ>
+		// now that defuns carry names.
+		String probe = "(let ((s (geom:box 2))) (geom:mesh s) #'geom:read-obj)";
+		assertThat(value(probe, true)).isInstanceOf(LispFunction.class);
+		assertThat(value(probe, false)).isInstanceOf(LispLambda.class);
 	}
 
 	// --- geom:read-obj ---------------------------------------------------------------

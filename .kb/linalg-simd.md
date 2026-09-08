@@ -422,9 +422,11 @@ the `vec:` kernels did not have to do:
 `WasmSections.skipSimd` (which throws on an unknown `0xFD` sub-opcode, by design).
 
 ## Verification
-- `eval/LinalgSimdTest` (48) -- the interception guard (`#'linalg:add` is `#<function linalg:add>`
-  under `--simd`, `#<lambda>` without; `emap`/`inv`/`det`/`solve`/`array-equal`/`mean`/`matmul`/
-  `flatten` stay `#<lambda>`), byte-identity vs the oracle at both widths and ranks, the declined
+- `eval/LinalgSimdTest` (48) -- the interception guard, which discriminates by TYPE
+  (`#'linalg:add` answers a `LispFunction` under `--simd` and a `LispLambda` without --
+  both print `#<function LINALG:ADD>` now that defuns carry names -- while
+  `emap`/`inv`/`det`/`solve`/`array-equal`/`mean`/`matmul`/`flatten` stay `LispLambda`),
+  byte-identity vs the oracle at both widths and ranks, the declined
   inputs, the f32 probe, the declined-shape follow-up,
   `erfMatchesTheScalarOracleOverTheWholeRangeAtBothWidths`,
   `theAdamStepAndTheGeneratorFillAreInterceptedUnderSimd`,

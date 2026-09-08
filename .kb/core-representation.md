@@ -145,3 +145,49 @@ first-class values -- internal encoding, not a real user definition (Lisp-2).
   [concatenate-result-families.md](concatenate-result-families.md)); the wrapper implementing
   the general case (`mapFamilyWrapper`, all six of the map family --
   [map-family.md](map-family.md)). Check the operator's CL lambda list before adding a wrapper.
+
+## A function value prints its registered NAME, one text on all four backends
+
+A FUNCTION value prints `#<function NAME>` when it has a registered name and `#<lambda>` when it
+does not. NAME is the RESOLVED registered name: bare for a CL/CL-USER defun (`CAR`), `PKG:` when
+the name is exported and reached as such (`LINALG:DOT`), `PKG::` for an internal (`LINALG::%LA-IM2COL`);
+a `(defun (setf f) ...)` writer as `%setf-F`, a generic function under its generic's name. Anonymous
+closures -- `lambda`, `flet`, `labels`, `coerce`'s, and the interpreter's sentinel funcId -1 -- print
+`#<lambda>`. NO identity hash, address or backend-local number may join the text
+([emitted-output-determinism.md](emitted-output-determinism.md)); SBCL's `#<FUNCTION FOO>` is the
+reference for the SHAPE only.
+
+- **The compiled name tables ride the SAME gate as the `_lookup` registry** --
+  `dispatchableFuncIds` (valueFuncIds union name-spelled rows union everything under
+  `--dynamic`/nameResolvable). The registry answers NAME to funcId for a computed call; the print
+  table answers funcId to NAME for a value. Two directions of one gate: a funcId reachable as a
+  VALUE is exactly one that has a row, so `#'name` and `(symbol-function 'name)` print what they
+  call.
+- **Interpreter**: `LispLambda` carries a `name` field that `LispEvaluator.evalDefun` fills with the
+  resolved registered name; `print()` answers the tag. Built-ins (`LispFunction`) already named
+  themselves.
+- **JVM**: a static `_funName(I)Ljava/lang/String;` built by `JvmRuntimeBuilder.buildFunNameBody`
+  over a `SortedMap` of the dispatchable defuns; `_lispToString`/`_lispToDisplayString` emit
+  `emitFuncValPrint` (slot-2 local, so both declare maxLocals 3 -- `StackMapAugmenter` sizes
+  `locals[]` from the header). The method is OMITTED when the map is empty: a program with no
+  nameable function value is byte-identical to a build that never knew the feature.
+- **WASM**: `_fun_name(funcId)` reuses `TYPE_PRINT_I32` and WRITES the whole tag itself via
+  `emitWriteString` (so prin1/princ cannot drift and no scratch local is needed), binary-searching
+  a sorted 12-byte-row blob `[funcId][nameOff][nameLen]` appended with the pinned `appendBlob`;
+  the names are interned with plain `addString` -- pinned, because the droppable-range scan cannot
+  see words inside a blob. The tag pieces are `StringTable.lambdaStr`/`funcPrefix` (`addBodyString`,
+  shakeable) and the shared `>` of `hashTableEnd`. The blob and the function are SKIPPED entirely
+  when the table is empty (byte-neutral), and the miss branch falls straight to `#<lambda>`.
+  Trap, once bitten: the search's `id < key` branch moves HI down and `id > key` moves LO up --
+  inverted, CAR hit its row by coincidence at the first mid and everything else silently printed
+  `#<lambda>`.
+- **Consequence for the acceleration guards**: an exported shim defun and the native kernel
+  installed over it print the SAME text, so the `--simd`/`--blas`/`--gpu` dead-flag guards
+  discriminate by Java TYPE -- installed kernel `LispFunction`, library defun `LispLambda` --
+  while pinning the tag alongside (`.kb/linalg-simd.md`, `.kb/linalg-blas.md`, `.kb/gpu.md`).
+- Pins: `LispEvaluatorTest#functionValuesPrintByNameAndAnonymousOnesByTheLambdaTag` and its JVM /
+  WASM-P1 / WASM-component twins in `JvmLispCompilerTest` /
+  `WasmLispCompilerIntegrationTest#functionValuesPrintTheSameNamedTextTheInterpreterAnswers`/
+  `#theComponentPrintsFunctionValuesWithTheSameNames`, plus the ci-spec
+  `function-and-stream-values-print-one-text-on-every-backend` case (all four backends, default and
+  `--simd`).

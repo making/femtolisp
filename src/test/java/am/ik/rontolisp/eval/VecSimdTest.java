@@ -4,6 +4,8 @@ import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 
 import am.ik.rontolisp.LispDoubleFloatArray;
+import am.ik.rontolisp.LispFunction;
+import am.ik.rontolisp.LispLambda;
 import am.ik.rontolisp.LispNil;
 import am.ik.rontolisp.LispSingleFloatArray;
 import am.ik.rontolisp.LispVal;
@@ -48,6 +50,19 @@ class VecSimdTest {
 		assertThat(eval(input, true).print()).isEqualTo(eval(input, false).print());
 	}
 
+	/**
+	 * The dead-flag guard's discriminator: a named defun and the native kernel installed
+	 * over it print the SAME {@code #<function NAME>} text (todo 434 gave defuns names),
+	 * so the pair is told apart by the Java type -- {@link LispFunction} is the installed
+	 * kernel, {@link LispLambda} the {@code vec.lisp} defun -- while the printed tag
+	 * stays pinned alongside.
+	 */
+	private void assertValueIs(String form, boolean simd, Class<?> type, String printedName) {
+		LispVal value = eval(form, simd);
+		assertThat(value).as(form + " simd=" + simd).isInstanceOf(type);
+		assertThat(value.print()).as(form + " simd=" + simd).isEqualTo("#<function " + printedName + ">");
+	}
+
 	@Test
 	void theVectorApiIsAvailableUnderTheSurefireAddModules() {
 		assertThat(VecSimd.available()).isTrue();
@@ -57,18 +72,19 @@ class VecSimdTest {
 
 	@Test
 	void simdReplacesTheVectorizableDefunsWithNativeFunctions() {
-		// A vec.lisp defun is a LispLambda ("#<lambda>"); the installed kernel is a
-		// native LispFunction. Without this the flag could be silently dead and every
-		// numeric assertion below would still pass on the scalar reference.
-		assertThat(eval("(vec:dot #d(1.0) #d(1.0)) #'vec:dot", true).print()).isEqualTo("#<function VEC:DOT>");
-		assertThat(eval("(vec:dot #d(1.0) #d(1.0)) #'vec:dot", false).print()).isEqualTo("#<lambda>");
+		// The installed kernel is a native LispFunction, the vec.lisp defun a LispLambda
+		// -- both print the same #<function VEC:DOT> tag (see assertValueIs). Without
+		// this the flag could be silently dead and every numeric assertion below would
+		// still pass on the scalar reference.
+		assertValueIs("(vec:dot #d(1.0) #d(1.0)) #'vec:dot", true, LispFunction.class, "VEC:DOT");
+		assertValueIs("(vec:dot #d(1.0) #d(1.0)) #'vec:dot", false, LispLambda.class, "VEC:DOT");
 	}
 
 	@Test
 	void nonVectorizableVecFunctionsStayOnTheScalarDefuns() {
 		// Construction / access / list conversion are untouched by --simd.
-		assertThat(eval("(vec:zeros 1) #'vec:from-list", true).print()).isEqualTo("#<lambda>");
-		assertThat(eval("(vec:zeros 1) #'vec:aref", true).print()).isEqualTo("#<lambda>");
+		assertValueIs("(vec:zeros 1) #'vec:from-list", true, LispLambda.class, "VEC:FROM-LIST");
+		assertValueIs("(vec:zeros 1) #'vec:aref", true, LispLambda.class, "VEC:AREF");
 	}
 
 	// --- reductions --------------------------------------------------------------
@@ -288,9 +304,9 @@ class VecSimdTest {
 
 	@Test
 	void simdReplacesTheIntoDefunsWithNativeFunctionsToo() {
-		assertThat(eval("(vec:zeros 1) #'vec:add-into", true).print()).isEqualTo("#<function VEC:ADD-INTO>");
-		assertThat(eval("(vec:zeros 1) #'vec:matvec-into", true).print()).isEqualTo("#<function VEC:MATVEC-INTO>");
-		assertThat(eval("(vec:zeros 1) #'vec:add-into", false).print()).isEqualTo("#<lambda>");
+		assertValueIs("(vec:zeros 1) #'vec:add-into", true, LispFunction.class, "VEC:ADD-INTO");
+		assertValueIs("(vec:zeros 1) #'vec:matvec-into", true, LispFunction.class, "VEC:MATVEC-INTO");
+		assertValueIs("(vec:zeros 1) #'vec:add-into", false, LispLambda.class, "VEC:ADD-INTO");
 	}
 
 	@Test
@@ -413,9 +429,8 @@ class VecSimdTest {
 				"sin-into", "cos-into", "tan-into", "asin-into", "acos-into", "atan-into", "sinh-into", "cosh-into",
 				"sqrt-into", "abs-into", "negative-into", "sign-into", "reciprocal-into" }) {
 			String form = "(vec:zeros 1) #'vec:" + member;
-			assertThat(eval(form, true).print()).as(member)
-				.isEqualTo("#<function VEC:" + member.toUpperCase(java.util.Locale.ROOT) + ">");
-			assertThat(eval(form, false).print()).as(member).isEqualTo("#<lambda>");
+			assertValueIs(form, true, LispFunction.class, "VEC:" + member.toUpperCase(java.util.Locale.ROOT));
+			assertValueIs(form, false, LispLambda.class, "VEC:" + member.toUpperCase(java.util.Locale.ROOT));
 		}
 	}
 
@@ -423,8 +438,8 @@ class VecSimdTest {
 	void squareIsAcceleratedTransitivelyThroughMul() {
 		// vec:square's defun body is (vec:mul v v), which resolves to the installed
 		// native -- like mean/norm. So there is no square kernel and no override.
-		assertThat(eval("(vec:zeros 1) #'vec:square", true).print()).isEqualTo("#<lambda>");
-		assertThat(eval("(vec:zeros 1) #'vec:square-into", true).print()).isEqualTo("#<lambda>");
+		assertValueIs("(vec:zeros 1) #'vec:square", true, LispLambda.class, "VEC:SQUARE");
+		assertValueIs("(vec:zeros 1) #'vec:square-into", true, LispLambda.class, "VEC:SQUARE-INTO");
 		assertMatchesScalarOracle("(vec:square (vec:arange 200))");
 		assertMatchesScalarOracle(
 				"(vec:square-into (vec:zeros 200 :element-type 'single-float) (vec:arange 200 :element-type 'single-float))");
@@ -557,9 +572,8 @@ class VecSimdTest {
 		for (String member : new String[] { "maximum", "minimum", "relu", "clip", "maximum-into", "minimum-into",
 				"relu-into", "clip-into" }) {
 			String form = "(vec:zeros 1) #'vec:" + member;
-			assertThat(eval(form, true).print()).as(member)
-				.isEqualTo("#<function VEC:" + member.toUpperCase(java.util.Locale.ROOT) + ">");
-			assertThat(eval(form, false).print()).as(member).isEqualTo("#<lambda>");
+			assertValueIs(form, true, LispFunction.class, "VEC:" + member.toUpperCase(java.util.Locale.ROOT));
+			assertValueIs(form, false, LispLambda.class, "VEC:" + member.toUpperCase(java.util.Locale.ROOT));
 		}
 	}
 

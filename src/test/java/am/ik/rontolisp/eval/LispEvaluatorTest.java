@@ -1863,6 +1863,34 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void functionValuesPrintByNameAndAnonymousOnesByTheLambdaTag() {
+		// The printed form of a FUNCTION value is one text on all four backends: a named
+		// function answers #<function NAME> with the registered name (bare inside its own
+		// package, PKG: when reached through an export, PKG:: for an internal), an
+		// anonymous one #<lambda>, and a stream the plain opaque tag. No identity hash,
+		// no address, no backend-local handle (see the matching compiler tests).
+		assertThat(eval("(princ-to-string #'car)")).isEqualTo(new LispString("#<function CAR>"));
+		assertThat(evalMulti("(defun my-double (x) (* x 2)) (princ-to-string #'my-double)"))
+			.isEqualTo(new LispString("#<function MY-DOUBLE>"));
+		assertThat(eval("(princ-to-string (symbol-function 'car))")).isEqualTo(new LispString("#<function CAR>"));
+		assertThat(eval("(princ-to-string #'(lambda () 1))")).isEqualTo(new LispString("#<lambda>"));
+		assertThat(eval("(princ-to-string (coerce #'(lambda () 1) 'function))")).isEqualTo(new LispString("#<lambda>"));
+		assertThat(evalMulti("(defpackage :pin-pkg (:use :cl) (:export :visible))"
+				+ " (defun pin-pkg::visible (x) x) (princ-to-string #'pin-pkg:visible)"))
+			.isEqualTo(new LispString("#<function PIN-PKG:VISIBLE>"));
+		assertThat(evalMulti("(defpackage :pin-pkg2 (:use :cl)) (defun pin-pkg2::%hidden (x) x)"
+				+ " (princ-to-string #'pin-pkg2::%hidden)"))
+			.isEqualTo(new LispString("#<function PIN-PKG2::%HIDDEN>"));
+		assertThat(evalMulti("(defmethod pin-gf ((x number)) x) (princ-to-string #'pin-gf)"))
+			.isEqualTo(new LispString("#<function PIN-GF>"));
+		assertThat(evalMulti("(defun (setf widget) (v o) v) (princ-to-string #'(setf widget))"))
+			.isEqualTo(new LispString("#<function %setf-WIDGET>"));
+		assertThat(eval("(princ-to-string (flet ((inner () 1)) #'inner))")).isEqualTo(new LispString("#<lambda>"));
+		assertThat(eval("(princ-to-string (labels ((loop1 () 1)) #'loop1))")).isEqualTo(new LispString("#<lambda>"));
+		assertThat(eval("(princ-to-string (make-string-output-stream))")).isEqualTo(new LispString("#<STREAM>"));
+	}
+
+	@Test
 	void equalpComparesArraysElementwise() {
 		assertThat(eval("(equalp #(1 \"A\" (2 3)) #(1 \"a\" (2 3.0)))")).isEqualTo(LispTrue.INSTANCE);
 		assertThat(eval("(equalp #(1) #(1 2))")).isEqualTo(LispNil.INSTANCE);

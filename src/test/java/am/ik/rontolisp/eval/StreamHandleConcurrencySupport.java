@@ -81,22 +81,29 @@ final class StreamHandleConcurrencySupport {
 	/**
 	 * The handler program both backends serve: every request opens its own TCP connection
 	 * to the echo server, sends its own path as the payload, reads the echo back and
-	 * answers {@code "<socket-stream> <echoed-path>"}. A stream printed twice therefore
-	 * names one handle handed to two in-flight requests -- and the crossed reads show up
-	 * as a mismatched echo.
+	 * answers {@code "<echoed-path> FRESH"} -- or {@code "SHARED"} when the stream it was
+	 * handed is {@code equal} to one an earlier request already recorded. Two streams are
+	 * equal only when they are the same stream (CL), so a table slot handed out twice
+	 * over names itself HERE, not in the printed value: a stream prints as the opaque
+	 * {@code #<STREAM>} tag on every backend, and no handle number may reach the output
+	 * ({@code .kb/emitted-output-determinism.md}). The crossed reads a shared handle
+	 * causes show up independently as a mismatched echo.
 	 * @param echoPort the port of {@link #startEchoServer}
 	 * @param servePort the port the handler serves on
 	 * @return the rontolisp program text
 	 */
 	static String echoingHandlerProgram(int echoPort, int servePort) {
 		return """
+				(defparameter *seen-socks* nil)
 				(defun handle (env)
 				  (let* ((token (getf env :path-info))
-				         (sock (rontolisp:tcp-connect "127.0.0.1" %d)))
+				         (sock (rontolisp:tcp-connect "127.0.0.1" %d))
+				         (shared (member sock *seen-socks* :test #'equal)))
+				    (push sock *seen-socks*)
 				    (write-line token sock)
 				    (let ((reply (read-line sock)))
 				      (close sock)
-				      (list 200 nil (list (format nil "~A ~A" sock reply))))))
+				      (list 200 nil (list (format nil "~A ~A" reply (if shared :SHARED :FRESH)))))))
 				(rontolisp:http-handler 'handle %d)
 				""".formatted(echoPort, servePort);
 	}
@@ -147,28 +154,23 @@ final class StreamHandleConcurrencySupport {
 
 	/**
 	 * Asserts the invariant on the bodies {@link #probeConcurrently} collected: every
-	 * request got a 200 whose echoed token is its own path, and no two requests were
-	 * handed the same socket handle.
+	 * request got a 200 whose echoed token is its own path, and no request reported its
+	 * socket stream as {@code :SHARED} with one an earlier request held.
 	 * @param bodies the collected response bodies
 	 */
 	static void assertHandlesAreUnshared(List<String> bodies) {
-		List<String> handles = new ArrayList<>();
 		List<String> broken = new ArrayList<>();
 		int round = 0;
 		int index = 0;
 		for (String body : bodies) {
 			String expectedToken = "/token-" + round + "-" + index;
-			// "200 <printed stream> <echoed token>" -- a stream PRINTS as a
-			// self-describing value (#<STREAM :HANDLE n :KIND :SOCKET>), which has
-			// spaces in it, so the token is what follows the LAST one.
-			int lastSpace = body.lastIndexOf(' ');
-			String token = lastSpace < 0 ? "" : body.substring(lastSpace + 1);
-			String prefix = lastSpace < 0 ? body : body.substring(0, lastSpace);
-			if (!prefix.startsWith("200 ") || !expectedToken.equals(token)) {
+			// "200 <echoed token> <probe>" -- neither the token (a path) nor the status
+			// word has a space, so the body splits into exactly three fields; ~A prints
+			// the keyword without its colon, so the fresh case reads FRESH.
+			String[] fields = body.split(" ");
+			if (fields.length != 3 || !"200".equals(fields[0]) || !expectedToken.equals(fields[1])
+					|| !"FRESH".equals(fields[2])) {
 				broken.add(expectedToken + " -> " + body);
-			}
-			else {
-				handles.add(prefix.substring("200 ".length()));
 			}
 			if (++index == CONCURRENCY) {
 				index = 0;
@@ -176,11 +178,8 @@ final class StreamHandleConcurrencySupport {
 			}
 		}
 		org.assertj.core.api.Assertions.assertThat(broken)
-			.as("requests whose echo came back wrong or failed")
+			.as("requests whose echo came back wrong, failed, or shared a socket stream")
 			.isEmpty();
-		org.assertj.core.api.Assertions.assertThat(handles)
-			.as("socket handles handed out to concurrent requests")
-			.doesNotHaveDuplicates();
 	}
 
 }

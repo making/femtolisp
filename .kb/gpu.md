@@ -1275,10 +1275,11 @@ The SHAPE half cannot be asked without a device, structurally.
 | the flag is value-less, the REPL pair, the `.wasm` refusal | `cli/CliOptionsTest`, `cli/RontoLispCliTest` |
 
 **The dead-flag guard is the load-bearing one**, as for `--blas`: every numeric assertion would pass
-on the scalar defun, so `#'linalg:dot` printing `#<function LINALG:DOT>` under the flag and `#<lambda>`
-without it is what fails when the flag is DEAD -- one assertion per accelerated member, plus the
-complementary list of members that must still be `#<lambda>`. On the compiled side the guard is the
-bridge NAME in the class bytes.
+on the scalar defun. Defuns carry printed names now, so the text cannot tell the pair apart
+(both answer `#<function LINALG:DOT>`); what fails when the flag is DEAD is the TYPE -- `#'linalg:dot`
+answering a `LispFunction` (the installed interceptor) vs a `LispLambda` (the defun) -- one assertion
+per accelerated member, plus the complementary list of members that must still be `LispLambda`. On
+the compiled side the guard is the bridge NAME in the class bytes.
 
 - **`GpuDeclineTest` is the half a CI runner actually runs** -- every machine this project has is
   GPU-less -- so it must never regress. It pins the probe answering without throwing, every decline

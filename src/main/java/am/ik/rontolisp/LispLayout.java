@@ -60,7 +60,17 @@ public record LispLayout(String tag, String printName, Kind kind, List<String> s
 		 * under {@code prin1} and as the bare namestring under {@code princ} (CLHS
 		 * 22.1.3.11), never in the slot-name syntax of the other two kinds.
 		 */
-		PATHNAME
+		PATHNAME,
+		/**
+		 * The built-in opaque type ({@link #STREAM}, the one layout of this kind): the
+		 * declared slots are machinery the printed form must not carry -- the {@code
+		 * %STREAM} handle is backend-local (a table index here, a WASI fd there, a linear
+		 * memory address on wasm), and printing one breaks
+		 * {@code .kb/emitted-output-determinism.md}. An OPAQUE instance prints as
+		 * {@code #<NAME>} with NO slot syntax in either escape mode, while the slots stay
+		 * fully visible to {@code %obj-ref} and {@code equal}.
+		 */
+		OPAQUE
 
 	}
 
@@ -137,9 +147,13 @@ public record LispLayout(String tag, String printName, Kind kind, List<String> s
 	 * <p>
 	 * The handle is a DECLARED slot rather than machinery so {@code equal} keeps CL's
 	 * "two streams are the same only when they are the same stream" -- a kind-only layout
-	 * would make any two file streams {@code equal}. It is therefore also visible in the
-	 * printed form, where the number is backend-local (a WASI fd is not a table index),
-	 * exactly as the bare handle was before this type existed.
+	 * would make any two file streams {@code equal}. The number is nevertheless
+	 * backend-local (a WASI fd is not a table index, and the wasm string-stream record is
+	 * a linear-memory address that moves for reasons unrelated to the program), so the
+	 * layout is {@link Kind#OPAQUE}: the printers answer the plain {@code #<STREAM>} tag
+	 * with no slots on every backend, the same text the async stream values already
+	 * carried, and the handle never reaches the output
+	 * ({@code .kb/emitted-output-determinism.md}).
 	 *
 	 * <p>
 	 * A FIXED layout, seeded into {@code ClosRegistry.layoutsByTag} as a LAYOUT ONLY like
@@ -148,7 +162,7 @@ public record LispLayout(String tag, String printName, Kind kind, List<String> s
 	 * no {@code structure-object} / {@code standard-object} enumeration and no
 	 * {@code %class-slot-defs} answer.
 	 */
-	public static final LispLayout STREAM = new LispLayout(STREAM_TAG, "STREAM", Kind.CLASS, List.of("HANDLE", "KIND"),
+	public static final LispLayout STREAM = new LispLayout(STREAM_TAG, "STREAM", Kind.OPAQUE, List.of("HANDLE", "KIND"),
 			List.of(LispNil.INSTANCE, LispNil.INSTANCE), 2);
 
 	/**
@@ -272,6 +286,7 @@ public record LispLayout(String tag, String printName, Kind kind, List<String> s
 			case STRUCT -> "#S(";
 			case CLASS -> "#<";
 			case PATHNAME -> "#P";
+			case OPAQUE -> "#<";
 		};
 	}
 
@@ -285,6 +300,7 @@ public record LispLayout(String tag, String printName, Kind kind, List<String> s
 			case STRUCT -> ")";
 			case CLASS -> ">";
 			case PATHNAME -> "";
+			case OPAQUE -> ">";
 		};
 	}
 

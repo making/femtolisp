@@ -4,6 +4,8 @@ import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 
 import am.ik.rontolisp.LispDoubleFloatArray;
+import am.ik.rontolisp.LispFunction;
+import am.ik.rontolisp.LispLambda;
 import am.ik.rontolisp.LispNil;
 import am.ik.rontolisp.LispSingleFloatArray;
 import am.ik.rontolisp.LispVal;
@@ -111,6 +113,19 @@ class LinalgGpuTest {
 
 	private LispVal eval(String input, boolean gpu) {
 		return eval(input, gpu, false, false);
+	}
+
+	/**
+	 * The dead-flag guard's discriminator: a named defun and the native kernel installed
+	 * over it print the SAME {@code #<function NAME>} text (todo 434 gave defuns names),
+	 * so the pair is told apart by the Java type -- {@link LispFunction} is the installed
+	 * kernel, {@link LispLambda} the {@code linalg.lisp} defun -- while the printed tag
+	 * stays pinned alongside.
+	 */
+	private void assertValueIs(String form, boolean gpu, Class<?> type, String printedName) {
+		LispVal value = eval(form, gpu);
+		assertThat(value).as(form + " gpu=" + gpu).isInstanceOf(type);
+		assertThat(value.print()).as(form + " gpu=" + gpu).isEqualTo("#<function " + printedName + ">");
 	}
 
 	/**
@@ -232,28 +247,30 @@ class LinalgGpuTest {
 
 	@Test
 	void gpuReplacesTheProductDefunWithANativeFunctionAndTouchesNothingElse() {
-		// A linalg.lisp defun is a LispLambda ("#<lambda>"); the installed interceptor is
-		// a native LispFunction. This is the only assertion in the file that fails if the
-		// flag never reaches the interceptor -- every numeric assertion below would pass
-		// just as well on a dead flag.
-		assertThat(eval("(linalg:zeros 1) #'linalg:dot", true).print()).isEqualTo("#<function LINALG:DOT>");
-		assertThat(eval("(linalg:zeros 1) #'linalg:dot", false).print()).isEqualTo("#<lambda>");
+		// The installed interceptor is a native LispFunction, the linalg.lisp defun a
+		// LispLambda -- both print the same #<function NAME> tag (see assertValueIs).
+		// This is the only assertion in the file that fails if the flag never reaches
+		// the interceptor -- every numeric assertion below would pass just as well on a
+		// dead flag.
+		assertValueIs("(linalg:zeros 1) #'linalg:dot", true, LispFunction.class, "LINALG:DOT");
+		assertValueIs("(linalg:zeros 1) #'linalg:dot", false, LispLambda.class, "LINALG:DOT");
 		// And the stacked member, whose qualified spelling carries the double colon.
-		assertThat(eval("(linalg:zeros 1) #'linalg::%la-matmul-nd", true).print())
-			.isEqualTo("#<function LINALG::%LA-MATMUL-ND>");
-		assertThat(eval("(linalg:zeros 1) #'linalg::%la-matmul-nd", false).print()).isEqualTo("#<lambda>");
+		assertValueIs("(linalg:zeros 1) #'linalg::%la-matmul-nd", true, LispFunction.class, "LINALG::%LA-MATMUL-ND");
+		assertValueIs("(linalg:zeros 1) #'linalg::%la-matmul-nd", false, LispLambda.class, "LINALG::%LA-MATMUL-ND");
 		// And its two TRANSPOSED siblings, the shape both matmul adjoints have.
 		for (String member : new String[] { "%la-matmul-nd-ta", "%la-matmul-nd-tb" }) {
-			assertThat(eval("(linalg:zeros 1) #'linalg::" + member, true).print()).as(member)
-				.isEqualTo("#<function LINALG::" + member.toUpperCase() + ">");
-			assertThat(eval("(linalg:zeros 1) #'linalg::" + member, false).print()).as(member).isEqualTo("#<lambda>");
+			assertValueIs("(linalg:zeros 1) #'linalg::" + member, true, LispFunction.class,
+					"LINALG::" + member.toUpperCase());
+			assertValueIs("(linalg:zeros 1) #'linalg::" + member, false, LispLambda.class,
+					"LINALG::" + member.toUpperCase());
 		}
 		// And every element-wise member the device takes.
 		for (String member : new String[] { "exp", "log", "tanh", "sin", "cos", "tan", "asin", "acos", "atan", "sinh",
 				"cosh", "erf" }) {
-			assertThat(eval("(linalg:zeros 1) #'linalg:" + member, true).print()).as(member)
-				.isEqualTo("#<function LINALG:" + member.toUpperCase() + ">");
-			assertThat(eval("(linalg:zeros 1) #'linalg:" + member, false).print()).as(member).isEqualTo("#<lambda>");
+			assertValueIs("(linalg:zeros 1) #'linalg:" + member, true, LispFunction.class,
+					"LINALG:" + member.toUpperCase());
+			assertValueIs("(linalg:zeros 1) #'linalg:" + member, false, LispLambda.class,
+					"LINALG:" + member.toUpperCase());
 		}
 		// And every member of the STRIDED tier: the six binary ops (the override is
 		// installed unconditionally, the SHAPE and the residency are what the kernel
@@ -265,9 +282,10 @@ class LinalgGpuTest {
 		for (String member : new String[] { "add", "sub", "mul", "div", "maximum", "minimum", "sum", "amax", "amin",
 				"transpose", "sqrt", "abs", "negative", "sign", "greater", "greater-equal", "less", "less-equal",
 				"equal", "where", "reshape", "concatenate", "take-rows", "gather", "softmax", "log-softmax" }) {
-			assertThat(eval("(linalg:zeros 1) #'linalg:" + member, true).print()).as(member)
-				.isEqualTo("#<function LINALG:" + member.toUpperCase() + ">");
-			assertThat(eval("(linalg:zeros 1) #'linalg:" + member, false).print()).as(member).isEqualTo("#<lambda>");
+			assertValueIs("(linalg:zeros 1) #'linalg:" + member, true, LispFunction.class,
+					"LINALG:" + member.toUpperCase());
+			assertValueIs("(linalg:zeros 1) #'linalg:" + member, false, LispLambda.class,
+					"LINALG:" + member.toUpperCase());
 		}
 		for (String internal : new String[] { "%la-adam-step", "%la-gather-strided", "%la-scale", "%la-scatter-rows",
 				"%la-sum-squares",
@@ -277,10 +295,10 @@ class LinalgGpuTest {
 				"%la-layer-norm-grad", "%la-layer-norm-affine", "%la-layer-norm-affine-grad", "%la-dropout-mask",
 				// The attention head's scaled and masked softmax pair (2026-09-02).
 				"%la-scaled-masked-softmax", "%la-scaled-masked-softmax-grad" }) {
-			assertThat(eval("(linalg:zeros 1) #'linalg::" + internal, true).print()).as(internal)
-				.isEqualTo("#<function LINALG::" + internal.toUpperCase() + ">");
-			assertThat(eval("(linalg:zeros 1) #'linalg::" + internal, false).print()).as(internal)
-				.isEqualTo("#<lambda>");
+			assertValueIs("(linalg:zeros 1) #'linalg::" + internal, true, LispFunction.class,
+					"LINALG::" + internal.toUpperCase());
+			assertValueIs("(linalg:zeros 1) #'linalg::" + internal, false, LispLambda.class,
+					"LINALG::" + internal.toUpperCase());
 		}
 		// Every accelerated linalg: member and no others. matmul, mean, var, square,
 		// relu,
@@ -288,13 +306,14 @@ class LinalgGpuTest {
 		// must still be the library's own lambdas under the flag.
 		for (String member : new String[] { "matmul", "outer", "norm", "trace", "argmax", "argmin", "mean", "var",
 				"slice", "flatten", "stack" }) {
-			assertThat(eval("(linalg:zeros 1) #'linalg:" + member, true).print()).as(member).isEqualTo("#<lambda>");
+			assertValueIs("(linalg:zeros 1) #'linalg:" + member, true, LispLambda.class,
+					"LINALG:" + member.toUpperCase());
 		}
 		// And the one member OUTSIDE linalg: -- vec:matvec, installed when the vec
 		// library loads, on top of whatever that library bound; vec:dot is not one.
-		assertThat(eval("(vec:zeros 1) #'vec:matvec", true).print()).isEqualTo("#<function VEC:MATVEC>");
-		assertThat(eval("(vec:zeros 1) #'vec:matvec", false).print()).isEqualTo("#<lambda>");
-		assertThat(eval("(vec:zeros 1) #'vec:dot", true).print()).isEqualTo("#<lambda>");
+		assertValueIs("(vec:zeros 1) #'vec:matvec", true, LispFunction.class, "VEC:MATVEC");
+		assertValueIs("(vec:zeros 1) #'vec:matvec", false, LispLambda.class, "VEC:MATVEC");
+		assertValueIs("(vec:zeros 1) #'vec:dot", true, LispLambda.class, "VEC:DOT");
 	}
 
 	// --- the fused tier (.todo/499) --------------------------------------------------
@@ -912,9 +931,8 @@ class LinalgGpuTest {
 		// is that the member is BOUND to the device interceptor -- and that a fill below
 		// the threshold, or a state word outside the generator's range, is declined to
 		// what was bound before and answers the same bytes.
-		assertThat(eval("(linalg:zeros 1) #'linalg::%la-rng-fill", true).print())
-			.isEqualTo("#<function LINALG::%LA-RNG-FILL>");
-		assertThat(eval("(linalg:zeros 1) #'linalg::%la-rng-fill", false).print()).isEqualTo("#<lambda>");
+		assertValueIs("(linalg:zeros 1) #'linalg::%la-rng-fill", true, LispFunction.class, "LINALG::%LA-RNG-FILL");
+		assertValueIs("(linalg:zeros 1) #'linalg::%la-rng-fill", false, LispLambda.class, "LINALG::%LA-RNG-FILL");
 		assertMatchesScalarOracle("(linalg:seed 3) (list (linalg:rand 8191) (linalg::%la-rng-next))");
 		assertMatchesScalarOracle("(linalg:seed 4) (let ((s (linalg::%la-rng-state)))"
 				+ " (setf (aref s 0) -3.0) (linalg::%la-rng-fill (linalg:zeros 20000) s 0 0.0 1.0))");

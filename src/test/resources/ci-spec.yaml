@@ -9550,8 +9550,8 @@ cases:
       "z"
       ("A" "B")
       ("test" "TEST" "Test" "sym-api-kw" "abc")
-      (T #<STREAM :HANDLE 2 :KIND :STANDARD> T T T T)
-      #<STREAM :HANDLE 2 :KIND :STANDARD>
+      (T #<STREAM> T T T T)
+      #<STREAM>
       (CAR :EXTERNAL)
       (NIL NIL)
       (CAR :INHERITED)
@@ -10874,6 +10874,44 @@ cases:
       T
       NIL
       :OK
+  - name: function-and-stream-values-print-one-text-on-every-backend
+    source: |
+      ;; A named function value prints #<function NAME> with the registered name (bare
+      ;; in its own package, PKG: through an export, PKG:: for an internal), an
+      ;; anonymous one #<lambda>, and a stream the plain opaque tag. One text on all
+      ;; four backends -- no identity hash, no address, no backend-local handle.
+      (defun ci-fp-double (x) (* x 2))
+      (defpackage :ci-fp-pkg (:use :cl) (:export :visible))
+      (defun ci-fp-pkg::visible (x) x)
+      (defun ci-fp-pkg::%hidden (x) x)
+      (defgeneric ci-fp-gf (x))
+      (defmethod ci-fp-gf ((x number)) x)
+      (defun (setf ci-fp-widget) (v o) v)
+      (print (princ-to-string #'car))
+      (print (princ-to-string #'ci-fp-double))
+      (print (princ-to-string (symbol-function 'car)))
+      (print (princ-to-string #'(lambda () 1)))
+      (print (princ-to-string (coerce #'(lambda () 1) 'function)))
+      (print (princ-to-string #'ci-fp-pkg:visible))
+      (print (princ-to-string #'ci-fp-pkg::%hidden))
+      (print (princ-to-string #'ci-fp-gf))
+      (print (princ-to-string #'(setf ci-fp-widget)))
+      (print (princ-to-string (flet ((ci-fp-inner () 1)) #'ci-fp-inner)))
+      (print (princ-to-string (labels ((ci-fp-loop1 () 1)) #'ci-fp-loop1)))
+      (print (princ-to-string (make-string-output-stream)))
+    expected: |
+      "#<function CAR>"
+      "#<function CI-FP-DOUBLE>"
+      "#<function CAR>"
+      "#<lambda>"
+      "#<lambda>"
+      "#<function CI-FP-PKG:VISIBLE>"
+      "#<function CI-FP-PKG::%HIDDEN>"
+      "#<function CI-FP-GF>"
+      "#<function %setf-CI-FP-WIDGET>"
+      "#<lambda>"
+      "#<lambda>"
+      "#<STREAM>"
   - name: format-as-first-class-function
     source: |
       (print (apply #'format nil "x=~a y=~d" (list 5 7)))

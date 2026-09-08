@@ -4,6 +4,8 @@ import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 
 import am.ik.rontolisp.LispDoubleFloatArray;
+import am.ik.rontolisp.LispFunction;
+import am.ik.rontolisp.LispLambda;
 import am.ik.rontolisp.LispNil;
 import am.ik.rontolisp.LispVal;
 import am.ik.rontolisp.reader.LispReader;
@@ -58,6 +60,19 @@ class LinalgBlasTest {
 	}
 
 	/**
+	 * The dead-flag guard's discriminator: a named defun and the native kernel installed
+	 * over it print the SAME {@code #<function NAME>} text (todo 434 gave defuns names),
+	 * so the pair is told apart by the Java type -- {@link LispFunction} is the installed
+	 * kernel, {@link LispLambda} the {@code linalg.lisp} / {@code vec.lisp} defun --
+	 * while the printed tag stays pinned alongside.
+	 */
+	private void assertValueIs(String form, boolean blas, Class<?> type, String printedName) {
+		LispVal value = eval(form, blas);
+		assertThat(value).as(form + " blas=" + blas).isInstanceOf(type);
+		assertThat(value.print()).as(form + " blas=" + blas).isEqualTo("#<function " + printedName + ">");
+	}
+
+	/**
 	 * Asserts that the accelerated result prints exactly what the scalar defun's does.
 	 */
 	private void assertMatchesScalarOracle(String input) {
@@ -72,14 +87,16 @@ class LinalgBlasTest {
 
 	@Test
 	void blasReplacesTheProductDefunWithANativeFunctionAndTouchesNothingElse() {
-		// A linalg.lisp defun is a LispLambda ("#<lambda>"); the installed kernel is a
-		// native LispFunction. This is the only assertion in the file that fails if the
-		// flag never reaches the interceptor.
-		assertThat(eval("(linalg:zeros 1) #'linalg:dot", true).print()).isEqualTo("#<function LINALG:DOT>");
-		assertThat(eval("(linalg:zeros 1) #'linalg:dot", false).print()).isEqualTo("#<lambda>");
+		// The installed kernel is a native LispFunction, the linalg.lisp defun a
+		// LispLambda -- both print the same #<function NAME> tag (see assertValueIs).
+		// This is the only assertion in the file that fails if the flag never reaches
+		// the interceptor.
+		assertValueIs("(linalg:zeros 1) #'linalg:dot", true, LispFunction.class, "LINALG:DOT");
+		assertValueIs("(linalg:zeros 1) #'linalg:dot", false, LispLambda.class, "LINALG:DOT");
 		// One member and no other: matmul is accelerated through dot, not instead of it.
 		for (String member : new String[] { "matmul", "add", "sum", "outer", "transpose" }) {
-			assertThat(eval("(linalg:zeros 1) #'linalg:" + member, true).print()).as(member).isEqualTo("#<lambda>");
+			assertValueIs("(linalg:zeros 1) #'linalg:" + member, true, LispLambda.class,
+					"LINALG:" + member.toUpperCase());
 		}
 	}
 
@@ -208,14 +225,14 @@ class LinalgBlasTest {
 		// The dead-flag guard for the vec: half: a vec.lisp defun is a LispLambda, the
 		// installed kernel a native LispFunction. Every numeric assertion below would
 		// pass on the defun alone ([[simd-shadow-and-dead-flag-lesson]]).
-		assertThat(eval("(vec:zeros 1) #'vec:matvec", true).print()).isEqualTo("#<function VEC:MATVEC>");
-		assertThat(eval("(vec:zeros 1) #'vec:matvec-into", true).print()).isEqualTo("#<function VEC:MATVEC-INTO>");
-		assertThat(eval("(vec:zeros 1) #'vec:matvec", false).print()).isEqualTo("#<lambda>");
-		assertThat(eval("(vec:zeros 1) #'vec:matvec-into", false).print()).isEqualTo("#<lambda>");
+		assertValueIs("(vec:zeros 1) #'vec:matvec", true, LispFunction.class, "VEC:MATVEC");
+		assertValueIs("(vec:zeros 1) #'vec:matvec-into", true, LispFunction.class, "VEC:MATVEC-INTO");
+		assertValueIs("(vec:zeros 1) #'vec:matvec", false, LispLambda.class, "VEC:MATVEC");
+		assertValueIs("(vec:zeros 1) #'vec:matvec-into", false, LispLambda.class, "VEC:MATVEC-INTO");
 		// Two members and no others: the element-wise and reduction kernels are
 		// memory-bound, so a library call cannot beat a loop over the same bytes.
 		for (String member : new String[] { "dot", "sum", "add", "scale", "norm", "add-into" }) {
-			assertThat(eval("(vec:zeros 1) #'vec:" + member, true).print()).as(member).isEqualTo("#<lambda>");
+			assertValueIs("(vec:zeros 1) #'vec:" + member, true, LispLambda.class, "VEC:" + member.toUpperCase());
 		}
 	}
 

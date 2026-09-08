@@ -13461,7 +13461,7 @@ class WasmLispCompilerIntegrationTest {
 		assertThat(compileAndRun("(print (boundp '*error-output*)) (print (symbol-value '*error-output*))"
 				+ "(print (boundp '*standard-output*)) (print (symbol-value '*standard-output*))"
 				+ "(print (boundp '*standard-input*)) (print (symbol-value '*standard-input*))"))
-			.isEqualTo("T\n#<STREAM :HANDLE 2 :KIND :STANDARD>\nT\nT\nT\nT");
+			.isEqualTo("T\n#<STREAM>\nT\nT\nT\nT");
 	}
 
 	@Test
@@ -13472,7 +13472,49 @@ class WasmLispCompilerIntegrationTest {
 		assertThat(compileAndRun("(defvar *sv-stream-name* '*error-output*)"
 				+ "(print (boundp *sv-stream-name*)) (print (symbol-value *sv-stream-name*))"
 				+ "(setq *error-output* 7) (print (symbol-value '*error-output*))"))
-			.isEqualTo("T\n#<STREAM :HANDLE 2 :KIND :STANDARD>\n7");
+			.isEqualTo("T\n#<STREAM>\n7");
+	}
+
+	private static final String FUNCTION_PRINT_PIN_PROGRAM = """
+			(defun my-double (x) (* x 2))
+			(defpackage :pin-pkg (:use :cl) (:export :visible))
+			(defun pin-pkg::visible (x) x)
+			(defun pin-pkg::%hidden (x) x)
+			(defmethod pin-gf ((x number)) x)
+			(defun (setf widget) (v o) v)
+			(print (princ-to-string #'car))
+			(print (princ-to-string #'my-double))
+			(print (princ-to-string (symbol-function 'car)))
+			(print (princ-to-string #'(lambda () 1)))
+			(print (princ-to-string (coerce #'(lambda () 1) 'function)))
+			(print (princ-to-string #'pin-pkg:visible))
+			(print (princ-to-string #'pin-pkg::%hidden))
+			(print (princ-to-string #'pin-gf))
+			(print (princ-to-string #'(setf widget)))
+			(print (princ-to-string (flet ((inner () 1)) #'inner)))
+			(print (princ-to-string (labels ((loop1 () 1)) #'loop1)))
+			(print (princ-to-string (make-string-output-stream)))
+			""";
+
+	private static final String FUNCTION_PRINT_PIN_OUTPUT = "\"#<function CAR>\"\n" + "\"#<function MY-DOUBLE>\"\n"
+			+ "\"#<function CAR>\"\n" + "\"#<lambda>\"\n" + "\"#<lambda>\"\n" + "\"#<function PIN-PKG:VISIBLE>\"\n"
+			+ "\"#<function PIN-PKG::%HIDDEN>\"\n" + "\"#<function PIN-GF>\"\n" + "\"#<function %setf-WIDGET>\"\n"
+			+ "\"#<lambda>\"\n" + "\"#<lambda>\"\n" + "\"#<STREAM>\"";
+
+	@Test
+	void functionValuesPrintTheSameNamedTextTheInterpreterAnswers() throws Exception {
+		// The module carries a _fun_name blob over the dispatchable defuns, so a named
+		// function value prints #<function NAME> and an anonymous one #<lambda> -- the
+		// same text the interpreter answers (LispEvaluatorTest's pin of the same
+		// program), with no identity hash or address. Streams print the plain opaque tag.
+		assertThat(compileAndRunPrelude(FUNCTION_PRINT_PIN_PROGRAM)).isEqualTo(FUNCTION_PRINT_PIN_OUTPUT);
+	}
+
+	@Test
+	void theComponentPrintsFunctionValuesWithTheSameNames() throws Exception {
+		// The fourth backend runs the same module through its own I/O adapter; the name
+		// table rides the module, so the text cannot diverge -- which is what this pins.
+		assertThat(compileComponentAndRunPrelude(FUNCTION_PRINT_PIN_PROGRAM)).isEqualTo(FUNCTION_PRINT_PIN_OUTPUT);
 	}
 
 	@Test

@@ -488,7 +488,8 @@ class WasmTreeShakerTest {
 		Module.parse(hello).assertWellFormed();
 		Module.parse(generic).assertWellFormed();
 		byte[] helloData = dataSectionPayload(hello);
-		for (String dead : new String[] { "#<function>", "#<FUTURE>", "Infinity", "Rubout", "Backspace", "#A(" }) {
+		for (String dead : new String[] { "#<lambda>", "#<function ", "#<FUTURE>", "Infinity", "Rubout", "Backspace",
+				"#A(" }) {
 			assertThat(contains(helloData, dead)).as("hello module keeps the dead prologue entry %s", dead).isFalse();
 		}
 		// "\n" is the one prologue entry a literal write reaches directly (terpri), so it
