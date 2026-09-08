@@ -15,10 +15,11 @@ the checked-in baseline; pass every chapter name instead and it writes
 
 ## Baseline (re-measured 2026-09-08, suite revision `ca06bd9`)
 
-**10,807 / 19,459 tests pass (55.5%)** -- 2,823 wrong values, 5,829 signalled,
-588 top-level forms lost. A full local re-run reproduced the checked-in report to
-within 2 tests (10,808 / 2,821 / 5,830; the drift is `random-state`), so the
-committed series is trustworthy and was NOT overwritten.
+**10,809 / 19,461 tests pass (55.5%)** -- 2,823 wrong values, 5,829 signalled,
+586 top-level forms lost. A full local re-run reproduced the checked-in report to
+within 2 tests (10,808 / 2,821 / 5,830; the drift is `random-state`, and the
+daily CI refresh landed 10,809 the same day), so the committed series is
+trustworthy and was NOT overwritten.
 
 Against the previous reading in this file (41.0%, 7,254 / 17,689, 2,229 lost
 forms): `.todo/680` made argument-shape errors a catchable `program-error` and
@@ -157,12 +158,12 @@ runtime package API (`.todo/741`) and complex numbers. The corpus uses only
   `program-error`. This is what made `.todo/736`'s 578 tests visible; the raw
   `IllegalArgumentException` shape this file used to rank is gone.
 - **2026-09-08, `.todo/681`** -- a raw exception escaping a `deftest` is booked
-  as that test's error, not as a lost form. Lost forms 2,229 -> 588, and the
+  as that test's error, not as a lost form. Lost forms 2,229 -> 586, and the
   denominator grew by 1,770.
 
 ## Reading caveat
 
-588 top-level forms are still lost, so every chapter is measured optimistically;
+586 top-level forms are still lost, so every chapter is measured optimistically;
 `streams` (61) and `printer` (53) most of all. Closing a gap can LOWER a
 chapter's rate by admitting the tests behind it -- that is progress, and the
 reason the report keeps the lost-form column next to the rate.
