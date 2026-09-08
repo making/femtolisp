@@ -3760,9 +3760,9 @@ class LispEvaluatorTest {
 		// position family's scan and so takes the whole keyword set (see
 		// evalFindFamilyTakesThePositionKeywordSet).
 		assertThatThrownBy(() -> eval("(assoc 1 '((1 . a)) :from-end t)")).isInstanceOf(RuntimeException.class)
-			.hasMessageContaining(":test/:test-not/:key");
+			.hasMessageContaining(":TEST/:TEST-NOT/:KEY");
 		assertThatThrownBy(() -> eval("(remove 1 '(1 2) :count 1)")).isInstanceOf(RuntimeException.class)
-			.hasMessageContaining(":test/:test-not/:key");
+			.hasMessageContaining(":TEST/:TEST-NOT/:KEY");
 		assertThatThrownBy(() -> eval("(find 1 '(1 2) :count 1)")).isInstanceOf(RuntimeException.class)
 			.hasMessageContaining(":FROM-END");
 	}
