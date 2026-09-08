@@ -400,7 +400,8 @@ why it is the storage format published machine-learning checkpoints use. It is a
 width rather than a compute one: hold weights in it, do not take a determinant in it.
 `(make-array n :element-type 'bfloat16)` builds one at runtime,
 `(array-element-type #bf16(1.0))` is `bfloat16`, and the printed form reads back as
-`#bf16(...)` like the other two. **The interpreter and the JVM only** -- the WASM backends have no bfloat16 array and
+`#bf16(...)` like the other two. As a type name it sits below `float` in the
+[`subtypep`](functions/subtypep.md) lattice, and no scalar belongs to it. **The interpreter and the JVM only** -- the WASM backends have no bfloat16 array and
 refuse the width by name (`bfloat16 arrays are supported on the interpreter and the JVM
 only`) at the call that asks for one.
 

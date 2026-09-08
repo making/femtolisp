@@ -32622,16 +32622,28 @@ public final class LispMacroExpander {
 	 * {@code base-string}/{@code simple-base-string} stay aliases (of {@code string} /
 	 * {@code simple-string}), for the one-character-type reason
 	 * {@link #canonicalSubtypeName} states.
+	 *
+	 * <p>
+	 * {@code bfloat16} is an edge too, below {@code FLOAT}, and never one of the
+	 * collapsed float aliases: it is a rontolisp extension naming the packed
+	 * {@code #bf16} array's element width, and NO scalar has it ({@code (typep 1.0
+	 * 'bfloat16)} is nil), so the symmetric claim a collapse makes would be false --
+	 * collapsed, as it was from 2026-09-03 to 2026-09-08, {@code (subtypep 'single-float
+	 * 'bfloat16)} answered t. An edge also reaches the runtime universe by derivation
+	 * ({@link #subtypepUniverse}); an alias reaches it only through that method's
+	 * hand-written list, which is why a computed pair naming this width answered nil
+	 * against everything, itself included, on the compile paths for the same five days.
 	 */
 	private static final java.util.Map<String, List<String>> SUBTYPEP_PARENTS = orderedMap(
 			java.util.Map.entry("FIXNUM", List.of("INTEGER")), java.util.Map.entry("BIGNUM", List.of("INTEGER")),
 			java.util.Map.entry("bit", List.of("INTEGER")), java.util.Map.entry("UNSIGNED-BYTE", List.of("INTEGER")),
 			java.util.Map.entry("SIGNED-BYTE", List.of("INTEGER")), java.util.Map.entry("INTEGER", List.of("RATIONAL")),
 			java.util.Map.entry("RATIO", List.of("RATIONAL")), java.util.Map.entry("RATIONAL", List.of("REAL")),
-			java.util.Map.entry("FLOAT", List.of("REAL")), java.util.Map.entry("REAL", List.of("NUMBER")),
-			java.util.Map.entry("KEYWORD", List.of("SYMBOL")), java.util.Map.entry("BOOLEAN", List.of("SYMBOL")),
-			java.util.Map.entry("NULL", List.of("SYMBOL", "LIST")), java.util.Map.entry("CONS", List.of("LIST")),
-			java.util.Map.entry("LIST", List.of("SEQUENCE")), java.util.Map.entry("STRING", List.of("VECTOR")),
+			java.util.Map.entry("BFLOAT16", List.of("FLOAT")), java.util.Map.entry("FLOAT", List.of("REAL")),
+			java.util.Map.entry("REAL", List.of("NUMBER")), java.util.Map.entry("KEYWORD", List.of("SYMBOL")),
+			java.util.Map.entry("BOOLEAN", List.of("SYMBOL")), java.util.Map.entry("NULL", List.of("SYMBOL", "LIST")),
+			java.util.Map.entry("CONS", List.of("LIST")), java.util.Map.entry("LIST", List.of("SEQUENCE")),
+			java.util.Map.entry("STRING", List.of("VECTOR")),
 			java.util.Map.entry("VECTOR", List.of("ARRAY", "SEQUENCE")),
 			java.util.Map.entry("SIMPLE-STRING", List.of("SIMPLE-ARRAY", "STRING")),
 			java.util.Map.entry("SIMPLE-VECTOR", List.of("SIMPLE-ARRAY", "VECTOR")),
@@ -32686,9 +32698,11 @@ public final class LispMacroExpander {
 	 * Collapses the type-name aliases the one runtime representation makes equal -- and
 	 * ONLY those. A collapse is symmetric, so a name belongs here only when it denotes
 	 * exactly the same set of values as its target: the four float names (one float
-	 * format), the character names (one character type), and the two {@code base-string}
-	 * spellings, which are "a string of {@code base-char}" and so name the same type as
-	 * {@code string}/{@code simple-string} while every character IS a base-char.
+	 * format -- not {@code bfloat16}, the EMPTY fifth, which is an edge in
+	 * {@link #SUBTYPEP_PARENTS}), the character names (one character type), and the two
+	 * {@code base-string} spellings, which are "a string of {@code base-char}" and so
+	 * name the same type as {@code string}/{@code simple-string} while every character IS
+	 * a base-char.
 	 *
 	 * <p>
 	 * {@code simple-string}/{@code simple-vector}/{@code simple-array} were here until
@@ -32701,7 +32715,7 @@ public final class LispMacroExpander {
 	 */
 	private static String canonicalSubtypeName(String plain) {
 		return switch (plain) {
-			case "SINGLE-FLOAT", "DOUBLE-FLOAT", "SHORT-FLOAT", "LONG-FLOAT", "BFLOAT16" -> "FLOAT";
+			case "SINGLE-FLOAT", "DOUBLE-FLOAT", "SHORT-FLOAT", "LONG-FLOAT" -> "FLOAT";
 			case "BASE-CHAR", "STANDARD-CHAR", "EXTENDED-CHAR" -> "CHARACTER";
 			case "BASE-STRING" -> "STRING";
 			case "SIMPLE-BASE-STRING" -> "SIMPLE-STRING";

@@ -345,7 +345,8 @@ $ rontolisp main.lisp
 *格納用*の幅です。重みを保持するために使うものであって、行列式を求めるためのもの
 ではありません。実行時には `(make-array n :element-type 'bfloat16)` で構築でき、
 `(array-element-type #bf16(1.0))` は `bfloat16` を返し、印字結果は他の 2 つと同様に
-`#bf16(...)` として読み戻せます。**インタプリタと JVM のみ**です -- WASM バックエンド
+`#bf16(...)` として読み戻せます。型名としては [`subtypep`](functions/subtypep.md) の束で
+`float` の下に位置し、この型に属するスカラはありません。**インタプリタと JVM のみ**です -- WASM バックエンド
 に bfloat16 配列は存在せず、それを要求した呼び出しの位置で幅を名指しして拒否します
 (`bfloat16 arrays are supported on the interpreter and the JVM only`)。
 

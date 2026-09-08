@@ -209,6 +209,26 @@ class JvmBFloat16ArrayTest {
 	}
 
 	@Test
+	void theTypeLatticeAnswersALiteralAndAComputedPairAlike() throws Exception {
+		// bfloat16 is an EDGE below float in the subtypep lattice, not a fourth alias of
+		// it: the type is EMPTY, so the reverse direction is nil. A computed pair goes
+		// through the emitted %subtypep-ancestor-table%, whose universe is DERIVED from
+		// the edges; an alias reached it only through a hand-written list that did not
+		// name this one, so until 2026-09-08 a computed pair answered NIL on the JVM --
+		// against itself included -- while the literal fold said T.
+		assertAgreedText(
+				"(defun bfl-sub (a b) (subtypep (car (list a)) (car (list b))))"
+						+ " (print (list (list (subtypep 'bfloat16 'float) (subtypep 'bfloat16 'number)"
+						+ " (subtypep 'bfloat16 'bfloat16) (subtypep 'float 'bfloat16)"
+						+ " (subtypep 'single-float 'bfloat16) (subtypep 'double-float 'bfloat16))"
+						+ " (list (bfl-sub 'bfloat16 'float) (bfl-sub 'bfloat16 'number)"
+						+ " (bfl-sub 'bfloat16 'bfloat16) (bfl-sub 'float 'bfloat16)"
+						+ " (bfl-sub 'single-float 'bfloat16) (bfl-sub 'double-float 'bfloat16))"
+						+ " (list (typep 1.0 'bfloat16) (typep (car (list 1.0)) (car (list 'bfloat16))))))",
+				"((T T T NIL NIL NIL) (T T T NIL NIL NIL) (NIL NIL))");
+	}
+
+	@Test
 	void theThreeWidthsCoexistWithDistinctPrefixes() throws Exception {
 		assertAgreedText("(print (list #d(1.0) #f(1.0) #bf16(1.0)))", "(#d(1.0) #f(1.0) #bf16(1.0))");
 		assertAgreedText("(print (list (array-element-type #d(1.0)) (array-element-type #f(1.0))"

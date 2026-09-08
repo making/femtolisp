@@ -3,7 +3,8 @@
 Difficulty: High (the umbrella; the children are sized individually)
 
 Filed 2026-09-03 from the re-verification of `.todo/482` (`bfloat16`), whose README "Round
-2" is the measurement record; `.todo/482` stays the width half of this.
+2" is the measurement record; `.todo/482` was the width half of this and closed 2026-09-08,
+its account in `.kb/bfloat16.md` ("The width's account").
 
 **The goal: a small language model that someone downloaded from Hugging Face runs on
 rontolisp from the file they downloaded** -- no Python, no `export.py`, no conversion step
@@ -18,7 +19,7 @@ tokenizer and hyperparameters in the same file).
 
 | width | verdict | where |
 | --- | --- | --- |
-| **bf16** | THE width. 1.5-2.1x f32 on one thread (Graal / C2), 1.6x on 20; widening exact; every checkpoint is in it | `.todo/482` (483-490) |
+| **bf16** | THE width. 1.5-2.1x f32 on one thread (Graal / C2), 1.6x on 20; widening exact; every checkpoint is in it | `.todo/482` (483-490), all closed; `.kb/bfloat16.md` |
 | **IEEE f16** | not a width -- a **load-time conversion** into `#f` / `#bf16`. A fused f16 GEMV is 0.30-0.58x on either JIT | `.todo/671` |
 | **Q8_0** (32 int8 + a scale) | a **read-only weight matrix** type with an integer-dot GEMV: 1.4-1.6x f32 on one thread under Graal, 1.7-1.9x under C2, 2.2-3.3x on 20, a quarter of f32's bytes. On the device since `728`: the kernel is the CPU contract's BITS, 5.3 ms of GEMV a forward against bf16's 7.7, the forward 13.9 against 16.7 (1.20x), tokens byte-identical with the flag on and off | CPU: `672`, `706`. Device: `728`. The row slice without a scratch file: `.todo/732` |
 | **Q4_0 / Q4_K** | not a CPU item: the nibble unpack is ALU-bound at 5.7 GB/s (1.1x f32 for 8.5% error). **Refused on the device too, twice** -- `718` on a decode profile, then `726` at the forward's own shapes. Behind `728`'s Q8_0 its increment is bounded by the byte ratio, ~2.7 ms of a 13.9 ms forward, at 8.5% error against 0.75%, so the refusal's reason is now ORDER, not size | `.kb/gpu.md`, "No Q4_0 / Q4_K weight width"; kernel rows in `.todo/artefacts/123-gpu-acceleration/README.md` |
@@ -158,6 +159,11 @@ Pointers, not records -- the home is where it gets updated.
 - **`483`'s rule is stated wrong in 483**: not "never write a `default`" but **"an arm
   matching two or more permits IS a default, whatever it is spelled"**. `.kb/vec.md`.
 - **`%la-gather-strided` has five readers** and grepping the name finds two. `.todo/687`.
+- **`bfloat16` was a float ALIAS in the `subtypep` lattice, not an EDGE**, from the day the
+  width landed: `(subtypep 'single-float 'bfloat16)` answered T against `(typep 1.0 'bfloat16)`'s
+  NIL, and a COMPUTED pair on the compile paths answered NIL against everything, itself
+  included -- the runtime universe derives edges and hand-lists aliases. Found closing `482`,
+  the one arm the umbrella specified and no child owned. `.kb/declarations-type-checks.md`.
 - **The bf16 conversion arithmetic census**: not seven sites and not the grep's twelve --
   `.kb/bfloat16.md`, "The conversion arithmetic census".
 - **A profile names the COST correctly and the CAUSE only as a guess**, and the two JFR
@@ -245,7 +251,7 @@ CLOSED item as its owner -- so the surface reads as finished from the umbrella a
 | A-3 | `689` the `jvm-export` handle does not carry `bfloat16` | Medium | Third, directly after `745` and against A-1's classification, because it is the same question one layer out: a Java caller of a compiled model can neither hand a bf16 weight matrix across nor receive one, and `runtime` imports nothing, so the arm is a THIRD spelling of the conversion. The refusal is correct today (`checkPacked`, "not a packed float array: [S") and nothing is silently misread -- which is why it is third and not first |
 | A-4 | `696` the narrow-width element-wise kernels and the operand pairing | Medium | Fourth: the one bf16 arm that is a KERNEL rather than a boundary. `.kb/bfloat16.md` states the gap -- widening is one shift, narrowing is not vectorized, so an element-wise arm is a scalar store loop -- and the item also holds the NARROW x NARROW pairing question the bridge has never been asked. Its x64 half is A's, every `.todo/488` number behind it being aarch64 |
 | A-5 | `732` a row slice of a quantized matrix without a scratch file | Medium | Fifth, and the other width: `examples/llm` splits Qwen3.5's `attn_q` through a byte copy in `$TMPDIR`, because a `quantized-matrix` is immutable and `file-position` does not seek. **A program's correctness depends on a writable temp directory on four backends**, which is the kind of dependency the checkpoint path is supposed to have shed. Filed by B's `728` and GPU-free, so the box question makes it takeable here |
-| A-6 | `482` the `bfloat16` umbrella itself | High | LAST because it is the only item the lane's own results decide. All eight children (483-490) are closed and the file still reads as an open plan; after A-1 through A-4 the remainder is known, and the honest close is either a rewritten `482` scoped to what is left or a deletion with the width's account moved into `.kb/bfloat16.md`. **Not a formality**: `.todo/487`'s close is what stranded two arms, and closing an umbrella has the same failure available to it |
+| A-6 | `482` the `bfloat16` umbrella itself | High | LAST because it is the only item the lane's own results decide. All eight children (483-490) are closed and the file still reads as an open plan; after A-1 through A-4 the remainder is known, and the honest close is either a rewritten `482` scoped to what is left or a deletion with the width's account moved into `.kb/bfloat16.md`. **Not a formality**: `.todo/487`'s close is what stranded two arms, and closing an umbrella has the same failure available to it. **Closed 2026-09-08, deleted**: the account moved into `.kb/bfloat16.md` ("The width's account"); the audit found the one arm the umbrella specified and no child owned -- the type-lattice entry -- and fixed it (Findings above) |
 
 **A's pool for THIS umbrella.** GPU-free and on the subject:
 

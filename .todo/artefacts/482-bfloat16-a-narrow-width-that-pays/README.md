@@ -2,11 +2,17 @@
 
 Throwaway probes kept for reproducibility, NOT project code: outside `src/`, not in the
 reactor, not formatted by `spring-javaformat:apply`, and nothing builds or tests them.
-They exist so the numbers in `../../482-bfloat16-a-narrow-width-that-pays.md` can be
-re-derived on other hardware -- above all the pair of numbers that chose the format:
+They exist so the numbers below can be re-derived on other hardware -- above all the
+pair of numbers that chose the format:
 **an IEEE f16 array is never faster to compute over on the JVM (0.60x at best), and a
 bfloat16 array is 1.60x faster on the same matrix.** The item was written for f16 first,
 because `Float.floatToFloat16` is in the JDK; the measurement is why it is not.
+
+The item these were written for, `../../482-bfloat16-a-narrow-width-that-pays.md`, is
+closed and deleted (2026-09-08); `../../history/2026-09.md`'s row reads it back
+(`git show <commit>~:.todo/482-bfloat16-a-narrow-width-that-pays.md`), and
+`../../../.kb/bfloat16.md` ("The width's account") is the live authority for what it
+decided.
 
 Every file is a single-class JDK source-launcher program. Run each with:
 

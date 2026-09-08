@@ -4262,8 +4262,10 @@ public final class LispNames {
 	 * <p>
 	 * This is a rontolisp EXTENSION, not a Common Lisp type: it belongs to the
 	 * {@code rontolisp} package and must never be added to {@code CL_SYMBOLS}. It is a
-	 * fourth subtype of {@code float}, disjoint from {@code single-float},
-	 * {@code double-float} and {@code short-float}. Distinct from
+	 * fourth subtype of {@code float} and an EMPTY one -- a lattice EDGE below
+	 * {@code float} ({@code LispMacroExpander.SUBTYPEP_PARENTS}), never one of the
+	 * collapsed float aliases: no scalar has the type, so {@code (typep 1.0 'bfloat16)}
+	 * is nil while {@code (subtypep 'bfloat16 'float)} is t. Distinct from
 	 * {@link #BFLOAT16_KEYWORD}, which names a bit-pattern FORMAT for the bulk
 	 * widen/narrow primitives rather than an array element type.
 	 */

@@ -15551,6 +15551,31 @@ standalone:
                     (sts 'vector '(simple-vector 4)))))
     stdout: |
       ((T NIL T NIL T NIL) (T T T NIL NIL NIL) (T T T T) (T NIL T NIL T NIL))
+  # bfloat16 is an EDGE below float in the lattice, not a fifth alias of it: the type
+  # is EMPTY (the width exists only as array storage), so the reverse direction answers
+  # nil -- and a COMPUTED pair, which the compile paths answer from the emitted ancestor
+  # table, answers exactly like the literal fold, on the two backends that have no #bf16
+  # array as much as on the two that do.
+  - name: bfloat16-type-lattice
+    source: |
+      (defun bfl-sub (a b) (subtypep (car (list a)) (car (list b))))
+      (print
+        (list (list (subtypep 'bfloat16 'float)
+                    (subtypep 'bfloat16 'number)
+                    (subtypep 'bfloat16 'bfloat16)
+                    (subtypep 'float 'bfloat16)
+                    (subtypep 'single-float 'bfloat16)
+                    (subtypep 'double-float 'bfloat16))
+              (list (bfl-sub 'bfloat16 'float)
+                    (bfl-sub 'bfloat16 'number)
+                    (bfl-sub 'bfloat16 'bfloat16)
+                    (bfl-sub 'float 'bfloat16)
+                    (bfl-sub 'single-float 'bfloat16)
+                    (bfl-sub 'double-float 'bfloat16))
+              (list (typep 1.0 'bfloat16)
+                    (typep (car (list 1.0)) (car (list 'bfloat16))))))
+    stdout: |
+      ((T T T NIL NIL NIL) (T T T NIL NIL NIL) (NIL NIL))
   - name: simple-type-name-typep-simplicity
     source: |
       (defvar *tps-sv* (make-array 4))

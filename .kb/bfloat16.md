@@ -2,7 +2,9 @@
 
 `bfloat16` = the TOP SIXTEEN BITS of an IEEE 754 binary32 (sign, f32's 8 exponent bits, 7 mantissa
 bits): the storage format published ML checkpoints use. Covers the scalar pair, the rounding the
-bulk pair shares with it, and the packed `#bf16` array width (interpreter + JVM only).
+bulk pair shares with it, the packed `#bf16` array width (interpreter + JVM only), and the width's
+account -- what it is for, why bf16 and not f16, the name, the prefix and the lattice entry (the
+umbrella `.todo/482`, closed 2026-09-08).
 
 ## The scalar pair
 `rontolisp:bfloat16-bits` (real -> 0..65535) / `rontolisp:bits-bfloat16`. There is no bfloat16
@@ -337,6 +339,53 @@ needed"). No `linalg:` acceleration seam takes it: `--simd`, `--blas` and `--gpu
   times and every copy spelled six of the seven codes. It is derived from `ArrayElementTypes`
   now: `.kb/array-literals.md`, "A RUNTIME `:element-type`".
 
+## The width's account (the umbrella `.todo/482`, 2026-08-22 -> 2026-09-08)
+The umbrella filed the width for ONE goal -- tokens per second on a 1B-class model, where decode
+streams every weight once per token, so the width IS the bandwidth -- and closed with its eight
+children (`483`-`490`) and the remainder lane (`746`, `745`, `689`, `696`, `732`) done. The
+measurement record is `.todo/artefacts/482-bfloat16-a-narrow-width-that-pays/README.md` (three
+rounds: the spike, both JITs plus the quantized widths, x64). What it decided, and why:
+- **bfloat16 and not IEEE binary16**, although `Float.floatToFloat16` is in the JDK. Same GEMV,
+  4 accumulators + FMA, 4096x4096: f16 0.60x of f32, bf16 **1.60x**; cache-resident 1024x1024,
+  0.32x / 0.88x. bf16 IS the top half of an f32, so the decode is one shift and the halved bytes
+  become the bandwidth win; f16 needs a ~6-op lane trick (the Vector API has no half-precision
+  species) and never reaches the memory wall -- on either JIT, on aarch64 and on x64. Three more:
+  every current checkpoint is published in bf16; widening is EXACT, so a fused kernel is the f32
+  kernel over the widened operand bit for bit (why it could join the f32 reduction contract
+  instead of needing its own); bf16 keeps f32's exponent range where f16 underflowed N(0, 0.02)
+  weights to zero. f16 is a load-time conversion instead (`.todo/671`, `.kb/checkpoint-readers.md`).
+- **Memory was never the constraint** at this size: 4.4 GB of f32 fits an 8 GB laptop. What the
+  width buys at 1B is tok/s (1.6-2.0x measured, one thread and twenty -- conditional on the
+  accumulator count, README section 7) and, on the device, the residency cap (`.kb/gpu.md`).
+- **The name is `bfloat16`, not `short-float`.** `short-float` means an IEEE-ish narrow float in
+  every other Lisp and stays what CL lets it be here -- an alias of the one float format
+  (`.kb/declarations-type-checks.md`) -- and free for an IEEE f16 width if one is ever wanted;
+  `bfloat16` is what C++23, PyTorch, JAX and `ml_dtypes` call it. Java spells it `BFloat16`
+  (`LispBFloat16Array`, `LispNames.BFLOAT16`, `FloatText.bfloat16Text`); prose may say "bf16" for
+  the bits, never the code.
+- **In the type lattice it is an EDGE below `float`, not a fifth alias of it** (fixed 2026-09-08
+  at the umbrella's close): an EMPTY type, since no scalar has it, so `(subtypep 'bfloat16 'float)`
+  is T, `(subtypep 'float 'bfloat16)` NIL and `(typep 1.0 'bfloat16)` NIL -- literal or computed,
+  on all four backends (ci-spec `bfloat16-type-lattice`). Collapsed, the reverse direction
+  answered T and a COMPUTED pair answered NIL against everything on the compile paths, because
+  the runtime universe derives edges and hand-lists aliases (`.kb/declarations-type-checks.md`).
+- **The prefix `#bf16(` is a WIDTH TAG, not a letter.** `#b(` reads as the binary radix, and the
+  single-letter space (`#f(`, `#d(`) runs out at the next narrow width; the tag scheme has room --
+  `#f16(`, `#fp8(` -- in the vocabulary numpy, PyTorch and C++23 use. Lexing is the `#S(` / `#P"` /
+  `#f(` shape (a fixed prefix that must be followed by the delimiter, else symbol reading) with one
+  ORDER requirement: the `#bf16(` branch runs BEFORE the `#x`/`#o`/`#b` radix branch, which would
+  otherwise claim the `#b` (`f` is not a binary digit, so it would fail rather than mis-read, but
+  the order is what keeps it so; `LispLexer`, pinned by `LispFloatArrayTest` reading `#b1010` and
+  `#bf16(1.0)` in one program). `#f32(` / `#f64(` aliases of `#f(` / `#d(` were left out on
+  purpose: four runtime readers would carry them for a symmetry no program asks for.
+- **Where each piece landed**, for the history rows: `483` the exhaustive width switches, `484` the
+  interpreter array, `485` the JVM array and its two-slot header, `486` the refusals, `487`
+  conversion and the reader path, `488` the fused kernels, `489` the 1B model, `490` the device;
+  then `707` `coerce`/`concatenate`, `687` `linalg:`, `745` the bulk pair, `746` the census, `689`
+  `jvm-export`, `696` the element-wise measurement. Still open and the width's: `.todo/747` (the
+  element-wise kernels that measurement justified) and `.todo/480` (the one-thread 1.6x waits on
+  its accumulator count).
+
 ## Refusing a width: three behaviours
 - **Silent DECLINE** (`null`/`false`, the rung below answers, answer identical): `VecSimd`,
   `LinalgSimd`, `LinalgGpu`, `LinalgBlas` -- guardable by a SOURCE-SHAPE pin
@@ -357,7 +406,8 @@ needed"). No `linalg:` acceleration seam takes it: `--simd`, `--blas` and `--gpu
 `FloatText.bfloat16Text` = the shortest decimal that reads back as the same bfloat16 (`singleText`
 would print the widened f32's digits). It walks significant-digit counts upwards and hands the
 first that narrows back to `singleText`, keeping the plain-versus-exponent decision shared
-(`.kb/format.md`). Nothing calls it yet -- the WASM mirror lands with the array width.
+(`.kb/format.md`). Its callers are `LispBFloat16Array`'s element print and the JVM's `_bf16Print`;
+there is no WASM mirror because no WASM backend carries the width.
 
 ## Tests
 `BFloat16Test`, `JvmBFloat16ArrayTest` (the `--simd` section: the fused decode shape equals the
