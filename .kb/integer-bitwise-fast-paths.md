@@ -4,7 +4,8 @@
 machine-word arithmetic when every operand fits the word, else the exact BigInteger
 path.** Only a LEFT shift can leave the range; and/or/xor/not need no guard.
 
-Sites: `Environment.createGlobal` (`allFixnums`); `JvmNumericRuntimeBuilder` keys
+Sites: `Environment.createGlobal` (`allFixnums`, testing for `LispInteger` — the `long` case,
+`LispBigInteger` holding only a magnitude outside it); `JvmNumericRuntimeBuilder` keys
 `LOGAND`/`LOGIOR`/`LOGXOR`/`LOGNOT`/`ASH`/`INTEGER_LENGTH`/`LOGBITP` + `JvmBitwiseCompiler`;
 `WasmBitwiseCompiler` -> `WasmBigIntRuntimeBuilder` `_big_*` ([wasm-bignum.md](wasm-bignum.md)),
 whose i31 fixnum makes `most-negative-fixnum` differ. Per-site `BigInteger.and`/`shiftLeft`

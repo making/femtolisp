@@ -74,7 +74,8 @@ needed"). No `linalg:` acceleration seam takes it: `--simd`, `--blas` and `--gpu
   defun's does. The contract is an EQUIVALENCE and not a tolerance -- widening is exact, so a fused
   kernel is the f32 kernel over the widened operand BIT FOR BIT -- which is why the width needed no
   entry of its own in the cross-backend identity contract: it joins the f32 reduction contract
-  instead, four pinned lanes and all (`.kb/vec.md`, "The lane-count pin"; the bf16 decode's
+  instead, four pinned lanes and all (`.kb/vec.md`, "The f32-reduction precision contract",
+  whose lane-count pin this is; the bf16 decode's
   `ShortVector.SPECIES_64` is pinned for the same reason `FSPECIES_REDUCE` is).
 - **Everything else DECLINES to the scalar defun, and that includes a MIXED bf16/f32 element-wise
   call**, which used to raise the fixed-width error under `--simd` while the defun computed it
