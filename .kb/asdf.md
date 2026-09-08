@@ -167,6 +167,16 @@ time: `(asdf:system-source-directory X)` -> `LispSystem.baseDir` + `/`;
 itself is no longer folded (the runtime answer is an object) but a nested literal
 `(asdf:find-system 'x)` in a system-designator position is unwrapped (`systemDesignator`).
 Quoted data is opaque and a `let`/`lambda` rebinding never triggers substitution.
+- **A recorded value is a constant only for a variable NOTHING assigns.** The `collectMutableNames`
+  pre-pass (beside `collectWrittenPaths`) collects every name `setq`/`psetq`/`setf`/`push`/`pushnew`/
+  `pop`/`incf`/`decf`/`shiftf`/`rotatef`/`multiple-value-setq` assigns ANYWHERE -- including in a
+  `defun` body, since the pass cannot order a top-level call against a fold site -- and records none
+  of them: the pass runs before anything executes and cannot order a write against a use. Without it
+  `(defvar *s* "ab") (setq *s* ...) (defvar *v1* *s*)` baked the replaced value into `*V1*` on every
+  compile backend (`LoadInlinerTest#doesNotSubstituteAVariableThatTopLevelSetqRebinds`).
+  Recording is likewise confined to a top-level position (`progn`/`eval-when` transparent), and a
+  `defvar` never overwrites a recorded value -- the runtime rule that it binds only an UNBOUND
+  variable.
 - Same pass rewrites `(with-open-file (var <literal utf-8 path> [:external-format :UTF-8]) BODY)`
   into `(with-input-from-string (var <inlined contents>) BODY)`, **chunked at 20k Java-char
   boundaries** and reassembled with `concatenate` so the **JVM 65535 UTF-8 byte per-string

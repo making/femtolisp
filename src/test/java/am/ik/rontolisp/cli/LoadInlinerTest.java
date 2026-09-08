@@ -688,6 +688,71 @@ class LoadInlinerTest {
 	}
 
 	@Test
+	void doesNotSubstituteAVariableThatTopLevelSetqRebinds() {
+		// The recorded defparameter/defvar value is a CONSTANT only while nothing
+		// assigns the variable: a top-level setq runs before the following defvar,
+		// so substituting the recorded literal into ITS init form (or into a foldable
+		// primitive's argument) bakes the value the setq replaced.
+		List<LispVal> program = LispReader.readAllFromString("""
+				(defvar *s* "ab")
+				(setq *s* (concatenate 'string *s* *s*))
+				(defvar *v1* *s*)
+				(defparameter *v4* *s*)""");
+		List<LispVal> result = LoadInliner.inline(program, loaderOf(Map.of()));
+		assertThat(result.stream().map(LispVal::print)).containsExactly("(DEFVAR *S* \"ab\")",
+				"(SETQ *S* (CONCATENATE 'STRING *S* *S*))", "(DEFVAR *V1* *S*)", "(DEFPARAMETER *V4* *S*)");
+	}
+
+	@Test
+	void aSetqInvalidatesTheRecordedParameterEvenInAFoldableArgument() {
+		List<LispVal> program = LispReader.readAllFromString("""
+				(defparameter *dir* "/base/")
+				(setq *dir* "/other/")
+				(defparameter *file* (uiop:merge-pathnames* *dir* "child.txt"))""");
+		List<LispVal> result = LoadInliner.inline(program, loaderOf(Map.of()));
+		assertThat(result.stream().map(LispVal::print)).containsExactly("(DEFPARAMETER *DIR* \"/base/\")",
+				"(SETQ *DIR* \"/other/\")", "(DEFPARAMETER *FILE* (UIOP:MERGE-PATHNAMES* *DIR* \"child.txt\"))");
+	}
+
+	@Test
+	void anAssignmentInsideAFunctionBodyInvalidatesTheParameterConservatively() {
+		// The folder cannot know WHEN a top-level call runs relative to the fold site,
+		// so a defun body that assigns the name disqualifies it outright.
+		List<LispVal> program = LispReader.readAllFromString("""
+				(defparameter *dir* "/base/")
+				(defun reset () (setq *dir* "/x"))
+				(defparameter *file* (uiop:merge-pathnames* *dir* "child.txt"))""");
+		List<LispVal> result = LoadInliner.inline(program, loaderOf(Map.of()));
+		assertThat(result.stream().map(LispVal::print))
+			.contains("(DEFPARAMETER *FILE* (UIOP:MERGE-PATHNAMES* *DIR*" + " \"child.txt\"))");
+	}
+
+	@Test
+	void aDefparameterInsideADefunBodyRecordsNothing() {
+		// The recorded value must be the value a top-level reference sees at run time;
+		// a defparameter in a function body binds only when the body runs, so it is
+		// folded in place but never recorded.
+		List<LispVal> program = LispReader.readAllFromString("""
+				(defun setup () (defparameter *dir* "/base/"))
+				(defparameter *file* (uiop:merge-pathnames* *dir* "child.txt"))""");
+		List<LispVal> result = LoadInliner.inline(program, loaderOf(Map.of()));
+		assertThat(result.stream().map(LispVal::print))
+			.contains("(DEFPARAMETER *FILE* (UIOP:MERGE-PATHNAMES* *DIR*" + " \"child.txt\"))");
+	}
+
+	@Test
+	void aSecondDefvarDoesNotOverwriteTheRecordedValue() {
+		// defvar binds only when the variable is UNBOUND, so the value run time keeps
+		// -- and records -- is the FIRST one.
+		List<LispVal> program = LispReader.readAllFromString("""
+				(defvar *dir* "/first/")
+				(defvar *dir* "/second/")
+				(defparameter *file* (uiop:merge-pathnames* *dir* "child.txt"))""");
+		List<LispVal> result = LoadInliner.inline(program, loaderOf(Map.of()));
+		assertThat(result.stream().map(LispVal::print)).contains("(DEFPARAMETER *FILE* #P\"/first/child.txt\")");
+	}
+
+	@Test
 	void foldsFindSystemAndSystemSourceDirectory() {
 		// Inline defsystem registers the system's baseDir; a literal find-system in
 		// system-source-directory's designator position unwraps (find-system itself no

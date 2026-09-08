@@ -11228,12 +11228,13 @@ cases:
             (setq total (+ total (char-code (char s i)))))
           total))
       ;; Both strings are the same 16 characters repeated, so the long one IS the
-      ;; short one 128 times. Each is grown from the literal rather than the shorter
-      ;; (defvar *scan-long* *scan-short*), which the compile paths get wrong.
+      ;; short one 128 times: it starts FROM the short one, which needs the fold that
+      ;; records a defparameter's value to leave a variable the program has already
+      ;; assigned alone (see the class docs of cli/CompileTimePathnameFolder).
       (defvar *scan-short* "0123456789abcdef")
       (dotimes (i 6) (setq *scan-short* (concatenate 'string *scan-short* *scan-short*)))
-      (defvar *scan-long* "0123456789abcdef")
-      (dotimes (i 13) (setq *scan-long* (concatenate 'string *scan-long* *scan-long*)))
+      (defvar *scan-long* *scan-short*)
+      (dotimes (i 7) (setq *scan-long* (concatenate 'string *scan-long* *scan-long*)))
       (scan-sum-of "warm")
       (defvar *scan-t0* (get-internal-real-time))
       (defvar *scan-whole* (scan-sum-of *scan-long*))
