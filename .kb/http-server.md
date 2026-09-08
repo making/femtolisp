@@ -143,7 +143,8 @@ transport that writes the wire.** Carry the octets, do not render them.
   STREAM body. JDK: `RontoHttpServer.Response` holds `byte[] body`; `writeResponse` encodes
   nothing. `--component`: octets cross `%http:body-stream-write` as a `list<u8>` —
   `WasmComponentImportCompiler.emitStageBytesParam` stages raw array bytes instead of
-  `_str_to_mem`'s UTF-8 (`.kb/wit.md`, "list<u8> = string"). Reactor: the byte-shaped
+  `_str_to_mem`'s UTF-8 (`.kb/wit.md`, "The settled type mapping", where `list<u8>` is a
+  byte-carrying string). Reactor: the byte-shaped
   `env.writeResponseBody` sink takes them as they are.
 - Tests assert RAW response bytes (the text spelling passes on a double-encode):
   `HttpHandlerTest.directiveServesAnOctetBodyByteExactly` and its `HttpHandlerJvmTest` /
