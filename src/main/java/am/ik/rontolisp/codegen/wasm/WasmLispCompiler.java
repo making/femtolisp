@@ -4616,21 +4616,31 @@ public final class WasmLispCompiler implements LispCompiler {
 		}
 		// The funcId -> name table _fun_name binary-searches to print a closure value
 		// as #<function NAME> (interpreter parity). One 12-byte {funcId, nameOff,
-		// nameLen} row per dispatchable defun -- the SAME gate as the registry above,
-		// because those are the two directions of one fact: a name is in this table
-		// exactly when the same run could resolve that name to this funcId, and the
-		// funcIds that materialize as values are exactly the ones printing can name.
-		// Rows come out in ascending funcId order (the defun index IS the funcId),
-		// which is what the search relies on. The names are interned with the plain
-		// addString, pinned like the registry rows: the search reaches them through
-		// words in this blob, which is the shape the droppable-range scan cannot see
-		// (.kb/optimize-dead-code-elimination.md).
+		// nameLen} row per defun whose funcId MATERIALIZES as a callable value
+		// (valueFuncIds) -- printing names VALUES, never call targets: a computed
+		// designator lowers to the SYMBOL itself (see
+		// WasmFunctionFormCompiler.compileSymbolFunction), so a funcId only the registry
+		// could resolve never reaches a printer and needs no row. Rows come out in
+		// ascending funcId order (the defun index IS the funcId), which is what the
+		// search relies on. The blob is shakeable on its BASE -- its one reader is
+		// _fun_name's own i32.const -- and each interned name joins the droppable ranges
+		// PROBED ON THAT SAME WORD (see shakeableRanges): the search reaches the names
+		// only through words inside the blob, a citation the constant scan cannot
+		// follow, so blob and names live and fall together with _fun_name
+		// (.kb/optimize-dead-code-elimination.md). A hello-shaped program whose internal
+		// #'identity/#'eql values are dead-code-eliminated keeps NEITHER. The placement
+		// is unaligned (appendShakeableBlobUnalignedProbedOnBase): an alignment pad here
+		// would charge a quoted u16/u8 vector's next element for the pad it shifts,
+		// breaking the per-element cost pin
+		// (WasmLispCompilerTest#aLiteralLookupTableCostsItsOwnBytesAndNotThreeTimesThem).
 		ByteArrayOutputStream funNameRows = new ByteArrayOutputStream();
+		List<StringTable.StringEntry> funNameEntries = new ArrayList<>();
 		for (int i = 0; i < defuns.size(); i++) {
-			if (!dispatchableFuncIds.contains(i)) {
+			if (!valueFuncIds.contains(i)) {
 				continue;
 			}
 			StringTable.StringEntry funName = stringTable.addString(defuns.get(i).name);
+			funNameEntries.add(funName);
 			writeLittleEndian32(funNameRows, i); // funcId == defun index
 			writeLittleEndian32(funNameRows, funName.offset());
 			writeLittleEndian32(funNameRows, funName.length());
@@ -4638,7 +4648,8 @@ public final class WasmLispCompiler implements LispCompiler {
 		final int funNameCount = funNameRows.size() / 12;
 		// No rows: no bytes appended, so a program with no nameable function value is
 		// byte-identical to the one from before this table existed.
-		final int funNameBase = funNameCount == 0 ? 0 : stringTable.appendBlob(funNameRows.toByteArray());
+		final int funNameBase = funNameCount == 0 ? -1
+				: stringTable.appendShakeableBlobUnalignedProbedOnBase(funNameRows.toByteArray());
 		if (usesEval) {
 			WasmEvalRuntimeBuilder.SpecialFormOffsets offsets = WasmEvalRuntimeBuilder.SpecialFormOffsets.builder()
 				.add(stringTable, LispNames.QUOTE)
@@ -6871,7 +6882,8 @@ public final class WasmLispCompiler implements LispCompiler {
 		// exactly that reason).
 		int stringDataSegIndex = upperFoldSegIndex - 1;
 		List<am.ik.wasm.WasmTreeShaker.DroppableDataRange> stringRanges = stringData.length == 0 ? List.of()
-				: stringTable.shakeableRanges(stringDataSegIndex, dataBase, internBase, internRows);
+				: stringTable.shakeableRanges(stringDataSegIndex, dataBase, internBase, internRows, funNameBase,
+						funNameEntries);
 		@Nullable Map<Integer, String> funcSizeNames = debugFuncSizes()
 				? funcSizeNames(functions, lambdaDecls, dispatchPageFuncBase, dispatchPageBodies.size()) : null;
 		if (this.component) {
@@ -9634,11 +9646,18 @@ public final class WasmLispCompiler implements LispCompiler {
 		 * @param internBase the runtime intern table's absolute base address, or -1 when
 		 * the program does not intern
 		 * @param internRows the intern table's rows in blob order (empty when absent)
+		 * @param funNameBase the funcId -> name blob's absolute base address, or -1 when
+		 * the program has no nameable function value
+		 * @param funNameEntries the names the fun-name blob cites, in row order (empty
+		 * when absent) -- each offered as a range PROBED ON THE BLOB'S FIRST WORD, since
+		 * _fun_name is their only reader and reaches them through words inside the blob,
+		 * a citation the constant scan cannot follow; name, blob and _fun_name therefore
+		 * live and fall together
 		 * @return the candidate ranges, each string range followed by its row range (the
 		 * shaker orders cuts itself; this order is fixed so the module is deterministic)
 		 */
 		List<am.ik.wasm.WasmTreeShaker.DroppableDataRange> shakeableRanges(int segmentIndex, int dataBase,
-				int internBase, List<StringEntry> internRows) {
+				int internBase, List<StringEntry> internRows, int funNameBase, List<StringEntry> funNameEntries) {
 			List<StringEntry> entries = new ArrayList<>(this.shakeable.size());
 			for (String s : this.shakeable) {
 				entries.add(this.cache.get(s));
@@ -9662,9 +9681,18 @@ public final class WasmLispCompiler implements LispCompiler {
 			}
 			for (int[] blob : this.shakeableBlobs) {
 				int start = blob[0] - dataBase;
+				int probeStart = blob.length > 3 ? blob[3] - dataBase : start;
 				int probeLen = blob[2] > 0 ? blob[2] : blob[1];
-				ranges.add(new am.ik.wasm.WasmTreeShaker.DroppableDataRange(segmentIndex, start, start + blob[1], start,
-						start + probeLen));
+				ranges.add(new am.ik.wasm.WasmTreeShaker.DroppableDataRange(segmentIndex, start, start + blob[1],
+						probeStart, probeStart + probeLen));
+			}
+			if (funNameBase >= 0) {
+				int blobStart = funNameBase - dataBase;
+				for (StringEntry e : funNameEntries) {
+					int start = e.offset() - dataBase;
+					ranges.add(new am.ik.wasm.WasmTreeShaker.DroppableDataRange(segmentIndex, start, start + e.length(),
+							blobStart, blobStart + 4));
+				}
 			}
 			return ranges;
 		}
@@ -9710,13 +9738,37 @@ public final class WasmLispCompiler implements LispCompiler {
 		 * droppable range is probed on the first word only, so an unrelated small
 		 * constant landing somewhere inside a wide blob cannot pin it -- with a 755-byte
 		 * table that false retention was near-certain (todo-431's Schubfach tables are
-		 * the one user today).
+		 * the one user today). The {@code appendBlob} alignment padding BEFORE the blob
+		 * joins the cut range (probing still on the blob's own base word): padding that
+		 * exists only because this blob needed it must not survive as a zero segment when
+		 * the blob is cut.
 		 * @param blob the bytes to place
 		 * @return the absolute offset where the blob was placed
 		 */
 		int appendShakeableBlobProbedOnBase(byte[] blob) {
+			int beforePadding = this.nextOffset;
 			int offset = appendBlob(blob);
-			this.shakeableBlobs.add(new int[] { offset, blob.length, 4 });
+			this.shakeableBlobs.add(new int[] { beforePadding, offset - beforePadding + blob.length, 4, offset });
+			return offset;
+		}
+
+		/**
+		 * {@link #appendShakeableBlobProbedOnBase} WITHOUT the 4-byte alignment. The
+		 * funcId -> name table is its user: its only reader loads rows with plain
+		 * {@code i32.load}s, and wasm linear memory defines an access at ANY address, so
+		 * the alignment bought nothing while making the blob's leading padding depend on
+		 * the phase of the packed literals placed before it -- one more u16 element in a
+		 * quoted vector then cost 4 module bytes instead of its own 2. With no padding
+		 * there is no leading pad to join the cut range either: the range is the blob
+		 * exactly.
+		 * @param blob the bytes to place
+		 * @return the absolute offset where the blob was placed
+		 */
+		int appendShakeableBlobUnalignedProbedOnBase(byte[] blob) {
+			int offset = this.nextOffset;
+			this.data.write(blob, 0, blob.length);
+			this.nextOffset += blob.length;
+			this.shakeableBlobs.add(new int[] { offset, blob.length, 4, offset });
 			return offset;
 		}
 
