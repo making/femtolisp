@@ -3,6 +3,9 @@ package am.ik.rontolisp.compiler;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
+import am.ik.rontolisp.LispCons;
+import am.ik.rontolisp.SourceProvenance;
+import am.ik.rontolisp.macro.LispMacroExpander;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -47,6 +50,21 @@ public final class CompileWarnings {
 		}
 		else {
 			pending.add(message);
+		}
+	}
+
+	/**
+	 * Warns about an expansion-time argument-shape rejection the backend is compiling as
+	 * a call-time {@code program-error} ({@code LispMacroExpander.lowerProgramError}, the
+	 * undefined-function precedent): the program still fails at that call, so say so at
+	 * compile time, where the position is known. A {@code %program-error} whose message
+	 * is built at run time is a runtime check, not a static rejection, and warns nothing.
+	 * @param form the {@code %program-error} form (carrying the rejected call's position)
+	 */
+	public static void warnStaticProgramError(LispCons form) {
+		String message = LispMacroExpander.staticProgramErrorMessage(form);
+		if (message != null) {
+			warn(SourceProvenance.prefix(form) + "warning: " + message + "; compiled as a call-time program-error");
 		}
 	}
 

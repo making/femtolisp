@@ -14891,6 +14891,38 @@ cases:
       "Expected integer, got: CI-TE-SYM"
       "Expected number, got: NIL"
       "Expected integer, got: NIL"
+  # CLHS 3.5.1.4-6 / .kb/error-handling.md, "Argument-shape errors signal a
+  # catchable program-error": a keyword the operator does not accept, an odd
+  # keyword tail and a non-keyword in keyword position signal a CATCHABLE
+  # program-error carrying the same text on every backend (the expansion-time
+  # rejection lowers to a call-time signal), a first-class call goes through the
+  # same validator, and :allow-other-keys t -- the LEFTMOST pair -- admits the
+  # extra keys (CLHS 3.4.1.4.1.1); the key itself is always accepted.
+  - name: argument-shape-errors-signal-program-error
+    source: |
+      (print (handler-case (remove 1 '(1 2 3) :bogus 4) (program-error (c) :program-error) (error (c) :plain)))
+      (print (handler-case (remove 1 '(1 2 3) :bogus 4) (error (c) (princ-to-string c))))
+      (print (handler-case (find 1 '(1 2) :key) (program-error (c) :odd-tail)))
+      (print (handler-case (remove 'a nil 'ci-pe-bad t) (program-error (c) :not-a-keyword)))
+      (print (handler-case (remove-duplicates '(1 1 2) :bogus t) (program-error (c) :rd)))
+      (print (handler-case (funcall (lambda (x &key y) (list x y)) 1 :z 2) (program-error (c) (princ-to-string c))))
+      (print (remove 'a '(a b c a d) :bad t :allow-other-keys t))
+      (print (remove 'a '(a b c a d) :bad1 t :allow-other-keys t :bad2 t :allow-other-keys nil :bad3 t))
+      (print (remove 'a '(a b c a d) :allow-other-keys nil))
+      (print (handler-case (remove 'a '(a b) :allow-other-keys nil :bad t) (program-error (c) :checked)))
+      (print (funcall (lambda (x &key y) (list x y)) 1 :z 2 :allow-other-keys t))
+    expected: |
+      :PROGRAM-ERROR
+      "REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY, got: :BOGUS"
+      :ODD-TAIL
+      :NOT-A-KEYWORD
+      :RD
+      "Unknown keyword argument: :Z"
+      (B C D)
+      (B C D)
+      (B C D)
+      :CHECKED
+      (1 NIL)
 
   # The tokenizer package (tokenizers.lisp, .kb/tokenizers.md): the five byte-level
   # pre-tokenizer shapes, the ranked merge loop, the special-token scan, Llama 3's

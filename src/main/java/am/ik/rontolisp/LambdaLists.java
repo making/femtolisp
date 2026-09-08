@@ -577,7 +577,8 @@ public final class LambdaLists {
 	/**
 	 * A {@code do} loop over the keyword tail signalling on the first indicator that is
 	 * not a declared keyword, unless the caller passed {@code :allow-other-keys} with a
-	 * true value.
+	 * true value. The signal is a {@code program-error} (CLHS 3.5.1.4), through the
+	 * internal {@code %program-error} primitive every backend lowers.
 	 */
 	private static LispVal unknownKeyCheck(LispSymbol source, List<KeyParam> keys) {
 		LispSymbol cur = new LispSymbol(CUR_VAR);
@@ -601,8 +602,11 @@ public final class LambdaLists {
 		LispVal callerOverride = list(new LispSymbol(LispNames.OR),
 				list(new LispSymbol(LispNames.GETF), source, new LispSymbol(LispNames.ALLOW_OTHER_KEYS_KEYWORD)),
 				list(new LispSymbol(LispNames.GETF), source, new LispSymbol(":ALLOW-OTHER-KEYS")));
-		LispVal signal = list(new LispSymbol(LispNames.ERROR), new LispString("Unknown keyword argument: ~s"),
-				call(LispNames.CAR, cur));
+		// The message is concatenated rather than formatted: no format machinery for a
+		// check every &key function carries.
+		LispVal signal = list(new LispSymbol(LispNames.PROGRAM_ERROR_INTERNAL),
+				list(new LispSymbol(LispNames.STRING_CONCAT), new LispString("Unknown keyword argument: "),
+						call(LispNames.PRIN1_TO_STRING, call(LispNames.CAR, cur))));
 		LispVal body = list(new LispSymbol(LispNames.IF), ok, LispNil.INSTANCE,
 				list(new LispSymbol(LispNames.IF), callerOverride, LispNil.INSTANCE, signal));
 		return list(new LispSymbol(LispNames.DO), bindings, endClause, body);

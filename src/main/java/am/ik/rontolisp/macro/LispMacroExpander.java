@@ -22,6 +22,7 @@ import am.ik.rontolisp.LispVal;
 import am.ik.rontolisp.PackageRegistry;
 import am.ik.rontolisp.UiopExports;
 import am.ik.rontolisp.PackageResolver;
+import am.ik.rontolisp.SourceProvenance;
 import am.ik.rontolisp.StructLiteralFolder;
 import am.ik.rontolisp.reader.Features;
 import am.ik.rontolisp.reader.LispReader;
@@ -2969,7 +2970,7 @@ public final class LispMacroExpander {
 	public static LispVal expandReadCharNoHang(LispCons cons) {
 		List<LispVal> parts = cons.toList();
 		if (parts.size() > 4) {
-			throw new UnsupportedOperationException(
+			return programErrorForm(cons,
 					LispNames.READ_CHAR_NO_HANG + " expects 0 to 3 arguments, got " + (parts.size() - 1));
 		}
 		List<LispVal> call = new ArrayList<>();
@@ -2996,7 +2997,7 @@ public final class LispMacroExpander {
 	public static LispVal expandUnreadChar(LispCons cons) {
 		List<LispVal> parts = cons.toList();
 		if (parts.size() < 2 || parts.size() > 3) {
-			throw new UnsupportedOperationException(
+			return programErrorForm(cons,
 					LispNames.UNREAD_CHAR + " expects 1 or 2 arguments, got " + (parts.size() - 1));
 		}
 		List<LispVal> body = new ArrayList<>();
@@ -3151,7 +3152,10 @@ public final class LispMacroExpander {
 		if (parts.size() < 3) {
 			throw new IllegalArgumentException(LispNames.STABLE_SORT + " expects a sequence and a predicate");
 		}
-		requireKeywords(LispNames.STABLE_SORT, parts, 3, LispNames.KEY_KEYWORD);
+		LispVal keywordError = keywordTailError(cons, LispNames.STABLE_SORT, parts, 3, LispNames.KEY_KEYWORD);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol pred = new LispSymbol("__ssort_pred");
 		LispSymbol key = new LispSymbol("__ssort_key");
@@ -4739,7 +4743,10 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandMember(LispCons cons) {
 		List<LispVal> parts = cons.toList();
-		requireTestKeyKeywords(LispNames.MEMBER, parts, 3);
+		LispVal keywordError = testKeyKeywordTailError(cons, LispNames.MEMBER, parts, 3);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		TestSpec testForm = testSpec(parts, 3);
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol item = new LispSymbol("__member_item");
@@ -4769,20 +4776,13 @@ public final class LispMacroExpander {
 		return null;
 	}
 
-	// Validates the keyword tail of a sequence/alist call: keyword/value pairs only, and
-	// every keyword must be :test, :test-not or :key. Unsupported keywords (:from-end,
-	// :start, ...) are rejected loudly rather than silently ignored.
-	private static void requireTestKeyKeywords(String name, List<LispVal> parts, int start) {
-		for (int i = start; i < parts.size(); i += 2) {
-			if (!(parts.get(i) instanceof LispSymbol kw) || (!LispNames.TEST_KEYWORD.equals(kw.name())
-					&& !LispNames.TEST_NOT_KEYWORD.equals(kw.name()) && !LispNames.KEY_KEYWORD.equals(kw.name()))) {
-				throw new IllegalArgumentException(
-						name + " expects keyword arguments :test/:test-not/:key, got: " + parts.get(i).print());
-			}
-			if (i + 1 >= parts.size()) {
-				throw new IllegalArgumentException(name + " expects a value after " + kw.name());
-			}
-		}
+	// The keyword tail of a sequence/alist call must be keyword/value pairs over :test,
+	// :test-not and :key; anything else (:from-end, :start, ...) is rejected rather than
+	// silently ignored -- as the program-error form the call lowers to, or null.
+	private static @Nullable LispVal testKeyKeywordTailError(LispCons call, String name, List<LispVal> parts,
+			int start) {
+		return keywordTailError(call, name, parts, start, LispNames.TEST_KEYWORD, LispNames.TEST_NOT_KEYWORD,
+				LispNames.KEY_KEYWORD);
 	}
 
 	/**
@@ -4867,8 +4867,12 @@ public final class LispMacroExpander {
 	/** {@link #expandFind(LispCons)} with the array-gate flag (see expandPosition). */
 	public static LispVal expandFind(LispCons cons, boolean arraysExist) {
 		List<LispVal> parts = cons.toList();
-		requireKeywords(LispNames.FIND, parts, 3, LispNames.TEST_KEYWORD, LispNames.TEST_NOT_KEYWORD,
-				LispNames.KEY_KEYWORD, LispNames.START_KEYWORD, LispNames.END_KEYWORD, LispNames.FROM_END_KEYWORD);
+		LispVal keywordError = keywordTailError(cons, LispNames.FIND, parts, 3, LispNames.TEST_KEYWORD,
+				LispNames.TEST_NOT_KEYWORD, LispNames.KEY_KEYWORD, LispNames.START_KEYWORD, LispNames.END_KEYWORD,
+				LispNames.FROM_END_KEYWORD);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		return buildPositionScan(parts, PositionMode.ITEM, PositionResult.ELEMENT, arraysExist);
 	}
 
@@ -4887,8 +4891,11 @@ public final class LispMacroExpander {
 	/** {@link #expandFindIf(LispCons)} with the array-gate flag (see expandPosition). */
 	public static LispVal expandFindIf(LispCons cons, boolean arraysExist) {
 		List<LispVal> parts = cons.toList();
-		requireKeywords(LispNames.FIND_IF, parts, 3, LispNames.KEY_KEYWORD, LispNames.START_KEYWORD,
-				LispNames.END_KEYWORD, LispNames.FROM_END_KEYWORD);
+		LispVal keywordError = keywordTailError(cons, LispNames.FIND_IF, parts, 3, LispNames.KEY_KEYWORD,
+				LispNames.START_KEYWORD, LispNames.END_KEYWORD, LispNames.FROM_END_KEYWORD);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		return buildPositionScan(parts, PositionMode.PREDICATE, PositionResult.ELEMENT, arraysExist);
 	}
 
@@ -4908,8 +4915,11 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandFindIfNot(LispCons cons, boolean arraysExist) {
 		List<LispVal> parts = cons.toList();
-		requireKeywords(LispNames.FIND_IF_NOT, parts, 3, LispNames.KEY_KEYWORD, LispNames.START_KEYWORD,
-				LispNames.END_KEYWORD, LispNames.FROM_END_KEYWORD);
+		LispVal keywordError = keywordTailError(cons, LispNames.FIND_IF_NOT, parts, 3, LispNames.KEY_KEYWORD,
+				LispNames.START_KEYWORD, LispNames.END_KEYWORD, LispNames.FROM_END_KEYWORD);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		return buildPositionScan(parts, PositionMode.PREDICATE_NOT, PositionResult.ELEMENT, arraysExist);
 	}
 
@@ -4938,8 +4948,12 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandPosition(LispCons cons, boolean arraysExist) {
 		List<LispVal> parts = cons.toList();
-		requireKeywords(LispNames.POSITION, parts, 3, LispNames.TEST_KEYWORD, LispNames.TEST_NOT_KEYWORD,
-				LispNames.KEY_KEYWORD, LispNames.START_KEYWORD, LispNames.END_KEYWORD, LispNames.FROM_END_KEYWORD);
+		LispVal keywordError = keywordTailError(cons, LispNames.POSITION, parts, 3, LispNames.TEST_KEYWORD,
+				LispNames.TEST_NOT_KEYWORD, LispNames.KEY_KEYWORD, LispNames.START_KEYWORD, LispNames.END_KEYWORD,
+				LispNames.FROM_END_KEYWORD);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		return buildPositionScan(parts, PositionMode.ITEM, PositionResult.INDEX, arraysExist);
 	}
 
@@ -4961,8 +4975,11 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandPositionIf(LispCons cons, boolean arraysExist) {
 		List<LispVal> parts = cons.toList();
-		requireKeywords(LispNames.POSITION_IF, parts, 3, LispNames.KEY_KEYWORD, LispNames.START_KEYWORD,
-				LispNames.END_KEYWORD, LispNames.FROM_END_KEYWORD);
+		LispVal keywordError = keywordTailError(cons, LispNames.POSITION_IF, parts, 3, LispNames.KEY_KEYWORD,
+				LispNames.START_KEYWORD, LispNames.END_KEYWORD, LispNames.FROM_END_KEYWORD);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		return buildPositionScan(parts, PositionMode.PREDICATE, PositionResult.INDEX, arraysExist);
 	}
 
@@ -4983,8 +5000,11 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandPositionIfNot(LispCons cons, boolean arraysExist) {
 		List<LispVal> parts = cons.toList();
-		requireKeywords(LispNames.POSITION_IF_NOT, parts, 3, LispNames.KEY_KEYWORD, LispNames.START_KEYWORD,
-				LispNames.END_KEYWORD, LispNames.FROM_END_KEYWORD);
+		LispVal keywordError = keywordTailError(cons, LispNames.POSITION_IF_NOT, parts, 3, LispNames.KEY_KEYWORD,
+				LispNames.START_KEYWORD, LispNames.END_KEYWORD, LispNames.FROM_END_KEYWORD);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		return buildPositionScan(parts, PositionMode.PREDICATE_NOT, PositionResult.INDEX, arraysExist);
 	}
 
@@ -5147,8 +5167,11 @@ public final class LispMacroExpander {
 		if (parts.size() < 2) {
 			throw new IllegalArgumentException("parse-integer expects a string: " + cons.print());
 		}
-		requireKeywords(LispNames.PARSE_INTEGER, parts, 2, LispNames.START_KEYWORD, LispNames.END_KEYWORD,
-				LispNames.RADIX_KEYWORD, LispNames.JUNK_ALLOWED_KEYWORD);
+		LispVal keywordError = keywordTailError(cons, LispNames.PARSE_INTEGER, parts, 2, LispNames.START_KEYWORD,
+				LispNames.END_KEYWORD, LispNames.RADIX_KEYWORD, LispNames.JUNK_ALLOWED_KEYWORD);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		LispVal startForm = keywordValue(parts, 2, LispNames.START_KEYWORD);
 		LispVal endForm = keywordValue(parts, 2, LispNames.END_KEYWORD);
 		LispVal radixForm = keywordValue(parts, 2, LispNames.RADIX_KEYWORD);
@@ -5406,17 +5429,156 @@ public final class LispMacroExpander {
 		return hasLetter ? affix.toUpperCase(java.util.Locale.ROOT) : affix;
 	}
 
-	private static void requireKeywords(String name, List<LispVal> parts, int start, String... allowed) {
-		for (int i = start; i < parts.size(); i += 2) {
-			if (!(parts.get(i) instanceof LispSymbol kw)
-					|| List.of(allowed).stream().noneMatch(a -> a.equals(kw.name()))) {
-				throw new IllegalArgumentException(name + " expects keyword arguments " + String.join("/", allowed)
-						+ ", got: " + parts.get(i).print());
-			}
-			if (i + 1 >= parts.size()) {
-				throw new IllegalArgumentException(name + " expects a value after " + kw.name());
+	// The (%program-error "...") form a call with a malformed keyword tail lowers to, or
+	// null when the tail is well-formed. The expander RETURNS the signal instead of
+	// throwing: CLHS 3.5.1.4-6 make a bad keyword, an odd tail and a wrong count
+	// program-errors the CALL signals, so the interpreter's handler-case sees them and
+	// the compiled backends keep the program compilable, signaling at the call site
+	// (the undefined-function precedent). The form inherits the call's position so a
+	// compile-time warning can name it.
+	private static @Nullable LispVal keywordTailError(LispCons call, String name, List<LispVal> parts, int start,
+			String... allowed) {
+		String problem = keywordTailProblem(name, parts, start, List.of(allowed));
+		return problem == null ? null : programErrorForm(call, problem);
+	}
+
+	/**
+	 * The complaint against a call's keyword tail, or null when it is well-formed: from
+	 * {@code start} the tail must be pairs whose indicator is one of {@code allowed},
+	 * with CLHS 3.4.1.4.1.1's suppression -- the LEFTMOST {@code :allow-other-keys} pair
+	 * decides, a non-nil value makes every indicator acceptable, and the key itself is
+	 * always accepted. A value that is not a literal nil counts as true, so a computed
+	 * {@code :allow-other-keys} suppresses statically (the lenient direction). An odd
+	 * tail is malformed whatever the suppression says. Shared by the expansion-time check
+	 * (over argument FORMS) and the interpreter's first-class validators (over argument
+	 * VALUES), so the two cannot disagree on the rule or the text.
+	 * @param name the operator name, for the message
+	 * @param parts the call's elements (operator first) or its argument values
+	 * @param start the index the keyword tail begins at
+	 * @param allowed the keywords the operator accepts
+	 * @return the message, or null
+	 */
+	public static @Nullable String keywordTailProblem(String name, List<LispVal> parts, int start,
+			List<String> allowed) {
+		boolean suppressed = false;
+		for (int i = start; i + 1 < parts.size(); i += 2) {
+			if (parts.get(i) instanceof LispSymbol kw && LispNames.ALLOW_OTHER_KEYS_KEYWORD.equals(kw.name())) {
+				suppressed = !isLiteralNil(parts.get(i + 1));
+				break;
 			}
 		}
+		for (int i = start; i < parts.size(); i += 2) {
+			LispVal indicator = parts.get(i);
+			boolean known = indicator instanceof LispSymbol kw
+					&& (LispNames.ALLOW_OTHER_KEYS_KEYWORD.equals(kw.name()) || allowed.contains(kw.name()));
+			if (!known && !suppressed) {
+				return name + " expects keyword arguments " + String.join("/", allowed) + ", got: " + indicator.print();
+			}
+			if (i + 1 >= parts.size()) {
+				return name + " expects a value after " + indicator.print();
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * {@code (%program-error "message")}: the signal an argument-shape rejection lowers
+	 * to (see {@link LispNames#PROGRAM_ERROR_INTERNAL}). The form inherits the position
+	 * of the call it stands for, so the compile paths can warn where the program will
+	 * fail.
+	 * @param call the rejected call, or null when it has no position to inherit
+	 * @param message the program-error's report text
+	 * @return the signalling form
+	 */
+	public static LispVal programErrorForm(@Nullable LispCons call, String message) {
+		LispVal form = listToCons(List.of(new LispSymbol(LispNames.PROGRAM_ERROR_INTERNAL), new LispString(message)));
+		return call == null ? form : SourceProvenance.inherit(call, form);
+	}
+
+	/**
+	 * Whether the form is a {@code %program-error} signal with a literal message -- the
+	 * shape an expansion-time rejection produces, and the one a compile path warns about
+	 * (a runtime-built message is a runtime check, not a static rejection).
+	 * @param form the form
+	 * @return the literal message, or null
+	 */
+	public static @Nullable String staticProgramErrorMessage(LispVal form) {
+		return form instanceof LispCons cons && cons.car() instanceof LispSymbol op
+				&& LispNames.PROGRAM_ERROR_INTERNAL.equals(op.name()) && cons.cdr() instanceof LispCons rest
+				&& rest.car() instanceof LispString message ? message.value() : null;
+	}
+
+	/**
+	 * Lowers {@code (%program-error message)} for a compiled backend. Where a handler
+	 * landing pad exists ({@code typed}) the signal carries a fresh {@code program-error}
+	 * instance --
+	 * {@code (%error-cond (%obj-new '%class-PROGRAM-ERROR ... message) message)}, the
+	 * same construction a pad synthesizes for a raw failure -- so a {@code program-error}
+	 * clause matches and the report prints the message. Without a pad nothing can observe
+	 * the class, the instance representation may not even exist, and the plain
+	 * {@code %error} channel prints the identical top-level line. A runtime-built message
+	 * is bound once, since both operands read it.
+	 * @param cons the {@code %program-error} form
+	 * @param closRegistry the class registry (for the seeded slot layout)
+	 * @param typed whether the signal may carry an instance
+	 * @return the lowered form
+	 */
+	public static LispVal lowerProgramError(LispCons cons, ClosRegistry closRegistry, boolean typed) {
+		LispVal message = cons.cdr() instanceof LispCons rest ? rest.car() : LispNil.INSTANCE;
+		if (!typed) {
+			return callOf(LispNames.ERROR_INTERNAL, message);
+		}
+		if (message instanceof LispString) {
+			return listToCons(List.of(new LispSymbol(LispNames.ERROR_COND_INTERNAL),
+					reportingConditionForm(closRegistry, ClosRegistry.PROGRAM_ERROR_CLASS_NAME, message), message));
+		}
+		LispSymbol messageVar = new LispSymbol("__pe_msg");
+		return makeLet(messageVar.name(), message, listToCons(List.of(new LispSymbol(LispNames.ERROR_COND_INTERNAL),
+				reportingConditionForm(closRegistry, ClosRegistry.PROGRAM_ERROR_CLASS_NAME, messageVar), messageVar)));
+	}
+
+	/**
+	 * Whether the program establishes a handler LANDING PAD -- a {@code handler-case},
+	 * {@code handler-bind}, {@code ignore-errors} or the {@code %hb-guard} the second
+	 * lowers to, in operator position of an evaluated form (quoted data does not count).
+	 * The gate for carrying a {@code program-error} INSTANCE on the compiled backends
+	 * ({@link #lowerProgramError}) and for baking its layout: a pad is the only thing
+	 * that can observe the class, and a pad also forces the instance representation on
+	 * ({@code mayCreateInstances}), so behind it the construction is always compilable.
+	 * @param program the top-level forms
+	 * @return whether a pad exists
+	 */
+	public static boolean establishesLandingPad(List<LispVal> program) {
+		for (LispVal form : program) {
+			if (containsOperator(form, LANDING_PAD_HEADS)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Whether an evaluated sub-form of {@code form} has one of {@code heads} as its
+	 * operator.
+	 */
+	private static boolean containsOperator(LispVal form, java.util.Set<String> heads) {
+		if (!(form instanceof LispCons cons)) {
+			return false;
+		}
+		if (cons.car() instanceof LispSymbol head) {
+			if (LispNames.QUOTE.equals(head.name())) {
+				return false;
+			}
+			if (heads.contains(LispSymbol.memberName(head.name()))) {
+				return true;
+			}
+		}
+		for (LispVal rest = cons; rest instanceof LispCons cell; rest = cell.cdr()) {
+			if (containsOperator(cell.car(), heads)) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**
@@ -5428,8 +5590,11 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandCount(LispCons cons) {
 		List<LispVal> parts = cons.toList();
-		requireKeywords(LispNames.COUNT, parts, 3, LispNames.TEST_KEYWORD, LispNames.TEST_NOT_KEYWORD,
-				LispNames.KEY_KEYWORD, LispNames.START_KEYWORD, LispNames.END_KEYWORD);
+		LispVal keywordError = keywordTailError(cons, LispNames.COUNT, parts, 3, LispNames.TEST_KEYWORD,
+				LispNames.TEST_NOT_KEYWORD, LispNames.KEY_KEYWORD, LispNames.START_KEYWORD, LispNames.END_KEYWORD);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		TestSpec testForm = testSpec(parts, 3);
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		// :start/:end restrict the scan to a subsequence, the same way reduce's do
@@ -5502,7 +5667,10 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandAssoc(LispCons cons) {
 		List<LispVal> parts = cons.toList();
-		requireTestKeyKeywords(LispNames.ASSOC, parts, 3);
+		LispVal keywordError = testKeyKeywordTailError(cons, LispNames.ASSOC, parts, 3);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		TestSpec testForm = testSpec(parts, 3);
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol key = new LispSymbol("__assoc_key");
@@ -5772,15 +5940,10 @@ public final class LispMacroExpander {
 		List<LispVal> parts = cons.toList();
 		String operator = cons.car() instanceof LispSymbol op ? LispSymbol.memberName(op.name())
 				: LispNames.REMOVE_DUPLICATES;
-		for (int i = 2; i < parts.size(); i += 2) {
-			if (!(parts.get(i) instanceof LispSymbol kw) || (!LispNames.TEST_KEYWORD.equals(kw.name())
-					&& !LispNames.KEY_KEYWORD.equals(kw.name()) && !LispNames.FROM_END_KEYWORD.equals(kw.name()))) {
-				throw new IllegalArgumentException(
-						operator + " expects keyword arguments :test/:key/:from-end, got: " + parts.get(i).print());
-			}
-			if (i + 1 >= parts.size()) {
-				throw new IllegalArgumentException(operator + " expects a value after " + kw.name());
-			}
+		LispVal keywordError = keywordTailError(cons, operator, parts, 2, LispNames.TEST_KEYWORD, LispNames.KEY_KEYWORD,
+				LispNames.FROM_END_KEYWORD);
+		if (keywordError != null) {
+			return keywordError;
 		}
 		TestSpec testForm = testSpec(parts, 2);
 		LispVal keyForm = keywordValue(parts, 2, LispNames.KEY_KEYWORD);
@@ -6040,7 +6203,10 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandAdjoin(LispCons cons) {
 		List<LispVal> parts = cons.toList();
-		requireTestKeyKeywords(LispNames.ADJOIN, parts, 3);
+		LispVal keywordError = testKeyKeywordTailError(cons, LispNames.ADJOIN, parts, 3);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		TestSpec testForm = testSpec(parts, 3);
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol item = new LispSymbol("__adjoin_item");
@@ -6067,7 +6233,10 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandUnion(LispCons cons) {
 		List<LispVal> parts = cons.toList();
-		requireTestKeyKeywords(LispNames.UNION, parts, 3);
+		LispVal keywordError = testKeyKeywordTailError(cons, LispNames.UNION, parts, 3);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		TestSpec testForm = testSpec(parts, 3);
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol cur = new LispSymbol("__un_cur");
@@ -6098,7 +6267,10 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandIntersection(LispCons cons) {
 		List<LispVal> parts = cons.toList();
-		requireTestKeyKeywords(LispNames.INTERSECTION, parts, 3);
+		LispVal keywordError = testKeyKeywordTailError(cons, LispNames.INTERSECTION, parts, 3);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		TestSpec testForm = testSpec(parts, 3);
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol cur = new LispSymbol("__in_cur");
@@ -6130,7 +6302,10 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandSetDifference(LispCons cons) {
 		List<LispVal> parts = cons.toList();
-		requireTestKeyKeywords(LispNames.SET_DIFFERENCE, parts, 3);
+		LispVal keywordError = testKeyKeywordTailError(cons, LispNames.SET_DIFFERENCE, parts, 3);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		TestSpec testForm = testSpec(parts, 3);
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol cur = new LispSymbol("__sd_cur");
@@ -6163,7 +6338,10 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandSubsetp(LispCons cons) {
 		List<LispVal> parts = cons.toList();
-		requireTestKeyKeywords(LispNames.SUBSETP, parts, 3);
+		LispVal keywordError = testKeyKeywordTailError(cons, LispNames.SUBSETP, parts, 3);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		TestSpec testForm = testSpec(parts, 3);
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol cur = new LispSymbol("__sp_cur");
@@ -6291,7 +6469,10 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandRemove(LispCons cons, boolean arraysExist) {
 		List<LispVal> parts = cons.toList();
-		requireTestKeyKeywords(LispNames.REMOVE, parts, 3);
+		LispVal keywordError = testKeyKeywordTailError(cons, LispNames.REMOVE, parts, 3);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		TestSpec testForm = testSpec(parts, 3);
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol item = new LispSymbol("__remove_item");
@@ -6324,7 +6505,10 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandRemoveIf(LispCons cons, boolean arraysExist) {
 		List<LispVal> parts = cons.toList();
-		requireKeywords(LispNames.REMOVE_IF, parts, 3, LispNames.KEY_KEYWORD);
+		LispVal keywordError = keywordTailError(cons, LispNames.REMOVE_IF, parts, 3, LispNames.KEY_KEYWORD);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol pred = new LispSymbol("__removeif_pred");
 		return makeLet(pred.name(), parts.get(1),
@@ -6353,7 +6537,10 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandRemoveIfNot(LispCons cons, boolean arraysExist) {
 		List<LispVal> parts = cons.toList();
-		requireKeywords(LispNames.REMOVE_IF_NOT, parts, 3, LispNames.KEY_KEYWORD);
+		LispVal keywordError = keywordTailError(cons, LispNames.REMOVE_IF_NOT, parts, 3, LispNames.KEY_KEYWORD);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol pred = new LispSymbol("__removeifnot_pred");
 		return makeLet(pred.name(), parts.get(1),
@@ -6384,7 +6571,10 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandSubstitute(LispCons cons, boolean arraysExist) {
 		List<LispVal> parts = cons.toList();
-		requireTestKeyKeywords(LispNames.SUBSTITUTE, parts, 4);
+		LispVal keywordError = testKeyKeywordTailError(cons, LispNames.SUBSTITUTE, parts, 4);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		TestSpec testForm = testSpec(parts, 4);
 		LispVal keyForm = keywordValue(parts, 4, LispNames.KEY_KEYWORD);
 		LispSymbol newItem = new LispSymbol("__subst_new");
@@ -6434,7 +6624,10 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandNsubstitute(LispCons cons, boolean arraysExist) {
 		List<LispVal> parts = cons.toList();
-		requireTestKeyKeywords(LispNames.NSUBSTITUTE, parts, 4);
+		LispVal keywordError = testKeyKeywordTailError(cons, LispNames.NSUBSTITUTE, parts, 4);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		TestSpec testForm = testSpec(parts, 4);
 		LispVal keyForm = keywordValue(parts, 4, LispNames.KEY_KEYWORD);
 		LispSymbol newItem = new LispSymbol("__nsub_new");
@@ -6530,7 +6723,10 @@ public final class LispMacroExpander {
 	public static LispVal expandSubstituteIf(LispCons cons, boolean arraysExist, boolean negated) {
 		String name = negated ? LispNames.SUBSTITUTE_IF_NOT : LispNames.SUBSTITUTE_IF;
 		List<LispVal> parts = cons.toList();
-		requireKeywords(name, parts, 4, LispNames.KEY_KEYWORD);
+		LispVal keywordError = keywordTailError(cons, name, parts, 4, LispNames.KEY_KEYWORD);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		LispVal keyForm = keywordValue(parts, 4, LispNames.KEY_KEYWORD);
 		LispSymbol newItem = new LispSymbol("__substif_new");
 		LispSymbol pred = new LispSymbol("__substif_pred");
@@ -6601,7 +6797,10 @@ public final class LispMacroExpander {
 	private static LispVal expandNsubstituteIf(LispCons cons, boolean arraysExist, boolean negated) {
 		String name = negated ? LispNames.NSUBSTITUTE_IF_NOT : LispNames.NSUBSTITUTE_IF;
 		List<LispVal> parts = cons.toList();
-		requireKeywords(name, parts, 4, LispNames.KEY_KEYWORD);
+		LispVal keywordError = keywordTailError(cons, name, parts, 4, LispNames.KEY_KEYWORD);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		LispVal keyForm = keywordValue(parts, 4, LispNames.KEY_KEYWORD);
 		LispSymbol newItem = new LispSymbol("__nsubif_new");
 		LispSymbol pred = new LispSymbol("__nsubif_pred");
@@ -6650,7 +6849,10 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandDelete(LispCons cons, boolean arraysExist) {
 		List<LispVal> parts = cons.toList();
-		requireTestKeyKeywords(LispNames.DELETE, parts, 3);
+		LispVal keywordError = testKeyKeywordTailError(cons, LispNames.DELETE, parts, 3);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		TestSpec testForm = testSpec(parts, 3);
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol item = new LispSymbol("__delete_item");
@@ -6828,7 +7030,7 @@ public final class LispMacroExpander {
 	public static LispVal expandLast(LispCons cons) {
 		List<LispVal> parts = cons.toList();
 		if (parts.size() < 2 || parts.size() > 3) {
-			throw new UnsupportedOperationException("last expects 1 or 2 arguments, got " + (parts.size() - 1));
+			return programErrorForm(cons, "last expects 1 or 2 arguments, got " + (parts.size() - 1));
 		}
 		if (parts.size() == 3) {
 			return expandLastN(parts.get(1), parts.get(2));
@@ -7748,11 +7950,10 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandMakeStringOutputStream(LispCons cons) {
 		List<LispVal> parts = cons.toList();
-		for (int i = 1; i < parts.size(); i += 2) {
-			if (i + 1 >= parts.size() || !(parts.get(i) instanceof LispSymbol key) || !key.isKeyword()) {
-				throw new UnsupportedOperationException(
-						LispNames.MAKE_STRING_OUTPUT_STREAM + " expects keyword arguments only");
-			}
+		LispVal keywordError = keywordTailError(cons, LispNames.MAKE_STRING_OUTPUT_STREAM, parts, 1,
+				LispNames.ELEMENT_TYPE_KEYWORD);
+		if (keywordError != null) {
+			return keywordError;
 		}
 		return listToCons(List.of(new LispSymbol(LispNames.MAKE_STRING_OUTPUT_STREAM_INTERNAL)));
 	}
@@ -7769,7 +7970,7 @@ public final class LispMacroExpander {
 	public static LispVal expandMakeStringInputStream(LispCons cons) {
 		List<LispVal> parts = cons.toList();
 		if (parts.size() < 2 || parts.size() > 4) {
-			throw new UnsupportedOperationException(
+			return programErrorForm(cons,
 					LispNames.MAKE_STRING_INPUT_STREAM + " expects 1 to 3 arguments, got " + (parts.size() - 1));
 		}
 		LispVal string = parts.get(1);
@@ -7794,7 +7995,7 @@ public final class LispMacroExpander {
 	public static LispVal expandGetOutputStreamString(LispCons cons) {
 		List<LispVal> parts = cons.toList();
 		if (parts.size() != 2) {
-			throw new UnsupportedOperationException(
+			return programErrorForm(cons,
 					LispNames.GET_OUTPUT_STREAM_STRING + " expects 1 argument, got " + (parts.size() - 1));
 		}
 		return callOf(LispNames.STRING_STREAM_CONTENTS_INTERNAL, parts.get(1));
@@ -7836,8 +8037,7 @@ public final class LispMacroExpander {
 	public static LispVal expandPeekChar(LispCons cons) {
 		List<LispVal> parts = cons.toList();
 		if (parts.size() > 5) {
-			throw new UnsupportedOperationException(
-					LispNames.PEEK_CHAR + " expects 0 to 4 arguments, got " + (parts.size() - 1));
+			return programErrorForm(cons, LispNames.PEEK_CHAR + " expects 0 to 4 arguments, got " + (parts.size() - 1));
 		}
 		LispVal peekType = parts.size() > 1 ? parts.get(1) : LispNil.INSTANCE;
 		LispVal stream = parts.size() > 2 ? parts.get(2) : LispNil.INSTANCE;
@@ -7923,7 +8123,7 @@ public final class LispMacroExpander {
 	public static LispVal expandMakeSynonymStream(LispCons cons) {
 		List<LispVal> parts = cons.toList();
 		if (parts.size() != 2) {
-			throw new UnsupportedOperationException(
+			return programErrorForm(cons,
 					LispNames.MAKE_SYNONYM_STREAM + " expects 1 argument, got " + (parts.size() - 1));
 		}
 		LispSymbol quoted = quotedSymbol(parts.get(1));
@@ -7971,7 +8171,7 @@ public final class LispMacroExpander {
 		}
 		List<LispVal> parts = cons.toList();
 		if (parts.size() != 2) {
-			throw new UnsupportedOperationException(LispNames.CLOSE + " expects 1 argument, got " + (parts.size() - 1));
+			return programErrorForm(cons, LispNames.CLOSE + " expects 1 argument, got " + (parts.size() - 1));
 		}
 		if (!synonymStreams) {
 			// No synonym stream can exist, so only the open-stream unwrap is needed.
@@ -9322,8 +9522,7 @@ public final class LispMacroExpander {
 	public static LispVal expandRandomWithState(LispCons cons) {
 		List<LispVal> parts = cons.toList();
 		if (parts.size() != 3) {
-			throw new UnsupportedOperationException(
-					LispNames.RANDOM + " expects 1 or 2 arguments, got " + (parts.size() - 1));
+			return programErrorForm(cons, LispNames.RANDOM + " expects 1 or 2 arguments, got " + (parts.size() - 1));
 		}
 		String prefix = "__rnd" + MV_COUNTER.getAndIncrement();
 		LispSymbol limit = new LispSymbol(prefix + "_l");
@@ -11507,7 +11706,7 @@ public final class LispMacroExpander {
 	public static LispVal expandSleep(LispCons cons, boolean spin) {
 		List<LispVal> parts = cons.toList();
 		if (parts.size() != 2) {
-			throw new IllegalArgumentException(LispNames.SLEEP + " expects 1 argument, got " + (parts.size() - 1));
+			return programErrorForm(cons, LispNames.SLEEP + " expects 1 argument, got " + (parts.size() - 1));
 		}
 		LispVal millis = callOf(LispNames.ROUND,
 				listToCons(List.of(new LispSymbol(LispNames.MUL), parts.get(1), new LispInteger(1000))));
@@ -24130,7 +24329,10 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandRassoc(LispCons cons) {
 		List<LispVal> parts = cons.toList();
-		requireTestKeyKeywords(LispNames.RASSOC, parts, 3);
+		LispVal keywordError = testKeyKeywordTailError(cons, LispNames.RASSOC, parts, 3);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		TestSpec testForm = testSpec(parts, 3);
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol key = new LispSymbol("__rassoc_key");
@@ -25530,6 +25732,9 @@ public final class LispMacroExpander {
 			for (String rawFailure : rawFailureConditionClasses()) {
 				scan.tags.add(LispLayout.CLASS_TAG_PREFIX + rawFailure);
 			}
+			// The %program-error lowering constructs its instance during BODY
+			// compilation, after this scan, and only behind a pad (lowerProgramError).
+			scan.tags.add(LispLayout.CLASS_TAG_PREFIX + ClosRegistry.PROGRAM_ERROR_CLASS_NAME);
 		}
 		return new ConditionNarrowing(java.util.Set.copyOf(scan.tags), !scan.rendererForced);
 	}
@@ -28732,8 +28937,13 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandWriteToStringKeywords(LispCons cons) {
 		List<LispVal> parts = cons.toList();
-		if (parts.size() < 2 || parts.size() % 2 != 0) {
-			throw new IllegalArgumentException("write-to-string: odd number of keyword arguments");
+		if (parts.size() < 2) {
+			return programErrorForm(cons, LispNames.WRITE_TO_STRING + " expects at least 1 argument, got 0");
+		}
+		LispVal keywordError = keywordTailError(cons, LispNames.WRITE_TO_STRING, parts, 2,
+				WRITE_KEYWORD_VARS.keySet().toArray(new String[0]));
+		if (keywordError != null) {
+			return keywordError;
 		}
 		LispSymbol objectVar = new LispSymbol("__wts" + MV_COUNTER.getAndIncrement());
 		List<LispVal> bindings = new java.util.ArrayList<>();
@@ -28742,7 +28952,8 @@ public final class LispMacroExpander {
 			String keyword = parts.get(i) instanceof LispSymbol key ? key.name() : null;
 			String variable = keyword == null ? null : WRITE_KEYWORD_VARS.get(keyword);
 			if (variable == null) {
-				throw new IllegalArgumentException("Unknown keyword argument: " + parts.get(i).print());
+				// :allow-other-keys t admitted an unknown key (or the key itself).
+				continue;
 			}
 			picksConversion = picksConversion || LispNames.PRINT_ESCAPE_VAR.equals(variable)
 					|| LispNames.PRINT_READABLY_VAR.equals(variable);
@@ -30017,7 +30228,7 @@ public final class LispMacroExpander {
 	public static LispVal expandClearOutput(LispCons cons) {
 		List<LispVal> parts = cons.toList();
 		if (parts.size() > 2) {
-			throw new UnsupportedOperationException(
+			return programErrorForm(cons,
 					LispNames.CLEAR_OUTPUT + " expects 0 or 1 arguments, got " + (parts.size() - 1));
 		}
 		return parts.size() == 2 ? makeProgn(List.of(parts.get(1), LispNil.INSTANCE)) : LispNil.INSTANCE;

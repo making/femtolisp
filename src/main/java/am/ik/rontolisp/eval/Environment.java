@@ -733,7 +733,8 @@ public final class Environment implements Scope {
 		}));
 		env.defineFunction(LispNames.GETHASH, new LispFunction(LispNames.GETHASH, args -> {
 			if (args.size() != 2 && args.size() != 3) {
-				throw new LispEvalException(LispNames.GETHASH + " expects 2 or 3 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.GETHASH + " expects 2 or 3 arguments, got " + args.size());
 			}
 			LispHashTable table = requireHashTable(LispNames.GETHASH, args.get(1));
 			LispVal dflt = (args.size() == 3) ? args.get(2) : LispNil.INSTANCE;
@@ -1982,7 +1983,8 @@ public final class Environment implements Scope {
 		String versionName = PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.VERSION);
 		env.defineFunction(versionName, new LispFunction(versionName, args -> {
 			if (!args.isEmpty()) {
-				throw new LispEvalException(LispNames.VERSION + " expects no arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.VERSION + " expects no arguments, got " + args.size());
 			}
 			return VersionInfo.plist();
 		}));
@@ -2027,7 +2029,8 @@ public final class Environment implements Scope {
 		String fetchName = PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.FETCH);
 		env.defineFunction(fetchName, new LispFunction(fetchName, args -> {
 			if (args.isEmpty() || args.size() > 2) {
-				throw new LispEvalException(LispNames.FETCH + " expects 1 or 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.FETCH + " expects 1 or 2 arguments, got " + args.size());
 			}
 			if (!(args.get(0) instanceof LispString url)) {
 				throw new LispEvalException(LispNames.FETCH + " expects a string URL, got: " + args.get(0).print());
@@ -2044,7 +2047,8 @@ public final class Environment implements Scope {
 		String futurepName = PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.FUTUREP);
 		env.defineFunction(futurepName, new LispFunction(futurepName, args -> {
 			if (args.size() != 1) {
-				throw new LispEvalException(LispNames.FUTUREP + " expects 1 argument, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.FUTUREP + " expects 1 argument, got " + args.size());
 			}
 			return (args.get(0) instanceof LispFuture) ? LispTrue.INSTANCE : LispNil.INSTANCE;
 		}));
@@ -2054,7 +2058,8 @@ public final class Environment implements Scope {
 		String asyncStreampName = PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.ASYNC_STREAMP);
 		env.defineFunction(asyncStreampName, new LispFunction(asyncStreampName, args -> {
 			if (args.size() != 1) {
-				throw new LispEvalException(LispNames.ASYNC_STREAMP + " expects 1 argument, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.ASYNC_STREAMP + " expects 1 argument, got " + args.size());
 			}
 			return (args.get(0) instanceof LispStream) ? LispTrue.INSTANCE : LispNil.INSTANCE;
 		}));
@@ -2062,7 +2067,8 @@ public final class Environment implements Scope {
 		String makeStreamName = PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.MAKE_STREAM);
 		env.defineFunction(makeStreamName, new LispFunction(makeStreamName, args -> {
 			if (!args.isEmpty()) {
-				throw new LispEvalException(LispNames.MAKE_STREAM + " expects no arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.MAKE_STREAM + " expects no arguments, got " + args.size());
 			}
 			return LispStream.open();
 		}));
@@ -2102,7 +2108,8 @@ public final class Environment implements Scope {
 		String waitForName = PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.WAIT_FOR);
 		env.defineFunction(waitForName, new LispFunction(waitForName, args -> {
 			if (args.size() != 1) {
-				throw new LispEvalException(LispNames.WAIT_FOR + " expects 1 argument, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.WAIT_FOR + " expects 1 argument, got " + args.size());
 			}
 			if (!(args.get(0) instanceof LispInteger millis) || millis.value() < 0) {
 				throw new LispEvalException(LispNames.WAIT_FOR
@@ -2612,7 +2619,7 @@ public final class Environment implements Scope {
 		// passes back. The argument (nil / t / a state) is accepted and ignored.
 		env.defineFunction(LispNames.MAKE_RANDOM_STATE, new LispFunction(LispNames.MAKE_RANDOM_STATE, args -> {
 			if (args.size() > 1) {
-				throw new LispEvalException(
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
 						LispNames.MAKE_RANDOM_STATE + " expects 0 or 1 arguments, got " + args.size());
 			}
 			return LispNil.INSTANCE;
@@ -2623,7 +2630,8 @@ public final class Environment implements Scope {
 			// and ignored -- the backend's own entropy draws (uuid's
 			// (random #xffffffffffff *uuid-random-state*)).
 			if (args.size() != 1 && args.size() != 2) {
-				throw new LispEvalException(LispNames.RANDOM + " expects 1 or 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.RANDOM + " expects 1 or 2 arguments, got " + args.size());
 			}
 			LispVal limit = args.get(0);
 			if (limit instanceof LispDouble d) {
@@ -3418,7 +3426,8 @@ public final class Environment implements Scope {
 		}));
 		env.defineFunction(LispNames.PAIRLIS, new LispFunction(LispNames.PAIRLIS, args -> {
 			if (args.size() < 2 || args.size() > 3) {
-				throw new LispEvalException(LispNames.PAIRLIS + " expects 2 or 3 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.PAIRLIS + " expects 2 or 3 arguments, got " + args.size());
 			}
 			LispVal keys = args.get(0);
 			LispVal data = args.get(1);
@@ -3660,7 +3669,8 @@ public final class Environment implements Scope {
 		AtomicLong gensymCounter = new AtomicLong();
 		env.defineFunction(LispNames.GENSYM, new LispFunction(LispNames.GENSYM, args -> {
 			if (args.size() > 1) {
-				throw new LispEvalException(LispNames.GENSYM + " expects at most 1 argument, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.GENSYM + " expects at most 1 argument, got " + args.size());
 			}
 			String prefix = "G";
 			if (args.size() == 1) {
@@ -3744,7 +3754,8 @@ public final class Environment implements Scope {
 		// keyword, or a global function/variable binding under the verbatim name.
 		env.defineFunction(LispNames.FIND_SYMBOL, new LispFunction(LispNames.FIND_SYMBOL, args -> {
 			if (args.isEmpty() || args.size() > 2) {
-				throw new LispEvalException(LispNames.FIND_SYMBOL + " expects 1 or 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.FIND_SYMBOL + " expects 1 or 2 arguments, got " + args.size());
 			}
 			String name = requireString(LispNames.FIND_SYMBOL, args.get(0));
 			boolean known = PackageRegistry.isClSymbol(name) || (!name.isEmpty() && name.charAt(0) == ':')
@@ -3755,7 +3766,8 @@ public final class Environment implements Scope {
 		// nil for exactly the names that one answers nil for.
 		env.defineFunction(LispNames.FIND_SYMBOL_STATUS, new LispFunction(LispNames.FIND_SYMBOL_STATUS, args -> {
 			if (args.isEmpty() || args.size() > 2) {
-				throw new LispEvalException(LispNames.FIND_SYMBOL + " expects 1 or 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.FIND_SYMBOL + " expects 1 or 2 arguments, got " + args.size());
 			}
 			String name = requireString(LispNames.FIND_SYMBOL, args.get(0));
 			if (!name.isEmpty() && name.charAt(0) == ':') {
@@ -3942,7 +3954,8 @@ public final class Environment implements Scope {
 		env.defineFunction(LispNames.SUBSEQ, new LispFunction(LispNames.SUBSEQ, args -> {
 			requireMinArgCount(LispNames.SUBSEQ, args, 2);
 			if (args.size() > 3) {
-				throw new LispEvalException(LispNames.SUBSEQ + " expects 2 or 3 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.SUBSEQ + " expects 2 or 3 arguments, got " + args.size());
 			}
 			LispVal endArg = (args.size() == 3 && !(args.get(2) instanceof LispNil)) ? args.get(2) : null;
 			int start = requireIndex(LispNames.SUBSEQ, args.get(1));
@@ -4617,9 +4630,17 @@ public final class Environment implements Scope {
 					return makeStringOutputStream.apply(args);
 				}));
 		// The public spelling. CL's lambda list is (&key element-type); every rontolisp
-		// stream is a character stream, so the option is accepted and dropped.
+		// stream is a character stream, so the option is accepted and dropped -- but the
+		// tail is still validated, as the compile paths' expansion validates it.
 		env.defineFunction(LispNames.MAKE_STRING_OUTPUT_STREAM,
-				new LispFunction(LispNames.MAKE_STRING_OUTPUT_STREAM, makeStringOutputStream));
+				new LispFunction(LispNames.MAKE_STRING_OUTPUT_STREAM, args -> {
+					String problem = LispMacroExpander.keywordTailProblem(LispNames.MAKE_STRING_OUTPUT_STREAM, args, 0,
+							List.of(LispNames.ELEMENT_TYPE_KEYWORD));
+					if (problem != null) {
+						throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME, problem);
+					}
+					return makeStringOutputStream.apply(args);
+				}));
 		env.defineFunction(LispNames.MAKE_STRING_INPUT_STREAM_INTERNAL,
 				new LispFunction(LispNames.MAKE_STRING_INPUT_STREAM_INTERNAL, args -> {
 					requireArgCount(LispNames.MAKE_STRING_INPUT_STREAM_INTERNAL, args, 1);
@@ -4636,7 +4657,7 @@ public final class Environment implements Scope {
 		env.defineFunction(LispNames.MAKE_STRING_INPUT_STREAM,
 				new LispFunction(LispNames.MAKE_STRING_INPUT_STREAM, args -> {
 					if (args.isEmpty() || args.size() > 3) {
-						throw new LispEvalException(
+						throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
 								LispNames.MAKE_STRING_INPUT_STREAM + " expects 1 to 3 arguments, got " + args.size());
 					}
 					if (!(args.get(0) instanceof LispString str)) {
@@ -5717,7 +5738,8 @@ public final class Environment implements Scope {
 		String tlsConnectName = PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.TLS_CONNECT);
 		env.defineFunction(tlsConnectName, new LispFunction(tlsConnectName, args -> {
 			if (args.size() != 2 && args.size() != 4) {
-				throw new LispEvalException(LispNames.TLS_CONNECT + " expects 2 or 4 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.TLS_CONNECT + " expects 2 or 4 arguments, got " + args.size());
 			}
 			if (!(args.get(0) instanceof LispString host)) {
 				throw new LispEvalException(
@@ -5749,7 +5771,8 @@ public final class Environment implements Scope {
 		String tlsUpgradeName = PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.TLS_UPGRADE);
 		env.defineFunction(tlsUpgradeName, new LispFunction(tlsUpgradeName, args -> {
 			if (args.size() != 2 && args.size() != 4) {
-				throw new LispEvalException(LispNames.TLS_UPGRADE + " expects 2 or 4 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.TLS_UPGRADE + " expects 2 or 4 arguments, got " + args.size());
 			}
 			if (!(streamTarget(args.get(0)) instanceof LispInteger handle)
 					|| !(streams.get(handle.value()) instanceof Socket socket)) {
@@ -5777,7 +5800,8 @@ public final class Environment implements Scope {
 		String tcpListenName = PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.TCP_LISTEN);
 		env.defineFunction(tcpListenName, new LispFunction(tcpListenName, args -> {
 			if (args.isEmpty() || args.size() > 2) {
-				throw new LispEvalException(LispNames.TCP_LISTEN + " expects 1 or 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.TCP_LISTEN + " expects 1 or 2 arguments, got " + args.size());
 			}
 			if (!(args.get(0) instanceof LispInteger port)) {
 				throw new LispEvalException(
@@ -5799,7 +5823,8 @@ public final class Environment implements Scope {
 		String tlsListenName = PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.TLS_LISTEN);
 		env.defineFunction(tlsListenName, new LispFunction(tlsListenName, args -> {
 			if (args.size() < 3 || args.size() > 4) {
-				throw new LispEvalException(LispNames.TLS_LISTEN + " expects 3 or 4 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.TLS_LISTEN + " expects 3 or 4 arguments, got " + args.size());
 			}
 			if (!(args.get(0) instanceof LispString keyStore)) {
 				throw new LispEvalException(
@@ -5830,7 +5855,8 @@ public final class Environment implements Scope {
 		String tlsListenPemName = PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.TLS_LISTEN_PEM);
 		env.defineFunction(tlsListenPemName, new LispFunction(tlsListenPemName, args -> {
 			if (args.size() < 3 || args.size() > 4) {
-				throw new LispEvalException(LispNames.TLS_LISTEN_PEM + " expects 3 or 4 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.TLS_LISTEN_PEM + " expects 3 or 4 arguments, got " + args.size());
 			}
 			if (!(args.get(0) instanceof LispString certPath)) {
 				throw new LispEvalException(
@@ -5861,7 +5887,8 @@ public final class Environment implements Scope {
 		String tlsListenP12Name = PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.TLS_LISTEN_P12);
 		env.defineFunction(tlsListenP12Name, new LispFunction(tlsListenP12Name, args -> {
 			if (args.size() < 3 || args.size() > 4) {
-				throw new LispEvalException(LispNames.TLS_LISTEN_P12 + " expects 3 or 4 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.TLS_LISTEN_P12 + " expects 3 or 4 arguments, got " + args.size());
 			}
 			if (!(args.get(0) instanceof LispString base64)) {
 				throw new LispEvalException(
@@ -7532,19 +7559,22 @@ public final class Environment implements Scope {
 
 	private static void requireArgCount(String name, List<LispVal> args, int expected) {
 		if (args.size() != expected) {
-			throw new LispEvalException(name + " expects " + expected + " arguments, got " + args.size());
+			throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+					name + " expects " + expected + " arguments, got " + args.size());
 		}
 	}
 
 	private static void requireMinArgCount(String name, List<LispVal> args, int min) {
 		if (args.size() < min) {
-			throw new LispEvalException(name + " expects at least " + min + " arguments, got " + args.size());
+			throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+					name + " expects at least " + min + " arguments, got " + args.size());
 		}
 	}
 
 	private static void requireArgCountBetween(String name, List<LispVal> args, int min, int max) {
 		if (args.size() < min || args.size() > max) {
-			throw new LispEvalException(name + " expects " + min + " to " + max + " arguments, got " + args.size());
+			throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+					name + " expects " + min + " to " + max + " arguments, got " + args.size());
 		}
 	}
 

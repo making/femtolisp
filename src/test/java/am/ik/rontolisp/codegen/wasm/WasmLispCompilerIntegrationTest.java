@@ -19589,6 +19589,51 @@ class WasmLispCompilerIntegrationTest {
 	}
 
 	@Test
+	void ehArgumentShapeErrorsSignalACatchableProgramError() throws Exception {
+		// A malformed keyword tail compiles to a call-time program-error carrying the
+		// interpreter's text, and :allow-other-keys t suppresses the check
+		// (.kb/error-handling.md, "Argument-shape errors signal a catchable
+		// program-error"); the evaluator/JVM twins assert the same lines.
+		assertThat(compileAndRunEh(
+				"""
+						(print (handler-case (remove 1 '(1 2 3) :bogus 4) (program-error (c) :program-error) (error (c) :plain)))
+						(print (handler-case (remove 1 '(1 2 3) :bogus 4) (error (c) (princ-to-string c))))
+						(print (handler-case (find 1 '(1 2) :key) (program-error (c) :odd-tail)))
+						(print (handler-case (remove-duplicates '(1 1 2) :bogus t) (program-error (c) :rd)))
+						(print (handler-case (funcall (lambda (x &key y) (list x y)) 1 :z 2) (program-error (c) :unknown-key)))
+						(print (remove 'a '(a b c a d) :bad t :allow-other-keys t))
+						(print (remove 'a '(a b c a d) :bad1 t :allow-other-keys t :bad2 t :allow-other-keys nil :bad3 t))
+						(print (handler-case (remove 'a '(a b) :allow-other-keys nil :bad t) (program-error (c) :checked)))
+						"""))
+			.isEqualTo("""
+					:PROGRAM-ERROR
+					"REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY, got: :BOGUS"
+					:ODD-TAIL
+					:RD
+					:UNKNOWN-KEY
+					(B C D)
+					(B C D)
+					:CHECKED""");
+	}
+
+	@Test
+	void ehArgumentShapeErrorsAreCaughtOnTheComponentPathToo() throws Exception {
+		assertThat(compileComponentAndRun("""
+				(print (handler-case (remove 1 '(1 2 3) :bogus 4) (program-error (c) (princ-to-string c))))
+				(print (remove 'a '(a b c a d) :bad t :allow-other-keys t))
+				""")).isEqualTo("\"REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY, got: :BOGUS\"\n(B C D)");
+	}
+
+	@Test
+	void ehAnUncaughtArgumentShapeErrorReportsTheInterpreterLineBeforeTrapping() throws Exception {
+		assertThat(compileAndRunEhExpectTrap("""
+				(print (handler-case (error "warm") (error (e) :ok)))
+				(print (length (remove 1 '(1 2 3) :bogus 4)))
+				"""))
+			.contains("Unhandled condition: REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY, got: :BOGUS");
+	}
+
+	@Test
 	void ehAnUncaughtNonNumberOperandReportsTheInterpreterLineBeforeTrapping() throws Exception {
 		assertThat(compileAndRunEhExpectTrap("""
 				(print (handler-case (error "warm") (error (e) :ok)))

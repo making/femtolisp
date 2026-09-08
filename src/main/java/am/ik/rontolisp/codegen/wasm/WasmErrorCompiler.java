@@ -59,14 +59,18 @@ final class WasmErrorCompiler {
 	}
 
 	/**
-	 * Compiles {@code (%error-cond condition message)}. The message operand is never
-	 * compiled: the payload cdr is read only by the handler-case landing's simple-error
-	 * synthesis, which runs only when the instance (car) is nil -- and every
+	 * Compiles {@code (%error-cond condition message)}. The message operand is normally
+	 * not compiled: the payload cdr is read only by the handler-case landing's
+	 * simple-error synthesis, which runs only when the instance (car) is nil -- and every
 	 * {@code %error-cond} site passes a real instance -- while an uncaught throw exits as
 	 * a bare {@code unreachable} trap, which carries no text on this backend. The text a
 	 * caught condition reports comes from its {@code :report} at print time instead, so
 	 * skipping the signal-point render changes what the artifact carries, never what it
-	 * prints.
+	 * prints. The one exception is a program with NO report renderer
+	 * ({@code routesConditionReports} off): no source site constructs a condition there,
+	 * so the only {@code %error-cond} that can exist is the {@code %program-error}
+	 * lowering's, and the entry landing pad's report of it can only come from the payload
+	 * cdr -- which then carries the message exactly as a plain {@code %error}'s does.
 	 */
 	static void compileCond(LispCons cons, WasmLispCompiler.Ctx ctx) {
 		if (!ctx.ehMode) {
@@ -75,8 +79,13 @@ final class WasmErrorCompiler {
 		}
 		List<LispVal> parts = cons.toList();
 		WasmExprCompiler.compileExpr(parts.get(1), ctx);
-		ctx.writer.write(Instruction.REF_NULL);
-		ctx.writer.writeHeapType(Type.EQ.code());
+		if (ctx.condMessagesObservable && !ctx.closRegistry.routesConditionReports()) {
+			WasmExprCompiler.compileExpr(parts.get(2), ctx);
+		}
+		else {
+			ctx.writer.write(Instruction.REF_NULL);
+			ctx.writer.writeHeapType(Type.EQ.code());
+		}
 		emitThrowPayload(ctx);
 	}
 

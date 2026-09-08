@@ -782,6 +782,9 @@ final class WasmAsyncEmit {
 			// compile %signal-cond with the depth test alone while defun bodies match
 			// clause types, and a top-level unmatched signal would abort again.
 			.signalClauseMatch(proto.signalClauseMatch)
+			// NOT optional, same lesson: a top-level %program-error must carry its
+			// instance exactly where a defun body's does.
+			.hasLandingPad(proto.hasLandingPad)
 			.printControls(proto.printControls)
 			.printControlVariables(proto.printControlVariables)
 			// NOT optional, same reason as the instance pair below: a synonym stream

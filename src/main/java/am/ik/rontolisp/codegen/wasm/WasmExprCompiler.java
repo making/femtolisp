@@ -1435,6 +1435,11 @@ final class WasmExprCompiler {
 				case LispNames.UNWIND_PROTECT -> WasmUnwindProtectCompiler.compile(cons, ctx);
 				case LispNames.HANDLER_CASE -> WasmHandlerCaseCompiler.compile(cons, ctx);
 				case LispNames.HB_GUARD_INTERNAL -> WasmHandlerCaseCompiler.compileGuard(cons, ctx);
+				case LispNames.PROGRAM_ERROR_INTERNAL -> {
+					CompileWarnings.warnStaticProgramError(cons);
+					WasmExprCompiler.compileExpr(LispMacroExpander.lowerProgramError(cons, ctx.closRegistry,
+							ctx.hasLandingPad && ctx.instanceTypeIndex >= 0), ctx);
+				}
 				case LispNames.HANDLER_BIND ->
 					WasmExprCompiler.compileExpr(LispMacroExpander.expandHandlerBind(cons, ctx.closRegistry), ctx);
 				case LispNames.IGNORE_ERRORS ->

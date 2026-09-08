@@ -1189,6 +1189,72 @@ class JvmLispCompilerTest {
 	}
 
 	@Test
+	void compileAndRunArgumentShapeErrorsSignalACatchableProgramError() throws Exception {
+		// A call whose keyword tail is malformed used to fail the COMPILE with the
+		// expander's raw exception; it now compiles to a call-time program-error (the
+		// undefined-function precedent), so the program behaves as it does interpreted
+		// (.kb/error-handling.md, "Argument-shape errors signal a catchable
+		// program-error"). The evaluator twin is
+		// argumentShapeErrorsSignalACatchableProgramError.
+		assertThat(compileAndRun(
+				"""
+						(print (handler-case (remove 1 '(1 2 3) :bogus 4) (program-error (c) :program-error) (error (c) :plain)))
+						(print (handler-case (remove 1 '(1 2 3) :bogus 4) (error (c) (princ-to-string c))))
+						(print (handler-case (find 1 '(1 2) :key) (program-error (c) :odd-tail)))
+						(print (handler-case (remove 'a nil 'bad t) (program-error (c) :not-a-keyword)))
+						(print (handler-case (remove-duplicates '(1 1 2) :bogus t) (program-error (c) :rd)))
+						(print (handler-case (position 1 '(1 2) :bogus 4) (program-error (c) :pos)))
+						(print (handler-case (make-string-output-stream 1) (program-error (c) :positional)))
+						(print (handler-case (funcall (lambda (x &key y) (list x y)) 1 :z 2) (program-error (c) :unknown-key)))
+						(print (remove 'a '(a b c a d) :bad t :allow-other-keys t))
+						(print (remove 'a '(a b c a d) :bad1 t :allow-other-keys t :bad2 t :allow-other-keys nil :bad3 t))
+						(print (remove 'a '(a b c a d) :allow-other-keys nil))
+						(print (handler-case (remove 'a '(a b) :allow-other-keys nil :bad t) (program-error (c) :checked)))
+						(print (funcall (lambda (x &key y) (list x y)) 1 :z 2 :allow-other-keys t))
+						"""))
+			.isEqualTo("""
+					:PROGRAM-ERROR
+					"REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY, got: :BOGUS"
+					:ODD-TAIL
+					:NOT-A-KEYWORD
+					:RD
+					:POS
+					:POSITIONAL
+					:UNKNOWN-KEY
+					(B C D)
+					(B C D)
+					(B C D)
+					:CHECKED
+					(1 NIL)""");
+	}
+
+	@Test
+	void compileAndRunAnUncaughtArgumentShapeErrorReportsTheSameLine() throws Exception {
+		// No handler anywhere: the class is unobservable, the signal takes the plain
+		// channel, and the top level prints the cross-backend line -- after the
+		// compile-time warning the lowering leaves behind.
+		ByteArrayOutputStream err = new ByteArrayOutputStream();
+		PrintStream oldErr = System.err;
+		System.setErr(new PrintStream(err));
+		Throwable cause;
+		try {
+			cause = catchThrowable(() -> compileAndRun("""
+					(print (length (remove 1 '(1 2 3) :bogus 4)))
+					"""));
+		}
+		finally {
+			System.setErr(oldErr);
+		}
+		assertThat(err.toString().trim()).isEqualTo(
+				"""
+						warning: REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY, got: :BOGUS; compiled as a call-time program-error
+						Unhandled condition: REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY, got: :BOGUS""");
+		assertThat(cause).isInstanceOf(InvocationTargetException.class);
+		assertThat(((InvocationTargetException) cause).getTargetException())
+			.hasMessage("REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY, got: :BOGUS");
+	}
+
+	@Test
 	void compileAndRunASynthesizedBuiltInConditionReportsARontolispMessage() throws Exception {
 		// A cast failure's host text names Java classes and an out-of-range index's
 		// counts the layout cell; both are replaced at the pad.

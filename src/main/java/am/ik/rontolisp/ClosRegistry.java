@@ -103,6 +103,17 @@ public final class ClosRegistry {
 	/** The class an arithmetic failure that is not a division by zero is signaled as. */
 	public static final String ARITHMETIC_ERROR_CLASS_NAME = "ARITHMETIC-ERROR";
 
+	/**
+	 * The class an argument-SHAPE error is signaled as (CLHS 3.5.1): a keyword the
+	 * operator does not accept, an odd keyword tail, a non-symbol in keyword position, a
+	 * wrong argument count. Named by the {@code %program-error} lowering of an
+	 * expansion-time rejection and by the interpreter's runtime validators and arity
+	 * checks; the interpreter also classifies a raw {@code IllegalArgumentException} /
+	 * {@code IndexOutOfBoundsException} escaping an evaluation as this class, since those
+	 * are how the expander reports a malformed form.
+	 */
+	public static final String PROGRAM_ERROR_CLASS_NAME = "PROGRAM-ERROR";
+
 	/** The class a division by zero is signaled as. */
 	public static final String DIVISION_BY_ZERO_CLASS_NAME = "DIVISION-BY-ZERO";
 
@@ -198,14 +209,15 @@ public final class ClosRegistry {
 	 * symbol by construction rather than by a second list somebody has to remember.
 	 *
 	 * <p>
-	 * Four classes carry {@code format-control}/{@code format-arguments} beyond CLHS's
-	 * slot lists ({@code type-error}, {@code arithmetic-error} and the two
-	 * {@code cell-error} leaves): those are the classes a BUILT-IN error is synthesized
-	 * as, and the two slots are how the synthesized instance carries the message it
-	 * reports -- the same {@code simple-condition} report path every other message-
-	 * bearing condition uses, rather than a second message channel. {@code type-error}
-	 * gaining them is what leaves {@code simple-type-error} with the identical layout (it
-	 * adds nothing now), so the {@code %obj-ref} indexes of both are unchanged.
+	 * Five classes carry {@code format-control}/{@code format-arguments} beyond CLHS's
+	 * slot lists ({@code type-error}, {@code arithmetic-error}, {@code program-error} and
+	 * the two {@code cell-error} leaves): those are the classes a BUILT-IN error is
+	 * synthesized as, and the two slots are how the synthesized instance carries the
+	 * message it reports -- the same {@code simple-condition} report path every other
+	 * message- bearing condition uses, rather than a second message channel.
+	 * {@code type-error} gaining them is what leaves {@code simple-type-error} with the
+	 * identical layout (it adds nothing now), so the {@code %obj-ref} indexes of both are
+	 * unchanged.
 	 */
 	private static final List<ConditionSeed> CONDITION_SEEDS = List.of(seed("CONDITION", null),
 			seed("SERIOUS-CONDITION", "CONDITION"), seed("ERROR", "SERIOUS-CONDITION"),
@@ -223,7 +235,8 @@ public final class ClosRegistry {
 			seed(END_OF_FILE_CLASS_NAME, "STREAM-ERROR"), seed("FILE-ERROR", "ERROR"),
 			seed(ARITHMETIC_ERROR_CLASS_NAME, "ERROR", "FORMAT-CONTROL", "FORMAT-ARGUMENTS"),
 			seed(DIVISION_BY_ZERO_CLASS_NAME, ARITHMETIC_ERROR_CLASS_NAME), seed("CONTROL-ERROR", "ERROR"),
-			seed("PROGRAM-ERROR", "ERROR"), seed("PACKAGE-ERROR", "ERROR"), seed("CELL-ERROR", "ERROR", "NAME"),
+			seed(PROGRAM_ERROR_CLASS_NAME, "ERROR", "FORMAT-CONTROL", "FORMAT-ARGUMENTS"),
+			seed("PACKAGE-ERROR", "ERROR"), seed("CELL-ERROR", "ERROR", "NAME"),
 			seed(UNBOUND_VARIABLE_CLASS_NAME, "CELL-ERROR", "FORMAT-CONTROL", "FORMAT-ARGUMENTS"),
 			seed(UNDEFINED_FUNCTION_CLASS_NAME, "CELL-ERROR", "FORMAT-CONTROL", "FORMAT-ARGUMENTS"),
 			// The condition a read of an unbound slot signals (CLHS 7.7.2): name = the

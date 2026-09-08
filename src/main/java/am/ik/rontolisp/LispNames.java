@@ -2244,6 +2244,19 @@ public final class LispNames {
 	public static final String ERROR_COND_INTERNAL = "%ERROR-COND";
 
 	/**
+	 * Internal one-argument primitive {@code (%program-error message)} that signals a
+	 * {@code program-error} carrying the message: what an expansion-time argument-shape
+	 * rejection (a keyword the operator does not accept, an odd keyword tail, a wrong
+	 * argument count) lowers to, so the rejection becomes a CATCHABLE condition at the
+	 * call site on every backend instead of an exception at expansion time. The
+	 * interpreter throws it as a class-named error (no instance until a handler
+	 * synthesizes one); the compiled backends lower it to {@link #ERROR_COND_INTERNAL}
+	 * over a fresh {@code program-error} instance where a handler landing pad exists and
+	 * to {@link #ERROR_INTERNAL} otherwise ({@code LispMacroExpander.lowerProgramError}).
+	 */
+	public static final String PROGRAM_ERROR_INTERNAL = "%PROGRAM-ERROR";
+
+	/**
 	 * The {@code signal} macro (signal a non-fatal condition). Same designator surface as
 	 * {@link #ERROR}; when no handler is established the signal returns nil (the CL
 	 * fall-through), which is the only behavior on the WASM backends.

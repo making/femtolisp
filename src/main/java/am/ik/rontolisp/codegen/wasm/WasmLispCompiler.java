@@ -2606,6 +2606,10 @@ public final class WasmLispCompiler implements LispCompiler {
 		// like restartMode; expandTopLevelDefinitions runs the same scan to inject the
 		// %hc-match-p defun and the cluster-stack defvar.
 		boolean signalClauseMatch = LispMacroExpander.needsSignalClauseMatch(program);
+		// Whether a handler landing pad exists -- the gate for a %program-error signal
+		// carrying its program-error INSTANCE (LispMacroExpander.lowerProgramError) and
+		// for baking that layout (usedLayoutTags); a pad forces the instance gate on.
+		boolean hasLandingPad = LispMacroExpander.establishesLandingPad(program);
 		// Whether the entry function's landing pad will READ the condition that escapes
 		// it (WasmUncaughtReportCompiler) -- which is exactly EH mode, decided below on
 		// the post-expansion program but needed here, because the report-routing gate is
@@ -3495,6 +3499,7 @@ public final class WasmLispCompiler implements LispCompiler {
 			.blockExitTag(blockExitTag)
 			.restartMode(restartMode)
 			.signalClauseMatch(signalClauseMatch)
+			.hasLandingPad(hasLandingPad)
 			.printControls(LispMacroExpander.usesPrintControls(program))
 			.printControlVariables(printControlVariables)
 			.usesSeqString(usesSeqString)
@@ -8051,6 +8056,16 @@ public final class WasmLispCompiler implements LispCompiler {
 		boolean signalClauseMatch = false;
 
 		/**
+		 * True when the program establishes a handler landing pad
+		 * ({@code LispMacroExpander.establishesLandingPad}): a {@code %program-error}
+		 * signal then carries a fresh {@code program-error} instance (whose layout
+		 * {@code usedLayoutTags} bakes on the same answer), so a {@code program-error}
+		 * clause matches it. Without a pad nothing can observe the class and the signal
+		 * takes the plain {@code %error} channel, byte-identically.
+		 */
+		boolean hasLandingPad = false;
+
+		/**
 		 * True when the program MENTIONS a printer-control variable
 		 * ({@code LispMacroExpander.usesPrintControls}: {@code *print-case*},
 		 * {@code *print-length*}, {@code *print-level*}, {@code *print-gensym*},
@@ -8530,6 +8545,7 @@ public final class WasmLispCompiler implements LispCompiler {
 			this.blockExitTag = builder.blockExitTag;
 			this.restartMode = builder.restartMode;
 			this.signalClauseMatch = builder.signalClauseMatch;
+			this.hasLandingPad = builder.hasLandingPad;
 			this.printControls = builder.printControls;
 			this.printControlVariables = builder.printControlVariables;
 			this.usesSynonymStreams = builder.usesSynonymStreams;
@@ -8646,6 +8662,8 @@ public final class WasmLispCompiler implements LispCompiler {
 			private boolean restartMode = false;
 
 			private boolean signalClauseMatch = false;
+
+			private boolean hasLandingPad = false;
 
 			private boolean printControls = false;
 
@@ -8897,6 +8915,11 @@ public final class WasmLispCompiler implements LispCompiler {
 
 			Builder signalClauseMatch(boolean signalClauseMatch) {
 				this.signalClauseMatch = signalClauseMatch;
+				return this;
+			}
+
+			Builder hasLandingPad(boolean hasLandingPad) {
+				this.hasLandingPad = hasLandingPad;
 				return this;
 			}
 
@@ -9247,6 +9270,12 @@ public final class WasmLispCompiler implements LispCompiler {
 				used.add(LispLayout.CLASS_TAG_PREFIX + "END-OF-FILE");
 				break;
 			}
+		}
+		// A %program-error signal constructs its program-error instance during BODY
+		// compilation (lowerProgramError) -- after this scan, and only behind a handler
+		// landing pad -- so the pad stands in for the tag.
+		if (LispMacroExpander.establishesLandingPad(program)) {
+			used.add(LispLayout.CLASS_TAG_PREFIX + am.ik.rontolisp.ClosRegistry.PROGRAM_ERROR_CLASS_NAME);
 		}
 		for (String tag : closRegistry.layouts().keySet()) {
 			String bare = tag.startsWith(LispLayout.CLASS_TAG_PREFIX)
