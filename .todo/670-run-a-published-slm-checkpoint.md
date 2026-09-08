@@ -158,8 +158,8 @@ Pointers, not records -- the home is where it gets updated.
 - **`483`'s rule is stated wrong in 483**: not "never write a `default`" but **"an arm
   matching two or more permits IS a default, whatever it is spelled"**. `.kb/vec.md`.
 - **`%la-gather-strided` has five readers** and grepping the name finds two. `.todo/687`.
-- **Seven sites hand-write the bf16 conversion arithmetic**, and only `am.ik.rontolisp.BFloat16`
-  is the authority. `.todo/487`'s remainder.
+- **The bf16 conversion arithmetic census**: not seven sites and not the grep's twelve --
+  `.kb/bfloat16.md`, "The conversion arithmetic census".
 - **A profile names the COST correctly and the CAUSE only as a guess**, and the two JFR
   sample sets must be read together or a native-heavy arm reads as a Java profile.
   `.kb/gpu.md`.

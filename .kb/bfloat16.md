@@ -33,20 +33,110 @@ because `BFloat16` does not travel with a compiled program. Sixteen bits fit an 
 
 ## One rounding, reached three ways
 `rontolisp:widen-float-bits` / `narrow-float-bits` share the rounding but reach it by destination
-width, because `BFloat16`'s API only takes a `double`.
-- `double-float` array: `BFloat16.value` / `BFloat16.bits` directly.
-- **`single-float` array never calls `BFloat16` at all**:
-  `eval/FloatBitsWidening#bfloat16BitsOfFloat` and `Float.intBitsToFloat(bits << 16)`, duplicated
-  in each backend's emitter, no `double` created. The third copy is deliberate.
-- All three NaN branches use `payload | ((payload - 1) >>> 31)`. Trap: a plain
-  `bits | <quiet bit>` loses the same 126 patterns -- a different way to lose them, not a fix.
+width and direction.
+- **Narrowing, `double-float` array**: `BFloat16.bits(double)` directly, on every backend that can
+  call it (the interpreter; `eval/FloatBitsWidening`).
+- **Narrowing, `single-float` array**: `BFloat16.bits(float)` directly on the interpreter too
+  (`eval/FloatBitsWidening`, since 2026-09-08, `.todo/746`) -- Java's overload resolution picks the
+  `float` overload over `double` without any implicit widening, so no `float` crosses a `double` on
+  the way to the authority's NaN handling. The compiled backends still hand-write it INLINE
+  (`JvmFloat16RuntimeBuilder#emitBf16Narrow`, and the WASM emitters where the format's source is
+  `#bf16`) -- a NECESSARY duplicate, not an avoidable one, because `BFloat16` does not travel with
+  a compiled program (`.kb/jvm-export.md`'s "What travels"). Same for the `--simd` fused kernels'
+  own narrow (`codegen.jvm.JvmSimdVectorTemplate#floatToBf16`, `eval.VecSimdKernels#floatToBf16`):
+  the JVM copy travels with `--simd` output the same way, and the interpreter copy is kept as an
+  inline mirror of it on purpose (the two files are tested and read as one operation-for-operation
+  pair; folding only one side into a call would make future diffs between them a false negative).
+- **Widening, `single-float` array**: `Float.intBitsToFloat(bits << 16)` everywhere, NEVER
+  `(float) BFloat16.value(bits)` -- `BFloat16.value` only returns a `double`, and narrowing that
+  back to `float` quiets a signalling NaN 126/65536 times, so calling it would be a NaN bug, not
+  a redundant round trip. `BFloat16` has no `value(int) -> float` overload (unlike `bits`, which
+  gained a `float` overload for exactly this reason on 2026-09-03) because the shift-only widen
+  needs no authority call to get right: there is no rounding or NaN branch to keep in sync.
+- All NaN branches use `payload | ((payload - 1) >>> 31)` (or the equivalent `u | (((u & 0x7f) - 1)
+  >>> 31)` over the already-assembled sign+exponent+payload word `u`). Trap: a plain
+  `bits | <quiet bit>` loses the same 126 patterns -- a different way to lose them, not a fix. This
+  is the exact bug the `--simd` fused kernels' own narrow carried, unnoticed, from 2026-09-03 (when
+  they copied the pre-fix formula) until `.todo/746`'s census on 2026-09-08 -- see "The conversion
+  arithmetic census" below.
 - Pins: `LispEvaluatorTest#bfloat16BulkNarrowingIsTheSameRoundingAsTheScalarPair`,
-  `JvmLispCompilerTest#compileAndRunBfloat16BulkAgreesWithTheScalarPair`.
+  `JvmLispCompilerTest#compileAndRunBfloat16BulkAgreesWithTheScalarPair`,
+  `eval.VecSimdBf16KernelsTest#theNarrowingAgreesWithTheAuthorityOnEveryBf16WidenedPattern`,
+  `codegen.jvm.JvmSimdVectorTemplateBf16Test#theNarrowingAgreesWithTheAuthorityOnEveryBf16WidenedPattern`.
 - On wasm-GC only the scalar-layout `single-float` cell is exact; the `double-float` arm and both
   `--simd` vblock cells lose the 126 signalling patterns, because `_v_get`/`_v_set` are typed
   `(eq,i32)->f64` at BOTH widths and `WasmFloat16Compiler.emitNarrowLoop` demotes. **That is the
   wasm element model's ceiling, not the pair's** -- `aref` alone loses the identical 126 -- so the
   `--simd` arm needs no f32-native vblock accessors. Keep the exact cell exact (`.kb/vec.md`).
+
+## The conversion arithmetic census (2026-09-08, `.todo/746`)
+
+`.todo/670`'s findings line ("Seven sites hand-write the bf16 conversion arithmetic") named no
+sites and no owner. A grep for a file touching both `bf16` and 16-bit shift arithmetic answers
+twelve files; sorted into what each actually is:
+
+- **The authority**: `BFloat16.java`.
+- **Not a duplicate at all -- a caller**: `LispBFloat16Array` (the packed `#bf16` array's
+  `aref`/`setf aref`) calls `BFloat16.value`/`BFloat16.bits` directly; it hand-writes nothing.
+- **False positives** (matched the grep, hand-write no bf16 arithmetic):
+  - `codegen/jvm/JvmPackedFloatWidth` -- knows the packed array's two-slot HEADER layout and calls
+    the program's own `_bf16Value`/`_bf16Bits`; the shift arithmetic the grep found is the header
+    words (`dims[k] >>> 16`), not the conversion.
+  - `codegen/wasm/WasmFloat16Compiler` -- compiles `rontolisp:float16-bits`/`bits-float16`, IEEE
+    BINARY16 (5 exponent bits, 10 mantissa), a different format entirely (see the top of this
+    file). Matched on "16-bit shift arithmetic" that has nothing to do with bfloat16.
+  - `codegen/wasm/NoGcWasmCompiler` -- refuses the packed `#bf16` array BY NAME
+    (`compiler.UnsupportedFloatWidth`); it never emits the arithmetic because this backend never
+    carries the width at all.
+- **Necessary emissions** (a backend writing into an artefact the authority cannot reach -- the
+  question is agreement, not existence; `.kb/jvm-export.md`'s "What travels"):
+  - `codegen/jvm/JvmBFloat16Compiler` (scalar `bfloat16-bits`/`bits-bfloat16`) -- AGREES, exhaustive
+    round-trip pin over all 65536 patterns (`JvmLispCompilerTest#compileAndRunBfloat16Bits`).
+  - `codegen/wasm/WasmBFloat16Compiler` (same pair, wasm-GC) -- AGREES, same exhaustive round-trip
+    shape (`WasmLispCompilerIntegrationTest#compileAndRunBfloat16Bits`) plus the cross-backend
+    `bfloat16-bits` case in `ci-spec.yaml`.
+  - `codegen/jvm/JvmFloat16RuntimeBuilder#emitBf16Narrow` (bulk `narrow-float-bits`, format
+    `:bfloat16`, single-float source) -- AGREES, exhaustive round-trip pin
+    (`JvmLispCompilerTest#compileAndRunBfloat16BulkAgreesWithTheScalarPair`, 0/65536 mismatches).
+  - `codegen/jvm/JvmFloatArrayRuntimeBuilder` (`_bf16Value`/`_bf16Bits`, the packed `#bf16` array's
+    own element access) -- AGREES, the STRONGEST sweep of any site: all 65536 patterns in the widen
+    direction and all 2^32 f32 patterns plus the double NaN space in the narrow direction, DIRECTLY
+    against `BFloat16` (`JvmBFloat16ArrayTest`).
+  - `codegen/jvm/JvmSimdVectorTemplate` (`bf16ToFloat`/`floatToBf16`, the `--simd` fused GEMV/dot/sum
+    kernels' decode and the `widenBf16Into`/`narrowBf16Into` bulk buffer conversions) -- widen
+    AGREES (an exact shift, no NaN branch to disagree on). Narrow DISAGREED with the authority on
+    NaN payloads until this item: `floatToBf16` carried `(bits >>> 16) | 0x0040` (this method's
+    original shape, from commit `a345e1a3`, 2026-09-03), which forces the quiet bit unconditionally
+    instead of only when the payload was already zero -- the identical bug
+    `eval/FloatBitsWidening`'s narrow was fixed for THE SAME DAY (commit `f296ca8e`), which never
+    reached this copy. 126/65536 bf16-widened patterns mismatched the authority (measured). Fixed
+    2026-09-08 to the `u | (((u & 0x7f) - 1) >>> 31)` shape; pinned by
+    `JvmSimdVectorTemplateBf16Test#theNarrowingAgreesWithTheAuthorityOnEveryBf16WidenedPattern`
+    (all 65536 bf16-widened patterns, direct vs. `BFloat16.bits`, not just round-trip).
+- **The avoidable copy, folded**: `eval/FloatBitsWidening#bfloat16BitsOfFloat` -- host Java that
+  could call `BFloat16.bits(float)` directly (that overload exists specifically for this call site,
+  added 2026-09-03) but reimplemented its body instead, on a stale comment claiming the call would
+  auto-widen to `double` (it would not: an exact-type overload beats a widening one). Folded
+  2026-09-08 into a direct call; the private method is gone.
+- **Kept as a duplicate on purpose, reclassified**: `eval/VecSimdKernels` (`bf16ToFloat`/
+  `floatToBf16`, the interpreter's `--simd` mirror of `JvmSimdVectorTemplate`) -- unlike
+  `FloatBitsWidening`, this one is host Java that genuinely COULD call `BFloat16.bits` too, so by
+  the letter of the rule it is "avoidable". It stays inline anyway: the two `--simd` kernel files
+  are documented and tested as one operation-for-operation mirror (`VecSimdBf16KernelsTest`'s class
+  javadoc), and the JVM half cannot be folded (see above) -- folding only the interpreter half would
+  make the two files diverge in SHAPE while staying equal in VALUE, which is a worse read for zero
+  behavioral gain. It carried the same 126-pattern NaN bug as its JVM mirror, from the same commit;
+  fixed alongside it, pinned by
+  `VecSimdBf16KernelsTest#theNarrowingAgreesWithTheAuthorityOnEveryBf16WidenedPattern`.
+
+**Result: not seven sites, and not twelve.** One authority, one non-duplicate caller, three grep
+false positives, five necessary emissions (all now agreeing with the authority, one fixed by this
+item), one avoidable copy (folded), and one duplicate kept deliberately (fixed, not folded, for the
+reason above). The finding this discharges: a fused-kernel NaN bug, unreachable from any `rontolisp:`
+primitive today (`narrowBf16Into`/`floatToBf16` have no Lisp-callable call site yet -- `.todo/696`
+is what will wire one up), sitting unfixed for five days after its twin was fixed elsewhere. Filed
+because the fix was small and the bug was already fully diagnosed by the census; not filed as a
+separate item.
 
 **Two lanes work this file at once**, and both breakages presented as NaN-handling changes that
 `git merge` has nothing to say about. Tell the other lane before pushing a NaN change here.

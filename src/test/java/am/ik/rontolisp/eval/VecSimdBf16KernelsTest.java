@@ -97,6 +97,22 @@ class VecSimdBf16KernelsTest {
 		}
 	}
 
+	/**
+	 * {@code .todo/746}'s census check: the narrowing must agree with
+	 * {@code am.ik.rontolisp.BFloat16}, the single authority, on EVERY pattern, NaN
+	 * payloads included -- not just "stays a NaN", which is all the test above and
+	 * {@link #theNarrowingNeverTurnsANanIntoAnInfinity} check.
+	 */
+	@Test
+	void theNarrowingAgreesWithTheAuthorityOnEveryBf16WidenedPattern() {
+		for (int p = 0; p < 1 << 16; p++) {
+			short bits = (short) p;
+			float widened = VecSimdKernels.bf16ToFloat(bits);
+			assertThat(VecSimdKernels.floatToBf16(widened) & 0xffff).as("pattern 0x%04x", p)
+				.isEqualTo(am.ik.rontolisp.BFloat16.bits(widened));
+		}
+	}
+
 	@Test
 	void theBulkWidenMatchesTheScalarWidenOnBothSidesOfTheLaneGate() {
 		for (int n : new int[] { 0, 1, 7, MATVEC_ROW_THRESHOLD, THRESHOLD - 1, THRESHOLD, THRESHOLD + 3, 1024 }) {
