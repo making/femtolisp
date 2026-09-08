@@ -99,6 +99,8 @@ sections:
         title: GPU による高速化（--gpu）
       - file: guides/neural-networks.md
         title: ニューラルネットワーク（torch）
+      - file: guides/running-a-checkpoint.md
+        title: モデルチェックポイントを読む（gguf, safetensors）
       - file: guides/solid-modeling.md
         title: ソリッドモデリング（geom）
       - file: guides/java-interop.md

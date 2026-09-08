@@ -17,7 +17,11 @@
 | [`ffi`](functions/ffi.md) | C ライブラリ連携 |
 | [`objc`](functions/objc.md) | Foreign Function API による Objective-C ランタイムと AppKit (macOS のインタプリタのみ) |
 | [`appkit`](functions/appkit.md) | `objc` の上の Cocoa ウィジェット層 |
+| [`checkpoint`](functions/checkpoint.md) | 公開モデルのテンソルをパックされた浮動小数点配列にステージングする。チェックポイントを読む処理のうちファイル形式によらず共通する半分 |
+| [`safetensors`](functions/safetensors.md) | Hugging Face の `model.safetensors` -- またはシャード分割された `model.safetensors.index.json` -- をパックされた浮動小数点配列に読み込む |
 | [`geom`](functions/geom.md) | `linalg` カーネル上のソリッドモデリング |
+| [`tokenizer`](functions/tokenizer.md) | 公開されている言語モデルが同梱するバイトレベル / SentencePiece 形式の BPE |
+| [`gguf`](functions/gguf.md) | GGUF チェックポイントを読む。ハイパーパラメータ・トークナイザ・重みが 1 ファイルに入っている |
 | [`metal`](functions/metal.md) | `objc` の上の `appkit` ウィンドウ上に載る Metal 描画サーフェス |
 | [`scene`](functions/scene.md) | `metal` の上に載る `geom` ソリッドの 3D ビューア |
 | [`asdf`](functions/asdf.md) | ASDF の限定的な API 互換サブセット(システム定義) |

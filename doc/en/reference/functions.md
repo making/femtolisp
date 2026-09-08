@@ -20,7 +20,11 @@ function's deviations from Common Lisp are noted on its own page.
 | [`ffi`](functions/ffi.md) | C library interop |
 | [`objc`](functions/objc.md) | The Objective-C runtime and AppKit through the foreign function API (macOS interpreter only) |
 | [`appkit`](functions/appkit.md) | A Cocoa widget layer over `objc` |
+| [`checkpoint`](functions/checkpoint.md) | Stages a published model's tensors into packed float arrays: the half of reading a checkpoint that every file format shares |
+| [`safetensors`](functions/safetensors.md) | Reads a Hugging Face `model.safetensors` -- or a sharded `model.safetensors.index.json` -- into packed float arrays |
 | [`geom`](functions/geom.md) | Solid modeling over the `linalg` kernels |
+| [`tokenizer`](functions/tokenizer.md) | The byte-level and SentencePiece-style BPE a published language model ships with |
+| [`gguf`](functions/gguf.md) | Reads a GGUF checkpoint: the hyperparameters, the tokenizer and the weights in one file |
 | [`metal`](functions/metal.md) | A Metal drawing surface on an `appkit` window over `objc` |
 | [`scene`](functions/scene.md) | A 3-D viewer for `geom` solids over `metal` |
 | [`asdf`](functions/asdf.md) | A limited, API-compatible subset of ASDF system definitions |

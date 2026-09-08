@@ -16,4 +16,4 @@ CL-USER> (with-open-file (s "model.safetensors" :element-type '(unsigned-byte 8)
 
 ## バックエンドのサポート
 
-`rontolisp:widen-float-bits` があり、ファイルシステムのあるすべてのバックエンド。現在はインタプリタとコンパイルされた `.class`/`.jar` です。
+ファイルシステムのあるすべてのバックエンド。インタプリタ、コンパイルされた `.class`/`.jar`、そして WASM の両バックエンドです。

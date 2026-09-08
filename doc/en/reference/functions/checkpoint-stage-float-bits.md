@@ -16,4 +16,4 @@ CL-USER> (with-open-file (s "model.safetensors" :element-type '(unsigned-byte 8)
 
 ## Backend support
 
-Every backend that has a filesystem, once `rontolisp:widen-float-bits` is there: the interpreter and a compiled `.class`/`.jar` today.
+Every backend that has a filesystem: the interpreter, a compiled `.class`/`.jar`, and both WASM backends.
