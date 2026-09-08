@@ -9520,6 +9520,30 @@ class JvmLispCompilerTest {
 	}
 
 	@Test
+	void compileAndRunNarrowFloatBitsReadsARankNSourceLikeTheInterpreter() throws Exception {
+		// narrow-float-bits reads the source's TOTAL SIZE. This backend used to ask
+		// _fvLength for it, whose rank-n arm goes through _fvToGeneral and _length --
+		// and _length refuses a multidimensional array, so a rank-2 source threw
+		// "argument is not a sequence" here while the interpreter narrowed it happily,
+		// at every width. It is the header's dimension product now, which is exactly
+		// what LispFloatArray.totalSize answers.
+		assertThat(compileAndRun("""
+				(let ((src (make-array '(2 3) :element-type 'single-float))
+				      (dsrc (make-array '(2 3) :element-type 'double-float))
+				      (back (make-array 6 :element-type '(unsigned-byte 16)))
+				      (dback (make-array 6 :element-type '(unsigned-byte 16))))
+				  (dotimes (i 2)
+				    (dotimes (j 3)
+				      (setf (aref src i j) (+ 1.0 j (* 3 i)))
+				      (setf (aref dsrc i j) (+ 1.0 j (* 3 i)))))
+				  (rontolisp:narrow-float-bits src :bfloat16 back)
+				  (rontolisp:narrow-float-bits dsrc :bfloat16 dback)
+				  (print (list (aref back 5) (aref dback 5)))
+				  (print (= (aref back 5) (rontolisp:bfloat16-bits 6.0))))
+				""")).isEqualTo("(16576 16576)\nT");
+	}
+
+	@Test
 	void compileAndRunFloat16Bits() throws Exception {
 		assertThat(compileAndRun("(print (rontolisp:float16-bits 1.0)) (print (rontolisp:float16-bits -2.5))"
 				+ " (print (rontolisp:bits-float16 15360))"

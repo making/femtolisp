@@ -36,8 +36,10 @@ import am.ik.rontolisp.LispVal;
  * The destination's/source's concrete packed-float width is dispatched with an EXHAUSTIVE
  * {@code switch} over the sealed {@link LispFloatArray} permits, not an
  * {@code instanceof LispSingleFloatArray} check with "anything else is double-float" --
- * so a third permit (a future {@code #bf16} array, {@code .todo/484}) fails to COMPILE
- * here instead of silently widening into the wrong width.
+ * so a FOURTH permit would fail to COMPILE here instead of silently widening into the
+ * wrong width. All three are served; the {@code #bf16} arms landed last, and the two that
+ * meet {@code :bfloat16} patterns are pure copies of the stored patterns, the only arms
+ * in this file with no conversion in them at all.
  */
 final class FloatBitsWidening {
 
@@ -98,12 +100,29 @@ final class FloatBitsWidening {
 					}
 				}
 			}
-			// A bfloat16 destination is a TEMPORARY decline, not an impossibility: from
-			// :bfloat16 patterns it is a straight copy and from :float16 one conversion,
-			// which is a capability to be added deliberately rather than a side effect
-			// of the width existing.
-			case LispBFloat16Array ignored ->
-				throw new LispEvalException(fnName + ": does not yet write a bfloat16 destination");
+			case LispBFloat16Array b -> {
+				short[] out = (short[]) FloatArrayAccessHook.written(b.storage());
+				if (float16) {
+					// The only route a published F16 checkpoint has into the narrow
+					// width. ONE rounding: the f16 pattern's float is exact (binary16 is
+					// a subset of binary32), so the narrow is the whole conversion, and
+					// it is BFloat16.bits(float) -- the authority, picked over the
+					// double overload by exact type, so no float crosses a double.
+					// Widening into #f and narrowing back answers the same patterns and
+					// allocates the f32 array this width exists to avoid.
+					for (int i = 0; i < n; i++) {
+						out[start + i] = (short) BFloat16.bits(Float.float16ToFloat((short) bitsData[i]));
+					}
+				}
+				else {
+					// A straight copy: the patterns ARE this width's representation, so
+					// there is no conversion and nothing a NaN can lose -- the same
+					// byte-for-byte identity read-sequence already has at this width.
+					for (int i = 0; i < n; i++) {
+						out[start + i] = (short) bitsData[i];
+					}
+				}
+			}
 		}
 		return dst;
 	}
@@ -172,10 +191,26 @@ final class FloatBitsWidening {
 					}
 				}
 			}
-			// A bfloat16 SOURCE is the same temporary decline as the destination above:
-			// to :bfloat16 patterns it is a straight copy, to :float16 one conversion.
-			case LispBFloat16Array ignored ->
-				throw new LispEvalException(fnName + ": does not yet read a bfloat16 source");
+			case LispBFloat16Array b -> {
+				short[] in = b.data();
+				if (float16) {
+					// bf16 -> f16 in one step: the widen is the exact shift (NEVER
+					// BFloat16.value, which only answers a double -- see widen above),
+					// and Float.floatToFloat16 is the same narrowing the single-float
+					// arm runs, so this answers what widening into #f and narrowing
+					// would, without the f32 array in between.
+					for (int i = 0; i < n; i++) {
+						out[start + i] = Float.floatToFloat16(Float.intBitsToFloat((in[i] & 0xFFFF) << 16)) & 0xFFFFL;
+					}
+				}
+				else {
+					// The copy in the other direction: the stored patterns are already
+					// what a :bfloat16 bits vector holds.
+					for (int i = 0; i < n; i++) {
+						out[start + i] = in[i] & 0xFFFFL;
+					}
+				}
+			}
 		}
 		return dst;
 	}

@@ -4,8 +4,8 @@
 
 Widens a packed `(unsigned-byte 16)` vector of `bits` -- `f16` or `bfloat16` bit
 patterns, chosen by `format` (`:float16` or `:bfloat16`) -- into `dst`, a packed
-float array (`single-float` or `double-float`, any rank), row-major from flat
-index `start`. Returns `dst`.
+float array (`single-float`, `double-float` or `bfloat16`, any rank), row-major
+from flat index `start`. Returns `dst`.
 
 This is the bulk form of `rontolisp:bits-float16`/`rontolisp:bits-bfloat16`: a
 published checkpoint's tensors arrive as a whole vector of sixteen-bit patterns,
@@ -25,8 +25,16 @@ never rounds.
 ; => (0.0 0.0 1.0 -2.5 100.0)
 ```
 
+A `bfloat16` destination stores bit patterns rather than values. With format
+`:bfloat16` that makes it a plain copy -- the patterns already are what the array
+holds, so nothing rounds and no NaN payload changes. With format `:float16` it is
+one rounding, the same one `rontolisp:bfloat16-bits` applies, and it is the way to
+load a published f16 checkpoint into the narrow width without allocating a
+`single-float` array on the way.
+
 `:start` is where a chunked read lands its next slice inside a whole tensor's
 destination -- see [checkpoint:stage-float-bits](checkpoint-stage-float-bits.md)
 for the pattern. Works on the interpreter, the JVM and both WASM backends;
-`--no-gc` has no packed float array model and refuses at compile time.
-`rontolisp:narrow-float-bits` is the inverse direction.
+`--no-gc` has no packed float array model and refuses at compile time. A
+`bfloat16` destination is the interpreter and the JVM only, since no WASM backend
+carries that array width. `rontolisp:narrow-float-bits` is the inverse direction.

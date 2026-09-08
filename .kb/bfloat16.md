@@ -217,8 +217,36 @@ needed"). No `linalg:` acceleration seam takes it: `--simd`, `--blas` and `--gpu
   `PackedBuffer.of` (width 2, `asShortBuffer`), JVM `_readSeqPacked` / `_writeSeqPacked` (the
   `short[]` arm, data offset `1 + 2 * rank` -- the one arm in that method whose offset is not
   `1 + rank`). Measured 2026-09-05: 2^21 elements round-trip with zero mismatches, 5 ms on the
-  JVM and 10 ms on the interpreter. The bulk `widen-float-bits` / `narrow-float-bits` pair
-  still declines a bf16 source or destination (`.todo/487` step 2).
+  JVM and 10 ms on the interpreter.
+- **The bulk `widen-float-bits` / `narrow-float-bits` pair carries a bf16 source and
+  destination** (2026-09-08, `.todo/745`; interpreter and JVM, the two backends that have the
+  width at all). Four arms, and only two of them convert anything:
+  - `:bfloat16` <-> `#bf16` is a **straight COPY of the stored patterns** in both directions.
+    The patterns already ARE this width's representation, so there is no rounding and nothing
+    a NaN can lose -- the same byte-for-byte identity `read-sequence` has, over all 65536
+    patterns. An arm that routed the copy through a `float` or a `double` would lose the 126
+    signalling ones for no reason at all.
+  - `:float16` -> `#bf16` is ONE rounding: the f16 pattern's `float` is exact (binary16 is a
+    subset of binary32), so the whole conversion is the narrow, and it is
+    `BFloat16.bits(float)` on the interpreter and `JvmFloat16RuntimeBuilder#emitBf16Narrow`
+    on the JVM -- the arms that already existed, not a fourth copy of the arithmetic. It is
+    the only route a published F16 checkpoint has into the narrow width without allocating
+    the f32 array the width exists to avoid.
+  - `#bf16` -> `:float16` is the exact shift-widen (never `BFloat16.value`, which only answers
+    a `double`) followed by the `Float.floatToFloat16` the single-float arm already runs.
+  - Pins, both backends per case, in `JvmBFloat16ArrayTest`:
+    `theBulkBitsPairCopiesEveryBf16PatternInBothDirections` (all 65536, the copy identity),
+    `theBulkBitsPairConvertsF16AgainstTheRouteThroughAnF32Array` (all 65536 in each
+    direction, against the two-step through `#f` that the arm replaces -- which is itself
+    pinned against the scalar authority), and `theBulkBitsPairReadsTheBf16HeaderAtEveryShape`
+    (rank 2, `:start`, and a 40000 dimension: the two-slot header).
+- **`narrow-float-bits` reads the source's TOTAL SIZE from the header's dimension product**,
+  at every width and on both backends. The JVM half used to ask `_fvLength`, whose rank-n arm
+  goes through `_fvToGeneral` and `_length` -- and `_length` refuses a multidimensional array,
+  so a rank-2 source threw `argument is not a sequence` on a compiled program while the
+  interpreter (`LispFloatArray.totalSize`) narrowed it happily. Found and fixed 2026-09-08
+  working `.todo/745`, at the `single-float` and `double-float` widths as much as at this one;
+  pinned by `JvmLispCompilerTest#compileAndRunNarrowFloatBitsReadsARankNSourceLikeTheInterpreter`.
 - **`coerce` / `concatenate` reach the width too** (2026-09-06, `.todo/707`):
   `(coerce v '(array bfloat16))` narrows into it on the two backends that carry it, and the
   refusal on the others sits where the representation is chosen -- the shared
@@ -236,7 +264,10 @@ needed"). No `linalg:` acceleration seam takes it: `--simd`, `--blas` and `--gpu
 - **Silent DECLINE** (`null`/`false`, the rung below answers, answer identical): `VecSimd`,
   `LinalgSimd`, `LinalgGpu`, `LinalgBlas` -- guardable by a SOURCE-SHAPE pin
   (`eval/LinalgWidthWireTest`); a reader that GUESSES instead needs a differential test.
-- **TEMPORARY refusal**: `LispEvalException` at RUN time, message says "does not yet".
+- **TEMPORARY refusal**: `LispEvalException` at RUN time, message says "does not yet". No
+  `bfloat16` site is in this state any more -- the bulk pair was the last one and it landed
+  2026-09-08 (`.todo/745`), so a "does not yet" mentioning this width in the tree today is a
+  stale comment rather than a scheduled arm.
 - **PERMANENT refusal**: `UnsupportedOperationException` on the COMPILE path naming width and
   backend, built by `compiler/UnsupportedFloatWidth`, positioned by `SourceProvenance.noteFailure`.
   Not `LispCompileException`: `codegen/wasm` does not use it.
