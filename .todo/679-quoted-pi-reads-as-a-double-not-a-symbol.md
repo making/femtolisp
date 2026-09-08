@@ -88,3 +88,42 @@ one (`read-time-constants.md`) and name the test in it. At minimum:
 Found while re-evaluating the ANSI measurement method (2026-09-03). Siblings:
 `.todo/680` (raw Java exceptions escape `handler-case`) and `.todo/681` (the driver
 books those escapes as lost forms instead of failing tests).
+
+## Correction to the "618 tests" figure (measured 2026-09-08, `.todo/715`)
+
+`'pi` is **not** the only link in that cascade, and this item alone does not
+recover most of it. Traced form by form through `universe.lsp` (the log's global
+form index; universe.lsp form 0 is global 10, `ansi-test/results/logs/cons.log`):
+
+| form | defines | dies on | owner |
+|---:|---|---|---|
+| 15 | `*floats*` | `BOUNDP expects a symbol, got 3.14159...` | **this item** |
+| 18 | `*numbers*` | `*FLOATS*` unbound | behind form 15 |
+| 19 | `*reals*` | `*FLOATS*` unbound | behind form 15 |
+| 32 | `*array-dimensions*` | `ARRAY-RANK-LIMIT` unbound | `.todo/742` |
+| 34 | `*arrays*` | `*ARRAY-DIMENSIONS*` unbound | behind form 32 |
+| 37 | `*logical-pathnames*` | `setf does not support place: LOGICAL-PATHNAME-TRANSLATIONS` | unowned |
+| 46 | `*functions*` | `COMPILE expects (compile name definition), got 1 argument(s)` | `.todo/042` |
+| 48 | `*methods*` | `FIND-METHOD is undefined` | out of scope, `.kb/clos.md` |
+| 50 | `*universe*` | `*NUMBERS*` unbound -- then `*ARRAYS*`, `*LOGICAL-PATHNAMES*`, `*FUNCTIONS*`, `*METHODS*` | all five |
+| 51 | `*mini-universe*` | same | all five |
+| 52 | `*classes*` | `*UNIVERSE*` unbound | behind form 50 |
+
+`*universe*` is `(append *symbols* *numbers* ... *arrays* ... *logical-pathnames*
+... *functions* *random-states* *methods* nil)`, evaluated left to right, so it
+needs EVERY one of them.
+
+Re-counting the cascade from TEST-level `ERROR` lines only (the report's reason
+table double-counts, `.todo/739` §4):
+
+- this item alone recovers `*FLOATS*` 15 + `*NUMBERS*` 30 + `*REALS*` 50 =
+  **~95 tests**;
+- `*UNIVERSE*` 175 + `*MINI-UNIVERSE*` 233 = **408 more** need all five links,
+  and the cheapest of the other four (`array-rank-limit`, `.todo/742`) is a
+  Low-difficulty constant.
+
+That does not make this item smaller -- it is still the only one of the five that
+is a semantics bug rather than a missing name, and `'pi` under `quote` is wrong
+whatever the suite does. It does mean **the 4%-of-the-corpus headline belongs to
+the chain, not to this item**, and that `.todo/742` should land first or
+alongside so the recovery is visible when this one lands.
