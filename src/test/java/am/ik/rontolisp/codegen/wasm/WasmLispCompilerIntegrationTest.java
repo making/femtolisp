@@ -17670,6 +17670,37 @@ class WasmLispCompilerIntegrationTest {
 	}
 
 	@Test
+	void compileAndRunPrintObjectMethodDefinedBelowItsFirstUse() throws Exception {
+		// Todo 445: a print-object method defined BELOW its first use used to trap
+		// with a cast failure (the whole-program registry routes the printer through
+		// the generic from the start, but the body global is assigned only when the
+		// defmethod form runs). The dispatcher now skips the not-yet-assigned body,
+		// so the first print renders the built-in text.
+		assertThat(compileAndRun("""
+				(defclass wpo-late () ())
+				(let ((o (make-instance 'wpo-late)))
+				  (print o)
+				  (defmethod print-object ((x wpo-late) s) (format s "#<LATE!>"))
+				  (print o))
+				""")).isEqualTo("#<WPO-LATE>\n#<LATE!>");
+	}
+
+	@Test
+	void compileAndRunNestedDefmethodCallBeforeItsFormFallsThrough() throws Exception {
+		// Todo 445, the general shape: a call before the nested defmethod form runs
+		// answers the default, and after it the new method.
+		assertThat(compileAndRun("""
+				(defclass wnd-late () ())
+				(defgeneric wnd-greet (x))
+				(defmethod wnd-greet (x) "default")
+				(let ((o (make-instance 'wnd-late)))
+				  (print (wnd-greet o))
+				  (defmethod wnd-greet ((x wnd-late)) "special")
+				  (print (wnd-greet o)))
+				""")).isEqualTo("\"default\"\n\"special\"");
+	}
+
+	@Test
 	void compileAndRunUnboundSlotSignalsUnboundSlot() throws Exception {
 		assertThat(compileAndRun("""
 				(defclass wu-box () ((a :initarg :a) (b :initform 7)))

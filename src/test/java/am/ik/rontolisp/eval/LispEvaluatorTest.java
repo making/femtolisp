@@ -15621,6 +15621,36 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void printObjectMethodDefinedBelowItsFirstUse() {
+		// Todo 445: a print-object method defined BELOW its first use renders the
+		// built-in text for the earlier print and the method's text after the form
+		// runs -- the compile paths route through the generic from the start, so
+		// their dispatcher skips the not-yet-assigned body the same way.
+		assertThat(evalMulti("""
+				(defclass po-late () ())
+				(let ((o (make-instance 'po-late)))
+				  (list (princ-to-string o)
+				        (progn (defmethod print-object ((x po-late) s) (format s "#<LATE!>"))
+				               (princ-to-string o))))
+				""").print()).isEqualTo("(\"#<PO-LATE>\" \"#<LATE!>\")");
+	}
+
+	@Test
+	void nestedDefmethodCallBeforeItsFormFallsThroughToTheDefault() {
+		// Todo 445, the general shape: a call before the nested defmethod form runs
+		// answers the default, and after it the new method.
+		assertThat(evalMulti("""
+				(defclass nd-late () ())
+				(defgeneric nd-greet (x))
+				(defmethod nd-greet (x) "default")
+				(let ((o (make-instance 'nd-late)))
+				  (list (nd-greet o)
+				        (progn (defmethod nd-greet ((x nd-late)) "special")
+				               (nd-greet o))))
+				""").print()).isEqualTo("(\"default\" \"special\")");
+	}
+
+	@Test
 	void printObjectIsConsultedForANestedObjectToo() {
 		// The method decides the text wherever the instance SITS -- inside a list, a
 		// dotted tail, a nested list, a vector -- not only when it is handed to the

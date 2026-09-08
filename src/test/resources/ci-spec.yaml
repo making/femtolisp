@@ -8357,6 +8357,32 @@ cases:
       (:MAYBE :NONE)
       (CLOS-U-SUB "c" :POOLED T NIL)
       ("#<CLOS-U-SUB d>" "#<CLOS-U-SUB d>|#<CLOS-U-SUB d>")
+  - name: clos-print-object-method-defined-below-its-first-use-445
+    source: |
+      ;; Todo 445: a print-object method defined BELOW its first use. The
+      ;; whole-program registry routes the printer through the generic from the very
+      ;; first print, but the body global is assigned only when the defmethod form
+      ;; runs -- so the dispatcher skips the not-yet-assigned body and the first
+      ;; print renders the built-in text, like the interpreter (and CL). The general
+      ;; shape second: a call before the nested defmethod form runs answers the
+      ;; default, and after it the new method.
+      (defclass po445-late () ())
+      (let ((po445-o (make-instance 'po445-late)))
+        (print po445-o)
+        (defmethod print-object ((x po445-late) s) (format s "#<PO445!>"))
+        (print po445-o))
+      (defclass nd445-late () ())
+      (defgeneric nd445-greet (x))
+      (defmethod nd445-greet (x) "default")
+      (let ((nd445-o (make-instance 'nd445-late)))
+        (print (nd445-greet nd445-o))
+        (defmethod nd445-greet ((x nd445-late)) "special")
+        (print (nd445-greet nd445-o)))
+    expected: |
+      #<PO445-LATE>
+      #<PO445!>
+      "default"
+      "special"
   - name: with-slots-write-only-unbound-slot-and-missing-slot
     source: |
       ;; with-slots BINDS, it never reads: a body that only assigns a slot

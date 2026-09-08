@@ -1001,6 +1001,21 @@ public final class ClosRegistry {
 	private final Set<String> changeClassTargets = new java.util.LinkedHashSet<>();
 
 	/**
+	 * The generated method-body defun names ({@code %<generic>--m<i>}) whose defun sits
+	 * inside a top-level {@code let} body rather than at top level -- the
+	 * closure-over-let method idiom
+	 * ({@code expandLetNestedDefmethods}/{@code rewriteNestedDefmethods}). Such a defun
+	 * compiles to a {@code (setq name (lambda ...))} global-closure assignment, so its
+	 * function value exists only once the {@code defmethod} FORM executes; a dispatcher
+	 * branch calling it before that must be skipped (falling through to the default or to
+	 * no-applicable-method), or the call reads an unassigned global. Only the compile
+	 * paths mark entries: the interpreter evaluates the defmethod (registering the
+	 * method) exactly when the form runs, so its dispatchers never reference an
+	 * unassigned body.
+	 */
+	private final Set<String> nestedMethodFunctions = new java.util.LinkedHashSet<>();
+
+	/**
 	 * Class name (normalized) to its memoized class METAOBJECT -- the
 	 * {@code standard-class} instance {@code find-class} answers with. Built on demand
 	 * ({@link #classMetaobject}) so programs that never touch the MOP surface allocate
@@ -1959,6 +1974,26 @@ public final class ClosRegistry {
 	 */
 	public void registerChangeClassTarget(String className) {
 		this.changeClassTargets.add(normalize(className));
+	}
+
+	/**
+	 * Records that the generated method-body defun {@code functionName} sits inside a
+	 * top-level {@code let} body (see {@link #nestedMethodFunctions}).
+	 * @param functionName the generated method-body defun name as spelled
+	 */
+	public void markNestedMethodFunction(String functionName) {
+		this.nestedMethodFunctions.add(functionName);
+	}
+
+	/**
+	 * Whether the generated method-body defun {@code functionName} sits inside a
+	 * top-level {@code let} body, so its function value is assigned only when the
+	 * {@code defmethod} form executes.
+	 * @param functionName the generated method-body defun name as spelled
+	 * @return true when the dispatcher must guard calls to it
+	 */
+	public boolean isNestedMethodFunction(String functionName) {
+		return this.nestedMethodFunctions.contains(functionName);
 	}
 
 	/**

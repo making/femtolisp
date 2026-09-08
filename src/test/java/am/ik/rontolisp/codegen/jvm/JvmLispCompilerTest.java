@@ -14819,6 +14819,37 @@ class JvmLispCompilerTest {
 			.hasMessageContaining("DEFMETHOD is only supported as a top-level form");
 	}
 
+	@Test
+	void compilePrintObjectMethodDefinedBelowItsFirstUse() throws Exception {
+		// Todo 445: a print-object method defined BELOW its first use used to crash
+		// with a raw NullPointerException (the whole-program registry routes the
+		// printer through the generic from the start, but the body global is assigned
+		// only when the defmethod form runs). The dispatcher now skips the
+		// not-yet-assigned body, so the first print renders the built-in text.
+		assertThat(compileAndRun("""
+				(defclass po-late () ())
+				(let ((o (make-instance 'po-late)))
+				  (print o)
+				  (defmethod print-object ((x po-late) s) (format s "#<LATE!>"))
+				  (print o))
+				""")).isEqualTo("#<PO-LATE>\n#<LATE!>");
+	}
+
+	@Test
+	void compileNestedDefmethodCallBeforeItsFormFallsThrough() throws Exception {
+		// Todo 445, the general shape: a call before the nested defmethod form runs
+		// answers the default, and after it the new method.
+		assertThat(compileAndRun("""
+				(defclass nd-late () ())
+				(defgeneric nd-greet (x))
+				(defmethod nd-greet (x) "default")
+				(let ((o (make-instance 'nd-late)))
+				  (print (nd-greet o))
+				  (defmethod nd-greet ((x nd-late)) "special")
+				  (print (nd-greet o)))
+				""")).isEqualTo("\"default\"\n\"special\"");
+	}
+
 	// --- Dynamic (special) variable binding ---
 
 	@Test
