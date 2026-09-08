@@ -11,7 +11,8 @@ Interpreter: `BlockReturnSignal` (stack-trace-free) at the scope `evalBlock` est
 JVM (`JvmBlockCompiler`/`JvmReturnCompiler`, `Ctx.blockTargets`): store-then-`goto`, reaching
 the exit with the stack the block was *entered* with (`BlockTarget.entryStack`) — the verifier
 requires it, so a `return` mid-expression **discards** the abandoned expression's operands
-(`JvmReturnCompiler.emitStackUnwind`, `.kb/error-handling.md`). WASM: `br` at
+(`JvmReturnCompiler.emitStackUnwind`, `.kb/error-handling.md`). WASM
+(`WasmBlockCompiler`/`WasmReturnCompiler`): `br` at
 `Ctx.wasmCtrlDepth - marker` (bumped only by `if` +1, `while` +2), which discards excess
 operands for free.
 

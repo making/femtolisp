@@ -14,7 +14,7 @@ line/column.
   ImportNamed / ExportRef / ExportNamed / Include), `WitType` (Prim / Named / ListOf / OptionOf /
   ResultOf / TupleOf / StreamOf / FutureOf / BorrowOf / OwnOf), `WitFunc`, `WitMeta`,
   `WitPackageName`, `WitRef`. **Record equality = model equality.** `Wit` is the construction DSL.
-- `WitParser.parseLocated` -> document + `WitLocations`. **Positions live BESIDE the model in an
+- `WitParser.parseLocated` -> `WitParseResult` = document + `WitLocations`. **Positions live BESIDE the model in an
   `IdentityHashMap`, never on the records** — a field would break the structural equality
   `WitRoundTripTest` pins; lookup is BY IDENTITY. This is what lets `wit-export` say
   `world.wit:5: ...`.

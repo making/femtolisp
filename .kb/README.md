@@ -7,6 +7,23 @@ the invariant, the mechanics, the per-backend differences and the tests that pin
 marker-to-marker edit silently deletes whatever was added between the markers since you
 last read the file, and nothing fails -- these files have no tests.
 
+**These files are already compacted; do not run another size pass.** The 2026-09-04/05
+passes took the tree from 3.66 MB to 1.54 MB (42%) and that is the RESTING size: what is
+left is identifier catalogues, one-line traps and pinning-test names, and the next thing a
+cut reaches is the test names -- the highest-value pointer a file carries. Ranking files by
+"% of the pre-compaction size" does NOT find un-compacted ones (measured 2026-09-08): the
+top of that ranking is files whose baseline was already terse (`string-index-cost.md` 96%,
+`bfloat16.md` 81%, `instance-syntax.md` 74%, all in card shape) plus files that GREW
+afterwards with new content (`checkpoint-readers.md`, 103%). An identifier-preservation
+audit over all 126 files against the pre-compaction tree (every backticked token, with
+package and class qualifiers normalized) found five names worth restoring and no other
+load-bearing loss: of the identifiers that left `.kb` entirely, 20 were
+`Jvm`/`Wasm<Name>Compiler` spellings the naming convention regenerates, the rest were
+narrative, private helper methods, per-test method names and benchmark row labels. Two
+deliberate boundaries the audit must not undo: user-facing operator catalogues live in
+`doc/**`, not here, and an enumeration of the emitters sharing one helper was replaced by
+"grep that name", which is the better pointer.
+
 ## Core language and evaluation
 
 - [core-representation.md](core-representation.md) -- core value model, three-pass compilation, `FreeVarAnalyzer` capture rule, non-top-level `defun`, `%` prefix, JVM method mangling, WASM rec-groups

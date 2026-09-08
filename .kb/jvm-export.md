@@ -114,7 +114,7 @@ parameter per JVM-reaching CLI flag under the same name.
   line naming `RontoHttpServletInitializer` (no `web.xml`), and forces `noMain` off — so every
   file needs its own handler against `servletMode && !usesHttpHandler` (`.kb/http-server.md`)
   and **shared code must be `(load ...)`ed, not a sibling `.lisp`**. `CompileMojo` checks
-  `${project.packaging}`.
+  `${project.packaging}` — not `TestCompileMojo`, whose classes never reach a war.
 - **Staleness is all-or-nothing** (a `(load "...")`ed file's own timestamp need not move), so
   state is a STATUS FILE (`target/rontolisp/compile-status.txt`), not the output directory.
 - It compiles IN PROCESS: `cli/CompileFrontend` (the shared, order-critical front end) +

@@ -191,8 +191,9 @@ they only have to EXIST. Node 22.16 has no JSPI. User half: `doc/{en,ja}/compili
 functions are `canon lower`ed into the core module (`appendUserImports`: instance type +
 import + per-function alias + lower (memory 0 / realloc = mem.wasm's `cabi_realloc` = core
 func 0 / utf8, exactly when the call touches linear memory) + one synthesized core instance
-per interface). Every downstream hardcoded index shifts by the user-import counts, so **zero
-imports = zero shift = byte-identical**.
+per interface; `WitComponentLevelTypes` owns the component-level type section and the
+resource collection behind it). Every downstream hardcoded index shifts by the user-import
+counts, so **zero imports = zero shift = byte-identical**.
 
 **Serve (`build`) has NO serve adapter and ONE block**: http.lisp IS the HTTP glue, so its
 `wasi:http/{types,client}@0.3.0` interfaces are the fixed surface, lowered FROM
