@@ -50,3 +50,20 @@ Sonnet-class model can size each on its own once picked up. None requires
 re-deriving the whole report format -- `ChapterResult.parse` /
 `ReportWriter` / `AnsiChapterRunner` in `src/test/java/am/ik/rontolisp/ansi/`
 are the only files involved for any of the three.
+
+## 4. The reason table mixes per-test and per-form rows (added 2026-09-08)
+
+`ChapterResult.parse` merges into one `reasons` map both `ERROR <test> <msg>`
+lines (one per TEST) and `%%%EVAL` / `%%%READ` lines (one per lost FORM, per
+chapter). A single aux form that fails in the shared PREFIX therefore contributes
+25 rows -- once per chapter -- to the same table a reader uses to rank missing
+operators, where every other row is a test count.
+
+Concretely, in the checked-in report `The variable *UNIVERSE* is unbound` reads
+202 but is **175 tests plus 27 form losses**; `*NUMBERS*` reads 80 but is 30
+tests; `*FLOATS*` reads 65 but is 15. Recomputing the top of the table from
+`ERROR` lines alone reorders it.
+
+The fix is the same shape as §1 and §2: either count the two kinds in separate
+tables, or label the column. Whoever takes this should re-read `.todo/715` after,
+since its ranking is derived from this table.

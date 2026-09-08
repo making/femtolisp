@@ -117,3 +117,18 @@ $ diff -u sbcl.out ronto.out
 - Per operator: a `LispEvaluatorTest` `multiple-value-bind` case, the same on the
   JVM and wasm-GC, and a `ci-spec.yaml` line (native E2E re-run).
 - Update the `missing-features.md` bullet in BOTH language trees as entries land.
+
+## What it costs on the ANSI suite (re-measured 2026-09-08)
+
+Two of the report's three largest wrong-value clusters are rows of the table
+above, which makes this the top FAIL-side item in `.todo/715`'s ranking:
+
+- **`read-from-string`'s index: 184 of the `reader` chapter's 285 failing
+  tests** (`got (A) want (A 1)`). The chapter is at 10.3%, second-lowest in the
+  report, and this one value is nearly two thirds of its wrong answers.
+- **`subtypep`'s valid-p: 112 of the 142 failing `SUBTYPEP.*` tests**
+  (`got (NIL) want (T T)` / `want (NIL T)`) in `types-and-classes` (43.5%).
+  `SUBTYPEP` is the largest single test-name cluster in the whole FAIL column.
+
+Neither needs a new operator -- both operators exist and answer the primary value
+correctly. Counted from `ansi-test/results/logs/` at suite revision `ca06bd9`.

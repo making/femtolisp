@@ -2,163 +2,173 @@
 
 Difficulty: Medium
 
-The ANSI Common Lisp test suite now runs against the interpreter
-(`ansi-test/`, harness landed 2026-08-12). Baseline at suite revision
-`ca06bd9`: **7,254 of 17,689 tests pass (41.0%)**, 3,370 return the wrong values,
-7,065 signal. Re-measure with `ansi-test/measure.sh`; the full per-chapter table
-and the ranked failure reasons live in `ansi-test/results/interpreter.md` and are
-NOT duplicated here.
+This item is the READING of `ansi-test/results/interpreter.md`: which gap is
+worth closing, in what order, and which todo owns it. The numbers themselves
+live in that report and are not duplicated here -- only the ordering, the owner
+and the reason.
 
-This item is the reading of that report: which gap is worth closing, in what
-order, and which existing todo already owns it. Most of the missing operators
-are already inventoried in the older extension todos -- what the suite adds is a
-COST for each, so the inventory can be worked in payoff order instead of
-alphabetically.
+**Re-measure before you read.** `ansi-test/measure.sh` with no argument rewrites
+the checked-in baseline; pass every chapter name instead and it writes
+`results/partial.md`, which is what a local re-read wants. Then rank from
+`ansi-test/results/logs/*.log`, not from the report's reason table -- see
+"How to count" below.
 
-## Cheap and high-payoff (a single missing answer costs a whole chapter)
+## Baseline (re-measured 2026-09-08, suite revision `ca06bd9`)
 
-| what | costs | owner |
-| --- | --- | --- |
-| ~~`find-symbol` has no status second value, so `cl-symbols.lsp` fails once per CL symbol~~ **CLOSED 2026-08-12**: `symbols` 4.2% -> **58.4%** (48 -> 665 of ~1,140), the largest single move the report has recorded | ~1,000 tests, the whole `symbols` chapter (4.2%) | .todo/214, `.kb/symbol-runtime-api.md` |
-| no runtime `make-package` and `defpackage` only as a LITERAL top-level form, so the chapter's own `set-up-packages` cannot be defined -- then the package-query API (`package-used-by-list`, `packagep`, `do-symbols`, `find-all-symbols`, ...) is missing on top | `packages` chapter (5.5%), 181 direct hits | .todo/038, .kb/packages.md |
-| `read-from-string` has no index second value | most of `reader`'s 288 wrong-value tests | .todo/214 |
-| the pathname accessors (`pathname-host`/`-device`/`-version`, `wild-pathname-p`, `pathname-match-p`, `enough-namestring`, `translate-logical-pathname`) and `*default-pathname-defaults*` | `pathnames` 9.8% + `files` 9.2% | .kb/pathnames.md |
+**10,809 / 19,461 tests pass (55.5%)** -- 2,823 wrong values, 5,829 signalled,
+586 top-level forms lost. A full local re-run reproduced the checked-in report to
+within 2 tests (10,808 / 2,821 / 5,830; the drift is `random-state`, and the
+daily CI refresh landed 10,809 the same day), so the committed series is
+trustworthy and was NOT overwritten.
 
-## Operator families the suite bills by the dozen
+Against the previous reading in this file (41.0%, 7,254 / 17,689, 2,229 lost
+forms): `.todo/680` made argument-shape errors a catchable `program-error` and
+`.todo/681` stopped booking a raw exception out of a `deftest` as a lost form, so
+BOTH the numerator and the denominator moved. Every per-chapter rate quoted in
+the old table is dead; do not carry one forward.
 
-Ranked by tests lost, all already listed in an existing todo -- the numbers are
-the new information:
+## How to count
 
-- set / tree operations on conses: `nunion` `set-exclusive-or` `nset-exclusive-or`
-  `nintersection` `nset-difference` `subsetp` `sublis` `nsublis` `subst-if(-not)`
-  `nsubst*` `tree-equal` `assoc-if-not` `rassoc-if-not` `member-if-not` `ldiff`
-  `tailp` `nbutlast` `list-length` `get-properties`, and the ordinal accessors
-  `fifth` through `tenth` (`first`..`fourth` exist) -- ~600 tests, `cons` at
-  32.8% (.todo/033). The ordinals are not only a test count: chapter 32 of the
-  _Practical Common Lisp_ corpus stops dead on them (2026-09-02), because
-  `compile-timing-data` sorts `:key #'fifth`, so the chapter's own entry point
-  `show-timing-data` cannot run at all -- everything else in that chapter is
-  SBCL-identical.
-- bit-array operations `bit-and` `bit-ior` `bit-xor` `bit-not` `bit-nand`
-  `bit-nor` `bit-eqv` `bit-andc1/2` `bit-orc1/2`, plus `bit-vector-p`
-  `simple-bit-vector-p` `array-in-bounds-p` `upgraded-array-element-type` --
-  `arrays` at 31.9% (.todo/043, .todo/180)
-- the integer logical family `lognor` `logeqv` `lognand` `logcount` `logtest`
-  `boole` `ldb-test` `deposit-field`, and `float-radix` `rational` `rationalize`
-  `realp` -- `numbers` at 38.1% (.todo/037)
-- complex numbers: 75 tests die on "complex numbers are not supported" and 55
-  more on the `#C` reader syntax (.todo/037 -- currently scoped as "niche"; the
-  suite disagrees, though only for conformance)
-- the MOP-ish reflection `find-method` `remove-method` `compute-applicable-methods`
-  `ensure-generic-function` `method-qualifiers` `next-method-p`, and
-  `define-method-combination` -- `objects` at 34.4% (.kb/clos.md)
-- stream constructors `make-two-way-stream` `make-echo-stream`
-  `make-concatenated-stream`, `open`'s `:if-exists`/`:direction` beyond the
-  native default -- `streams` at 20.0% (.todo/387)
-- `with-hash-table-iterator` -- the one hash-table operator ranked here, and it
-  has no item of its own (`.todo/012` is the `:test` semantics, a different gap)
-- the pretty printer `pprint-fill` `pprint-linear` `pprint-tabular`
-  `pprint-exit-if-list-exhausted` `formatter` -- `printer` at 19.6%
-  (.todo/001, .todo/041)
+The report's "Most frequent failure reasons" table merges two different units:
+`ERROR <test>` lines, one per TEST, and `%%%EVAL`/`%%%READ` lines, one per lost
+FORM **per chapter** -- and the aux files are loaded by all 25 chapters. One
+failing aux form therefore appears 25 times beside rows that are test counts.
+`The variable *UNIVERSE* is unbound` reads 202 in the report and is 175 tests.
+Filed as `.todo/739` section 4. **Every number below is TEST-level `ERROR`/`FAIL`
+lines from `results/logs/`.**
 
-## Two failure shapes worth investigating as bugs, not as gaps
+## The ranking
 
-- **660 `IllegalArgumentException: ... expects keyword arguments ...`**: a
-  sequence/cons function handed a keyword it does not know raises a raw Java
-  exception. A conforming implementation signals a Lisp condition, and
-  `handler-case` cannot see this one, so a test that expects a `program-error`
-  fails twice over. The same shape covers `UnsupportedOperationException: setf
-  does not support place: X` (101) and `IndexOutOfBoundsException` out of `aref`.
-- **"Function expects 1 argument, got 2" (206 + the `X expects N arguments`
-  rows)**: partly genuine arity checking, partly our functions being narrower
-  than CL's (`&optional`/`&key` parameters we never took). Worth splitting the
-  two before treating either as a gap.
+### 1. Two wrong-value clusters that need no new operator
+
+| what | tests | owner |
+|---|---:|---|
+| `read-from-string` has no index second value -- 184 of the `reader` chapter's 285 failures | 184 | `.todo/214` |
+| `subtypep` has no valid-p second value -- 112 of the 142 failing `SUBTYPEP.*` | 112 | `.todo/214` |
+| a macro EXPANDER's secondary values leak into the expansion's value (the suite's `expand-in-current-env`, used by 132 of its files) -- `got (X T) want (X)` | 264 | `.todo/213` |
+
+`.todo/213`'s 264 is the largest single FAIL cluster in the report and was
+unpriced until now; `.todo/214` owns the two next largest. Both operators in
+`.todo/214` already exist and answer their primary value correctly. **These three
+rows are the cheapest points on the board.**
+
+### 2. The `universe.lsp` cascade -- 504 tests behind five links
+
+`universe.lsp` is loaded before EVERY chapter and builds `*universe*` /
+`*mini-universe*` by appending sixteen lists. Five of them fail, so both are
+unbound everywhere: `*MINI-UNIVERSE*` 233 tests, `*UNIVERSE*` 175, `*REALS*` 50,
+`*NUMBERS*` 30, `*FLOATS*` 15.
+
+The full chain, form by form, is in `.todo/679`. Its links: `.todo/679` (`'pi`
+reads as a double, High), `.todo/742` (`array-rank-limit` unbound, Low),
+a `setf` place for `logical-pathname-translations` (unowned), one-argument
+`(compile nil)` (`.todo/042`), and `find-method` (out of scope, `.kb/clos.md`).
+**`.todo/679` alone recovers ~95 of the 504** -- its own "618 behind one fix"
+figure is corrected there. Land `.todo/742` first: it is a Low-difficulty
+constant on the same chain and makes `.todo/679`'s recovery visible.
+
+Closing this ADMITS ~500 tests that may then fail. That is progress, and it is
+why the report keeps the lost-form column beside the rate.
+
+### 3. Operator families, by tests billed
+
+| family | tests | owner |
+|---|---:|---|
+| `substitute`/`remove`/`count` reject `:count`/`:start`/`:end`/`:from-end` -- the report's top two rows | 578 | `.todo/736` |
+| the cons set / tree family (`nunion`, `nset-*`, `nsubst*`, `assoc-if-not`, `nbutlast`, `list-length`, `tailp`, `get-properties`, ...) | 458 | **`.todo/740`** (new) |
+| bit-array ops plus `bit-vector-p` / `simple-bit-vector-p` / `array-in-bounds-p` / `upgraded-array-element-type` | ~400 | `.todo/043`, `.todo/180` |
+| the runtime package API (`make-package` 217, `delete-package`, `packagep`, `do-all-symbols`, `find-all-symbols`, `apropos*`) | 370 | **`.todo/741`** (new) |
+| stream constructors and `open`'s `:if-exists` / `:direction` / `:element-type` | 224 | `.todo/387` |
+| complex numbers (`#C` 56, the type specifier 40, the operators 92) | 188 | `.todo/037` |
+| the integer logical family plus `float-radix` (80 on its own), `rational`, `rationalize`, `realp` | ~180 | `.todo/037` |
+| `find-class` has no `ARRAY`/`VECTOR`/`BIT-VECTOR`/`NUMBER` class (104 of them in `arrays` alone) | 156 | **`.todo/744`** (new) |
+| `pprint-fill`/`-linear`/`-tabular`/`formatter` (81) and a `setf` place for `readtable-case` (56) | 137 | `.todo/041`, `.todo/001` |
+| `(go 10)` -- an integer tagbody tag is rejected | 51 | **`.todo/743`** (new) |
+
+`.todo/033` and `.todo/038` were the owners this table used to name for the cons
+and package rows. **Both closed `completed` on 2026-08-15 without covering
+them**, so those rows had no owner at all until `.todo/740` / `.todo/741` were
+filed for this reading. Check an owner still exists before quoting one.
+
+### 4. Billed by the suite, DECIDED AGAINST -- do not read these as gaps
+
+- MOP reflection: `find-method`, `compute-applicable-methods`,
+  `ensure-generic-function`, `add-method`, `define-method-combination` (~70
+  tests). `.kb/clos.md`, "Out of scope": classes are compile-time-static and the
+  dispatch tables depend on it.
+- `slot-value` as a first-class function (53). It is in `CL_MACROS` by design
+  (`.kb/clos.md`); `SLOT-VALUE is a macro or special operator, not a function` is
+  the model working.
+- `compile-file` / `compile-file-pathname` (29): "no file compiler -- a program
+  is compiled whole".
+- `class-precedence-list-foo` (63, all in `types-and-classes`): the suite builds
+  it with `#.` read-eval over `(:method-combination list)`. It is one aux form,
+  not an operator.
+- `packages` at 9.8% is partly the DRIVER: it skips every `(in-package ...)`, so
+  the chapter runs in `COMMON-LISP-USER` throughout (`.todo/739` section 3).
+  Settle 739 before treating that rate as a capability measurement.
+
+## The second instrument: the _Practical Common Lisp_ corpus
+
+Peter Seibel's book code -- twelve ASDF systems of ordinary 2005 Common Lisp,
+diffed byte for byte against SBCL. The standing verdict is `.kb/asdf.md`, "The
+_Practical Common Lisp_ book corpus". It ranks by WHETHER A PROGRAM RUNS AT ALL,
+while the suite ranks by TESTS LOST, which over-weights operator families nobody
+calls. **The judgment axis has not changed: an item BOTH instruments name is the
+one to take first.**
+
+As of 2026-09-08 the corpus needs no shim and no replacement `.asd`, and names
+exactly one live gap: **`.todo/041`'s missing right margin**, which three systems
+(`simple-database`, `test-framework`, `pathnames`) still differ by. The suite
+independently puts `.todo/041` in the table above (`printer` at 40.7%, the
+`pprint-*` layout operators plus `setf readtable-case`). It is the only item both
+instruments name, and on the corpus's own axis it is the last one standing.
+
+Everything the corpus previously put ahead of the suite has closed: the reader
+could not read `.4` (`.todo/621`), `nreverse` on a vector answered nil
+(`.todo/602`), `delete`/`nsubstitute` were vector no-ops (`.todo/623`), a `.asd`
+with its own component class (`.todo/625`), line-oriented `read` (`.todo/624`),
+and the ordinal accessors `fifth`..`tenth` -- chapter 32's `profiler` is
+byte-identical again. The three `net.aserve` systems are decided against
+(`.kb/asdf.md`).
+
+What the corpus still says is NOT urgent, against the suite's ranking: the
+runtime package API (`.todo/741`) and complex numbers. The corpus uses only
+`defpackage`/`in-package`, and both work.
 
 ## Worked so far
 
-**Row 1, 2026-08-12** -- `find-symbol`/`intern` now answer the accessibility status
-as their second value, and `symbol-plist` exists (reaching the `:external` branch of
-`test-if-not-in-cl-package` calls it, so the status alone would have turned 1,002
-wrong-value failures into 1,002 signals). Measured with `ansi-test/measure.sh symbols`:
-**4.2% -> 58.4%**, +617 tests, which is ~+3.5 points on the whole suite. What is left in
-that chapter is a different list -- `set` / `makunbound` / `remprop` / `copy-symbol` /
-`gentemp` / `delete-package` / `do-symbols`, and the 364 ANSI CL symbols we simply do
-not have (`find-symbol` answers `:external` for the 614 that are in
-`PackageRegistry.CL_SYMBOLS` and nil for the rest -- deliberately, since claiming the
-full 978 would be answering for symbols the image does not carry).
-
-Three lowering bugs had to go first, all on the exact call the suite writes
-(`(find-symbol "CAR" 'common-lisp)`): a QUOTED bare designator read as computed, a
-built-in package nickname not canonicalized before the cl/cl-user/keyword arms, and
-`(find-symbol LITERAL 'cl)` taking the build-a-spelling deviation instead of the
-compile-time answer. Mechanics, the deviation that remains, and its re-evaluation
-trigger: `.kb/symbol-runtime-api.md`.
-
-Next by payoff, unchanged: `read-from-string`'s index (.todo/214, most of `reader`'s
-288 wrong-value tests), then runtime `make-package` (.todo/038).
-
-**Interpreter raw-exception escapes, 2026-08-15** (done with .todo/379): the
-built-in seam in `LispEvaluator.apply` wraps an escaping `IndexOutOfBounds` /
-`NegativeArraySize` / `Arithmetic` / `ClassCast` into a `LispEvalException`, so
-`handler-case` now sees an out-of-range `aref` and `(make-array -1)` -- the
-`IndexOutOfBoundsException`-out-of-`aref` shape above is closed for those four
-families (the keyword-argument `UnsupportedOperationException` throws are
-unchanged). Recorded while probing 379, still open here: `(elt (list 1 2) 5)`,
-`(nth -1 ...)` and `(coerce "abc" 'integer)` answer nil where CL signals -- a
-silent-nil family, not a raw throw, so the seam cannot see it.
-
-**Typed built-in errors, 2026-08-15** (done with .todo/380): the classes a
-built-in error is signaled as -- `type-error` for a bad `car`/index/argument
-type, `division-by-zero`, `unbound-variable`, `undefined-function` -- are now
-carried instead of everything being a `simple-error`, and every seeded condition
-class name is a `cl` symbol, so a `(:use #:cl)` package's `'type-error` is the
-CL symbol and a RUNTIME `(typep c ty)` on one matches. Still open here, recorded
-while probing 380: the ANSI condition classes the registry does not SEED at all
--- `reader-error`, `print-not-readable`, `storage-condition`, the
-`floating-point-*` four -- so `(handler-case ... (reader-error ...))` inside a
-user package resolves to `pkg::reader-error` and can never match. Nothing in
-rontolisp signals any of them today, which is why they are unseeded (a seeded
-class joins every runtime `typep`/class table); seed them WITH a signaling site,
-not before one.
+- **2026-08-12** -- `find-symbol`/`intern` answer the accessibility status as
+  their second value, `symbol-plist` exists. `symbols` 4.2% -> 58.4%, the
+  largest single move the report has recorded; it is 69.5% today. Three lowering
+  bugs had to go first, all on `(find-symbol "CAR" 'common-lisp)`; mechanics and
+  the deviation that remains are in `.kb/symbol-runtime-api.md`.
+- **2026-08-15, `.todo/379`** -- the built-in seam in `LispEvaluator.apply` wraps
+  an escaping `IndexOutOfBounds` / `NegativeArraySize` / `Arithmetic` /
+  `ClassCast` into a `LispEvalException`. Recorded then and STILL OPEN:
+  `(elt (list 1 2) 5)`, `(nth -1 ...)` and `(coerce "abc" 'integer)` answer nil
+  where CL signals -- a silent-nil family the seam cannot see.
+- **2026-08-15, `.todo/380`** -- typed built-in errors (`type-error`,
+  `division-by-zero`, `unbound-variable`, `undefined-function`) instead of one
+  `simple-error`. Recorded then and still open: `reader-error`,
+  `print-not-readable`, `storage-condition` and the `floating-point-*` four are
+  not SEEDED, so a `(:use #:cl)` package's `'reader-error` can never match. Seed
+  one WITH a signaling site, not before one.
+- **2026-09-08, `.todo/680`** -- argument-shape errors are a catchable
+  `program-error`. This is what made `.todo/736`'s 578 tests visible; the raw
+  `IllegalArgumentException` shape this file used to rank is gone.
+- **2026-09-08, `.todo/681`** -- a raw exception escaping a `deftest` is booked
+  as that test's error, not as a lost form. Lost forms 2,229 -> 586, and the
+  denominator grew by 1,770.
 
 ## Reading caveat
 
-2,229 top-level forms were lost (unreadable or unevaluable; none non-terminating),
-and every test they would have defined is missing from the counts -- `objects`
-(239) and `sequences` (903) are measured optimistically. Closing a gap can
-therefore LOWER a chapter's pass rate by admitting the tests behind it; that is
-progress, and the reason the report keeps the lost-form column next to the rate.
+586 top-level forms are still lost, so every chapter is measured optimistically;
+`streams` (61) and `printer` (53) most of all. Closing a gap can LOWER a
+chapter's rate by admitting the tests behind it -- that is progress, and the
+reason the report keeps the lost-form column next to the rate.
 
-## A second measurement: the _Practical Common Lisp_ corpus (2026-09-01)
-
-Peter Seibel's own book code -- twelve ASDF systems of ordinary 2005 Common
-Lisp -- was run against SBCL and the output diffed (the standing per-system
-verdict lives in `.kb/asdf.md`, "The _Practical Common Lisp_ book corpus"). It is a
-different instrument from the ANSI suite and worth reading beside it: the suite
-ranks by TESTS LOST, which over-weights the operator families nobody calls,
-while the corpus ranks by WHETHER A PROGRAM RUNS AT ALL. The two disagree
-usefully.
-
-What the corpus put at the top that the suite does not:
-
-- the reader cannot read `.4` (`.todo/621`) -- one literal, one chapter dead
-- `nreverse` on a vector answers nil (`.todo/602`) -- one operator, one library
-  (cl-ppcre 1.2.3) dead seven files from the call
-- `delete`/`delete-if`/`nsubstitute` are no-ops on a vector, `sort` drops a
-  fill pointer (`.todo/623`)
-- a `.asd` that defines its own component class (`.todo/625`) -- three chapters
-- `read` on a stream is line-oriented (`.todo/624`)
-
-What the corpus CONFIRMS is not urgent, against the suite's ranking: the
-package-query API and `make-package` (row 2 of the table above) never come up
--- the corpus uses `defpackage`/`in-package` and nothing else, and both work.
-Complex numbers likewise. Neither ranking is wrong; they are answering
-different questions, and an item that BOTH instruments name is the one to take
-first.
-
-Re-measured 2026-09-02, after `.todo/621`/`623`/`624`/`625`/`391`/`626` and
-`.todo/041`'s printer-variable half all landed: five rows are byte-identical,
-four differ only by `.todo/041`'s missing right margin (one of those also by
-this item's own ordinal accessors' neighbour, `.todo/156`'s gensym prefix), one
-is the `fifth` gap above, and three need a `net.aserve` port that is decided
-against (`.kb/asdf.md`).
+`ansi-test/README.md`, "What the numbers are not": the suite tests full ANSI CL,
+which rontolisp does not set out to be. A failing test is a statement about the
+standard, not automatically a bug worth fixing. Section 4 above is that filter
+applied.

@@ -73,3 +73,36 @@ the same fix:
   `split-sequence-residue-features` ci-spec output stays byte-identical, native
   E2E re-run.
 - Re-diff the REPL against SBCL with the case list in `.todo/214`.
+
+## What it costs on the ANSI suite (measured 2026-09-08)
+
+**264 wrong-value tests** -- the largest single FAIL cluster in the report
+(`ansi-test/results/logs/`, the `got (X T) want (X)` shape), 58 of them `LOOP.*`
+in `iteration` alone. All of them come from one aux macro the suite uses
+everywhere (`auxiliary/ansi-aux.lsp:1189`, 132 of its files call it):
+
+```lisp
+(defmacro expand-in-current-env (macro-form &environment env)
+  (macroexpand macro-form env))
+```
+
+The EXPANDER returns two values (`macroexpand`'s form and its expanded-p flag),
+nobody consumes the second, and it leaks into the value of whatever the expansion
+sits inside. Reduced:
+
+```lisp
+(defmacro %m (z) z)
+(defmacro eice (form) (macroexpand form))
+(multiple-value-list (eice (%m 1)))                        ; => (1 T)     SBCL: (1)
+(multiple-value-list (loop for i from (eice (%m 1)) to 5 collect i))
+;                                    => ((1 2 3 4 5) T)    SBCL: ((1 2 3 4 5))
+(defmacro eice2 (form) (values (macroexpand form)))
+(multiple-value-list (loop for i from (eice2 (%m 1)) to 5 collect i))
+;                                    => ((1 2 3 4 5))      -- the single-value expander is fine
+```
+
+CLHS 3.1.2.1.2.2: a macro function's secondary values are discarded; only the
+first is the expansion. So a macro EXPANDER is one concrete non-tail `values`
+producer whose leftover has a defined answer, and it is worth checking whether
+the carrier design below fixes it for free or whether the expander seam needs its
+own truncation. `.todo/715` ranks this second among all open items.
