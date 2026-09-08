@@ -40,3 +40,24 @@ file-set argument was not needed.
 `eval/LinalgBlas{,Kernels}.java` and `eval/LinalgBlasDeclineTest.java`. That is the first
 time the shared-list claim has been tested by a change to the classes it names rather than
 merely restated, and it held.
+
+## `report-classes-dorian-8b3adb1e8.txt` (2026-09-08)
+
+dorian's run at the close of A's `746` / `745` / `689` / `696` / `732` / `482` lane:
+10184 / 0 / **1 error** / 290 skipped, 238 reports. **It does not certify** --
+`JvmClassShakerCorpusTest` errors with a `StackOverflowError` -- and it is kept here anyway,
+because the LIST is the part that survives the red.
+
+**The list is identical to `report-classes-dorian-20d8ac979.txt`, name for name**, across a
+lane that added five test classes and deleted none of the classes named here (the new ones
+are members of classes already listed, plus `JvmSimdVectorTemplateBf16Test`,
+`VecSimdBf16KernelsTest` and `RontoFloatArrayTest`, all of which the previous list already
+holds). So the set equality now holds across two consecutive dorian lanes as well as across
+the two boxes.
+
+**And that is exactly what makes the red readable.** A run whose class set is unchanged and
+whose single error is in a class present on both boxes cannot be a dropped class, a renamed
+class or a skipped leg -- the three things a count alone cannot separate. It leaves one
+candidate, which turned out to be the box's own working directory (`.todo/748`, `.todo/749`;
+`.todo/670` rule 16). **The set diff did not find the bug, but it eliminated every
+explanation that was cheaper than looking.**
