@@ -381,9 +381,9 @@ A **structure or pathname literal is a constant even outside `quote`**: `#S(...)
 object on every backend, so `(eq (f) (f))` is `T` for `(defun f () #P"a/b.txt")`. This
 is the one literal syntax that does not follow the constructor rule above.
 
-### Packed float arrays (`#d` / `#f`)
+### Packed float arrays (`#d` / `#f` / `#bf16`)
 
-`#d(...)` and `#f(...)` denote a **packed float array**: a float-typed array whose
+`#d(...)`, `#f(...)` and `#bf16(...)` denote a **packed float array**: a float-typed array whose
 elements are stored unboxed. `#d(...)` is `double-float` (f64) and `#f(...)` is
 `single-float` (f32 -- half the memory, double the SIMD lane count). They read like
 `#(...)`, but every element is coerced to the array's float type, so `#d(1 2 3)` and
@@ -393,9 +393,25 @@ elements are stored unboxed. `#d(...)` is `double-float` (f64) and `#f(...)` is
 `(make-array n :element-type 'double-float)` (or `'single-float`) builds one at
 runtime.
 
+`#bf16(...)` is the third width, **bfloat16**: the top sixteen bits of an IEEE binary32 --
+one sign bit, the same eight exponent bits an f32 has, and seven mantissa bits. It keeps
+the whole f32 range at a quarter of `#d`'s memory and about three decimal digits, which is
+why it is the storage format published machine-learning checkpoints use. It is a *storage*
+width rather than a compute one: hold weights in it, do not take a determinant in it.
+`(make-array n :element-type 'bfloat16)` builds one at runtime,
+`(array-element-type #bf16(1.0))` is `bfloat16`, and the printed form reads back as
+`#bf16(...)` like the other two. As a type name it sits below `float` in the
+[`subtypep`](functions/subtypep.md) lattice, and no scalar belongs to it. **The interpreter and the JVM only** -- the WASM backends have no bfloat16 array and
+refuse the width by name (`bfloat16 arrays are supported on the interpreter and the JVM
+only`) at the call that asks for one.
+
 Scalars stay `double`: reading an element widens it to a `double` (a single-float
 element is widened f32 -> f64), and storing one narrows it to the array's width
-(f64 -> f32 for a single-float array). Storing a non-real is a type error (a general
+(f64 -> f32 for a single-float array). There is no bfloat16 scalar either, so a `#bf16`
+element read answers the `double` its sixteen bits name -- exactly, since widening a
+bfloat16 pattern loses nothing -- and a store rounds to nearest, ties to even, the same
+rounding [`rontolisp:bfloat16-bits`](functions/rontolisp-bfloat16-bits.md) performs.
+Storing a non-real is a type error (a general
 array holds any value). Otherwise a packed array behaves like a general array of the
 same numbers for every operation -- `aref`, `(setf (aref ...))`, `length`,
 `row-major-aref`, `array-rank`, `array-dimensions` and `coerce` all work on it --
@@ -409,12 +425,17 @@ kernels over packed arrays -- and their optional hardware acceleration -- see th
 [`vec` package](../guides/simd-acceleration.md). A packed array is also a binary I/O
 buffer: [`read-sequence`](functions/read-sequence.md) / [`write-sequence`](functions/write-sequence.md)
 move its elements as raw little-endian IEEE-754 in one bulk transfer (any rank, row-major),
-which is how a weight file or a numpy dump is loaded.
+which is how a weight file or a numpy dump is loaded. A `#bf16` array moves its *stored*
+patterns, two little-endian bytes an element -- which is exactly what a BF16 safetensors or
+GGUF tensor holds, so such a tensor loads with no conversion at all and writing it back
+reproduces the file byte for byte.
 
 ```lisp
 (aref #d(1.0 2.0 3.0) 1)                   ; => 2.0
 (array-element-type #d(1 2 3))             ; => DOUBLE-FLOAT
 (array-element-type #f(1.0 2.0))           ; => SINGLE-FLOAT
+(array-element-type #bf16(1.0 2.0))        ; => BFLOAT16
+(aref #bf16(0.1) 0)                        ; => 0.10009765625
 (print #d((1.0 2.0) (3.0 4.0)))            ; #d((1.0 2.0) (3.0 4.0))
 (coerce #d(1 2 3) 'list)                   ; => (1.0 2.0 3.0)
 (let ((v (make-array 3 :element-type 'single-float :initial-element 0.0)))

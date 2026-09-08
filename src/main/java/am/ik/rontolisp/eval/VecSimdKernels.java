@@ -1113,16 +1113,24 @@ final class VecSimdKernels {
 	 * lands on the one with an even mantissa.
 	 *
 	 * <p>
-	 * A NaN takes the guarded arm: rounding an f32 NaN whose surviving mantissa bits are
-	 * all zero would carry into the exponent and answer an INFINITY, so the pattern is
-	 * truncated and its quiet bit set instead. Every NaN therefore narrows to a NaN.
+	 * A NaN takes the guarded arm, matching {@code am.ik.rontolisp.BFloat16#bits(float)}
+	 * instruction for instruction: the top sixteen bits of an f32 NaN already ARE the
+	 * bf16 sign, exponent and payload, so {@code u} is carried across untouched, forced
+	 * nonzero only when the payload was already all zero (which would otherwise read back
+	 * as an infinity, not a NaN). A plain {@code bits | 0x0040} -- this method's first
+	 * version, until {@code .todo/746}'s census found it -- forces the quiet bit
+	 * unconditionally, which changes 126 of the 65536 patterns' payload rather than
+	 * carrying it across, exactly the bug {@code eval/FloatBitsWidening}'s own
+	 * float-array narrowing was fixed for on 2026-09-03 (that fix never reached this
+	 * mirror). {@code .kb/bfloat16.md}.
 	 * @param value the f32 value
 	 * @return its bf16 bit pattern
 	 */
 	static short floatToBf16(float value) {
 		int bits = Float.floatToRawIntBits(value);
 		if ((bits & 0x7f800000) == 0x7f800000 && (bits & 0x007fffff) != 0) {
-			return (short) ((bits >>> 16) | 0x0040);
+			int u = (bits >>> 16) & 0xffff;
+			return (short) (u | (((u & 0x7f) - 1) >>> 31));
 		}
 		return (short) ((bits + 0x7fff + ((bits >>> 16) & 1)) >>> 16);
 	}

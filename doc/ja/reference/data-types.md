@@ -326,9 +326,9 @@ $ rontolisp main.lisp
 そのため `(defun f () #P"a/b.txt")` の `(eq (f) (f))` は `T` になります。上のコンストラクタ
 規則に従わない唯一のリテラル構文です。
 
-### パックド浮動小数点配列(`#d` / `#f`)
+### パックド浮動小数点配列(`#d` / `#f` / `#bf16`)
 
-`#d(...)` と `#f(...)` は**パックド浮動小数点配列**を表します。これは要素をアン
+`#d(...)`・`#f(...)`・`#bf16(...)` は**パックド浮動小数点配列**を表します。これは要素をアン
 ボックスで格納する浮動小数点型の配列です。`#d(...)` は `double-float`(f64)、
 `#f(...)` は `single-float`(f32 -- メモリは半分、SIMD レーン数は 2 倍)です。
 `#(...)` と同じ記法で読み込まれますが、各要素は配列の浮動小数点型に強制変換される
@@ -338,9 +338,24 @@ $ rontolisp main.lisp
 実行時には `(make-array n :element-type 'double-float)`(または `'single-float`)
 で構築できます。
 
+`#bf16(...)` は 3 つめの幅、**bfloat16** です。IEEE binary32 の上位 16 ビット --
+符号 1 ビット、f32 と同じ指数 8 ビット、仮数 7 ビット -- であり、f32 の全範囲を
+`#d` の 1/4 のメモリと約 3 桁の 10 進精度で保持します。公開された機械学習チェック
+ポイントがこの形式で重みを格納しているのはそのためです。これは計算用ではなく
+*格納用*の幅です。重みを保持するために使うものであって、行列式を求めるためのもの
+ではありません。実行時には `(make-array n :element-type 'bfloat16)` で構築でき、
+`(array-element-type #bf16(1.0))` は `bfloat16` を返し、印字結果は他の 2 つと同様に
+`#bf16(...)` として読み戻せます。型名としては [`subtypep`](functions/subtypep.md) の束で
+`float` の下に位置し、この型に属するスカラはありません。**インタプリタと JVM のみ**です -- WASM バックエンド
+に bfloat16 配列は存在せず、それを要求した呼び出しの位置で幅を名指しして拒否します
+(`bfloat16 arrays are supported on the interpreter and the JVM only`)。
+
 スカラは `double` のままです。要素を読むと `double` に拡張され(single-float 要素は
 f32 -> f64 に拡張)、格納するときは配列の幅に丸められます(single-float 配列では
-f64 -> f32)。非実数を格納すると型エラーです(一般配列は任意の値を保持します)。
+f64 -> f32)。bfloat16 のスカラも存在しないため、`#bf16` の要素を読むとその 16 ビット
+が表す `double` がそのまま返り(bfloat16 パターンの拡張は何も失いません)、格納時は
+最近接偶数丸めで丸められます -- [`rontolisp:bfloat16-bits`](functions/rontolisp-bfloat16-bits.md)
+と同じ丸めです。非実数を格納すると型エラーです(一般配列は任意の値を保持します)。
 それ以外のすべての操作 -- `aref`・`(setf (aref ...))`・`length`・`row-major-aref`・
 `array-rank`・`array-dimensions`・`coerce` -- は同じ数値の一般配列と同じように機能し
 ますが、印字だけは独自の `#d(...)` / `#f(...)` リーダ構文を用いるため、その印字結果を
@@ -353,11 +368,16 @@ f64 -> f32)。非実数を格納すると型エラーです(一般配列は任�
 さい。パックド配列はバイナリ I/O のバッファでもあります。[`read-sequence`](functions/read-sequence.md) /
 [`write-sequence`](functions/write-sequence.md) はその要素を生のリトルエンディアン IEEE-754 として
 一括転送します(任意ランク、行優先順)。重みファイルや numpy のダンプはこうして読み込みます。
+`#bf16` 配列が転送するのは*格納されているパターン*そのもの、1 要素あたりリトルエンディアン
+2 バイトです。これは BF16 の safetensors や GGUF のテンソルが保持しているものそのままなので、
+そうしたテンソルは一切の変換なしに読み込め、書き戻せばファイルをバイト単位で再現します。
 
 ```lisp
 (aref #d(1.0 2.0 3.0) 1)                   ; => 2.0
 (array-element-type #d(1 2 3))             ; => DOUBLE-FLOAT
 (array-element-type #f(1.0 2.0))           ; => SINGLE-FLOAT
+(array-element-type #bf16(1.0 2.0))        ; => BFLOAT16
+(aref #bf16(0.1) 0)                        ; => 0.10009765625
 (print #d((1.0 2.0) (3.0 4.0)))            ; #d((1.0 2.0) (3.0 4.0))
 (coerce #d(1 2 3) 'list)                   ; => (1.0 2.0 3.0)
 (let ((v (make-array 3 :element-type 'single-float :initial-element 0.0)))

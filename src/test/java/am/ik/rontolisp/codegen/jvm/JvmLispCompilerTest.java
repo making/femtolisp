@@ -1014,6 +1014,24 @@ class JvmLispCompilerTest {
 	}
 
 	@Test
+	void compileAndRunHandlerCaseNoErrorClauseReceivesAllValues() throws Exception {
+		// :no-error binds the protected form's full VALUES -- a (values ...) tail, a
+		// values-list and a producing call all spread. Missing values are nil, surplus
+		// values are dropped.
+		assertThat(compileAndRun("(print (handler-case (values 1 2 3) (:no-error (a b c) (list a b c))))"))
+			.isEqualTo("(1 2 3)");
+		assertThat(compileAndRun("(print (handler-case (values 1 2) (:no-error (a b c) (list a b c))))"))
+			.isEqualTo("(1 2 NIL)");
+		assertThat(compileAndRun("(print (handler-case (values 1 2 3 4) (:no-error (a b) (list a b))))"))
+			.isEqualTo("(1 2)");
+		assertThat(compileAndRun("(print (handler-case (values-list (list 1 2 3)) (:no-error (a b c) (list a b c))))"))
+			.isEqualTo("(1 2 3)");
+		assertThat(compileAndRun(
+				"(let ((h (make-hash-table))) (setf (gethash 'k h) 99) (print (handler-case (gethash 'k h) (:no-error (a b) (list a b)))))"))
+			.isEqualTo("(99 T)");
+	}
+
+	@Test
 	void compileAndRunRestartCaseNormalCompletionReturnsPrimaryValues() throws Exception {
 		assertThat(compileAndRun("(print (restart-case (+ 1 2) (retry () :retried)))")).isEqualTo("3");
 		assertThat(compileAndRun("(print (multiple-value-list (restart-case (values 1 2) (retry () nil))))"))
@@ -9551,6 +9569,30 @@ class JvmLispCompilerTest {
 	}
 
 	@Test
+	void compileAndRunNarrowFloatBitsReadsARankNSourceLikeTheInterpreter() throws Exception {
+		// narrow-float-bits reads the source's TOTAL SIZE. This backend used to ask
+		// _fvLength for it, whose rank-n arm goes through _fvToGeneral and _length --
+		// and _length refuses a multidimensional array, so a rank-2 source threw
+		// "argument is not a sequence" here while the interpreter narrowed it happily,
+		// at every width. It is the header's dimension product now, which is exactly
+		// what LispFloatArray.totalSize answers.
+		assertThat(compileAndRun("""
+				(let ((src (make-array '(2 3) :element-type 'single-float))
+				      (dsrc (make-array '(2 3) :element-type 'double-float))
+				      (back (make-array 6 :element-type '(unsigned-byte 16)))
+				      (dback (make-array 6 :element-type '(unsigned-byte 16))))
+				  (dotimes (i 2)
+				    (dotimes (j 3)
+				      (setf (aref src i j) (+ 1.0 j (* 3 i)))
+				      (setf (aref dsrc i j) (+ 1.0 j (* 3 i)))))
+				  (rontolisp:narrow-float-bits src :bfloat16 back)
+				  (rontolisp:narrow-float-bits dsrc :bfloat16 dback)
+				  (print (list (aref back 5) (aref dback 5)))
+				  (print (= (aref back 5) (rontolisp:bfloat16-bits 6.0))))
+				""")).isEqualTo("(16576 16576)\nT");
+	}
+
+	@Test
 	void compileAndRunFloat16Bits() throws Exception {
 		assertThat(compileAndRun("(print (rontolisp:float16-bits 1.0)) (print (rontolisp:float16-bits -2.5))"
 				+ " (print (rontolisp:bits-float16 15360))"
@@ -14806,6 +14848,37 @@ class JvmLispCompilerTest {
 		assertThatThrownBy(() -> compileAndRun("(defun f () (defmethod g (x) x)) (f)"))
 			.isInstanceOf(UnsupportedOperationException.class)
 			.hasMessageContaining("DEFMETHOD is only supported as a top-level form");
+	}
+
+	@Test
+	void compilePrintObjectMethodDefinedBelowItsFirstUse() throws Exception {
+		// Todo 445: a print-object method defined BELOW its first use used to crash
+		// with a raw NullPointerException (the whole-program registry routes the
+		// printer through the generic from the start, but the body global is assigned
+		// only when the defmethod form runs). The dispatcher now skips the
+		// not-yet-assigned body, so the first print renders the built-in text.
+		assertThat(compileAndRun("""
+				(defclass po-late () ())
+				(let ((o (make-instance 'po-late)))
+				  (print o)
+				  (defmethod print-object ((x po-late) s) (format s "#<LATE!>"))
+				  (print o))
+				""")).isEqualTo("#<PO-LATE>\n#<LATE!>");
+	}
+
+	@Test
+	void compileNestedDefmethodCallBeforeItsFormFallsThrough() throws Exception {
+		// Todo 445, the general shape: a call before the nested defmethod form runs
+		// answers the default, and after it the new method.
+		assertThat(compileAndRun("""
+				(defclass nd-late () ())
+				(defgeneric nd-greet (x))
+				(defmethod nd-greet (x) "default")
+				(let ((o (make-instance 'nd-late)))
+				  (print (nd-greet o))
+				  (defmethod nd-greet ((x nd-late)) "special")
+				  (print (nd-greet o)))
+				""")).isEqualTo("\"default\"\n\"special\"");
 	}
 
 	// --- Dynamic (special) variable binding ---

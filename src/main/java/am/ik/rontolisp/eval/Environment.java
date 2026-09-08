@@ -2597,6 +2597,9 @@ public final class Environment implements Scope {
 		String makeQuantizedName = PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.MAKE_QUANTIZED_MATRIX);
 		env.defineFunction(makeQuantizedName,
 				new LispFunction(makeQuantizedName, args -> QuantizedMatrices.make(makeQuantizedName, args)));
+		String quantizedRowsName = PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.QUANTIZED_ROWS);
+		env.defineFunction(quantizedRowsName,
+				new LispFunction(quantizedRowsName, args -> QuantizedMatrices.rows(quantizedRowsName, args)));
 		String quantizedPName = PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.QUANTIZED_MATRIX_P);
 		env.defineFunction(quantizedPName,
 				new LispFunction(quantizedPName, args -> QuantizedMatrices.isMatrix(quantizedPName, args)));

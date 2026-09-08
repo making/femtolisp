@@ -124,8 +124,8 @@ double[] out = y.toArray();                                           // copies 
 ```
 
 **Why a handle and not a `double[]`.** A packed float array is a bare
-`double[]` (or `float[]`) carrying an embedded dimension header, so a plain
-Java array is not one — passing `new double[]{3, 4}` would compile and answer a
+`double[]` (or `float[]`, or a `short[]` of `bfloat16` patterns) carrying an
+embedded dimension header, so a plain Java array is not one — passing `new double[]{3, 4}` would compile and answer a
 wrong number. Converting one at every call would be safe but costs about ten
 times the kernel it feeds, which turns a 3x win into a 3x loss:
 
@@ -159,10 +159,15 @@ What follows from it is that the *read* is where the cost sits — the first
 `get(i)` or `toArray()` on a fresh device result pays the download, later ones
 do not — so read a result once rather than element by element.
 
-Both element widths cross the same designator (`of(double[])` and
-`of(float[])`; `width()` reports which), and the rank comes from the header, so
-a matrix is the same class with a rank-2 `dims()` rather than a second type. A
-rank the designator does not declare throws at the boundary.
+All three element widths cross the same designator — `of(double[])`,
+`of(float[])` and `of(short[])`, the last taking `bfloat16` *bit patterns*
+rather than values (`0x3f80` is `1.0`), which is how a published checkpoint's
+weights cross without being widened first. `width()` reports which width a
+handle holds; `toArray()` answers `double` at every one of them, and
+`toFloatArray()` / `toShortArray()` copy out at the other two. The rank comes
+from the header, so a matrix is the same class with a rank-2 `dims()` rather
+than a second type. A rank the designator does not declare throws at the
+boundary.
 
 ## A Maven project: `src/main/lisp`
 

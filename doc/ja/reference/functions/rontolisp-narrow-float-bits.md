@@ -2,8 +2,8 @@
 
 `(rontolisp:narrow-float-bits src format dst &key (start 0))`
 
-パックされた浮動小数点配列 `src`（`single-float` または `double-float`、任意の
-階数）を、パックされた `(unsigned-byte 16)` ベクタ `dst`（`f16` または `bfloat16`
+パックされた浮動小数点配列 `src`（`single-float`、`double-float` または `bfloat16`、
+任意の階数）を、パックされた `(unsigned-byte 16)` ベクタ `dst`（`f16` または `bfloat16`
 のビットパターン。`format`（`:float16` または `:bfloat16`）で選択）へ、`src` の
 フラットインデックス `0` から `dst` のフラットインデックス `start` へ行優先で
 狭めます。`dst` を返します。
@@ -22,5 +22,9 @@
 ; => (16256 49184 17096)
 ```
 
+`bfloat16` のソースは値ではなくビットパターンを渡します。`format` が `:bfloat16` の
+ときは単純なコピーなので、テンソルはバイト単位でそのまま往復します。
+
 インタプリタ、JVM、両方の WASM バックエンドで動作します。`--no-gc` にはパックされた
-浮動小数点配列のモデルがなく、コンパイル時に拒否されます。
+浮動小数点配列のモデルがなく、コンパイル時に拒否されます。`bfloat16` のソースは
+インタプリタと JVM のみです。その配列幅を持つ WASM バックエンドがないためです。

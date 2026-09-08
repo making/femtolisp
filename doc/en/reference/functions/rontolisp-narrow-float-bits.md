@@ -2,8 +2,8 @@
 
 `(rontolisp:narrow-float-bits src format dst &key (start 0))`
 
-Narrows a packed float array `src` (`single-float` or `double-float`, any rank)
-into `dst`, a packed `(unsigned-byte 16)` vector of bit patterns -- `f16` or
+Narrows a packed float array `src` (`single-float`, `double-float` or `bfloat16`,
+any rank) into `dst`, a packed `(unsigned-byte 16)` vector of bit patterns -- `f16` or
 `bfloat16`, chosen by `format` (`:float16` or `:bfloat16`) -- row-major from
 `src`'s flat index `0` into `dst` starting at flat index `start`. Returns `dst`.
 
@@ -21,5 +21,9 @@ would -- **nearest, ties to even** for both formats.
 ; => (16256 49184 17096)
 ```
 
+A `bfloat16` source hands out bit patterns rather than values: at format
+`:bfloat16` that is a plain copy, so a tensor round-trips byte for byte.
+
 Works on the interpreter, the JVM and both WASM backends; `--no-gc` has no
-packed float array model and refuses at compile time.
+packed float array model and refuses at compile time. A `bfloat16` source is the
+interpreter and the JVM only, since no WASM backend carries that array width.

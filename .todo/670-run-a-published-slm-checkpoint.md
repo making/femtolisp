@@ -2,8 +2,8 @@
 
 Difficulty: High (the umbrella; the children are sized individually)
 
-Filed 2026-09-03 from the re-verification of `.todo/482` (`bfloat16`), whose README "Round
-2" is the measurement record; `.todo/482` stays the width half of this.
+Filed 2026-09-03 from the re-verification of `.todo/482` (`bfloat16`), which closed
+2026-09-08 with the width's account in `.kb/bfloat16.md` ("The width's account").
 
 **The goal: a small language model that someone downloaded from Hugging Face runs on
 rontolisp from the file they downloaded** -- no Python, no `export.py`, no conversion step
@@ -18,9 +18,9 @@ tokenizer and hyperparameters in the same file).
 
 | width | verdict | where |
 | --- | --- | --- |
-| **bf16** | THE width. 1.5-2.1x f32 on one thread (Graal / C2), 1.6x on 20; widening exact; every checkpoint is in it | `.todo/482` (483-490) |
+| **bf16** | THE width. 1.5-2.1x f32 on one thread (Graal / C2), 1.6x on 20; widening exact; every checkpoint is in it | `.kb/bfloat16.md`; `482` and 483-490 all closed |
 | **IEEE f16** | not a width -- a **load-time conversion** into `#f` / `#bf16`. A fused f16 GEMV is 0.30-0.58x on either JIT | `.todo/671` |
-| **Q8_0** (32 int8 + a scale) | a **read-only weight matrix** type with an integer-dot GEMV: 1.4-1.6x f32 on one thread under Graal, 1.7-1.9x under C2, 2.2-3.3x on 20, a quarter of f32's bytes. On the device since `728`: the kernel is the CPU contract's BITS, 5.3 ms of GEMV a forward against bf16's 7.7, the forward 13.9 against 16.7 (1.20x), tokens byte-identical with the flag on and off | CPU: `672`, `706`. Device: `728`. The row slice without a scratch file: `.todo/732` |
+| **Q8_0** (32 int8 + a scale) | a **read-only weight matrix** type with an integer-dot GEMV: 1.4-1.6x f32 on one thread under Graal, 1.7-1.9x under C2, 2.2-3.3x on 20, a quarter of f32's bytes. On the device since `728`: the kernel is the CPU contract's BITS, 5.3 ms of GEMV a forward against bf16's 7.7, the forward 13.9 against 16.7 (1.20x), tokens byte-identical with the flag on and off | CPU: `672`, `706`. Device: `728`. The row gather: `732` |
 | **Q4_0 / Q4_K** | not a CPU item: the nibble unpack is ALU-bound at 5.7 GB/s (1.1x f32 for 8.5% error). **Refused on the device too, twice** -- `718` on a decode profile, then `726` at the forward's own shapes. Behind `728`'s Q8_0 its increment is bounded by the byte ratio, ~2.7 ms of a 13.9 ms forward, at 8.5% error against 0.75%, so the refusal's reason is now ORDER, not size | `.kb/gpu.md`, "No Q4_0 / Q4_K weight width"; kernel rows in `.todo/artefacts/123-gpu-acceleration/README.md` |
 
 Two facts under all four: **the width is bandwidth, not fitting** -- 4.4 GB of f32 fits an
@@ -32,9 +32,10 @@ to 0.20x under C2 from an inlining cliff, so `.todo/488` takes its numbers under
 `671` (bulk widening), `673` (GGUF reader), `674` (byte-level BPE), `675` (safetensors +
 `config.json`), `676` (the forward pass as a table of layer kinds), `677` (Gated DeltaNet),
 `678` (LFM2 gated short-conv), `672` + `706` (the Q8_0 matrix and its integer dot), `489`
-(the model rungs at f32 and bf16), `490` (bf16 on the device). Each owns its own numbers
-(rule 9); the measured rungs live in `examples/llm/README.md`, the closing accounts in
-`.todo/history/2026-09.md`.
+(the model rungs at f32 and bf16), `490` (bf16 on the device), and `482` (the width
+umbrella) with `746` / `745` / `689` / `696` / `732` its remainder. Each owns its own
+numbers (rule 9); the measured rungs live in `examples/llm/README.md`, the closing accounts
+in `.todo/history/2026-09.md`.
 
 The order they were taken in is the one reusable part: `671` needs no new array type, so a
 BF16 checkpoint loaded into `#f` BEFORE the bf16 width existed, and both readers were
@@ -47,7 +48,7 @@ Qwen3.5-0.8B from its BF16 safetensors AND from ggml-org's BF16 GGUF, **token fo
 identical between the two**; TinyLlama-1.1B-Chat from safetensors and an F16 GGUF, same
 forty tokens; stories15M converted to GGUF answers with `run.c`'s own text token for token
 -- the one EXTERNAL oracle, and the one that caught a live bug. **On all four backends
-since `693`.**
+since `693`.** Splitting a quantized weight matrix needs no scratch file since `732`.
 
 **The path is documented as a path, not only as operators.** `gguf`, `safetensors`,
 `checkpoint` and `tokenizer` are listed in the Functions index and the guide
@@ -106,36 +107,46 @@ artefacts out -- see rule 12.
 ## The certification record
 
 **What a run certifies is failures, errors and the report-file SET -- never the totals.**
-The count walked 232 -> 234 -> 235 -> 237 on dorian while reading 237 on GB10 and the
-arithmetic never closed to the unit. It does not have to: **the two boxes' report-class
-lists are identical, name for name**, so every class is present on both and what differs is
-only what each SKIPS. A later run therefore diffs against a list known to be SHARED, and a
-name that leaves is attributable to the box or to the change, never to the boxes having
-always differed. That list held across a lane that changed the classes it names -- the
-first evidence the discipline has produced rather than assumed. Each certification writes
-its own list beside the others in
+The count walked 232 -> 238 on dorian while reading 237 on GB10 and the arithmetic never
+closed to the unit. It does not have to: **the two boxes' report-class lists are identical,
+name for name**, so every class is present on both and what differs is only what each
+SKIPS. A later run therefore diffs against a list known to be SHARED, and a name that
+leaves is attributable to the box or to the change, never to the boxes having always
+differed. Each certification writes its own list beside the others in
 `.todo/artefacts/670-run-a-published-slm-checkpoint/`.
 
-- **dorian certifies `20d8ac979`** at the close of A's six-item lane: 10159 / 0 / 0 / 290
-  skipped, **238** reports, exit 0. **The set gained exactly one name against BOTH earlier
-  lists** -- `am.ik.rontolisp.ansi.AnsiChapterRunnerTest`, the class `681` added -- which is
-  the outcome the discipline is for: a diff of one, attributable to a named change. The skip
-  count moved 283 -> 290 and is left UNATTRIBUTED, as its predecessor was.
+- **dorian certifies `20d8ac979`** at the close of A's lane before last: 10159 / 0 / 0 / 290
+  skipped, **238** reports, exit 0. The set gained exactly one name against both earlier
+  lists -- `AnsiChapterRunnerTest`, the class `681` added -- which is the outcome the
+  discipline is for: a diff of one, attributable to a named change.
 - **GB10 certifies `b6d0ea513`** at the close of B's two-item lane: 10128 / 0 / 0 / 189
   skipped, 237 reports, exit 0, `GpuTest` included (59 tests, 560.7 s).
+- **dorian does NOT certify `8b3adb1e8`** at the close of A's six-item lane (`746`, `745`,
+  `689`, `696`, `732`, `482`): 10184 / 0 / **1 error** / 290 skipped, 238 reports.
+  `JvmClassShakerCorpusTest` errors with a `StackOverflowError` whose entire stack is
+  `Test._append`. **The error is not in the tree**: the same commit is green in a fresh
+  worktree, and red in the main checkout with the lane's `ci-spec.yaml` reverted. The corpus
+  walks the project root with `**`, dorian's root now holds 9991 of its 10375 `.txt` files
+  inside other agents' worktrees, and `append` recurses once per element. Filed as
+  `.todo/748` (the walk) and `.todo/749` (the recursion); they open A's next lane. Every
+  other class in the run is green, and **the report-class list is identical to
+  `20d8ac979`'s, name for name** -- so the red cannot be a dropped class, a renamed one or a
+  skipped leg, which is what left the box itself as the only candidate.
 
-The heads are a lane apart and are NOT one certification; jointly they establish that no box
-is red, and dorian cannot verify B's `am.ik.gpu` / `eval/LinalgGpu*` / `codegen/jvm/JvmGpuTemplate`
-drift at all. Both are taken by the ORCHESTRATOR on `develop`, never from a lane's worktree
-(rule 4) -- a lane's combination exists nowhere else.
+The heads are lanes apart and are NOT one certification; jointly they establish that no box
+is red for a reason in the tree, and dorian cannot verify B's `am.ik.gpu` /
+`eval/LinalgGpu*` / `codegen/jvm/JvmGpuTemplate` drift at all. Both are taken by the
+ORCHESTRATOR on `develop`, never from a lane's worktree (rule 4) -- a lane's combination
+exists nowhere else, and rule 16 is why a worktree is not a substitute even when it is
+convenient.
 
 Three things a reader needs before comparing two runs:
 
 1. **A total taken before `0e65326b` is not comparable to one taken after.**
    `LispFormatterTest` used to walk `Path.of(".")` and format every `.lisp` under
    `.claude/worktrees/`, so one term of the comparison was how many agents had run on that
-   box recently.
-2. **The cross-box difference is a SKIP difference, not a class difference**: dorian's 283
+   box recently. `.todo/748` is that defect re-introduced in Lisp, inside the corpus.
+2. **The cross-box difference is a SKIP difference, not a class difference**: dorian's 290
    against GB10's 189 is `.todo/708`'s 87, from seventeen classes present on both that skip
    different amounts. Contamination never reached skips.
 3. **A skip count is only a signal against a prior count for the SAME slice.** Its designed
@@ -144,12 +155,13 @@ Three things a reader needs before comparing two runs:
    the coverage, which is how `682` was accepted by a run that skipped the part of the suite
    its rename was most likely to break.
 
-The argument for taking the run from `develop` is that it is the run that found the red:
-`LispFormatterTest`'s walk raced a scratch file another test writes into the project root,
-giving `Tests run: 9425, Errors: 1` while six lanes' worktrees were green throughout. Twice,
-coverage fell into the SEAM between two correct plans with nobody skipping an assigned step:
-**a verification owed by one party and skipped by everyone else is a gap that looks exactly
-like coverage until someone checks who actually ran it.**
+The argument for taking the run from `develop` is that it is the run that FINDS the red --
+twice now the red was visible nowhere else. `LispFormatterTest`'s walk raced a scratch file
+another test writes into the project root while six lanes' worktrees were green throughout;
+`748` is red in the checkout that carries worktrees and green inside every one of them.
+Twice, coverage fell into the SEAM between two correct plans with nobody skipping an
+assigned step: **a verification owed by one party and skipped by everyone else is a gap that
+looks exactly like coverage until someone checks who actually ran it.**
 
 ## Findings, and where each one now lives
 
@@ -158,8 +170,16 @@ Pointers, not records -- the home is where it gets updated.
 - **`483`'s rule is stated wrong in 483**: not "never write a `default`" but **"an arm
   matching two or more permits IS a default, whatever it is spelled"**. `.kb/vec.md`.
 - **`%la-gather-strided` has five readers** and grepping the name finds two. `.todo/687`.
-- **Seven sites hand-write the bf16 conversion arithmetic**, and only `am.ik.rontolisp.BFloat16`
-  is the authority. `.todo/487`'s remainder.
+- **`bfloat16` was a float ALIAS in the `subtypep` lattice, not an EDGE**, from the day the
+  width landed: `(subtypep 'single-float 'bfloat16)` answered T against
+  `(typep 1.0 'bfloat16)`'s NIL, and a COMPUTED pair on the compile paths answered NIL
+  against everything, itself included -- the runtime universe derives edges and hand-lists
+  aliases. Found closing `482`, the one arm the umbrella specified and no child owned.
+  `.kb/declarations-type-checks.md`.
+- **The bf16 conversion arithmetic census**: not seven sites and not the grep's twelve --
+  `.kb/bfloat16.md`, "The conversion arithmetic census".
+- **`append` recurses once per element on all four backends**, so a long first argument is a
+  `StackOverflowError` rather than a slow call. `.todo/749`.
 - **A profile names the COST correctly and the CAUSE only as a guess**, and the two JFR
   sample sets must be read together or a native-heavy arm reads as a Java profile.
   `.kb/gpu.md`.
@@ -195,74 +215,66 @@ them about a checkpoint (rule 15).
 
 ### Orchestrator A -- dorian, GPU-free, the model side
 
-A's previous lane closed `722`, `724`, `701`, `680`, `681` and re-read `715`, and ran
-`733`, `734`, `738` and `695` beside it. Its subject was **the two instruments the
-checkpoint path is measured with, then the error surface three items describe from three
-sides** -- and in four of the six the thing measured was the instrument, not the subject.
+A's previous lane was **the narrow width's remainder**, and closed all of it: `746`, `745`,
+`689`, `696`, `732` and the umbrella `482` itself. Three boundaries, one kernel, one close
+-- and in four of the six **the item's own statement of the problem is what turned out to be
+wrong.**
 
-- `722` -- **the trap was not ours.** `cranelift-frontend`'s SSA builder leaves a block
-  parameter on a `try_table` catch when the protected body holds a loop with an inner
-  two-predecessor merge and a call after it; each `try_call` then passes the local as an
-  exceptional-edge ARGUMENT, spilled to a slot the stack map does not list, so a copying
-  collection during the call moves the object and updates only stack-mapped slots. The
-  "one-line source edit moves it" behaviour was pregrow -- 16x emitted code bytes --
-  shifting GC timing. **A cliff a source edit moves is a timing signature, not a codegen
-  signature.** Unfixed through 49.0.0-rc.1; the workaround is `WasmLandingPad` at zero
-  runtime cost, the mechanics and the reproducer are `.kb/wasm-landing-pad-refresh.md`, and
-  the report is `.todo/731`.
-- `724` -- the clock started at the end of the first loop iteration, so prompt forwards were
-  inside the clock and outside the count. **A rate whose numerator and denominator are
-  collected at different points is wrong by a factor that differs per arm**, which is why
-  every row on the page compared with the others and with nothing else.
-- `701` -- **the oracle's invocation was the divergence.** `llama-cli --reasoning-budget 0`
-  does not set the template's `enable_thinking`; `--reasoning off` does, and then the
-  prompts match byte for byte including the empty `<think>`. The genuine divergence was
-  elsewhere: SmolLM2's own template injects a system turn a generic ChatML rendering does
-  not, now `*chatml-smollm2*`.
-- `680` -- **making the expander SIGNAL is only half the fix**, because macroexpansion runs
-  outside the enclosing `handler-case`'s dynamic extent. Returning `(%program-error ...)`
-  for the compilers to lower is what moves the signal to call time, on all four backends.
-- `681` -- the report counted a lost form into the reason table and into NONE of
-  `pass`/`fail`/`error`. **A denominator that drops what it cannot classify makes every fix
-  look smaller than it is**; `680` landing first is what made it visible (840 -> 588 lost,
-  denominator +252, numerator unchanged).
-- `715` -- the ranking's own instrument mixed units: per-test `ERROR` rows and per-form
-  `%%%EVAL` rows in one table, and an aux file loads into all 25 chapters, so one failed aux
-  form reads as 25. Two owner columns pointed at items closed 2026-08-15 with the work
-  undone -- **a closed owner is worse than no owner, because the row reads as taken.** Kept
-  open deliberately: it is a standing READING, re-taken at the close of the lane that spends
-  it.
+- `746` -- the census is not seven sites and not the grep's twelve: one authority, three
+  false positives, five emissions a backend cannot route through `BFloat16`, one avoidable
+  copy, one deliberate. Checking those five against the authority in the NaN direction is
+  what found a live defect -- two fused `--simd` kernels carrying a quiet-bit formula that
+  was fixed the SAME DAY they landed, 126 of 65536 patterns wrong. **A fix dated the same
+  day as the code it never reached is invisible to any comparison by date.**
+- `745` -- of the bulk pair's four arms only two convert; `:bfloat16` <-> `#bf16` is a
+  pattern copy, so there was no rounding to add. The defect found alongside belonged to the
+  three widths already shipped: `_narrowFloatBits` asked `_fvLength` for the source's
+  element count and its rank-n arm rejects multidimensional arrays, so a rank-2 source threw
+  on the compile paths and narrowed fine in the interpreter. **A divergence found while
+  adding a fourth arm was owned by the three that were already there.**
+- `689` -- `Width`'s third member is not a third branch. bf16 spends TWO header slots per
+  dimension (a `short` tops out at 32767), so the eight readers that spelled `1 + rank`
+  misread it, and the fix was to route them all through `dimAt` / `dataOffset`. **A new
+  member with a different header shape is a change to every reader.**
+- `696` -- **the premise was overturned by its own measurement.** Narrowing DOES vectorize:
+  a branch-free lane form is 1.4-3.2x the scalar loop and agrees on all 2^32 patterns, and
+  the composite kernel is 2.3-2.7x the scalar route. The prediction was right about the
+  shape it imagined (lane load, scalar store: 0.89-1.07x) and wrong that the shape was
+  forced. **A refusal justified by a predicted implementation dies the moment a different
+  implementation is measured.** The implementation is `.todo/747`.
+- `732` -- the item proposed a contiguous row range; the driving case (`examples/llm`'s
+  `split-gated-q`) interleaves query and gate per head, so a range needs a join the item
+  never mentioned. It shipped as a row GATHER instead, one `System.arraycopy` per row.
+  **A primitive designed from the statement of the problem rather than from its caller gets
+  the wrong arity.**
+- `482` -- closing the umbrella was not a formality, exactly as its row predicted. The audit
+  found the one arm the umbrella SPECIFIED and no child owned: the type registered as a
+  fifth alias of `float` instead of a fourth subtype (Findings above). **An umbrella's own
+  specification is the one thing none of its children tests.**
 
-**The current lane is the narrow width's remainder.** `482`'s eight children all closed and
-the width shipped, but three arms of it are still refused in the tree and one of them names a
-CLOSED item as its owner -- so the surface reads as finished from the umbrella and as
-"does not yet" from the source. The lane's own first item is the map the next two need.
+**The current lane is the instrument, then the width's last kernel.** A's box cannot certify
+anything until `748` lands: every later item's verification would be read out of a suite
+that is red for a reason unrelated to it, which is rule 13's failure seen from the other
+side.
 
 | # | item | difficulty | why here, why now |
 | --- | --- | --- | --- |
-| A-1 | `746` the hand-written bf16 conversion census has no owner and no current number | Low | FIRST, and cheap, because it is the MAP for A-2 and A-3: both of them risk adding another copy of the same rounding, and the census is exactly which sites spell it, which of those had no choice (a backend emitter cannot call `BFloat16`, which does not travel with the output) and whether they agree in the narrow / NaN direction. Every break this arithmetic has had was in a copy, in that direction. Taking it after the two would be reading the map after the walk |
-| A-2 | `745` the bulk float-bits pair declines `bfloat16` in both directions | Medium | Second: it is the STAGING primitive on the checkpoint path, and its refusal is a `"does not yet"` naming `.todo/487`, closed 2026-09-05 -- so it has been reading as scheduled while nothing owned it. The cost is narrow and real: a published F16 checkpoint reaches the narrow width only by widening into `#f` and narrowing back, allocating exactly the f32 array the width exists to avoid. `read-sequence`'s bulk pattern transfer is why this was survivable, not why it is done |
-| A-3 | `689` the `jvm-export` handle does not carry `bfloat16` | Medium | Third, directly after `745` and against A-1's classification, because it is the same question one layer out: a Java caller of a compiled model can neither hand a bf16 weight matrix across nor receive one, and `runtime` imports nothing, so the arm is a THIRD spelling of the conversion. The refusal is correct today (`checkPacked`, "not a packed float array: [S") and nothing is silently misread -- which is why it is third and not first |
-| A-4 | `696` the narrow-width element-wise kernels and the operand pairing | Medium | Fourth: the one bf16 arm that is a KERNEL rather than a boundary. `.kb/bfloat16.md` states the gap -- widening is one shift, narrowing is not vectorized, so an element-wise arm is a scalar store loop -- and the item also holds the NARROW x NARROW pairing question the bridge has never been asked. Its x64 half is A's, every `.todo/488` number behind it being aarch64 |
-| A-5 | `732` a row slice of a quantized matrix without a scratch file | Medium | Fifth, and the other width: `examples/llm` splits Qwen3.5's `attn_q` through a byte copy in `$TMPDIR`, because a `quantized-matrix` is immutable and `file-position` does not seek. **A program's correctness depends on a writable temp directory on four backends**, which is the kind of dependency the checkpoint path is supposed to have shed. Filed by B's `728` and GPU-free, so the box question makes it takeable here |
-| A-6 | `482` the `bfloat16` umbrella itself | High | LAST because it is the only item the lane's own results decide. All eight children (483-490) are closed and the file still reads as an open plan; after A-1 through A-4 the remainder is known, and the honest close is either a rewritten `482` scoped to what is left or a deletion with the width's account moved into `.kb/bfloat16.md`. **Not a formality**: `.todo/487`'s close is what stranded two arms, and closing an umbrella has the same failure available to it |
+| A-1 | `748` the corpus's wild-pathname case walks the whole project tree | Low | FIRST, because it is the precondition of the lane: `JvmClassShakerCorpusTest` is how the checkpoint path's own pass pipeline is pinned on this box, and it errors on dorian for a reason that lives in the BOX. Cheapest item here and the one that restores the instrument. Its trap is stated in the file: the `**/`-matches-zero-levels branch is what the case exists to pin, and no WASM backend can create a directory to scope it into |
+| A-2 | `749` `append` recurses once per element on every backend | Medium | Second, immediately after, because it is `748`'s MECHANISM and the more general defect: `748` bounds one walk, `749` is why any long list is a crash rather than a slow call. Taking it first would make the red disappear and leave the unbounded walk, which `748` says explicitly is not `748` being done. Four spellings of one shape (`Environment.appendTwo`, both `RuntimeBuilder` `_append`s, the two mapcan accumulators), and the sibling census belongs with the fix |
+| A-3 | `747` the element-wise `bfloat16` `vec:` kernels | High | Third: the one bf16 arm still declined, and the only lane item whose measurement is already DONE (`696`, with the harness and the lane form written out). What is left is design -- which operand pairings are admitted, what width a result takes, which of ~40 members mirror -- so it is High for the decisions, not for the numbers. Directly on the subject: it is how a checkpoint's weights are streamed at the width they are published in |
+| A-4 | `731` the wasmtime landing-pad report and the toolchain floor | Medium | Fourth: on the subject by descent, the argument `722` earned -- a cross-backend pin that an unrelated later case can turn red is not a pin, and the checkpoint path is pinned on four backends. Half of it is a person's action (filing upstream is an external submission), so it is last: the half this lane can finish is the floor, and **the narrowing question is answered by the PIN, never by the version** |
 
 **A's pool for THIS umbrella.** GPU-free and on the subject:
 
-- `731` (Medium) -- the wasmtime landing-pad report and the toolchain floor. On the subject
-  by descent: `722` earned its place as the corpus INSTRUMENT, because a cross-backend pin an
-  unrelated later case can turn red is not a pin, and the checkpoint path is pinned on four
-  backends. Half of it is a person's action -- filing the bug upstream is an external
-  submission. The narrowing question is answered by the PIN, never by the version.
 - `721` (Medium) -- a character `read-sequence` costs ~1.2 us/char. Adjacent rather than on
   the path: the checkpoint readers use the BYTE and packed transfers, not the character one.
-  It is here because it wants a quiet box and does not decay, and it should move out if a
-  lane ever has to choose.
+  It is here because it wants a quiet box and does not decay, and **it is the item to drop
+  the next time a lane has to choose** -- this is the second lane it has been passed over
+  for, which is evidence about the item rather than about the lanes.
 
-**Not this umbrella's, and moved out of A's pool.** Every one is real work and GPU-free, and
-none is about running a checkpoint. They belong to their own tracks and any lane may take
-them; 670 should not own them: `041` (the printer's right margin, and the one item both the
-ANSI suite and the _Practical Common Lisp_ corpus name), `735` / `736` / `739` / `740` /
+**Not this umbrella's, and not in A's pool.** Every one is real work and GPU-free, and none
+is about running a checkpoint. They belong to their own tracks and any lane may take them;
+670 should not own them: `041` (the printer's right margin), `735` / `736` / `739` / `740` /
 `741` / `742` / `743` / `744` (the ANSI ranking `715` produced -- `715` is its own standing
 reading and is not this file's either), `679` (`'pi` reads as a double), `597` (the four
 `geom:` MODEL readers -- solid models, not checkpoints; the name is the whole reason it
@@ -295,11 +307,12 @@ B's previous lane closed `726`, `727` and `728`. What outlived them:
 | B-1 | `729` the binary's downcalls through SubstrateVM's own AOT route | High | The lane, and open-ended: `727` left the measurement done and the COST accepted rather than the design. 10.7 ns against 2-7 us on the same address in the same image, ~5 ms of a decode forward's ~1300 driver calls, and a `--blas` floor that exists only to pay for it. What is unsettled is the SHAPE -- a `-Pnative` source set substituting the binding halves of `am.ik.gpu.CudaDriver`, `eval/LinalgBlasKernels` and `am.ik.objc`, one interface method per shape across 45 CUDA + 6 BLAS + the objc table, against core libraries that import nothing. **The honest first step is deciding whether that seam is payable, and "not worth it" is a close** |
 
 **The device pool did not refill this time.** Two lanes ago both closers filed a device
-successor and the partition held on that; `728` filed `732`, which is GPU-free and on this
-umbrella's subject, so it went to A. B's lane is therefore one item. The **aarch64/x64 axis**
-is what to settle next rather than wait on, and after rule 15 it is smaller than it looked:
-only `696` carries a half of it that this plan is about (the narrow width's element-wise
-kernels, now A-4), and `684`'s f64 GEMV row belongs to its own track.
+successor and the partition held on that; `728` filed `732`, which was GPU-free and on this
+umbrella's subject, so it went to A and has closed. B's lane is therefore one item. The
+**aarch64/x64 axis** is what to settle next rather than wait on, and after rule 15 it is
+smaller than it looked: only `747` carries a half of it that this plan is about (the narrow
+width's element-wise kernels, now A-3, whose x64 measurement `696` already took), and
+`684`'s f64 GEMV row belongs to its own track.
 
 **Not either lane's.** `730` (report the SVM findings upstream) is finished as writing and
 needs a person to post it. `514` (`LinalgGpuTest` never finishes on Apple silicon) and `516`
@@ -310,7 +323,7 @@ this plan can even fail them.
 **The one decision still open, and not either lane's to take alone: `.todo/709` is an
 explicit DRAFT and needs co-signing or cutting by both orchestrators.** It is process, so
 one side adopting it unilaterally is the failure it is written about. It has now outlived
-six full lanes, which is evidence about the item rather than about its subject. It is also
+seven full lanes, which is evidence about the item rather than about its subject. It is also
 where the general reading disciplines belong -- diff the lists rather than reasoning about
 which terms ought to differ; a sum that closes is not evidence about its terms; relay a
 census with its total AND its class count -- **there or nowhere**.
@@ -327,8 +340,8 @@ Cited by number from other items -- **the numbering is fixed.**
 3. **Sort every "Remaining" into blocked / not-done / deferred.** Only the first is a real
    remainder; the second is unstarted work in a blocker's clothes; the third evaporates
    without an owner. Two of nine were truly blocked.
-4. **One session runs the full suite on `develop`, the other runs the GPU legs.** Three reds
-   were invisible from every lane's own worktree.
+4. **One session runs the full suite on `develop`, the other runs the GPU legs.** Four reds
+   now have been invisible from every lane's own worktree.
 5. **Never two device-touching runs at once, separately from who owns what.** `./mvnw test`
    includes `GpuTest`, so a full suite IS device-touching. **Ownership says who takes a
    result; exclusion says what may run at once** -- fusing the two produced a
@@ -337,7 +350,8 @@ Cited by number from other items -- **the numbering is fixed.**
    and the half that looks more exhaustive is the half that hides it.** Three in one day,
    including `692` against a `671` that closed claiming all four backends while its tests
    counted backends and never `--simd` on each (`694`). **The instrument is not exempt**:
-   the corpus's own `vec:` cases were all under the `--simd` length gates until `705`.
+   the corpus's own `vec:` cases were all under the `--simd` length gates until `705`, and
+   every `append` it runs was under the recursion depth until the box grew (`748`, `749`).
 7. **A rule one lane derives from one measurement is a hypothesis until the other lane has
    tried to break it.** Three corrections in one day, each of which would otherwise have
    entered `.kb` as a law. What survives from the first: a failure count's SIZE narrows the
@@ -393,6 +407,15 @@ Cited by number from other items -- **the numbering is fixed.**
     the box constraint selects the taker**, and an item that passes only the second belongs
     to its own track. `.kb`-style test: name the item's connection to the umbrella's goal in
     one clause without using the word "and".
+16. **A bisect must hold the TREE constant and vary only the commit.** Chasing `748`'s red,
+    four probes ran in four fresh worktrees and produced a clean, wrong answer -- green,
+    green, green, red at the lane's last commit: an ordinary-looking bisect naming a culprit
+    that was innocent. Every green probe had also changed the working DIRECTORY, and the
+    working directory was the variable. The run that settles it stays in the checkout that
+    is red and moves one file: `git checkout <older> -- <the suspect>`, re-run, still red.
+    **A probe that moves the box and the commit together measures their sum**, and a bisect
+    is the shape of experiment most likely to hide that, because its output looks like a
+    verdict either way.
 
 ## What is deliberately not in the plan
 

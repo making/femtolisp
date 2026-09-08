@@ -4,8 +4,8 @@
 
 パックされた `(unsigned-byte 16)` ベクタ `bits`（`f16` または `bfloat16` の
 ビットパターン。`format`（`:float16` または `:bfloat16`）で選択）を、パックされた
-浮動小数点配列 `dst`（`single-float` または `double-float`、任意の階数）へ、フラット
-インデックス `start` から行優先で拡張します。`dst` を返します。
+浮動小数点配列 `dst`（`single-float`、`double-float` または `bfloat16`、任意の階数）へ、
+フラットインデックス `start` から行優先で拡張します。`dst` を返します。
 
 これは `rontolisp:bits-float16`/`rontolisp:bits-bfloat16` のバルク版です。公開されて
 いるチェックポイントのテンソルは 1 要素ずつではなく、16 ビットパターンのベクタ丸ごと
@@ -24,9 +24,16 @@
 ; => (0.0 0.0 1.0 -2.5 100.0)
 ```
 
+`bfloat16` の宛先は値ではなくビットパターンを格納します。したがって `format` が
+`:bfloat16` のときは単純なコピーであり、配列が保持する表現そのものなので丸めは起こらず、
+NaN のペイロードも変化しません。`format` が `:float16` のときは丸めが 1 回だけ起こり、
+それは `rontolisp:bfloat16-bits` と同じ丸めです。公開されている f16 のチェックポイントを、
+途中で `single-float` 配列を確保することなく狭い幅へ読み込む方法がこれです。
+
 `:start` は、チャンク単位で読み込んだ結果をテンソル全体の宛先の途中に置くための
 ものです。パターンについては
 [checkpoint:stage-float-bits](checkpoint-stage-float-bits.md) を参照してください。
 インタプリタ、JVM、両方の WASM バックエンドで動作します。`--no-gc` にはパックされた
-浮動小数点配列のモデルがなく、コンパイル時に拒否されます。`rontolisp:narrow-float-bits`
-が逆方向です。
+浮動小数点配列のモデルがなく、コンパイル時に拒否されます。`bfloat16` の宛先は
+インタプリタと JVM のみです。その配列幅を持つ WASM バックエンドがないためです。
+`rontolisp:narrow-float-bits` が逆方向です。

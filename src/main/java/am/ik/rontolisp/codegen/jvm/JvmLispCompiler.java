@@ -2478,12 +2478,12 @@ public final class JvmLispCompiler implements LispCompiler {
 						JvmIntArrayRuntimeBuilder.build(cp, objectClass, objectArrayClass, thisClass, usesFloatArray));
 			}
 			// widen-float-bits/narrow-float-bits (.todo/671): bulk f16/bf16 bit <->
-			// packed-float conversion, over the same bare double[]/float[]/long[]
+			// packed-float conversion, over the same bare double[]/float[]/short[]/long[]
 			// backing the _fv*/_iv* helpers above use. Needs both tiers (a packed float
 			// array AND a packed (unsigned-byte 16) vector), which usesFloat16Bits
 			// already forced on above.
 			if (usesFloat16Bits) {
-				built.addAll(JvmFloat16RuntimeBuilder.build(cp, objectClass, thisClass));
+				built.addAll(JvmFloat16RuntimeBuilder.build(cp));
 			}
 			arrayMethods = built;
 		}

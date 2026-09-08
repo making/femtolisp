@@ -717,7 +717,7 @@ public final class PackageRegistry {
 				// constructors, its predicate, its type name and the q8-0 format
 				// designator. Extensions like bfloat16 above, so they live here too.
 				LispNames.QUANTIZE, LispNames.DEQUANTIZE, LispNames.MAKE_QUANTIZED_MATRIX, LispNames.QUANTIZED_MATRIX_P,
-				LispNames.QUANTIZED_MATRIX, LispNames.Q8_0));
+				LispNames.QUANTIZED_ROWS, LispNames.QUANTIZED_MATRIX, LispNames.Q8_0));
 		Set<String> rontolispSymbols = new HashSet<>(rontolispExternals);
 		// Internal: the two raw accessors vec.lisp's integer-dot GEMV reads a quantized
 		// matrix through, spelled rontolisp::%quantized-* by their one call site.

@@ -69,7 +69,7 @@ deliberate boundaries the audit must not undo: user-facing operator catalogues l
 - [quoted-data.md](quoted-data.md) -- a quoted datum is one shared constant per quote site on all four backends
 - [adjustable-arrays.md](adjustable-arrays.md) -- fill pointers, `:adjustable`, displaced arrays, `vector-push*`, `adjust-array`
 - [packed-integer-vectors.md](packed-integer-vectors.md) -- `(unsigned-byte 8|16|32)` rank-1 packs, `#N@(...)`, per-backend raw paths
-- [bfloat16.md](bfloat16.md) -- bfloat16 conversion pair and the packed `#bf16` width
+- [bfloat16.md](bfloat16.md) -- bfloat16 conversion pair, the packed `#bf16` width, and the width's account (why bf16, the name, the prefix, the lattice entry)
 - [pathnames.md](pathnames.md) -- a pathname is a distinct value; `#P"..."` in the frontend and both emitted readers
 - [random.md](random.md) -- `random` draws from a generator inside the program, never a host call per draw
 

@@ -630,35 +630,22 @@
       (split-gated-q-blocks w n-heads hs)
       (split-gated-q-elements w n-heads hs)))
 
+(defun gated-q-rows (n-heads hs offset)
+  ;; The source rows of one half, head by head: head h's hs rows start at
+  ;; h * 2hs (the query half) or h * 2hs + hs (the gate half).
+  (let ((rows '()))
+    (dotimes (h n-heads (nreverse rows))
+      (dotimes (i hs) (push (+ (* h 2 hs) offset i) rows)))))
+
 (defun split-gated-q-blocks (w n-heads hs)
   ;; The Q8_0 split, keeping the file's own blocks: a row is dim / 32 whole
-  ;; blocks, and head h's query rows and its gate rows are each contiguous, so
-  ;; the split is a byte copy -- the matrix written once and each half read
-  ;; back a head at a time through read-sequence's byte-counted :start / :end,
-  ;; in file order, so no seek is needed. Through a scratch file rather than
-  ;; rontolisp:dequantize / rontolisp:quantize (which would be exact too): this
-  ;; program compiles to WASM, where those two are refused by name at compile
-  ;; time, and a quantized file never reaches that backend anyway.
-  (let* ((dim (array-dimension w 1))
-         (rows (* n-heads hs))
-         (row-bytes (* (floor dim 32) 34))
-         (wq (rontolisp:make-quantized-matrix 'q8-0 (list rows dim)))
-         (gate (rontolisp:make-quantized-matrix 'q8-0 (list rows dim)))
-         (path
-          (concatenate 'string (env-or "TMPDIR" "/tmp")
-                       "/rontolisp-llm-split-gated-q.q8")))
-    (with-open-file (s path
-                       :direction :output
-                       :element-type '(unsigned-byte 8)
-                       :if-exists :supersede)
-      (write-sequence w s))
-    (with-open-file (s path :element-type '(unsigned-byte 8))
-      (dotimes (h n-heads)
-        (let ((start (* h hs row-bytes)))
-          (read-sequence wq s :start start :end (+ start (* hs row-bytes)))
-          (read-sequence gate s :start start :end (+ start (* hs row-bytes))))))
-    (delete-file path)
-    (values wq gate)))
+  ;; blocks, so each half is a GATHER of the source's rows and the bytes move
+  ;; as they are -- one rontolisp:quantized-rows a half, an array copy a row.
+  ;; Not rontolisp:dequantize / rontolisp:quantize (which would be exact too):
+  ;; this program compiles to WASM, where those two are refused by name at
+  ;; compile time, and a quantized file never reaches that backend anyway.
+  (values (rontolisp:quantized-rows w (gated-q-rows n-heads hs 0))
+          (rontolisp:quantized-rows w (gated-q-rows n-heads hs hs))))
 
 (defun split-gated-q-elements (w n-heads hs)
   ;; The packed-float split: the two halves keep the weight width.

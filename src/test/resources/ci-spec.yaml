@@ -8357,6 +8357,32 @@ cases:
       (:MAYBE :NONE)
       (CLOS-U-SUB "c" :POOLED T NIL)
       ("#<CLOS-U-SUB d>" "#<CLOS-U-SUB d>|#<CLOS-U-SUB d>")
+  - name: clos-print-object-method-defined-below-its-first-use-445
+    source: |
+      ;; Todo 445: a print-object method defined BELOW its first use. The
+      ;; whole-program registry routes the printer through the generic from the very
+      ;; first print, but the body global is assigned only when the defmethod form
+      ;; runs -- so the dispatcher skips the not-yet-assigned body and the first
+      ;; print renders the built-in text, like the interpreter (and CL). The general
+      ;; shape second: a call before the nested defmethod form runs answers the
+      ;; default, and after it the new method.
+      (defclass po445-late () ())
+      (let ((po445-o (make-instance 'po445-late)))
+        (print po445-o)
+        (defmethod print-object ((x po445-late) s) (format s "#<PO445!>"))
+        (print po445-o))
+      (defclass nd445-late () ())
+      (defgeneric nd445-greet (x))
+      (defmethod nd445-greet (x) "default")
+      (let ((nd445-o (make-instance 'nd445-late)))
+        (print (nd445-greet nd445-o))
+        (defmethod nd445-greet ((x nd445-late)) "special")
+        (print (nd445-greet nd445-o)))
+    expected: |
+      #<PO445-LATE>
+      #<PO445!>
+      "default"
+      "special"
   - name: with-slots-write-only-unbound-slot-and-missing-slot
     source: |
       ;; with-slots BINDS, it never reads: a body that only assigns a slot
@@ -10124,6 +10150,25 @@ cases:
       (:OK 3)
       :RAISED
       NIL
+  # :no-error binds the protected form's full VALUES -- a (values ...) tail, a
+  # values-list and a producing call (gethash) all spread. Missing values are
+  # nil, surplus values are dropped, as in multiple-value-bind.
+  - name: handler-case-no-error-multiple-values
+    source: |
+      (print (handler-case (values 1 2 3) (:no-error (a b c) (list a b c))))
+      (print (handler-case (values 1 2) (:no-error (a b c) (list a b c))))
+      (print (handler-case (values 1 2 3 4) (:no-error (a b) (list a b))))
+      (print (handler-case (values) (:no-error (a) (list :none a))))
+      (print (handler-case (values-list (list 1 2 3)) (:no-error (a b c) (list a b c))))
+      (let ((h (make-hash-table))) (setf (gethash 'k h) 99)
+        (print (handler-case (gethash 'k h) (:no-error (a b) (list a b)))))
+    expected: |
+      (1 2 3)
+      (1 2 NIL)
+      (1 2)
+      (:NONE NIL)
+      (1 2 3)
+      (99 T)
   # CLHS 9.1.4.1: signal returns nil when no applicable handler transfers
   # control, and a handler-case whose clauses do not match the condition is not
   # an applicable handler -- it declines, the forms after the signal run, and
@@ -15363,6 +15408,15 @@ standalone:
         (print (equalp (rontolisp:dequantize m2 'single-float) (rontolisp:dequantize *qm* 'single-float)))
         (print (aref m2 2 63)))
       (print (length (rontolisp:dequantize (rontolisp:make-quantized-matrix 'q8-0 40000) 'bfloat16)))
+      ;; A row gather keeps the file's own blocks -- a row is whole blocks -- so
+      ;; splitting a quantized weight matrix needs neither a scratch file nor a
+      ;; dequantize round trip (examples/llm's split-gated-q).
+      (defparameter *qg* (rontolisp:quantized-rows *qm* '(2 0)))
+      (print (list (array-dimensions *qg*) (rontolisp:quantized-matrix-p *qg*)
+                   (= (aref *qg* 0 5) (aref *qm* 2 5)) (= (aref *qg* 1 5) (aref *qm* 0 5))))
+      (print (equalp (rontolisp:dequantize (rontolisp:quantized-rows *qm* '(0 1 2)) 'single-float)
+                     (rontolisp:dequantize *qm* 'single-float)))
+      (print (vec:matvec *qg* *qx*))
     stdout: |
       #<quantized-matrix q8-0 (3 64)>
       ((3 64) Q8-0 T NIL T QUANTIZED-MATRIX)
@@ -15375,6 +15429,9 @@ standalone:
       T
       0.0037794113159179688
       40000
+      ((2 64) T T T)
+      T
+      #f(0.0076408954 0.0031668926)
     refusedOn: [wasm, wasm_component]
     refusal: "quantized matrices are supported on the interpreter and the JVM only"
   - name: array-operations-enablement-language-group
@@ -15577,6 +15634,31 @@ standalone:
                     (sts 'vector '(simple-vector 4)))))
     stdout: |
       ((T NIL T NIL T NIL) (T T T NIL NIL NIL) (T T T T) (T NIL T NIL T NIL))
+  # bfloat16 is an EDGE below float in the lattice, not a fifth alias of it: the type
+  # is EMPTY (the width exists only as array storage), so the reverse direction answers
+  # nil -- and a COMPUTED pair, which the compile paths answer from the emitted ancestor
+  # table, answers exactly like the literal fold, on the two backends that have no #bf16
+  # array as much as on the two that do.
+  - name: bfloat16-type-lattice
+    source: |
+      (defun bfl-sub (a b) (subtypep (car (list a)) (car (list b))))
+      (print
+        (list (list (subtypep 'bfloat16 'float)
+                    (subtypep 'bfloat16 'number)
+                    (subtypep 'bfloat16 'bfloat16)
+                    (subtypep 'float 'bfloat16)
+                    (subtypep 'single-float 'bfloat16)
+                    (subtypep 'double-float 'bfloat16))
+              (list (bfl-sub 'bfloat16 'float)
+                    (bfl-sub 'bfloat16 'number)
+                    (bfl-sub 'bfloat16 'bfloat16)
+                    (bfl-sub 'float 'bfloat16)
+                    (bfl-sub 'single-float 'bfloat16)
+                    (bfl-sub 'double-float 'bfloat16))
+              (list (typep 1.0 'bfloat16)
+                    (typep (car (list 1.0)) (car (list 'bfloat16))))))
+    stdout: |
+      ((T T T NIL NIL NIL) (T T T NIL NIL NIL) (NIL NIL))
   - name: simple-type-name-typep-simplicity
     source: |
       (defvar *tps-sv* (make-array 4))

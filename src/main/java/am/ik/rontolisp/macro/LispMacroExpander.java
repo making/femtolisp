@@ -17350,6 +17350,26 @@ public final class LispMacroExpander {
 	 * @return the generated method-body defun
 	 */
 	public static LispVal expandDefmethod(LispCons cons, ClosRegistry closRegistry) {
+		return expandDefmethod(cons, closRegistry, false);
+	}
+
+	/**
+	 * As {@link #expandDefmethod(LispCons, ClosRegistry)}, additionally recording that
+	 * the method-body defun sits inside a top-level {@code let} body when {@code nested}
+	 * is true -- the closure-over-let method idiom. Only the user method's own defun is
+	 * recorded; a synthesized system-default defun the expansion carries (the
+	 * instance-initialization or {@code print-object} default primary) is
+	 * position-independent and the caller hoists it to top level, so it stays a direct
+	 * call. Only the compile paths pass true: the interpreter evaluates the defmethod
+	 * exactly when the form runs, so its dispatchers never reference an unassigned body.
+	 * @param cons the defmethod expression
+	 * @param closRegistry mutated: the method is registered (and the generic implicitly
+	 * created when no defgeneric preceded it)
+	 * @param nested whether the defmethod sits inside a top-level {@code let} body
+	 * @return the generated method-body defun, or a progn of a synthesized default plus
+	 * the method-body defun
+	 */
+	public static LispVal expandDefmethod(LispCons cons, ClosRegistry closRegistry, boolean nested) {
 		List<LispVal> parts = cons.toList();
 		if (parts.size() < 3 || !(parts.get(1) instanceof LispSymbol nameSym)) {
 			throw new IllegalArgumentException(
@@ -17487,6 +17507,13 @@ public final class LispMacroExpander {
 		List<LispVal> body = methodBody;
 		generic.methods()
 			.put(key, new ClosRegistry.MethodInfo(List.copyOf(specializers), functionName, qualifier, usesNext));
+		if (nested) {
+			// The method-body defun stays inside the let and compiles to a global-closure
+			// setq, so the dispatcher must skip this branch until the defmethod form
+			// runs. A synthesized system default below is position-independent and is
+			// hoisted to top level by the caller instead, so it is never marked here.
+			closRegistry.markNestedMethodFunction(functionName);
+		}
 		// Every method-body defun takes a leading %next-method thunk; call-next-method
 		// and next-method-p in the body are rewritten against it (harmless for methods
 		// that do not use them -- the dispatcher passes nil).
@@ -18276,6 +18303,66 @@ public final class LispMacroExpander {
 	}
 
 	/**
+	 * The assignment guard of one nested (let-body) method: {@code (not (null name))}.
+	 * Such a method-body defun compiles to a global-closure {@code setq}, so before the
+	 * defmethod form runs the global holds nothing and a call through it reads an
+	 * unassigned global (a raw NullPointerException on the JVM, a cast-failure trap on
+	 * WASM). The guard is a plain variable read -- no eval runtime, no designator probe:
+	 * an unassigned global is Java null on the JVM (where {@code null} compiles to
+	 * IFNULL) and a null reference on WASM (where {@code null} is ref.is_null), so the
+	 * branch is skipped until the form runs and falls through to the default or to
+	 * no-applicable-method, exactly what the interpreter answers when the defmethod has
+	 * not run yet. Top-level methods are never guarded: their defuns are direct
+	 * functions, callable whatever ran before.
+	 * @param functionName the generated method-body defun name
+	 * @return the {@code (not (null name))} test
+	 */
+	private static LispVal methodAssignedTest(String functionName) {
+		return listToCons(List.of(new LispSymbol(LispNames.NOT),
+				listToCons(List.of(new LispSymbol(LispNames.NULL), new LispSymbol(functionName)))));
+	}
+
+	/**
+	 * The conjunction of the assignment guards of every nested method participating in
+	 * one dispatch branch's effective method, or null when no participant is nested.
+	 * @param generic the generic function
+	 * @param branchRep the branch representative, or null for the default fallback branch
+	 * @param closRegistry the registry carrying the nested marks
+	 * @param qualifiers the qualifier roles composing this branch's effective method, or
+	 * null for every role
+	 * @return the guard conjunction, or null when the branch needs none
+	 */
+	private static @Nullable LispVal nestedBranchGuard(ClosRegistry.GenericInfo generic,
+			ClosRegistry.@Nullable MethodInfo branchRep, ClosRegistry closRegistry,
+			java.util.@Nullable Set<String> qualifiers) {
+		java.util.Set<String> guarded = new java.util.LinkedHashSet<>();
+		List<LispVal> checks = new java.util.ArrayList<>();
+		for (ClosRegistry.MethodInfo m : generic.methods().values()) {
+			if ((qualifiers == null || qualifiers.contains(m.qualifier()))
+					&& closRegistry.isNestedMethodFunction(m.functionName())
+					&& appliesToBranch(m, branchRep, closRegistry) && guarded.add(m.functionName())) {
+				checks.add(methodAssignedTest(m.functionName()));
+			}
+		}
+		if (checks.isEmpty()) {
+			return null;
+		}
+		if (checks.size() == 1) {
+			return checks.get(0);
+		}
+		List<LispVal> and = new java.util.ArrayList<>();
+		and.add(new LispSymbol(LispNames.AND));
+		and.addAll(checks);
+		return listToCons(and);
+	}
+
+	/**
+	 * The qualifier roles composing a standard-method-combination effective method.
+	 */
+	private static final java.util.Set<String> STANDARD_COMBINATION_ROLES = java.util.Set.of("", ":BEFORE", ":AFTER",
+			":AROUND");
+
+	/**
 	 * The single-method-per-branch dispatcher body (no qualifiers, no call-next-method).
 	 */
 	private static LispVal simpleDispatchBody(ClosRegistry.GenericInfo generic, List<LispVal> params,
@@ -18304,8 +18391,20 @@ public final class LispMacroExpander {
 			.filter(ClosRegistry.MethodInfo::isDefault)
 			.findFirst()
 			.orElse(null);
-		LispVal chain = defaultMethod != null ? methodCall(defaultMethod, params, variadic)
-				: fallbackOrNoApplicableMethod(generic.name(), params, variadic, builtinFallback);
+		LispVal chain;
+		if (defaultMethod == null) {
+			chain = fallbackOrNoApplicableMethod(generic.name(), params, variadic, builtinFallback);
+		}
+		else if (!closRegistry.isNestedMethodFunction(defaultMethod.functionName())) {
+			chain = methodCall(defaultMethod, params, variadic);
+		}
+		else {
+			// A nested default is assigned only when its defmethod form runs; until
+			// then the call falls through to the last resort (todo 445).
+			chain = makeIf(methodAssignedTest(defaultMethod.functionName()),
+					methodCall(defaultMethod, params, variadic),
+					fallbackOrNoApplicableMethod(generic.name(), params, variadic, builtinFallback));
+		}
 		for (ClosRegistry.MethodInfo method : methods.reversed()) {
 			if (method.isDefault()) {
 				continue;
@@ -18318,6 +18417,15 @@ public final class LispMacroExpander {
 			LispVal test = exactTagBranches.contains(method)
 					? miExactTagTest(method, java.util.Objects.requireNonNull(refinement), params)
 					: specializerTest(method, params, closRegistry);
+			if (closRegistry.isNestedMethodFunction(method.functionName())) {
+				// The body is assigned only when the defmethod form runs; until then
+				// the branch is skipped (todo 445).
+				List<LispVal> and = new java.util.ArrayList<>();
+				and.add(new LispSymbol(LispNames.AND));
+				and.add(methodAssignedTest(method.functionName()));
+				and.add(test);
+				test = listToCons(and);
+			}
 			chain = makeIf(test, methodCall(method, params, variadic), chain);
 		}
 		return chain;
@@ -18486,7 +18594,16 @@ public final class LispMacroExpander {
 			}
 		}
 		branches.sort(specificityOrder(closRegistry));
+		java.util.@Nullable Set<String> roles = generic.methodCombination() == null ? STANDARD_COMBINATION_ROLES
+				: java.util.Set.of(generic.methodCombination(), ":AROUND");
 		LispVal chain = effectiveMethod(null, generic, params, closRegistry, builtinFallback);
+		LispVal fallbackGuard = nestedBranchGuard(generic, null, closRegistry, roles);
+		if (fallbackGuard != null) {
+			// A nested default is assigned only when its defmethod form runs; until
+			// then the call falls through to the last resort (todo 445).
+			chain = makeIf(fallbackGuard, chain,
+					fallbackOrNoApplicableMethod(generic.name(), params, generic.variadic(), builtinFallback));
+		}
 		for (ClosRegistry.MethodInfo rep : branches.reversed()) {
 			if (narrower != null && !narrower.branchSelectable(generic.name(), rep.specializers())) {
 				// No call site can select this branch (a meet branch's vector is more
@@ -18496,6 +18613,18 @@ public final class LispMacroExpander {
 			LispVal test = exactTagBranches.contains(rep)
 					? miExactTagTest(rep, java.util.Objects.requireNonNull(refinement), params)
 					: specializerTest(rep, params, closRegistry);
+			LispVal branchGuard = nestedBranchGuard(generic, rep, closRegistry, roles);
+			if (branchGuard != null) {
+				// A nested participant is assigned only when its defmethod form runs;
+				// until then the branch is skipped (todo 445). Conservative: the whole
+				// branch is skipped when ANY participant is unassigned, even when the
+				// remaining ones could still run.
+				List<LispVal> and = new java.util.ArrayList<>();
+				and.add(new LispSymbol(LispNames.AND));
+				and.add(branchGuard);
+				and.add(test);
+				test = listToCons(and);
+			}
 			chain = makeIf(test, effectiveMethod(rep, generic, params, closRegistry, builtinFallback), chain);
 		}
 		return chain;
@@ -20373,9 +20502,10 @@ public final class LispMacroExpander {
 	 * {@code build-dao-methods} splice (see {@link MopEvalCapture}) -- is rewritten in
 	 * place, its expansion progn standing where the defmethod stood. A method under a
 	 * conditional registers unconditionally (dispatch is static); when the guard is false
-	 * at run time its body global is never assigned, so calling it fails on the
-	 * unassigned global rather than as no-applicable-method -- the static subset's
-	 * documented divergence.
+	 * at run time its body global is never assigned, so calling it falls through to the
+	 * default or to no-applicable-method -- the branch is guarded on the body's
+	 * assignment (todo 445), which is also what the interpreter answers when the
+	 * defmethod never runs.
 	 */
 	private static void expandLetNestedDefmethods(LispCons letForm, ClosRegistry closRegistry, List<LispVal> out,
 			java.util.Map<Integer, String> dispatcherSlots, java.util.Set<String> placedDispatchers,
@@ -20383,22 +20513,23 @@ public final class LispMacroExpander {
 		List<LispVal> parts = letForm.toList();
 		List<LispVal> rebuilt = new java.util.ArrayList<>(parts.subList(0, 2));
 		List<String> generics = new java.util.ArrayList<>();
+		List<LispVal> hoisted = new java.util.ArrayList<>();
 		for (LispVal rawBodyForm : parts.subList(2, parts.size())) {
 			if (!isNamedForm(rawBodyForm, LispNames.DEFMETHOD)) {
-				rebuilt.add(rewriteNestedDefmethods(rawBodyForm, closRegistry, generics, structAccessors));
+				rebuilt.add(rewriteNestedDefmethods(rawBodyForm, closRegistry, generics, structAccessors, hoisted));
 				continue;
 			}
 			LispCons bodyForm = normalizeSetfMethodForm((LispCons) rawBodyForm, structAccessors);
-			LispVal expandedMethod = expandDefmethod(bodyForm, closRegistry);
-			if (isNamedForm(expandedMethod, LispNames.PROGN) && expandedMethod instanceof LispCons prognCons) {
-				List<LispVal> members = prognCons.toList();
-				rebuilt.addAll(members.subList(1, members.size()));
-			}
-			else {
-				rebuilt.add(expandedMethod);
-			}
+			rebuilt.add(splitNestedMethodExpansion(expandDefmethod(bodyForm, closRegistry, true), hoisted));
 			generics.add(ClosRegistry.normalize(((LispSymbol) bodyForm.toList().get(1)).name()));
 		}
+		// A synthesized system default (the instance-initialization or print-object
+		// default primary) is position-independent: it closes over nothing, so it is
+		// emitted at top level where it is assigned before any call -- including a call
+		// inside this very let that runs before the defmethod form. Without the hoist
+		// the default would sit unassigned beside the user method and even the
+		// fall-through would read an unassigned global.
+		out.addAll(hoisted);
 		out.add(listToCons(rebuilt));
 		for (String generic : generics) {
 			if (placedDispatchers.add(generic)) {
@@ -20408,13 +20539,33 @@ public final class LispMacroExpander {
 		}
 	}
 
+	/**
+	 * Splits a nested {@code defmethod} expansion into its hoisted and its in-place
+	 * halves: every member but the last is a synthesized system-default defun and is
+	 * appended to {@code hoisted} for top-level emission; the last member is the user
+	 * method's own body defun and is answered for the let body. A lone defun (no
+	 * synthesized default) is answered unchanged.
+	 * @param expandedMethod the {@code expandDefmethod} result
+	 * @param hoisted mutated: the synthesized system-default defuns, if any
+	 * @return the user method's body defun
+	 */
+	private static LispVal splitNestedMethodExpansion(LispVal expandedMethod, List<LispVal> hoisted) {
+		if (isNamedForm(expandedMethod, LispNames.PROGN) && expandedMethod instanceof LispCons prognCons) {
+			List<LispVal> members = prognCons.toList();
+			hoisted.addAll(members.subList(1, members.size() - 1));
+			return members.get(members.size() - 1);
+		}
+		return expandedMethod;
+	}
+
 	// Rewrites every defmethod nested below a top-level let body member in place
 	// (quoted data skipped): registered like a top-level defmethod, replaced by its
-	// expansion progn -- an expression-position form, so no splicing is possible or
-	// needed. The method-body defun inside compiles to a global-closure setq exactly
-	// like the direct-member case.
+	// user method-body defun -- an expression-position form, so no splicing is possible
+	// or needed. A synthesized system default the expansion carries is hoisted to top
+	// level instead (see splitNestedMethodExpansion). The method-body defun inside
+	// compiles to a global-closure setq exactly like the direct-member case.
 	private static LispVal rewriteNestedDefmethods(LispVal form, ClosRegistry closRegistry, List<String> generics,
-			java.util.Map<String, Integer> structAccessors) {
+			java.util.Map<String, Integer> structAccessors, List<LispVal> hoisted) {
 		if (!(form instanceof LispCons cons)) {
 			return form;
 		}
@@ -20425,13 +20576,13 @@ public final class LispMacroExpander {
 			}
 			if (LispNames.DEFMETHOD.equals(member) && cons.isProperList()) {
 				LispCons normalized = normalizeSetfMethodForm(cons, structAccessors);
-				LispVal expandedMethod = expandDefmethod(normalized, closRegistry);
+				LispVal inPlace = splitNestedMethodExpansion(expandDefmethod(normalized, closRegistry, true), hoisted);
 				generics.add(ClosRegistry.normalize(((LispSymbol) normalized.toList().get(1)).name()));
-				return expandedMethod;
+				return inPlace;
 			}
 		}
-		return new LispCons(rewriteNestedDefmethods(cons.car(), closRegistry, generics, structAccessors),
-				rewriteNestedDefmethods(cons.cdr(), closRegistry, generics, structAccessors));
+		return new LispCons(rewriteNestedDefmethods(cons.car(), closRegistry, generics, structAccessors, hoisted),
+				rewriteNestedDefmethods(cons.cdr(), closRegistry, generics, structAccessors, hoisted));
 	}
 
 	private static LispVal rewriteSetfFunctionDefun(LispCons cons, java.util.Map<String, Integer> structAccessors) {
@@ -32622,16 +32773,28 @@ public final class LispMacroExpander {
 	 * {@code base-string}/{@code simple-base-string} stay aliases (of {@code string} /
 	 * {@code simple-string}), for the one-character-type reason
 	 * {@link #canonicalSubtypeName} states.
+	 *
+	 * <p>
+	 * {@code bfloat16} is an edge too, below {@code FLOAT}, and never one of the
+	 * collapsed float aliases: it is a rontolisp extension naming the packed
+	 * {@code #bf16} array's element width, and NO scalar has it ({@code (typep 1.0
+	 * 'bfloat16)} is nil), so the symmetric claim a collapse makes would be false --
+	 * collapsed, as it was from 2026-09-03 to 2026-09-08, {@code (subtypep 'single-float
+	 * 'bfloat16)} answered t. An edge also reaches the runtime universe by derivation
+	 * ({@link #subtypepUniverse}); an alias reaches it only through that method's
+	 * hand-written list, which is why a computed pair naming this width answered nil
+	 * against everything, itself included, on the compile paths for the same five days.
 	 */
 	private static final java.util.Map<String, List<String>> SUBTYPEP_PARENTS = orderedMap(
 			java.util.Map.entry("FIXNUM", List.of("INTEGER")), java.util.Map.entry("BIGNUM", List.of("INTEGER")),
 			java.util.Map.entry("bit", List.of("INTEGER")), java.util.Map.entry("UNSIGNED-BYTE", List.of("INTEGER")),
 			java.util.Map.entry("SIGNED-BYTE", List.of("INTEGER")), java.util.Map.entry("INTEGER", List.of("RATIONAL")),
 			java.util.Map.entry("RATIO", List.of("RATIONAL")), java.util.Map.entry("RATIONAL", List.of("REAL")),
-			java.util.Map.entry("FLOAT", List.of("REAL")), java.util.Map.entry("REAL", List.of("NUMBER")),
-			java.util.Map.entry("KEYWORD", List.of("SYMBOL")), java.util.Map.entry("BOOLEAN", List.of("SYMBOL")),
-			java.util.Map.entry("NULL", List.of("SYMBOL", "LIST")), java.util.Map.entry("CONS", List.of("LIST")),
-			java.util.Map.entry("LIST", List.of("SEQUENCE")), java.util.Map.entry("STRING", List.of("VECTOR")),
+			java.util.Map.entry("BFLOAT16", List.of("FLOAT")), java.util.Map.entry("FLOAT", List.of("REAL")),
+			java.util.Map.entry("REAL", List.of("NUMBER")), java.util.Map.entry("KEYWORD", List.of("SYMBOL")),
+			java.util.Map.entry("BOOLEAN", List.of("SYMBOL")), java.util.Map.entry("NULL", List.of("SYMBOL", "LIST")),
+			java.util.Map.entry("CONS", List.of("LIST")), java.util.Map.entry("LIST", List.of("SEQUENCE")),
+			java.util.Map.entry("STRING", List.of("VECTOR")),
 			java.util.Map.entry("VECTOR", List.of("ARRAY", "SEQUENCE")),
 			java.util.Map.entry("SIMPLE-STRING", List.of("SIMPLE-ARRAY", "STRING")),
 			java.util.Map.entry("SIMPLE-VECTOR", List.of("SIMPLE-ARRAY", "VECTOR")),
@@ -32686,9 +32849,11 @@ public final class LispMacroExpander {
 	 * Collapses the type-name aliases the one runtime representation makes equal -- and
 	 * ONLY those. A collapse is symmetric, so a name belongs here only when it denotes
 	 * exactly the same set of values as its target: the four float names (one float
-	 * format), the character names (one character type), and the two {@code base-string}
-	 * spellings, which are "a string of {@code base-char}" and so name the same type as
-	 * {@code string}/{@code simple-string} while every character IS a base-char.
+	 * format -- not {@code bfloat16}, the EMPTY fifth, which is an edge in
+	 * {@link #SUBTYPEP_PARENTS}), the character names (one character type), and the two
+	 * {@code base-string} spellings, which are "a string of {@code base-char}" and so
+	 * name the same type as {@code string}/{@code simple-string} while every character IS
+	 * a base-char.
 	 *
 	 * <p>
 	 * {@code simple-string}/{@code simple-vector}/{@code simple-array} were here until
@@ -32701,7 +32866,7 @@ public final class LispMacroExpander {
 	 */
 	private static String canonicalSubtypeName(String plain) {
 		return switch (plain) {
-			case "SINGLE-FLOAT", "DOUBLE-FLOAT", "SHORT-FLOAT", "LONG-FLOAT", "BFLOAT16" -> "FLOAT";
+			case "SINGLE-FLOAT", "DOUBLE-FLOAT", "SHORT-FLOAT", "LONG-FLOAT" -> "FLOAT";
 			case "BASE-CHAR", "STANDARD-CHAR", "EXTENDED-CHAR" -> "CHARACTER";
 			case "BASE-STRING" -> "STRING";
 			case "SIMPLE-BASE-STRING" -> "SIMPLE-STRING";
@@ -35897,6 +36062,10 @@ public final class LispMacroExpander {
 						LispNames.MULTIPLE_VALUE_CALL, LispNames.NTH_VALUE, LispNames.VALUES_LIST,
 						LispNames.PARSE_INTEGER ->
 					true;
+				// handler-case's :no-error clause is a multiple-value consumer (.kb/
+				// multiple-values.md): the protected form's VALUES ride the spill,
+				// so the global must exist whenever a handler-case is reachable.
+				case LispNames.HANDLER_CASE -> true;
 				default -> false;
 			};
 		}

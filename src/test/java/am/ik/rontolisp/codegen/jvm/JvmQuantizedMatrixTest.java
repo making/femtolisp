@@ -248,6 +248,36 @@ class JvmQuantizedMatrixTest {
 		assertThat(both(program)).startsWith("#<quantized-matrix q8-0 (3 64)>\n204\nT\n");
 	}
 
+	// --- the row gather, on both backends ---------------------------------------------
+
+	@Test
+	void quantizedRowsGathersTheSameBlocksOnBothBackends() throws Exception {
+		String program = fixture(4, 64, "single-float") + """
+				(defparameter *g* (rontolisp:quantized-rows *m* '(3 1 3)))
+				(print *g*)
+				(print (list (array-dimensions *g*) (rontolisp:quantized-matrix-p *g*)))
+				(dotimes (j 64)
+				  (print (list (= (aref *g* 0 j) (aref *m* 3 j)) (= (aref *g* 1 j) (aref *m* 1 j))
+				               (= (aref *g* 2 j) (aref *m* 3 j)))))
+				(print (equalp (rontolisp:dequantize (rontolisp:quantized-rows *m* '(0 1 2 3)) 'single-float)
+				               (rontolisp:dequantize *m* 'single-float)))
+				(print (rontolisp:quantized-rows *m* '()))
+				(print (array-dimensions (rontolisp:quantized-rows (rontolisp:make-quantized-matrix 'q8-0 64) '(0 0))))
+				(print (vec:matvec *g* *x*))
+				(print (handler-case (rontolisp:quantized-rows *m* '(4)) (error (e) :out-of-bounds)))
+				(print (handler-case (rontolisp:quantized-rows *m* 0) (error (e) :not-a-list)))
+				(print (handler-case (rontolisp:quantized-rows *w* '(0)) (error (e) :not-a-matrix)))
+				""";
+		String out = both(program);
+		assertThat(out).startsWith("#<quantized-matrix q8-0 (3 64)>\n((3 64) T)\n");
+		assertThat(out.lines().filter(line -> line.equals("(T T T)")).count()).isEqualTo(64);
+		assertThat(out).contains("\nT\n#<quantized-matrix q8-0 (0 64)>\n(2 64)\n");
+		assertThat(out).endsWith(":OUT-OF-BOUNDS\n:NOT-A-LIST\n:NOT-A-MATRIX");
+		// The gathered matrix's GEMV is the source rows' GEMV, kernel or defun.
+		String rows = run(compile(program, true, false));
+		assertThat(rows).isEqualTo(out);
+	}
+
 	// --- the gate: a program that can build no matrix
 	// ------------------------------------
 

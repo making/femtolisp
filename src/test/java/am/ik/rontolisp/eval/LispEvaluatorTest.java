@@ -9847,6 +9847,32 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void handlerCaseNoErrorClauseReceivesAllValues() {
+		// :no-error is a multiple-value consumer: a (values ...) tail, a values-list,
+		// and a producing call all spread into the variable list. Missing values are
+		// nil and surplus values are dropped, as in multiple-value-bind.
+		assertThat(eval("(handler-case (values 1 2 3) (:no-error (a b c) (list a b c)))").print()).isEqualTo("(1 2 3)");
+		assertThat(eval("(handler-case (values 1 2) (:no-error (a b c) (list a b c)))").print()).isEqualTo("(1 2 NIL)");
+		assertThat(eval("(handler-case (values 1 2 3 4) (:no-error (a b) (list a b)))").print()).isEqualTo("(1 2)");
+		assertThat(eval("(handler-case (values) (:no-error (a) (list :none a)))").print()).isEqualTo("(:NONE NIL)");
+	}
+
+	@Test
+	void handlerCaseNoErrorClauseReceivesValuesFromValuesList() {
+		assertThat(eval("(handler-case (values-list (list 1 2 3)) (:no-error (a b c) (list a b c)))").print())
+			.isEqualTo("(1 2 3)");
+	}
+
+	@Test
+	void handlerCaseNoErrorClauseReceivesValuesFromProducerCall() {
+		// gethash is a syntactic multiple-value producer: a found key yields a second
+		// value of T. The :no-error clause binds (a b) so a is the value and b is T.
+		assertThat(eval(
+				"(let ((h (make-hash-table))) (setf (gethash 'k h) 99) (handler-case (gethash 'k h) (:no-error (a b) (list a b))))")
+			.print()).isEqualTo("(99 T)");
+	}
+
+	@Test
 	void handlerCaseValueWithoutClauses() {
 		assertThat(eval("(handler-case (+ 1 2) (error (e) :err))")).isEqualTo(new LispInteger(3));
 	}
@@ -15620,6 +15646,36 @@ class LispEvaluatorTest {
 				(list (princ-to-string (make-po-node :value 42))
 				      (format nil "~a|~s" (make-po-node :value 1) (make-po-node :value 2)))
 				""").print()).isEqualTo("(\"#<PO-NODE 42>\" \"#<PO-NODE 1>|#<PO-NODE 2>\")");
+	}
+
+	@Test
+	void printObjectMethodDefinedBelowItsFirstUse() {
+		// Todo 445: a print-object method defined BELOW its first use renders the
+		// built-in text for the earlier print and the method's text after the form
+		// runs -- the compile paths route through the generic from the start, so
+		// their dispatcher skips the not-yet-assigned body the same way.
+		assertThat(evalMulti("""
+				(defclass po-late () ())
+				(let ((o (make-instance 'po-late)))
+				  (list (princ-to-string o)
+				        (progn (defmethod print-object ((x po-late) s) (format s "#<LATE!>"))
+				               (princ-to-string o))))
+				""").print()).isEqualTo("(\"#<PO-LATE>\" \"#<LATE!>\")");
+	}
+
+	@Test
+	void nestedDefmethodCallBeforeItsFormFallsThroughToTheDefault() {
+		// Todo 445, the general shape: a call before the nested defmethod form runs
+		// answers the default, and after it the new method.
+		assertThat(evalMulti("""
+				(defclass nd-late () ())
+				(defgeneric nd-greet (x))
+				(defmethod nd-greet (x) "default")
+				(let ((o (make-instance 'nd-late)))
+				  (list (nd-greet o)
+				        (progn (defmethod nd-greet ((x nd-late)) "special")
+				               (nd-greet o))))
+				""").print()).isEqualTo("(\"default\" \"special\")");
 	}
 
 	@Test

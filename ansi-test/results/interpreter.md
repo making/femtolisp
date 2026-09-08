@@ -46,11 +46,11 @@ Suite: `ca06bd919661af162c67407c9d994e881870bdb3`
 | 202 | `The variable *UNIVERSE* is unbound` |
 | 156 | `X: there is no class named X` |
 | 101 | `UnsupportedOperationException: setf does not support place: X` |
-| 93 | `Function expects 1 argument, got 2` |
+| 92 | `Function expects 1 argument, got 2` |
 | 89 | `X expects 2 arguments, got 4` |
 | 80 | `The function FLOAT-RADIX is undefined` |
 | 80 | `The variable *NUMBERS* is unbound` |
-| 75 | `complex numbers are not supported (imaginary part X)` |
+| 76 | `complex numbers are not supported (imaginary part X)` |
 | 65 | `The variable *FLOATS* is unbound` |
 | 63 | `The function CLASS-PRECEDENCE-LIST-FOO is undefined` |
 | 62 | `X is a macro or special operator, not a function` |

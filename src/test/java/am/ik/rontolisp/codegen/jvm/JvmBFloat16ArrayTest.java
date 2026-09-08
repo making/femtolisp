@@ -209,6 +209,26 @@ class JvmBFloat16ArrayTest {
 	}
 
 	@Test
+	void theTypeLatticeAnswersALiteralAndAComputedPairAlike() throws Exception {
+		// bfloat16 is an EDGE below float in the subtypep lattice, not a fourth alias of
+		// it: the type is EMPTY, so the reverse direction is nil. A computed pair goes
+		// through the emitted %subtypep-ancestor-table%, whose universe is DERIVED from
+		// the edges; an alias reached it only through a hand-written list that did not
+		// name this one, so until 2026-09-08 a computed pair answered NIL on the JVM --
+		// against itself included -- while the literal fold said T.
+		assertAgreedText(
+				"(defun bfl-sub (a b) (subtypep (car (list a)) (car (list b))))"
+						+ " (print (list (list (subtypep 'bfloat16 'float) (subtypep 'bfloat16 'number)"
+						+ " (subtypep 'bfloat16 'bfloat16) (subtypep 'float 'bfloat16)"
+						+ " (subtypep 'single-float 'bfloat16) (subtypep 'double-float 'bfloat16))"
+						+ " (list (bfl-sub 'bfloat16 'float) (bfl-sub 'bfloat16 'number)"
+						+ " (bfl-sub 'bfloat16 'bfloat16) (bfl-sub 'float 'bfloat16)"
+						+ " (bfl-sub 'single-float 'bfloat16) (bfl-sub 'double-float 'bfloat16))"
+						+ " (list (typep 1.0 'bfloat16) (typep (car (list 1.0)) (car (list 'bfloat16))))))",
+				"((T T T NIL NIL NIL) (T T T NIL NIL NIL) (NIL NIL))");
+	}
+
+	@Test
 	void theThreeWidthsCoexistWithDistinctPrefixes() throws Exception {
 		assertAgreedText("(print (list #d(1.0) #f(1.0) #bf16(1.0)))", "(#d(1.0) #f(1.0) #bf16(1.0))");
 		assertAgreedText("(print (list (array-element-type #d(1.0)) (array-element-type #f(1.0))"
@@ -445,17 +465,101 @@ class JvmBFloat16ArrayTest {
 	}
 
 	@Test
-	void theBulkBitsPairDeclinesABf16ArrayWithTheInterpretersWords() {
-		String widen = "(rontolisp:widen-float-bits (make-array 2 :element-type '(unsigned-byte 16)) :bfloat16"
-				+ " (make-array 2 :element-type 'bfloat16))";
-		String narrow = "(rontolisp:narrow-float-bits #bf16(1.0 2.0) :bfloat16"
-				+ " (make-array 2 :element-type '(unsigned-byte 16)))";
-		assertThatThrownBy(() -> interpret(widen)).hasMessageContaining("does not yet write a bfloat16 destination");
-		assertThatThrownBy(() -> compileAndRun(widen)).rootCause()
-			.hasMessageContaining("does not yet write a bfloat16 destination");
-		assertThatThrownBy(() -> interpret(narrow)).hasMessageContaining("does not yet read a bfloat16 source");
-		assertThatThrownBy(() -> compileAndRun(narrow)).rootCause()
-			.hasMessageContaining("does not yet read a bfloat16 source");
+	void theBulkBitsPairCopiesEveryBf16PatternInBothDirections() throws Exception {
+		// :bfloat16 patterns into a #bf16 array and back out are pure COPIES -- the
+		// patterns already are this width's representation -- so the identity must hold
+		// over all 65536, NaN payloads and the 126 signalling ones included. Anything
+		// that routed the copy through a float or a double would lose exactly those.
+		assertAgreedText("""
+				(let* ((n 65536)
+				       (patterns (make-array n :element-type '(unsigned-byte 16)))
+				       (dst (make-array n :element-type 'bfloat16))
+				       (back (make-array n :element-type '(unsigned-byte 16)))
+				       (bad 0))
+				  (dotimes (i n) (setf (aref patterns i) i))
+				  (rontolisp:widen-float-bits patterns :bfloat16 dst)
+				  (rontolisp:narrow-float-bits dst :bfloat16 back)
+				  (print (dotimes (i n bad) (unless (= i (aref back i)) (incf bad)))))
+				""", "0");
+	}
+
+	@Test
+	void theBulkBitsPairConvertsF16AgainstTheRouteThroughAnF32Array() throws Exception {
+		// :float16 -> #bf16 is the only route a published F16 checkpoint has into the
+		// narrow width. The oracle is the route it replaces -- widen into #f, narrow to
+		// :bfloat16 -- which is already pinned against the scalar authority, so this
+		// says the direct arm did not grow a rounding of its own. All 65536 f16
+		// patterns.
+		assertAgreedText("""
+				(let* ((n 65536)
+				       (patterns (make-array n :element-type '(unsigned-byte 16)))
+				       (direct (make-array n :element-type 'bfloat16))
+				       (via (make-array n :element-type 'single-float))
+				       (dbits (make-array n :element-type '(unsigned-byte 16)))
+				       (vbits (make-array n :element-type '(unsigned-byte 16)))
+				       (bad 0))
+				  (dotimes (i n) (setf (aref patterns i) i))
+				  (rontolisp:widen-float-bits patterns :float16 direct)
+				  (rontolisp:widen-float-bits patterns :float16 via)
+				  (rontolisp:narrow-float-bits direct :bfloat16 dbits)
+				  (rontolisp:narrow-float-bits via :bfloat16 vbits)
+				  (print (dotimes (i n bad) (unless (= (aref dbits i) (aref vbits i)) (incf bad)))))
+				""", "0");
+		// And the other direction: a #bf16 SOURCE written out as :float16 patterns, over
+		// all 65536 bf16 patterns, against the same two-step through an #f array.
+		assertAgreedText("""
+				(let* ((n 65536)
+				       (patterns (make-array n :element-type '(unsigned-byte 16)))
+				       (src (make-array n :element-type 'bfloat16))
+				       (f32 (make-array n :element-type 'single-float))
+				       (direct (make-array n :element-type '(unsigned-byte 16)))
+				       (via (make-array n :element-type '(unsigned-byte 16)))
+				       (bad 0))
+				  (dotimes (i n) (setf (aref patterns i) i))
+				  (rontolisp:widen-float-bits patterns :bfloat16 src)
+				  (rontolisp:widen-float-bits patterns :bfloat16 f32)
+				  (rontolisp:narrow-float-bits src :float16 direct)
+				  (rontolisp:narrow-float-bits f32 :float16 via)
+				  (print (dotimes (i n bad) (unless (= (aref direct i) (aref via i)) (incf bad)))))
+				""", "0");
+	}
+
+	@Test
+	void theBulkBitsPairReadsTheBf16HeaderAtEveryShape() throws Exception {
+		// The two-slot header, in the one place that had no reason to know about it
+		// until now: a rank-2 destination, the :start offset checkpoint.lisp's chunked
+		// read uses, and a dimension past 32767 -- the regression this class exists for.
+		assertAgreedText("""
+				(let ((bits (make-array 6 :element-type '(unsigned-byte 16)))
+				      (dst (make-array '(2 3) :element-type 'bfloat16))
+				      (back (make-array 6 :element-type '(unsigned-byte 16))))
+				  (dotimes (i 6) (setf (aref bits i) (rontolisp:bfloat16-bits (+ i 1.0))))
+				  (rontolisp:widen-float-bits bits :bfloat16 dst)
+				  (rontolisp:narrow-float-bits dst :bfloat16 back)
+				  (print dst)
+				  (print (aref back 5)))
+				""", "#bf16((1.0 2.0 3.0) (4.0 5.0 6.0))\n" + BFloat16.bits(6.0));
+		assertAgreedText("""
+				(let ((bits (make-array 2 :element-type '(unsigned-byte 16)))
+				      (dst (make-array 5 :element-type 'bfloat16)))
+				  (setf (aref bits 0) (rontolisp:bfloat16-bits 1.5))
+				  (setf (aref bits 1) (rontolisp:bfloat16-bits 2.5))
+				  (rontolisp:widen-float-bits bits :bfloat16 dst :start 2)
+				  (print dst))
+				""", "#bf16(0.0 0.0 1.5 2.5 0.0)");
+		assertAgreedText("""
+				(let* ((n 40000)
+				       (bits (make-array n :element-type '(unsigned-byte 16)))
+				       (dst (make-array n :element-type 'bfloat16))
+				       (back (make-array n :element-type '(unsigned-byte 16))))
+				  (dotimes (i n) (setf (aref bits i) (rontolisp:bfloat16-bits (* i 0.5))))
+				  (rontolisp:widen-float-bits bits :bfloat16 dst)
+				  (rontolisp:narrow-float-bits dst :bfloat16 back)
+				  (print (list (aref dst 1) (aref dst 39999) (= (aref back 39999) (aref bits 39999)))))
+				""", "(0.5 19968.0 T)");
+		// 19999.5 is not representable at this width -- the ulp on [16384, 32768) is 128
+		// -- so the pattern stored is 19968.0's. The point is the INDEX: the last
+		// element of a 40000-long vector, whose dimension needs both header slots.
 	}
 
 	// --- vec: carries the width; --simd declines to the defun --------------------

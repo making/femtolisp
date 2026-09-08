@@ -381,6 +381,7 @@ class WasmLispCompilerTest {
 				(print (f #f((1.0 2.0)) #f(1.0 1.0)))
 				(print (rontolisp:quantized-matrix-p 3))
 				(defun g (dims) (rontolisp:make-quantized-matrix 'q8-0 dims))
+				(defun h (m) (rontolisp:quantized-rows m '(0)))
 				(print (rontolisp::%quantized-quant 1 2 3))
 				""")).isNotEmpty();
 	}

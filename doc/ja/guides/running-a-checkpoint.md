@@ -170,7 +170,11 @@ safetensors のディレクトリからなら、`tokenizer.json` 自身の `voca
 [`rontolisp:quantize`](../reference/functions/rontolisp-quantize.md) のブロックを
 そのまま置き、自身のバイト列を 1 回の転送で読み、`:element-type` は適用されません。
 GGUF のみ、かつインタプリタと JVM のみです。WASM のバックエンドはそのテンソルで
-シグナルします。
+シグナルします。読み込んだあとで**分割**が必要なテンソル -- 融合された
+`query | gate` の射影など -- は
+[`rontolisp:quantized-rows`](../reference/functions/rontolisp-quantized-rows.md)
+で分割します。指定した行をブロックのまま集めて新しい行列にするので、分割後も
+量子化されたままで、値が展開されることはありません。
 
 **それ以外の量子化型は、その本体を要求されたときに名指しで拒否され、それより早くは
 拒否されません。**Q4_K_M のチェックポイントでも、開くこと・テンソルディレクトリ全体

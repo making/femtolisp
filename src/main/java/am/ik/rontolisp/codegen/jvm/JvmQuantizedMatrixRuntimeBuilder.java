@@ -97,6 +97,8 @@ final class JvmQuantizedMatrixRuntimeBuilder {
 
 	static final String DEQUANTIZE = "_qmDequantize";
 
+	static final String ROWS = "_qmRows";
+
 	static final String UNARY_DESC = "(" + OBJ + ")" + OBJ;
 
 	static final String BINARY_DESC = "(" + OBJ + OBJ + ")" + OBJ;
@@ -133,7 +135,7 @@ final class JvmQuantizedMatrixRuntimeBuilder {
 			ClassConstant sbClass, MethodrefConstant sbInit, MethodrefConstant sbAppendStr,
 			MethodrefConstant sbAppendInt, MethodrefConstant sbToString, MethodrefConstant stringLastIndexOf,
 			MethodrefConstant stringSubstring, MethodrefConstant stringEquals, MethodrefConstant bf16Value,
-			MethodrefConstant bf16Bits) {
+			MethodrefConstant bf16Bits, MethodrefConstant systemArraycopy) {
 
 	}
 
@@ -182,7 +184,9 @@ final class JvmQuantizedMatrixRuntimeBuilder {
 						cp.addNameAndType(cp.addUtf8("equals"), cp.addUtf8("(Ljava/lang/Object;)Z"))),
 				self(cp, selfClass, JvmFloatArrayRuntimeBuilder.BF16_VALUE,
 						JvmFloatArrayRuntimeBuilder.BF16_VALUE_DESC),
-				self(cp, selfClass, JvmFloatArrayRuntimeBuilder.BF16_BITS, JvmFloatArrayRuntimeBuilder.BF16_BITS_DESC));
+				self(cp, selfClass, JvmFloatArrayRuntimeBuilder.BF16_BITS, JvmFloatArrayRuntimeBuilder.BF16_BITS_DESC),
+				cp.addMethodref(cp.addClass(cp.addUtf8("java/lang/System")), cp.addNameAndType(cp.addUtf8("arraycopy"),
+						cp.addUtf8("(Ljava/lang/Object;ILjava/lang/Object;II)V"))));
 		List<ArrayMethod> methods = new ArrayList<>();
 		methods.add(buildInt(r));
 		methods.add(buildPutInt(r));
@@ -204,6 +208,7 @@ final class JvmQuantizedMatrixRuntimeBuilder {
 		methods.add(buildMake(r));
 		methods.add(buildQuantize(r));
 		methods.add(buildDequantize(r));
+		methods.add(buildRows(r));
 		return methods;
 	}
 
@@ -1362,6 +1367,125 @@ final class JvmQuantizedMatrixRuntimeBuilder {
 		}
 		throwMessage(a, r, op + ": element-type must be single-float, double-float or bfloat16");
 		return method(r, DEQUANTIZE, BINARY_DESC, 8, 11, a);
+	}
+
+	// _qmRows(m, rows): a fresh rank-2 matrix gathering the rows named by the cons list
+	// of Longs, one array copy a row -- the source's own blocks. Locals: 0=m, 1=rows,
+	// 2=a, 3=srcRows, 4=cols, 5=rowBytes, 6=srcOff, 7=count, 8=cur, 9=out, 10=i, 11=idx.
+	private static ArrayMethod buildRows(Refs r) {
+		String op = PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.QUANTIZED_ROWS);
+		JvmAsm a = new JvmAsm();
+		int isMatrix = a.label();
+		a.aload(0);
+		a.instanceOf(r.byteArrayClass());
+		a.branch(Opcode.IFNE, isMatrix);
+		throwMessage(a, r, op + ": expects a quantized matrix");
+		a.bind(isMatrix);
+		a.aload(0);
+		a.checkcast(r.byteArrayClass());
+		a.astore(2);
+		emitRowsCols(a, r, 2, 3, 4);
+		// rowBytes = cols / 32 * 34; srcOff = 8 + 4 * rank (the destination's own header
+		// is 16 bytes, a gathered matrix always being rank 2)
+		a.iload(4);
+		a.iconst(BLOCK);
+		a.op(Opcode.IDIV);
+		a.iconst(BLOCK_BYTES);
+		a.op(Opcode.IMUL);
+		a.istore(5);
+		headerInt(a, r, 2, 4);
+		a.iconst(4);
+		a.op(Opcode.IMUL);
+		a.iconst(8);
+		a.op(Opcode.IADD);
+		a.istore(6);
+		// a cons list is Object[]{car, cdr} terminated by null; nothing else is one
+		int listOk = a.label();
+		a.aload(1);
+		a.branch(Opcode.IFNULL, listOk);
+		a.aload(1);
+		a.instanceOf(r.objectArrayClass());
+		a.branch(Opcode.IFNE, listOk);
+		throwMessage(a, r, op + ": expects a list of row indexes");
+		a.bind(listOk);
+		// count the indexes, then allocate the destination
+		a.iconst(0);
+		a.istore(7);
+		a.aload(1);
+		a.astore(8);
+		int countLoop = a.label();
+		int countDone = a.label();
+		a.bind(countLoop);
+		a.aload(8);
+		a.instanceOf(r.objectArrayClass());
+		a.branch(Opcode.IFEQ, countDone);
+		a.iinc(7, 1);
+		a.aload(8);
+		a.checkcast(r.objectArrayClass());
+		a.iconst(1);
+		a.aaload();
+		a.astore(8);
+		a.branch(Opcode.GOTO, countLoop);
+		a.bind(countDone);
+		a.ldcString(r.cp().addString(op));
+		a.iconst(2);
+		a.iload(7);
+		a.iload(4);
+		a.invokestatic(r.qmAlloc());
+		a.astore(9);
+		// row idx of the source over row i of the destination
+		a.iconst(0);
+		a.istore(10);
+		a.aload(1);
+		a.astore(8);
+		int gatherLoop = a.label();
+		int gatherDone = a.label();
+		int bad = a.label();
+		int ok = a.label();
+		a.bind(gatherLoop);
+		a.aload(8);
+		a.instanceOf(r.objectArrayClass());
+		a.branch(Opcode.IFEQ, gatherDone);
+		a.aload(8);
+		a.checkcast(r.objectArrayClass());
+		a.iconst(0);
+		a.aaload();
+		a.checkcast(r.longClass());
+		a.invokevirtual(r.longIntValue());
+		a.istore(11);
+		a.iload(11);
+		a.branch(Opcode.IFLT, bad);
+		a.iload(11);
+		a.iload(3);
+		a.branch(Opcode.IF_ICMPLT, ok);
+		a.bind(bad);
+		throwMessage(a, r, op + ": row index out of bounds");
+		a.bind(ok);
+		a.aload(2);
+		a.iload(6);
+		a.iload(11);
+		a.iload(5);
+		a.op(Opcode.IMUL);
+		a.op(Opcode.IADD);
+		a.aload(9);
+		a.iconst(16);
+		a.iload(10);
+		a.iload(5);
+		a.op(Opcode.IMUL);
+		a.op(Opcode.IADD);
+		a.iload(5);
+		a.invokestatic(r.systemArraycopy());
+		a.iinc(10, 1);
+		a.aload(8);
+		a.checkcast(r.objectArrayClass());
+		a.iconst(1);
+		a.aaload();
+		a.astore(8);
+		a.branch(Opcode.GOTO, gatherLoop);
+		a.bind(gatherDone);
+		a.aload(9);
+		a.areturn();
+		return method(r, ROWS, BINARY_DESC, 8, 12, a);
 	}
 
 }

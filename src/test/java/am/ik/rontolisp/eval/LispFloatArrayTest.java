@@ -296,6 +296,16 @@ class LispFloatArrayTest {
 		assertThat(eval("(typep 1.0 'bfloat16)")).isEqualTo(LispNil.INSTANCE);
 		assertThat(eval("(typep 1.0 'short-float)")).isEqualTo(LispTrue.INSTANCE);
 		assertThat(eval("(subtypep 'bfloat16 'float)")).isEqualTo(LispTrue.INSTANCE);
+		assertThat(eval("(subtypep 'bfloat16 'real)")).isEqualTo(LispTrue.INSTANCE);
+		assertThat(eval("(subtypep 'bfloat16 'bfloat16)")).isEqualTo(LispTrue.INSTANCE);
+		// An EDGE below float, never one of the collapsed float aliases: a collapse
+		// claims
+		// the same value set in both directions, and this type's set is empty. Collapsed,
+		// as it was from 2026-09-03 to 2026-09-08, the reverse direction answered T
+		// against the typep above.
+		assertThat(eval("(subtypep 'float 'bfloat16)")).isEqualTo(LispNil.INSTANCE);
+		assertThat(eval("(subtypep 'single-float 'bfloat16)")).isEqualTo(LispNil.INSTANCE);
+		assertThat(eval("(subtypep 'double-float 'bfloat16)")).isEqualTo(LispNil.INSTANCE);
 		assertThat(eval("(typep #bf16(1.0) '(array bfloat16))")).isEqualTo(LispTrue.INSTANCE);
 		assertThat(eval("(typep #bf16(1.0) '(simple-array bfloat16 (1)))")).isEqualTo(LispTrue.INSTANCE);
 	}

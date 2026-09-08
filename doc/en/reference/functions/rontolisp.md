@@ -18,6 +18,7 @@ package system. Each name below links to its own page.
 | `rontolisp:quantize` | `(rontolisp:quantize w 'q8-0)` | a packed float matrix as a block-quantized weight matrix (ggml's `Q8_0`: 32-element blocks, one binary16 scale and 32 int8 quants), the operand `vec:matvec` runs its integer-dot GEMV over; interpreter and JVM |
 | `rontolisp:dequantize` | `(rontolisp:dequantize m 'single-float)` | a quantized matrix expanded into a fresh packed float array of the element type named |
 | `rontolisp:make-quantized-matrix` | `(rontolisp:make-quantized-matrix 'q8-0 '(rows cols))` | an all-zero quantized matrix, the destination `read-sequence` fills with a Q8_0 tensor's bytes |
+| `rontolisp:quantized-rows` | `(rontolisp:quantized-rows m '(3 1))` | a fresh quantized matrix of the rows named, block for block -- an array copy a row, no dequantizing; this type's `subseq` and `linalg:take-rows` |
 | `rontolisp:quantized-matrix-p` | `(rontolisp:quantized-matrix-p m)` | `t` if the value is a quantized matrix (also `(typep m 'rontolisp:quantized-matrix)`) |
 | `rontolisp:octets-to-string` | `(rontolisp:octets-to-string #8@(72 105))` | decode a packed `(unsigned-byte 8)` vector as the UTF-8 text its bytes spell; total and lenient |
 | `rontolisp:string-to-octets` | `(rontolisp:string-to-octets "Hi")` | encode a string as UTF-8, as a packed `(unsigned-byte 8)` vector |

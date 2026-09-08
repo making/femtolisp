@@ -123,7 +123,24 @@ sort in `computeCpl`; inconsistent local orders are an `IllegalArgumentException
   collecting classes/methods, splices defuns in place, and inserts each generic's dispatcher
   at its defgeneric's position (or the first defmethod's) AFTER the walk, so descendant and
   method sets are complete regardless of definition order. Non-top-level
-  defclass/defgeneric/defmethod -> "only supported as a top-level form".
+  defclass/defgeneric/defmethod -> "only supported as a top-level form", with ONE
+  exception: a `defmethod` in a top-level `let`/`let*` body (the closure-over-let idiom)
+  is registered statically by `expandLetNestedDefmethods`/`rewriteNestedDefmethods`
+  while its body defun stays in the let (a global-closure `setq`).
+- **A nested method's body exists only once its defmethod form runs, so every
+  dispatcher branch calling one is guarded on the assignment** (`(and (not (null
+  %<generic>--m<i>)) <specializer-test>)`, todo 445; `ClosRegistry`
+  `nestedMethodFunctions`, marked only by the two nested expanders — the interpreter
+  never marks, since it registers the method exactly when the form runs). Until the
+  form runs the branch is skipped and the call falls through to the default or to
+  `no-applicable-method`, which is what the interpreter answers for the same program.
+  The guard is a plain variable read (an unassigned global is Java null on the JVM,
+  a null reference on WASM), so it costs no eval runtime and no designator probe. A
+  SYNTHESIZED system default (`print-object`, the init protocol) is position-free and
+  is hoisted to top level instead of guarded, so the fall-through itself never reads
+  an unassigned global. Combined-method branches are guarded conservatively: the
+  whole branch is skipped when ANY nested participant is unassigned, even when the
+  remaining ones could still run (residual).
 - **`make-instance`/`slot-value`** are `CL_MACROS`, expanding at the three dispatch sites
   (`evalCons` + both ExprCompilers); a literal quoted name gets the static expansion.
   `expandSetf` has a `closRegistry` parameter with a SLOT_VALUE place case. `#'make-instance`
@@ -436,6 +453,18 @@ below): with none, every printing operator compiles exactly as before.
   print-object` evaluated AFTER the first print take effect. **Still not walked (trigger)**: a
   value in a STRUCTURE or class SLOT, a hash table, an array of rank != 1. **Cost**: O(n^2) in
   string concatenation, like `%print-cased`'s.
+- **A `print-object` method defined BELOW its first use renders the built-in text for
+  the earlier print on all four backends** (todo 445; pinned by the per-backend
+  `*PrintObjectMethodDefinedBelowItsFirstUse` tests and
+  `clos-print-object-method-defined-below-its-first-use-445`). The compile paths
+  route through the generic from the very first print (whole-program registry) while
+  the interpreter has not seen the method yet — the two cannot agree on the first
+  print by construction, so the compile path answers what the interpreter (and CL)
+  answers for this program: the branch guard skips the not-yet-assigned body and the
+  hoisted system default renders the raw text. The alternative (no-applicable-method)
+  was rejected because the repro must PRINT, and a raw `NullPointerException` /
+  wasm cast-failure trap — the pre-fix behavior — is a condition no program can act
+  on. The same guard covers every generic, not only the printer.
 - `print-unreadable-object`'s `:type t` prints the type NAME with the `%struct-`/`%class-` tag
   prefix stripped INLINE (`typeNameOf`), not via the prelude's `type-of`: this expansion runs
   inside the compilers, after the prelude pre-pass. The separating space is written only when a
@@ -617,7 +646,8 @@ where nested `defmethod`s carry the class METAOBJECT spliced as a literal specia
   resource-config): a defmethod-containing definition answers a do-nothing function, anything
   else signals — so a method-defining form built from RUNTIME data is silently absorbed, the one
   soft edge. A method under a false definition-time guard still registers in the dispatcher;
-  calling it fails on the unassigned body global.
+  calling it falls through to the default or to no-applicable-method (the nested-branch
+  guard, todo 445) -- matching the interpreter, where the defmethod never runs.
 
 ### Registry-growth lesson
 The RUNTIME-slot-name dispatch used to be inlined per call site and grows with every layout
@@ -675,7 +705,9 @@ computed `change-class`, `withSlots` write-only + nested capture, writer / class
 `defclassMetaclassEnsureClassUsingClassAndInitargMunging` (sharing
 `MopWideningFixture.MITO_SHAPE_SOURCE`) /
 `defclassMetaclassSharedInitializeBeforeRunsBeforeInitargFilling` /
-`slotExistsPAnswersDeclaredSlotsRegardlessOfBoundness`. Plus `ShadowedBuiltinsTest`,
+`slotExistsPAnswersDeclaredSlotsRegardlessOfBoundness`,
+`*PrintObjectMethodDefinedBelowItsFirstUse` /
+`*NestedDefmethodCallBeforeItsFormFallsThrough*` (todo 445). Plus `ShadowedBuiltinsTest`,
 `FastIoCircularStreamsE2eTest`, `JzonE2eTest`, the PostmodernE2eTest DAO leg.
 
 ci-spec: `clos-defgeneric-defmethod-eql-dispatch`,
@@ -683,6 +715,7 @@ ci-spec: `clos-defgeneric-defmethod-eql-dispatch`,
 `clos-multiple-inheritance-cpl-slots-and-dispatch`, `clos-setf-methods-and-setf-generic`,
 `clos-computed-change-class-442`, `clos-reinitialize-442`,
 `clos-slot-options-and-metaobject-types-442`, `clos-defmethod-eql-specializer-over-a-constant`,
+`clos-print-object-method-defined-below-its-first-use-445`,
 `package-defmethod-specializer`, `defmethod-on-a-builtin-name-keeps-the-builtin`,
 `defgeneric-short-form-method-combination`, `find-class-metaobject-substrate`,
 `defclass-metaclass-protocol`, `mop-widening-for-mito`,

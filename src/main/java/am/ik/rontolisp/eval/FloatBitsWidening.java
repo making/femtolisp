@@ -36,8 +36,10 @@ import am.ik.rontolisp.LispVal;
  * The destination's/source's concrete packed-float width is dispatched with an EXHAUSTIVE
  * {@code switch} over the sealed {@link LispFloatArray} permits, not an
  * {@code instanceof LispSingleFloatArray} check with "anything else is double-float" --
- * so a third permit (a future {@code #bf16} array, {@code .todo/484}) fails to COMPILE
- * here instead of silently widening into the wrong width.
+ * so a FOURTH permit would fail to COMPILE here instead of silently widening into the
+ * wrong width. All three are served; the {@code #bf16} arms landed last, and the two that
+ * meet {@code :bfloat16} patterns are pure copies of the stored patterns, the only arms
+ * in this file with no conversion in them at all.
  */
 final class FloatBitsWidening {
 
@@ -98,28 +100,45 @@ final class FloatBitsWidening {
 					}
 				}
 			}
-			// A bfloat16 destination is a TEMPORARY decline, not an impossibility: from
-			// :bfloat16 patterns it is a straight copy and from :float16 one conversion,
-			// which is a capability to be added deliberately rather than a side effect
-			// of the width existing.
-			case LispBFloat16Array ignored ->
-				throw new LispEvalException(fnName + ": does not yet write a bfloat16 destination");
+			case LispBFloat16Array b -> {
+				short[] out = (short[]) FloatArrayAccessHook.written(b.storage());
+				if (float16) {
+					// The only route a published F16 checkpoint has into the narrow
+					// width. ONE rounding: the f16 pattern's float is exact (binary16 is
+					// a subset of binary32), so the narrow is the whole conversion, and
+					// it is BFloat16.bits(float) -- the authority, picked over the
+					// double overload by exact type, so no float crosses a double.
+					// Widening into #f and narrowing back answers the same patterns and
+					// allocates the f32 array this width exists to avoid.
+					for (int i = 0; i < n; i++) {
+						out[start + i] = (short) BFloat16.bits(Float.float16ToFloat((short) bitsData[i]));
+					}
+				}
+				else {
+					// A straight copy: the patterns ARE this width's representation, so
+					// there is no conversion and nothing a NaN can lose -- the same
+					// byte-for-byte identity read-sequence already has at this width.
+					for (int i = 0; i < n; i++) {
+						out[start + i] = (short) bitsData[i];
+					}
+				}
+			}
 		}
 		return dst;
 	}
 
 	/**
 	 * {@code (rontolisp:narrow-float-bits src format dst &key (start 0))}: the inverse of
-	 * {@link #widen}. {@code :bfloat16} narrowing is the same round-to-nearest-even
-	 * {@link am.ik.rontolisp.BFloat16} ({@code .todo/487}'s single authority for the
-	 * conversion, {@code .kb/bfloat16.md}) uses, but the two array widths reach it
-	 * differently. A {@code double[]} element calls {@link BFloat16#bits(double)}
-	 * directly -- a genuine double, its own careful NaN handling is exact. A
-	 * {@code float[]} element does NOT: {@code bits(double)}'s parameter would make Java
-	 * auto-widen the float first (an implicit f2d), and f2d alone quiets a signalling NaN
-	 * as often as a widen-then-narrow roundtrip does (126/65536, measured both
-	 * directions) -- so a float source runs {@link #bfloat16BitsOfFloat}, a copy of the
-	 * same rounding operating on the float's raw bits with no double ever created.
+	 * {@link #widen}. {@code :bfloat16} narrowing calls {@link am.ik.rontolisp.BFloat16},
+	 * the single authority for the conversion ({@code .kb/bfloat16.md}), directly for
+	 * BOTH array widths -- host Java, so there is no reason to copy it. A
+	 * {@code double[]} element calls {@link BFloat16#bits(double)}; a {@code float[]}
+	 * element calls {@link BFloat16#bits(float)}, which Java's overload resolution picks
+	 * over the {@code double} arm without any implicit widening (an exact-type match is
+	 * always more specific), so no {@code float} ever crosses a {@code double} on its way
+	 * to the authority's own NaN handling. Until {@code .todo/746}'s census, this arm ran
+	 * a private copy of {@code bits(float)}'s own arithmetic instead of calling it, on
+	 * the (by-then stale) belief that calling {@code bits} here would auto-widen.
 	 * @param fnName the operator name, for error messages
 	 * @param args the argument list
 	 * @return {@code dst}
@@ -148,16 +167,11 @@ final class FloatBitsWidening {
 					}
 				}
 				else {
-					// NOT BFloat16.bits(in[i]): that parameter is a double, so Java auto-
-					// widens the float argument first (an implicit f2d) -- measured (both
-					// directions, exhaustively): f2d alone quiets a signalling NaN
-					// exactly
-					// as often as the d2f roundtrip does (126/65536), so bits() would
-					// already be looking at a quieted value by the time it runs its own
-					// careful double-domain NaN math. bfloat16BitsOfFloat operates on the
-					// float's raw bits directly -- no double ever created.
+					// BFloat16.bits(in[i]): in[i] is a float, and bits(float) exists, so
+					// overload resolution picks it -- no implicit f2d widening, no
+					// private copy of its arithmetic.
 					for (int i = 0; i < n; i++) {
-						out[start + i] = bfloat16BitsOfFloat(in[i]);
+						out[start + i] = BFloat16.bits(in[i]);
 					}
 				}
 			}
@@ -177,38 +191,28 @@ final class FloatBitsWidening {
 					}
 				}
 			}
-			// A bfloat16 SOURCE is the same temporary decline as the destination above:
-			// to :bfloat16 patterns it is a straight copy, to :float16 one conversion.
-			case LispBFloat16Array ignored ->
-				throw new LispEvalException(fnName + ": does not yet read a bfloat16 source");
+			case LispBFloat16Array b -> {
+				short[] in = b.data();
+				if (float16) {
+					// bf16 -> f16 in one step: the widen is the exact shift (NEVER
+					// BFloat16.value, which only answers a double -- see widen above),
+					// and Float.floatToFloat16 is the same narrowing the single-float
+					// arm runs, so this answers what widening into #f and narrowing
+					// would, without the f32 array in between.
+					for (int i = 0; i < n; i++) {
+						out[start + i] = Float.floatToFloat16(Float.intBitsToFloat((in[i] & 0xFFFF) << 16)) & 0xFFFFL;
+					}
+				}
+				else {
+					// The copy in the other direction: the stored patterns are already
+					// what a :bfloat16 bits vector holds.
+					for (int i = 0; i < n; i++) {
+						out[start + i] = in[i] & 0xFFFFL;
+					}
+				}
+			}
 		}
 		return dst;
-	}
-
-	/**
-	 * The bf16 round-to-nearest-even narrow of a float, operating on its raw bits with no
-	 * {@code double} ever created (see the call site above for why that matters for NaN).
-	 * NaN is special-cased exactly like {@link am.ik.rontolisp.BFloat16#bits(double)}'s
-	 * own NaN branch, adapted to a 23-bit float mantissa instead of a 52-bit double one
-	 * (so its {@code >>> 45} becomes {@code >>> 16}): the payload's top seven bits are
-	 * carried across AS-IS, forced nonzero only when they were already all zero (which
-	 * would otherwise read back as infinity, not NaN). A plain {@code bits | 0x0040} --
-	 * this method's first version -- forces the quiet bit unconditionally, which quiets
-	 * EVERY signalling NaN exactly as often as the double detour it was written to avoid
-	 * (126/65536, measured): trading one 126-pattern gap for a different one, not closing
-	 * it.
-	 * @param f the value to narrow
-	 * @return the bf16 bit pattern, unsigned in {@code [0, 65535]}
-	 */
-	private static long bfloat16BitsOfFloat(float f) {
-		int bits = Float.floatToRawIntBits(f);
-		boolean isNaN = ((bits >>> 23) & 0xff) == 0xff && (bits & 0x7fffff) != 0;
-		if (isNaN) {
-			int payload = (bits >>> 16) & 0x7f;
-			return (((bits >>> 16) & 0x8000) | 0x7f80 | (payload | ((payload - 1) >>> 31))) & 0xFFFFL;
-		}
-		int rounded = bits + 0x7fff + ((bits >>> 16) & 1);
-		return (rounded >>> 16) & 0xFFFFL;
 	}
 
 	private static boolean isFloat16Format(String fnName, LispVal formatArg) {

@@ -18,6 +18,7 @@
 | `rontolisp:quantize` | `(rontolisp:quantize w 'q8-0)` | パックされた浮動小数点行列をブロック量子化した重み行列に（ggml の `Q8_0`。32 要素ブロックごとに binary16 のスケールと int8 の量子 32 個）。`vec:matvec` が整数内積 GEMV を走らせる被演算子。インタプリタと JVM |
 | `rontolisp:dequantize` | `(rontolisp:dequantize m 'single-float)` | 量子化行列を、指定した要素型の新しいパック浮動小数点配列に展開する |
 | `rontolisp:make-quantized-matrix` | `(rontolisp:make-quantized-matrix 'q8-0 '(rows cols))` | 全要素ゼロの量子化行列。`read-sequence` が Q8_0 テンソルのバイト列で埋める宛先 |
+| `rontolisp:quantized-rows` | `(rontolisp:quantized-rows m '(3 1))` | 指定した行だけをブロックごと集めた新しい量子化行列。1 行につき配列コピー 1 回で、逆量子化はしない。この型の `subseq` かつ `linalg:take-rows` |
 | `rontolisp:quantized-matrix-p` | `(rontolisp:quantized-matrix-p m)` | 値が量子化行列なら `t`（`(typep m 'rontolisp:quantized-matrix)` でも可） |
 | `rontolisp:octets-to-string` | `(rontolisp:octets-to-string #8@(72 105))` | packed な `(unsigned-byte 8)` ベクタをデコードし、そのバイト列が表す UTF-8 テキストを返す。全域的かつ寛容 |
 | `rontolisp:string-to-octets` | `(rontolisp:string-to-octets "Hi")` | 文字列を UTF-8 としてエンコードし、packed な `(unsigned-byte 8)` ベクタとして返す |

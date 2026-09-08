@@ -125,6 +125,14 @@ form may be evaluated several times, so callers bind a temp (`__check-type` / `_
   single-float lands, `canonicalSubtypeName` must stop collapsing AND the lattice must gain the
   real edges in the SAME pass**, or every library probing the float lattice silently takes the
   wrong branch. `subtypep` returns ONE value here; `deftype` is a parsed no-op in this path.
+- **`bfloat16` is an EDGE below `FLOAT` (`SUBTYPEP_PARENTS`), never a fifth alias**, because its
+  set is EMPTY -- no scalar has the type, the width lives in array storage (`.kb/bfloat16.md`) --
+  so the symmetric claim is false. It was an alias from 2026-09-03 to 2026-09-08 and that cost
+  twice: `(subtypep 'single-float 'bfloat16)` answered `T` against `(typep 1.0 'bfloat16)`'s `NIL`,
+  and a COMPUTED pair on the compile paths answered `NIL` against everything, itself included,
+  because `subtypepUniverse` derives the edge names from the table and lists the alias names BY
+  HAND. **An edge is in the runtime universe by construction; an alias is only as present as that
+  list.** Pins: `LispFloatArrayTest`, `JvmBFloat16ArrayTest`, ci-spec `bfloat16-type-lattice`.
 
 ## The array type lattice: type-of BUILDS the compound specifier
 **`type-of` answers an array's COMPOUND specifier and `makeTypeTest` takes the same one back -- one

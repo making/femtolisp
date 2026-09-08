@@ -681,8 +681,9 @@ the clock -- and the model loads in 1.3 s against 2.1. What that run also found:
 `examples/llm`'s `split-gated-q` (Qwen3.5's `attn_q` is `query | gate` per head) rebuilt the halves
 with `make-array` at the source's element type, which for a quantized source is a GENERAL array, so
 every `wq` / `gate` GEMV of the Q8_0 file ran the boxed defun on both arms (5.6 tok/s at `--simd`,
-2-4 under the flag); it now splits the blocks by byte span (`split-gated-q-blocks`), and the CPU arm
-reads 9.7 tok/s. A row slice of a quantized matrix without a scratch file is `.todo/732`.
+2-4 under the flag); it now gathers the blocks of each half's rows (`split-gated-q-blocks`, one
+`rontolisp:quantized-rows` a half since `.todo/732`; a byte copy through a scratch file
+before it), and the CPU arm reads 9.7 tok/s.
 
 **What the decode step waits on once the GEMV is on the device** (2026-09-06, `.todo/718`; GB10,
 JVM class output, Qwen3.5-0.8B from the BF16 GGUF at `-w bf16`; `nsys` per forward pass and JFR per

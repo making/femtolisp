@@ -13,11 +13,21 @@ import am.ik.rontolisp.codegen.jvm.JvmArrayRuntimeBuilder.ArrayMethod;
  * The JVM-compiled arm of {@code rontolisp:widen-float-bits} / {@code
  * rontolisp:narrow-float-bits} (.todo/671): two hand-assembled bytecode helpers,
  * {@code _widenFloatBits}/{@code _narrowFloatBits}, that loop over the same bare
- * {@code double[]}/{@code float[]} (with a {@code [rank, dims..., data...]} header,
- * {@link JvmFloatArrayRuntimeBuilder}) and {@code long[]} (with a {@code [width, e0,
- * ...]} header, {@link JvmIntArrayRuntimeBuilder}) backing every other packed-array
- * helper uses -- so a widened/narrowed tensor is a normal packed array to every OTHER
- * helper afterward, and no boxed element ever exists.
+ * {@code double[]}/{@code float[]}/{@code short[]} (with a
+ * {@code [rank, dims..., data...]} header, {@link JvmFloatArrayRuntimeBuilder}; the
+ * header's shape is per width and comes from {@link JvmPackedFloatWidth} alone, never
+ * spelled here) and {@code long[]} (with a {@code [width, e0, ...]} header,
+ * {@link JvmIntArrayRuntimeBuilder}) backing every other packed-array helper uses -- so a
+ * widened/narrowed tensor is a normal packed array to every OTHER helper afterward, and
+ * no boxed element ever exists.
+ *
+ * <p>
+ * All three float widths are served in both directions. The {@code short[]} arms carry
+ * PATTERNS rather than values: at format {@code :bfloat16} they are straight copies (the
+ * bits vector already holds this width's representation), and at {@code :float16} they
+ * are one conversion each -- through {@link #emitBf16Narrow} on the way in, through the
+ * exact shift-widen plus {@code Float.floatToFloat16} on the way out, never through a
+ * {@code double}.
  *
  * <p>
  * {@code float16-bits}/{@code bits-float16} (the scalar pair) need no helper here --
@@ -52,24 +62,18 @@ final class JvmFloat16RuntimeBuilder {
 	/**
 	 * Builds {@code _widenFloatBits}/{@code _narrowFloatBits}.
 	 * @param cp the constant pool
-	 * @param objectClass the {@code java/lang/Object} class constant
-	 * @param selfClass the generated program class (for the self-referencing
-	 * {@code _fvLength} call {@code _narrowFloatBits} makes)
 	 * @return the two helper methods
 	 */
-	static List<ArrayMethod> build(ConstantPool cp, ClassConstant objectClass, ClassConstant selfClass) {
+	static List<ArrayMethod> build(ConstantPool cp) {
 		ClassConstant doubleArrayClass = cp.addClass(cp.addUtf8("[D"));
 		ClassConstant floatArrayClass = cp.addClass(cp.addUtf8("[F"));
 		ClassConstant shortArrayClass = cp.addClass(cp.addUtf8("[S"));
 		ClassConstant longArrayClass = cp.addClass(cp.addUtf8("[J"));
-		ClassConstant longClass = cp.addClass(cp.addUtf8("java/lang/Long"));
 		ClassConstant floatClass = cp.addClass(cp.addUtf8("java/lang/Float"));
 		ClassConstant rtExClass = cp.addClass(cp.addUtf8("java/lang/RuntimeException"));
 
 		MethodrefConstant rtExInit = cp.addMethodref(rtExClass,
 				cp.addNameAndType(cp.addUtf8("<init>"), cp.addUtf8("(Ljava/lang/String;)V")));
-		MethodrefConstant longIntValue = cp.addMethodref(longClass,
-				cp.addNameAndType(cp.addUtf8("intValue"), cp.addUtf8("()I")));
 		MethodrefConstant stringEqualsObj = cp.addMethodref(cp.addClass(cp.addUtf8("java/lang/String")),
 				cp.addNameAndType(cp.addUtf8("equals"), cp.addUtf8("(Ljava/lang/Object;)Z")));
 		MethodrefConstant float16ToFloat = cp.addMethodref(floatClass,
@@ -82,31 +86,32 @@ final class JvmFloat16RuntimeBuilder {
 				cp.addNameAndType(cp.addUtf8("floatToRawIntBits"), cp.addUtf8("(F)I")));
 		MethodrefConstant floatIsNaN = cp.addMethodref(floatClass,
 				cp.addNameAndType(cp.addUtf8("isNaN"), cp.addUtf8("(F)Z")));
-		MethodrefConstant fvLength = cp.addMethodref(selfClass, cp.addNameAndType(
-				cp.addUtf8(JvmFloatArrayRuntimeBuilder.LENGTH), cp.addUtf8(JvmFloatArrayRuntimeBuilder.LENGTH_DESC)));
 
 		List<ArrayMethod> methods = new ArrayList<>();
 		methods.add(buildWiden(cp, doubleArrayClass, floatArrayClass, shortArrayClass, longArrayClass, rtExClass,
-				rtExInit, stringEqualsObj, float16ToFloat, intBitsToFloat));
-		methods.add(buildNarrow(cp, doubleArrayClass, floatArrayClass, shortArrayClass, longArrayClass, longClass,
-				rtExClass, rtExInit, longIntValue, stringEqualsObj, floatToFloat16, floatToRawIntBits, floatIsNaN,
-				fvLength));
+				rtExInit, stringEqualsObj, float16ToFloat, intBitsToFloat, floatToRawIntBits, floatIsNaN));
+		methods.add(buildNarrow(cp, doubleArrayClass, floatArrayClass, shortArrayClass, longArrayClass, rtExClass,
+				rtExInit, stringEqualsObj, floatToFloat16, intBitsToFloat, floatToRawIntBits, floatIsNaN));
 		return methods;
 	}
 
 	// _widenFloatBits(bits, format, dst, start): bits a long[] (width header at index 0,
 	// data from index 1, .kb/packed-integer-vectors.md), format ":FLOAT16"/":BFLOAT16"
 	// (a plain String -- a keyword literal compiles to one, JvmQuoteCompiler), dst a
-	// packed double[]/float[] (rank header at index 0, data from index 1+rank). Fills
-	// dst[1+rank+start .. +bits.length-1) row-major and returns dst. Locals: 0=bits,
+	// packed double[]/float[]/short[] (rank header at index 0, data from the width's own
+	// JvmPackedFloatWidth.dataOffset -- a bfloat16 header spends TWO slots per
+	// dimension).
+	// Fills dst[off+start .. +bits.length-1) row-major and returns dst. Locals: 0=bits,
 	// 1=format, 2=dst, 3=start, 4=bitsArr, 5=n, 6=float16, 7=dArr, 8=rank, 9=off, 10=i,
-	// 11=bTmp, 12=vf (the decoded float -- NEVER widened to double: see emitWidenArm).
+	// 11=bTmp, 12=vf (the decoded float -- NEVER widened to double: see emitWidenArm),
+	// 13=bitsInt, 14=resultInt (the bfloat16 destination's narrow only).
 	private static ArrayMethod buildWiden(ConstantPool cp, ClassConstant doubleArrayClass,
 			ClassConstant floatArrayClass, ClassConstant shortArrayClass, ClassConstant longArrayClass,
 			ClassConstant rtExClass, MethodrefConstant rtExInit, MethodrefConstant stringEqualsObj,
-			MethodrefConstant float16ToFloat, MethodrefConstant intBitsToFloat) {
+			MethodrefConstant float16ToFloat, MethodrefConstant intBitsToFloat, MethodrefConstant floatToRawIntBits,
+			MethodrefConstant floatIsNaN) {
 		int bitsP = 0, formatP = 1, dstP = 2, startP = 3, bitsArr = 4, n = 5, float16 = 6, dArr = 7, rank = 8, off = 9,
-				i = 10, bTmp = 11, vf = 12;
+				i = 10, bTmp = 11, vf = 12, bitsInt = 13, resultInt = 14;
 		JvmAsm a = new JvmAsm();
 		a.aload(bitsP);
 		a.checkcast(longArrayClass);
@@ -125,39 +130,38 @@ final class JvmFloat16RuntimeBuilder {
 		a.aload(dstP);
 		a.instanceOf(doubleArrayClass);
 		a.branch(Opcode.IFEQ, tryFloat);
-		emitWidenArm(a, false, doubleArrayClass, float16ToFloat, intBitsToFloat, dstP, bitsArr, n, float16, startP,
-				dArr, rank, off, i, bTmp, vf);
+		emitWidenArm(a, JvmPackedFloatWidth.DOUBLE, doubleArrayClass, float16ToFloat, intBitsToFloat, floatToRawIntBits,
+				floatIsNaN, dstP, bitsArr, n, float16, startP, dArr, rank, off, i, bTmp, vf, bitsInt, resultInt);
 		a.bind(tryFloat);
 		a.aload(dstP);
 		a.instanceOf(floatArrayClass);
 		a.branch(Opcode.IFEQ, tryShort);
-		emitWidenArm(a, true, floatArrayClass, float16ToFloat, intBitsToFloat, dstP, bitsArr, n, float16, startP, dArr,
-				rank, off, i, bTmp, vf);
-		// A bfloat16 destination is the interpreter's TEMPORARY decline
-		// (eval/FloatBitsWidening), word for word: .todo/487 adds the copy.
+		emitWidenArm(a, JvmPackedFloatWidth.SINGLE, floatArrayClass, float16ToFloat, intBitsToFloat, floatToRawIntBits,
+				floatIsNaN, dstP, bitsArr, n, float16, startP, dArr, rank, off, i, bTmp, vf, bitsInt, resultInt);
 		a.bind(tryShort);
 		a.aload(dstP);
 		a.instanceOf(shortArrayClass);
 		a.branch(Opcode.IFEQ, notArray);
-		emitThrow(a, cp, rtExClass, rtExInit, "WIDEN-FLOAT-BITS: does not yet write a bfloat16 destination");
+		emitWidenArm(a, JvmPackedFloatWidth.BFLOAT16, shortArrayClass, float16ToFloat, intBitsToFloat,
+				floatToRawIntBits, floatIsNaN, dstP, bitsArr, n, float16, startP, dArr, rank, off, i, bTmp, vf, bitsInt,
+				resultInt);
 		a.bind(notArray);
 		emitThrow(a, cp, rtExClass, rtExInit, "WIDEN-FLOAT-BITS: dst must be a packed float array");
-		return new ArrayMethod(cp.addUtf8(WIDEN), cp.addUtf8(WIDEN_DESC), 6, 13, a.finish());
+		return new ArrayMethod(cp.addUtf8(WIDEN), cp.addUtf8(WIDEN_DESC), 8, 15, a.finish());
 	}
 
-	private static void emitWidenArm(JvmAsm a, boolean single, ClassConstant arrayClass,
-			MethodrefConstant float16ToFloat, MethodrefConstant intBitsToFloat, int dstP, int bitsArr, int n,
-			int float16, int startP, int dArr, int rank, int off, int i, int bTmp, int vf) {
+	private static void emitWidenArm(JvmAsm a, JvmPackedFloatWidth w, ClassConstant arrayClass,
+			MethodrefConstant float16ToFloat, MethodrefConstant intBitsToFloat, MethodrefConstant floatToRawIntBits,
+			MethodrefConstant floatIsNaN, int dstP, int bitsArr, int n, int float16, int startP, int dArr, int rank,
+			int off, int i, int bTmp, int vf, int bitsInt, int resultInt) {
 		a.aload(dstP);
 		a.checkcast(arrayClass);
 		a.astore(dArr);
 		a.aload(dArr);
-		a.iconst(0);
-		loadHeaderIntShared(a, single);
+		w.loadRank(a);
 		a.istore(rank);
-		a.iconst(1);
 		a.iload(rank);
-		a.op(Opcode.IADD);
+		w.emitDataOffset(a);
 		a.iload(startP);
 		a.op(Opcode.IADD);
 		a.istore(off);
@@ -186,32 +190,63 @@ final class JvmFloat16RuntimeBuilder {
 		// NaN the source encoded as signalling into the corresponding quiet one.
 		int isBf16 = a.label();
 		int decodeDone = a.label();
-		a.iload(float16);
-		a.branch(Opcode.IFEQ, isBf16);
-		a.iload(bTmp);
-		a.invokestatic(float16ToFloat);
-		a.fstore(vf);
-		a.branch(Opcode.GOTO, decodeDone);
-		a.bind(isBf16);
-		a.iload(bTmp);
-		a.iconst(16);
-		a.op(Opcode.ISHL);
-		a.invokestatic(intBitsToFloat);
-		a.fstore(vf);
-		a.bind(decodeDone);
-		a.aload(dArr);
-		a.iload(off);
-		a.iload(i);
-		a.op(Opcode.IADD);
-		a.fload(vf);
-		if (single) {
-			a.fastore();
+		if (w == JvmPackedFloatWidth.BFLOAT16) {
+			// The bfloat16 destination stores PATTERNS, not values, so this arm ends in
+			// an int and never touches the two above's f32 store.
+			//
+			// :bfloat16 -> #bf16 is a straight COPY: the source patterns are already
+			// what the destination holds, so there is nothing to convert and nothing a
+			// NaN can lose. :float16 -> #bf16 is ONE conversion -- the f16 pattern's
+			// float is exact, and the narrow is emitBf16Narrow, the same rounding this
+			// file's narrow arm emits and the interpreter reaches through
+			// am.ik.rontolisp.BFloat16#bits(float). Not a fourth copy of it.
+			a.iload(float16);
+			a.branch(Opcode.IFEQ, isBf16);
+			a.iload(bTmp);
+			a.invokestatic(float16ToFloat);
+			a.fstore(vf);
+			emitBf16Narrow(a, floatToRawIntBits, floatIsNaN, vf, bitsInt, resultInt);
+			a.branch(Opcode.GOTO, decodeDone);
+			a.bind(isBf16);
+			a.iload(bTmp);
+			emitMaskU16(a);
+			a.istore(resultInt);
+			a.bind(decodeDone);
+			a.aload(dArr);
+			a.iload(off);
+			a.iload(i);
+			a.op(Opcode.IADD);
+			a.iload(resultInt);
+			a.sastore();
 		}
 		else {
-			// float -> double is a WIDENING conversion: always exact, signal bit
-			// included (unlike the double -> float narrow above, this is safe).
-			a.f2d();
-			a.dastore();
+			a.iload(float16);
+			a.branch(Opcode.IFEQ, isBf16);
+			a.iload(bTmp);
+			a.invokestatic(float16ToFloat);
+			a.fstore(vf);
+			a.branch(Opcode.GOTO, decodeDone);
+			a.bind(isBf16);
+			a.iload(bTmp);
+			a.iconst(16);
+			a.op(Opcode.ISHL);
+			a.invokestatic(intBitsToFloat);
+			a.fstore(vf);
+			a.bind(decodeDone);
+			a.aload(dArr);
+			a.iload(off);
+			a.iload(i);
+			a.op(Opcode.IADD);
+			a.fload(vf);
+			if (w == JvmPackedFloatWidth.SINGLE) {
+				a.fastore();
+			}
+			else {
+				// float -> double is a WIDENING conversion: always exact, signal bit
+				// included (unlike the double -> float narrow above, this is safe).
+				a.f2d();
+				a.dastore();
+			}
 		}
 		a.iinc(i, 1);
 		a.branch(Opcode.GOTO, loopTop);
@@ -221,23 +256,23 @@ final class JvmFloat16RuntimeBuilder {
 	}
 
 	// _narrowFloatBits(src, format, dst, start): the inverse. src a packed
-	// double[]/float[] read row-major from element 0 (its own total size, through the
-	// self-referencing _fvLength); dst a long[] bits vector written from 1 + start.
+	// double[]/float[]/short[] read row-major from element 0 for its TOTAL SIZE -- the
+	// product of the header's dimensions, computed per arm (emitNarrowArm) because the
+	// header shape is the width's. NOT the self-referencing _fvLength, which this used to
+	// call: at rank 1 that answers the same number, but at rank n it goes through
+	// _fvToGeneral and _length, and _length refuses a multidimensional array -- so a
+	// rank-2 source threw here while the interpreter (LispFloatArray.totalSize) narrowed
+	// it, at EVERY width. dst is a long[] bits vector written from 1 + start.
 	// Locals: 0=src, 1=format, 2=dst, 3=start, 4=n, 5=float16, 6=sArr, 7=bitsArr, 8=i,
-	// 9=fTmp, 10=bitsInt, 11=resultInt, 12=rank, 13=off.
+	// 9=fTmp, 10=bitsInt, 11=resultInt, 12=rank, 13=off, 14=k (the dimension product).
 	private static ArrayMethod buildNarrow(ConstantPool cp, ClassConstant doubleArrayClass,
 			ClassConstant floatArrayClass, ClassConstant shortArrayClass, ClassConstant longArrayClass,
-			ClassConstant longClass, ClassConstant rtExClass, MethodrefConstant rtExInit,
-			MethodrefConstant longIntValue, MethodrefConstant stringEqualsObj, MethodrefConstant floatToFloat16,
-			MethodrefConstant floatToRawIntBits, MethodrefConstant floatIsNaN, MethodrefConstant fvLength) {
+			ClassConstant rtExClass, MethodrefConstant rtExInit, MethodrefConstant stringEqualsObj,
+			MethodrefConstant floatToFloat16, MethodrefConstant intBitsToFloat, MethodrefConstant floatToRawIntBits,
+			MethodrefConstant floatIsNaN) {
 		int srcP = 0, formatP = 1, dstP = 2, startP = 3, n = 4, float16 = 5, sArr = 6, bitsArr = 7, i = 8, fTmp = 9,
-				bitsInt = 10, resultInt = 11, rank = 12, off = 13;
+				bitsInt = 10, resultInt = 11, rank = 12, off = 13, k = 14;
 		JvmAsm a = new JvmAsm();
-		a.aload(srcP);
-		a.invokestatic(fvLength);
-		a.checkcast(longClass);
-		a.invokevirtual(longIntValue);
-		a.istore(n);
 		emitFormatFlag(a, cp, formatP, float16, stringEqualsObj);
 		emitFormatCheck(a, cp, float16, rtExClass, rtExInit, stringEqualsObj, formatP, "NARROW-FLOAT-BITS");
 		a.aload(dstP);
@@ -250,42 +285,65 @@ final class JvmFloat16RuntimeBuilder {
 		a.aload(srcP);
 		a.instanceOf(doubleArrayClass);
 		a.branch(Opcode.IFEQ, tryFloat);
-		emitNarrowArm(a, false, doubleArrayClass, floatToFloat16, floatToRawIntBits, floatIsNaN, srcP, bitsArr, n,
-				float16, startP, sArr, i, fTmp, bitsInt, resultInt, rank, off);
+		emitNarrowArm(a, JvmPackedFloatWidth.DOUBLE, doubleArrayClass, floatToFloat16, intBitsToFloat,
+				floatToRawIntBits, floatIsNaN, srcP, bitsArr, n, float16, startP, sArr, i, fTmp, bitsInt, resultInt,
+				rank, off, k);
 		a.bind(tryFloat);
 		a.aload(srcP);
 		a.instanceOf(floatArrayClass);
 		a.branch(Opcode.IFEQ, tryShort);
-		emitNarrowArm(a, true, floatArrayClass, floatToFloat16, floatToRawIntBits, floatIsNaN, srcP, bitsArr, n,
-				float16, startP, sArr, i, fTmp, bitsInt, resultInt, rank, off);
-		// A bfloat16 source is the interpreter's TEMPORARY decline, word for word.
+		emitNarrowArm(a, JvmPackedFloatWidth.SINGLE, floatArrayClass, floatToFloat16, intBitsToFloat, floatToRawIntBits,
+				floatIsNaN, srcP, bitsArr, n, float16, startP, sArr, i, fTmp, bitsInt, resultInt, rank, off, k);
 		a.bind(tryShort);
 		a.aload(srcP);
 		a.instanceOf(shortArrayClass);
 		a.branch(Opcode.IFEQ, notArray);
-		emitThrow(a, cp, rtExClass, rtExInit, "NARROW-FLOAT-BITS: does not yet read a bfloat16 source");
+		emitNarrowArm(a, JvmPackedFloatWidth.BFLOAT16, shortArrayClass, floatToFloat16, intBitsToFloat,
+				floatToRawIntBits, floatIsNaN, srcP, bitsArr, n, float16, startP, sArr, i, fTmp, bitsInt, resultInt,
+				rank, off, k);
 		a.bind(notArray);
 		emitThrow(a, cp, rtExClass, rtExInit, "NARROW-FLOAT-BITS: src must be a packed float array");
-		return new ArrayMethod(cp.addUtf8(NARROW), cp.addUtf8(NARROW_DESC), 6, 14, a.finish());
+		return new ArrayMethod(cp.addUtf8(NARROW), cp.addUtf8(NARROW_DESC), 8, 15, a.finish());
 	}
 
-	private static void emitNarrowArm(JvmAsm a, boolean single, ClassConstant arrayClass,
-			MethodrefConstant floatToFloat16, MethodrefConstant floatToRawIntBits, MethodrefConstant floatIsNaN,
-			int srcP, int bitsArr, int n, int float16, int startP, int sArr, int i, int fTmp, int bitsInt,
-			int resultInt, int rank, int off) {
+	private static void emitNarrowArm(JvmAsm a, JvmPackedFloatWidth w, ClassConstant arrayClass,
+			MethodrefConstant floatToFloat16, MethodrefConstant intBitsToFloat, MethodrefConstant floatToRawIntBits,
+			MethodrefConstant floatIsNaN, int srcP, int bitsArr, int n, int float16, int startP, int sArr, int i,
+			int fTmp, int bitsInt, int resultInt, int rank, int off, int k) {
 		a.aload(srcP);
 		a.checkcast(arrayClass);
 		a.astore(sArr);
-		// off = 1 + rank -- the source is read row-major from its own element 0, so
-		// (unlike widen's destination) no :start offset applies here.
+		// off = the width's own data offset -- the source is read row-major from its own
+		// element 0, so (unlike widen's destination) no :start offset applies here.
 		a.aload(sArr);
-		a.iconst(0);
-		loadHeaderIntShared(a, single);
+		w.loadRank(a);
 		a.istore(rank);
-		a.iconst(1);
 		a.iload(rank);
-		a.op(Opcode.IADD);
+		w.emitDataOffset(a);
 		a.istore(off);
+		// n = the product of the header's dimensions, which is what the interpreter's
+		// LispFloatArray.totalSize answers at every rank. Read from the HEADER and not
+		// from the Java length, for the same reason _fvLength's rank-1 arm does: under
+		// --gpu a result stub is the header alone (.kb/gpu.md).
+		a.iconst(1);
+		a.istore(n);
+		a.iconst(0);
+		a.istore(k);
+		int dimTop = a.label();
+		int dimEnd = a.label();
+		a.bind(dimTop);
+		a.iload(k);
+		a.iload(rank);
+		a.branch(Opcode.IF_ICMPGE, dimEnd);
+		a.iload(n);
+		a.aload(sArr);
+		a.iload(k);
+		w.loadDim(a);
+		a.op(Opcode.IMUL);
+		a.istore(n);
+		a.iinc(k, 1);
+		a.branch(Opcode.GOTO, dimTop);
+		a.bind(dimEnd);
 		a.iconst(0);
 		a.istore(i);
 		int loopTop = a.label();
@@ -300,31 +358,61 @@ final class JvmFloat16RuntimeBuilder {
 		// source narrows ONCE with d2f -- either is safe, but a widen-then-narrow
 		// roundtrip (f2d then d2f, what loadElemShared followed by a bare d2f would be
 		// for the single-float arm) quiets a signalling NaN 126/65536 times (measured).
-		a.aload(sArr);
-		a.iload(off);
-		a.iload(i);
-		a.op(Opcode.IADD);
-		if (single) {
-			a.faload();
-		}
-		else {
-			a.daload();
-			a.d2f();
-		}
-		a.fstore(fTmp);
 		int isBf16 = a.label();
 		int narrowDone = a.label();
-		a.iload(float16);
-		a.branch(Opcode.IFEQ, isBf16);
-		// f16: Float.floatToFloat16(fTmp) & 0xFFFF
-		a.fload(fTmp);
-		a.invokestatic(floatToFloat16);
-		emitMaskU16(a);
-		a.istore(resultInt);
-		a.branch(Opcode.GOTO, narrowDone);
-		a.bind(isBf16);
-		emitBf16Narrow(a, floatToRawIntBits, floatIsNaN, fTmp, bitsInt, resultInt);
-		a.bind(narrowDone);
+		if (w == JvmPackedFloatWidth.BFLOAT16) {
+			// A bfloat16 SOURCE hands out patterns, not values: to :bfloat16 it is a
+			// straight copy of the stored pattern (no conversion, so no NaN can be lost),
+			// and to :float16 it is the exact shift-widen -- NEVER _bf16Value, which
+			// answers a double and would quiet a signalling NaN on the way back down --
+			// followed by the same Float.floatToFloat16 the two arms above run.
+			a.aload(sArr);
+			a.iload(off);
+			a.iload(i);
+			a.op(Opcode.IADD);
+			a.saload();
+			emitMaskU16(a);
+			a.istore(bitsInt);
+			a.iload(float16);
+			a.branch(Opcode.IFEQ, isBf16);
+			a.iload(bitsInt);
+			a.iconst(16);
+			a.op(Opcode.ISHL);
+			a.invokestatic(intBitsToFloat);
+			a.invokestatic(floatToFloat16);
+			emitMaskU16(a);
+			a.istore(resultInt);
+			a.branch(Opcode.GOTO, narrowDone);
+			a.bind(isBf16);
+			a.iload(bitsInt);
+			a.istore(resultInt);
+			a.bind(narrowDone);
+		}
+		else {
+			a.aload(sArr);
+			a.iload(off);
+			a.iload(i);
+			a.op(Opcode.IADD);
+			if (w == JvmPackedFloatWidth.SINGLE) {
+				a.faload();
+			}
+			else {
+				a.daload();
+				a.d2f();
+			}
+			a.fstore(fTmp);
+			a.iload(float16);
+			a.branch(Opcode.IFEQ, isBf16);
+			// f16: Float.floatToFloat16(fTmp) & 0xFFFF
+			a.fload(fTmp);
+			a.invokestatic(floatToFloat16);
+			emitMaskU16(a);
+			a.istore(resultInt);
+			a.branch(Opcode.GOTO, narrowDone);
+			a.bind(isBf16);
+			emitBf16Narrow(a, floatToRawIntBits, floatIsNaN, fTmp, bitsInt, resultInt);
+			a.bind(narrowDone);
+		}
 		// bitsArr[1 + start + i] = (long) resultInt
 		a.aload(bitsArr);
 		a.iconst(1);
@@ -437,18 +525,6 @@ final class JvmFloat16RuntimeBuilder {
 		a.ldcString(cp.addString(message));
 		a.invokespecial(rtExInit);
 		a.op(Opcode.ATHROW);
-	}
-
-	// stack: (..., arrayref, index) -> (..., int).
-	private static void loadHeaderIntShared(JvmAsm a, boolean single) {
-		if (single) {
-			a.faload();
-			a.f2i();
-		}
-		else {
-			a.daload();
-			a.d2i();
-		}
 	}
 
 }
