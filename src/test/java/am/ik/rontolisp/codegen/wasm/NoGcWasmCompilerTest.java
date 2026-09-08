@@ -76,6 +76,16 @@ class NoGcWasmCompilerTest {
 	}
 
 	@Test
+	void quantizedRowsIsRefusedOnTheNoGcBackend() {
+		assertThatThrownBy(() -> compile("""
+				(defun r (n) (rontolisp:quantized-rows n '(0)))
+				(rontolisp:wasm-export 'r :params '(:int) :returns :int)
+				""")).isInstanceOf(UnsupportedOperationException.class)
+			.hasMessageContaining("quantized matrices are supported on the interpreter and the JVM only")
+			.hasMessageContaining("the --no-gc backend");
+	}
+
+	@Test
 	void bfloat16LiteralsAreRefusedOnTheNoGcBackend() {
 		assertThatThrownBy(() -> compile("""
 				(defun bf-lit () (aref #bf16(1.0 2.0) 0))

@@ -20,7 +20,7 @@ import am.ik.rontolisp.macro.LispMacroExpander;
  * program that can BUILD a matrix ({@code JvmLispCompiler.Ctx#usesQuantized}: it names
  * {@code rontolisp:quantize} or {@code rontolisp:make-quantized-matrix}). In every other
  * program no matrix can exist, so {@code quantized-matrix-p} compiles to its argument
- * evaluated for effect and {@code nil}, and the four operations that need one compile to
+ * evaluated for effect and {@code nil}, and the five operations that need one compile to
  * a call-time signal -- the shape the wasm-GC backend gives every one of them. That is
  * what lets {@code vec.lisp}'s integer-dot GEMV arm and {@code gguf.lisp}'s Q8_0 arm
  * compile in a program that never reaches them without dragging the helpers in.
@@ -30,11 +30,11 @@ final class JvmQuantizedMatrixCompiler {
 	private JvmQuantizedMatrixCompiler() {
 	}
 
-	/** Whether the member is one of the six primitives this class compiles. */
+	/** Whether the member is one of the seven primitives this class compiles. */
 	static boolean handles(String member) {
 		return LispNames.QUANTIZE.equals(member) || LispNames.DEQUANTIZE.equals(member)
-				|| LispNames.MAKE_QUANTIZED_MATRIX.equals(member) || LispNames.QUANTIZED_MATRIX_P.equals(member)
-				|| LispNames.QUANTIZED_QUANT_INTERNAL.equals(member)
+				|| LispNames.MAKE_QUANTIZED_MATRIX.equals(member) || LispNames.QUANTIZED_ROWS.equals(member)
+				|| LispNames.QUANTIZED_MATRIX_P.equals(member) || LispNames.QUANTIZED_QUANT_INTERNAL.equals(member)
 				|| LispNames.QUANTIZED_SCALE_INTERNAL.equals(member);
 	}
 
@@ -70,6 +70,7 @@ final class JvmQuantizedMatrixCompiler {
 			case LispNames.QUANTIZE -> JvmQuantizedMatrixRuntimeBuilder.QUANTIZE;
 			case LispNames.DEQUANTIZE -> JvmQuantizedMatrixRuntimeBuilder.DEQUANTIZE;
 			case LispNames.MAKE_QUANTIZED_MATRIX -> JvmQuantizedMatrixRuntimeBuilder.MAKE;
+			case LispNames.QUANTIZED_ROWS -> JvmQuantizedMatrixRuntimeBuilder.ROWS;
 			case LispNames.QUANTIZED_QUANT_INTERNAL -> JvmQuantizedMatrixRuntimeBuilder.QUANT;
 			case LispNames.QUANTIZED_SCALE_INTERNAL -> JvmQuantizedMatrixRuntimeBuilder.SCALE;
 			default -> throw new IllegalStateException(member);

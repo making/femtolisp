@@ -286,6 +286,45 @@ class QuantizedMatrixTest {
 		assertThat(b.format()).isEqualTo(QuantizedFormat.Q8_0);
 	}
 
+	// --- the row gather ----------------------------------------------------------------
+
+	@Test
+	void quantizedRowsGathersWholeBlocksVerbatim() {
+		String program = fixture(4, 64, "single-float");
+		LispQuantizedMatrix m = (LispQuantizedMatrix) eval(program + "*m*", false, false);
+		LispQuantizedMatrix g = (LispQuantizedMatrix) eval(program + "(rontolisp:quantized-rows *m* '(3 1 3))", false,
+				false);
+		assertThat(g.dims()).isEqualTo(new int[] { 3, 64 });
+		assertThat(g.format()).isEqualTo(QuantizedFormat.Q8_0);
+		// A row is cols / 32 whole blocks, so the gathered bytes ARE the source's.
+		int rowBytes = 64 / 32 * 34;
+		byte[] expected = new byte[3 * rowBytes];
+		System.arraycopy(m.blocks(), 3 * rowBytes, expected, 0, rowBytes);
+		System.arraycopy(m.blocks(), rowBytes, expected, rowBytes, rowBytes);
+		System.arraycopy(m.blocks(), 3 * rowBytes, expected, 2 * rowBytes, rowBytes);
+		assertThat(g.blocks()).isEqualTo(expected);
+		// The identity gather is the matrix, and the empty one a zero-row matrix.
+		assertThat(eval(program + "(equalp (rontolisp:dequantize (rontolisp:quantized-rows *m* '(0 1 2 3))"
+				+ " 'single-float) (rontolisp:dequantize *m* 'single-float))"))
+			.isEqualTo("T");
+		assertThat(eval(program + "(list (rontolisp:quantized-rows *m* '())"
+				+ " (rontolisp:quantized-matrix-p (rontolisp:quantized-rows *m* '(0)))"
+				+ " (aref (rontolisp:quantized-rows *m* '(2)) 0 5) (aref *m* 2 5))"))
+			.isEqualTo("(#<quantized-matrix q8-0 (0 64)> T -0.033034563064575195 -0.033034563064575195)");
+		// A rank-1 matrix is a matrix of one row; a gather always answers rank 2.
+		assertThat(eval(
+				"(array-dimensions (rontolisp:quantized-rows" + " (rontolisp:make-quantized-matrix 'q8-0 64) '(0 0)))"))
+			.isEqualTo("(2 64)");
+		assertThatThrownBy(() -> eval(program + "(rontolisp:quantized-rows *m* '(4))"))
+			.hasMessageContaining("row index out of bounds");
+		assertThatThrownBy(() -> eval(program + "(rontolisp:quantized-rows *m* '(-1))"))
+			.hasMessageContaining("row index out of bounds");
+		assertThatThrownBy(() -> eval(program + "(rontolisp:quantized-rows *m* 0)"))
+			.hasMessageContaining("expects a list of row indexes");
+		assertThatThrownBy(() -> eval("(rontolisp:quantized-rows #f(1.0) '(0))"))
+			.hasMessageContaining("expects a quantized matrix");
+	}
+
 	// --- vec:matvec: the defun and the kernel are one value --------------------------
 
 	@Test

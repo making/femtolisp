@@ -636,7 +636,7 @@ final class WasmExprCompiler {
 					// two are the user-facing operations on it.
 					throw am.ik.rontolisp.compiler.UnsupportedFloatWidth.refuseQuantized("the wasm-GC backend");
 				}
-				if (LispNames.MAKE_QUANTIZED_MATRIX.equals(qn.member())
+				if (LispNames.MAKE_QUANTIZED_MATRIX.equals(qn.member()) || LispNames.QUANTIZED_ROWS.equals(qn.member())
 						|| LispNames.QUANTIZED_QUANT_INTERNAL.equals(qn.member())
 						|| LispNames.QUANTIZED_SCALE_INTERNAL.equals(qn.member())) {
 					// A CALL-TIME signal, the shape the bfloat16 make-array arm takes:

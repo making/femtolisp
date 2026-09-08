@@ -195,6 +195,7 @@ public final class BuiltinFunctionWrappers {
 		gated.add(PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.QUANTIZE));
 		gated.add(PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.DEQUANTIZE));
 		gated.add(PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.MAKE_QUANTIZED_MATRIX));
+		gated.add(PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.QUANTIZED_ROWS));
 		gated.add(PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.QUANTIZED_MATRIX_P));
 		REFERENCE_GATED_FUNCTIONS = Set.copyOf(gated);
 	}
@@ -1474,6 +1475,7 @@ public final class BuiltinFunctionWrappers {
 			binary(PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.QUANTIZE)),
 			binary(PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.DEQUANTIZE)),
 			binary(PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.MAKE_QUANTIZED_MATRIX)),
+			binary(PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.QUANTIZED_ROWS)),
 			unary(PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.QUANTIZED_MATRIX_P)),
 			// open as a first-class value: (apply #'open path options) is the portable
 			// way to build an option list at run time (alexandria's

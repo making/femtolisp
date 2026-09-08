@@ -373,6 +373,7 @@ public final class NoGcWasmCompiler implements LispCompiler {
 		for (String quantizedName : List.of(PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.QUANTIZE),
 				PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.DEQUANTIZE),
 				PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.MAKE_QUANTIZED_MATRIX),
+				PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.QUANTIZED_ROWS),
 				PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.QUANTIZED_MATRIX_P))) {
 			if (referencesSymbol(program, quantizedName)) {
 				throw am.ik.rontolisp.compiler.UnsupportedFloatWidth.refuseQuantized("the --no-gc backend");

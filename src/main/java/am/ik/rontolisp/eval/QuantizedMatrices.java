@@ -20,8 +20,8 @@ import am.ik.rontolisp.QuantizedFormat;
 /**
  * The interpreter arm of the {@code rontolisp:quantized-matrix} primitives
  * ({@code .kb/quantized-matrix.md}): {@code quantize}, {@code dequantize},
- * {@code make-quantized-matrix}, {@code quantized-matrix-p} and the two raw accessors
- * {@code vec.lisp}'s integer-dot GEMV reads a matrix through,
+ * {@code make-quantized-matrix}, {@code quantized-rows}, {@code quantized-matrix-p} and
+ * the two raw accessors {@code vec.lisp}'s integer-dot GEMV reads a matrix through,
  * {@code rontolisp::%quantized-quant} / {@code %quantized-scale}.
  *
  * <p>
@@ -151,6 +151,32 @@ final class QuantizedMatrices {
 		return new LispQuantizedMatrix(format, dims, new byte[bytes]);
 	}
 
+	/**
+	 * {@code (rontolisp:quantized-rows m rows)}: a fresh rank-2 matrix whose row
+	 * {@code i} is row {@code (nth i rows)} of {@code m}, block for block. A row of a
+	 * Q8_0 matrix is whole blocks ({@code cols / 32 * 34} bytes), so a gather is one
+	 * {@code System.arraycopy} a row and the result holds the source's own bytes -- the
+	 * immutable type's {@code subseq} and {@code linalg:take-rows} in one, and the reason
+	 * a program that splits a quantized weight matrix needs neither a scratch file nor
+	 * {@code dequantize} (which the WASM backends refuse by name).
+	 */
+	static LispVal rows(String fnName, List<LispVal> args) {
+		if (args.size() != 2) {
+			throw new LispEvalException(fnName + " expects 2 arguments, got " + args.size());
+		}
+		LispQuantizedMatrix m = matrix(fnName, args.get(0));
+		int[] rows = rowIndexes(fnName, args.get(1), m.rows());
+		int cols = m.cols();
+		int rowBytes = cols / m.format().blockElements() * m.format().blockBytes();
+		int[] dims = { rows.length, cols };
+		byte[] out = new byte[checkedByteCount(m.format(), dims, fnName)];
+		byte[] src = m.blocks();
+		for (int i = 0; i < rows.length; i++) {
+			System.arraycopy(src, rows[i] * rowBytes, out, i * rowBytes, rowBytes);
+		}
+		return new LispQuantizedMatrix(m.format(), dims, out);
+	}
+
 	/** {@code (rontolisp:quantized-matrix-p x)}. */
 	static LispVal isMatrix(String fnName, List<LispVal> args) {
 		if (args.size() != 1) {
@@ -237,6 +263,26 @@ final class QuantizedMatrices {
 			dims[k] = sizes.get(k);
 		}
 		return dims;
+	}
+
+	private static int[] rowIndexes(String fnName, LispVal value, int bound) {
+		java.util.ArrayList<Integer> rows = new java.util.ArrayList<>();
+		LispVal cur = value;
+		while (cur instanceof LispCons cons) {
+			if (!(cons.car() instanceof LispInteger n) || n.value() < 0 || n.value() >= bound) {
+				throw new LispEvalException(fnName + ": row index out of bounds: " + cons.car().print());
+			}
+			rows.add((int) n.value());
+			cur = cons.cdr();
+		}
+		if (!(cur instanceof LispNil)) {
+			throw new LispEvalException(fnName + ": expects a list of row indexes, got " + value.print());
+		}
+		int[] out = new int[rows.size()];
+		for (int k = 0; k < out.length; k++) {
+			out[k] = rows.get(k);
+		}
+		return out;
 	}
 
 	private static int index(String fnName, LispVal value, int bound) {

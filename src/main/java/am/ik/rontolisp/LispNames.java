@@ -8279,6 +8279,14 @@ public final class LispNames {
 	/** {@code rontolisp:quantized-matrix-p} -- the type predicate. */
 	public static final String QUANTIZED_MATRIX_P = "QUANTIZED-MATRIX-P";
 
+	/**
+	 * {@code rontolisp:quantized-rows} -- a fresh quantized matrix gathering the rows of
+	 * another one named by a list of row indexes, block for block. The immutable type's
+	 * answer to {@code subseq} and to {@code linalg:take-rows}: a row is whole blocks, so
+	 * a gather is one array copy a row and the bytes are the source's.
+	 */
+	public static final String QUANTIZED_ROWS = "QUANTIZED-ROWS";
+
 	/** {@code rontolisp:quantized-matrix} -- the type name {@code typep} answers to. */
 	public static final String QUANTIZED_MATRIX = "QUANTIZED-MATRIX";
 

@@ -174,7 +174,11 @@ becomes 4.4 GB of single floats and needs a few megabytes besides.
 [`rontolisp:quantize`](../reference/functions/rontolisp-quantize.md)'s blocks,
 read straight into place, its own bytes in one transfer, with `:element-type`
 not applying to it. GGUF only, and the interpreter and the JVM only: the WASM
-backends signal at that tensor.
+backends signal at that tensor. A tensor that has to be SPLIT once it is loaded
+-- a fused `query | gate` projection, say -- is split by
+[`rontolisp:quantized-rows`](../reference/functions/rontolisp-quantized-rows.md),
+which gathers the rows named into a fresh matrix block for block, so the halves
+stay quantized and no value is ever expanded.
 
 **Every other quantized type is refused BY NAME when its body is asked for, and
 never earlier.** A Q4_K_M checkpoint still opens, still lists its whole tensor

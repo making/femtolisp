@@ -37,6 +37,16 @@ JVM; both WASM backends refuse it by name. `.todo/672`; the device kernel `.todo
   `gguf.lisp`'s type-8 arm (make + one `read-sequence`, `:element-type` ignored). Every
   spelling of the designator names the format by its LOCAL name: `'q8-0`, `'rontolisp:q8-0`,
   `:q8-0` (`QuantizedFormat.ofSymbolName`, `_qmLocalName`).
+- **`rontolisp:quantized-rows m rows` is the type's `subseq`** (`.todo/732`): a fresh RANK-2
+  matrix whose row `i` is row `(nth i rows)` of `m`, for a list of row indexes. A row is
+  whole blocks (`cols / 32 * 34` bytes), so the gather MOVES THE BLOCKS -- one
+  `System.arraycopy` a row, the result's bytes the source's, no round trip through a float
+  array. The source may be rank 1 (one row); an empty list answers a matrix of no rows; an
+  index outside the source and anything but a list of integers signal. It is what lets a
+  program SPLIT a quantized weight matrix -- `examples/llm`'s `split-gated-q`, whose halves
+  interleave head by head, is one call a half -- without the scratch file it used until
+  2026-09-08 and without naming `dequantize` / `quantize`, which a program that also
+  compiles to WASM cannot (below).
 - `rontolisp:dequantize m 'single-float|'double-float|'bfloat16` -> a fresh packed array.
   `linalg::%la-etype` maps `q8-0` to `single-float`, so `linalg:row` over a quantized
   embedding table answers the `#f` row the rest of a decode step expects (the `Q8_0` file
@@ -134,10 +144,11 @@ and 0 in the kernel -- finite inputs only, as for every `vec:` member.
 
 ## The gate on the JVM
 `JvmLispCompiler`: `usesQuantized` = the program names `rontolisp:quantize` or
-`rontolisp:make-quantized-matrix` (the pruner keeps `gguf::%read-tensor` only for a
+`rontolisp:make-quantized-matrix` -- the two names that build a matrix out of nothing;
+`quantized-rows` needs one to exist already and so does NOT open the gate (the pruner keeps `gguf::%read-tensor` only for a
 `gguf:read` program). On: `_qm*` helpers, the `byte[]` arms of every `_fv*` helper
 (`JvmFloatArrayRuntimeBuilder.emitQuantizedArm`), the `_readSeqPacked` arm, the print branch,
-and `usesFloatArray` forced on. Off: `dequantize` and the two `%quantized-*` accessors
+and `usesFloatArray` forced on. Off: `dequantize`, `quantized-rows` and the two `%quantized-*` accessors
 compile to a call-time signal, `quantized-matrix-p` to `(progn x nil)`, and the class is
 byte-identical to one that never knew the type -- which is what lets `vec.lisp`'s dead arm
 and the prelude's `type-of` clause compile everywhere. `BuiltinFunctionWrappers` gates the
@@ -145,13 +156,14 @@ four wrappers on the reference for the same reason.
 
 ## Refusals (`.kb/bfloat16.md`'s three behaviours)
 - wasm-GC: `quantize`/`dequantize` PERMANENT at compile time
-  (`UnsupportedFloatWidth.refuseQuantized`); `make-quantized-matrix` and the two accessors a
-  CALL-TIME signal with the same sentence (a spliced library's dead arm);
-  `quantized-matrix-p` -> `(progn x nil)`. `--no-gc`: all four names refused at compile time.
+  (`UnsupportedFloatWidth.refuseQuantized`); `make-quantized-matrix`, `quantized-rows` and
+  the two accessors a CALL-TIME signal with the same sentence (a spliced library's dead arm);
+  `quantized-matrix-p` -> `(progn x nil)`. `--no-gc`: all five names refused at compile time.
   Pinned by `WasmLispCompilerTest` / `NoGcWasmCompilerTest`; ci-spec `refusedOn`. A program
   that compiles to WASM as well (`examples/llm`) therefore cannot NAME `quantize` /
-  `dequantize` even in a guarded arm -- its Q8_0 split goes through a scratch file instead
-  (`split-gated-q-blocks`; a row slice without one is `.todo/732`).
+  `dequantize` even in a guarded arm -- its Q8_0 split is a `quantized-rows` gather a half
+  (`split-gated-q-blocks`; until 2026-09-08 a byte copy through a scratch file in `$TMPDIR`,
+  `file-position` not seeking).
 - `--blas`: silent decline. `--gpu`: the rank-2-against-`#f` GEMV is taken on CUDA (the
   defun's bits, above); every other pairing and Metal decline silently.
   `rontolisp:jvm-export`: not a boundary type.
@@ -186,7 +198,8 @@ left to differ is the arithmetic -- and at Q8_0 the arithmetic is two different 
 Record and ids: `.todo/672-.../README.md`.
 
 ## Tests
-`eval/QuantizedMatrixTest` (surface, ggml bytes, dequantize bound, bulk transfer, defun ==
+`eval/QuantizedMatrixTest` (surface, ggml bytes, dequantize bound, bulk transfer, the
+gather's bytes, defun ==
 `--simd` == `--parallel` at both widths, the declines, `linalg:row`), `eval/VecSimdQ8KernelsTest`
 and `codegen/jvm/JvmSimdVectorTemplateQ8Test` (kernels against the defun transcribed, bits),
 `codegen/jvm/JvmQuantizedMatrixTest` (both backends, the header past 32767, the gate),

@@ -669,10 +669,10 @@ completion).
 array, whose `vec:matvec` is the boxed defun -- so every `wq` and `gate` GEMV of the Q8_0
 file ran on the defun on both arms: 5.6 tok/s at `--simd` and 2-4 under the flag, where
 the residency guard on every boxed element read made the device arm the SLOWER one. The
-Q8_0 halves are now split by byte span (`split-gated-q-blocks`: a row is whole blocks, and
-each head's query rows and gate rows are contiguous), through a scratch file rather than
-`rontolisp:dequantize` / `quantize` because this program also compiles to WASM, where those
-two names are refused at compile time (`.todo/732` is the slice without the file). The
+Q8_0 halves are now GATHERED block for block (`split-gated-q-blocks`: a row is whole blocks,
+so each half is one `rontolisp:quantized-rows` over the source rows its heads name), rather
+than through `rontolisp:dequantize` / `quantize` because this program also compiles to WASM,
+where those two names are refused at compile time. The
 `--simd` column above is the CPU arm after that fix (9.7 printed by the old harness, against
 5.6 before it).
 

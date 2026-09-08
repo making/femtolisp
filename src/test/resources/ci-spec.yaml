@@ -15325,6 +15325,15 @@ standalone:
         (print (equalp (rontolisp:dequantize m2 'single-float) (rontolisp:dequantize *qm* 'single-float)))
         (print (aref m2 2 63)))
       (print (length (rontolisp:dequantize (rontolisp:make-quantized-matrix 'q8-0 40000) 'bfloat16)))
+      ;; A row gather keeps the file's own blocks -- a row is whole blocks -- so
+      ;; splitting a quantized weight matrix needs neither a scratch file nor a
+      ;; dequantize round trip (examples/llm's split-gated-q).
+      (defparameter *qg* (rontolisp:quantized-rows *qm* '(2 0)))
+      (print (list (array-dimensions *qg*) (rontolisp:quantized-matrix-p *qg*)
+                   (= (aref *qg* 0 5) (aref *qm* 2 5)) (= (aref *qg* 1 5) (aref *qm* 0 5))))
+      (print (equalp (rontolisp:dequantize (rontolisp:quantized-rows *qm* '(0 1 2)) 'single-float)
+                     (rontolisp:dequantize *qm* 'single-float)))
+      (print (vec:matvec *qg* *qx*))
     stdout: |
       #<quantized-matrix q8-0 (3 64)>
       ((3 64) Q8-0 T NIL T QUANTIZED-MATRIX)
@@ -15337,6 +15346,9 @@ standalone:
       T
       0.0037794113159179688
       40000
+      ((2 64) T T T)
+      T
+      #f(0.0076408954 0.0031668926)
     refusedOn: [wasm, wasm_component]
     refusal: "quantized matrices are supported on the interpreter and the JVM only"
   - name: array-operations-enablement-language-group
