@@ -196,6 +196,26 @@ needed"). No `linalg:` acceleration seam takes it: `--simd`, `--blas` and `--gpu
   no null-check rung, and a call site that never sees the width emits the bytes it always did.
   Trap: every test is POSITIVE -- asking "is it the unsupported one?" lets the next representation
   fall through to the cast.
+- **The guard and the bridge are WIDTH-AGNOSTIC; the PAIRING is what the plan restricts.**
+  Asked and answered 2026-09-05/2026-09-08 (`.todo/696` part 2), recorded because a later reader
+  cannot reconstruct it and both `.todo/490` (bf16 on the device) and `.todo/672` (Q8_0) brush
+  against it. Today every fused kernel is narrow WEIGHTS against f32 ACTIVATIONS -- a plan
+  decision, not an artefact (`.todo/670` line 259, `.todo/488`'s table, `.todo/482`'s record and
+  `.todo/672`'s Q8_0 rows all measure f32 activations; 490 closed without a pairing, the device
+  taking exactly the CPU's). A NARROW x NARROW pairing would be an EXTENSION, not a rewrite:
+  - The TOTAL-bridge property does not depend on exactly one operand being narrow. It depends on
+    the guard admitting only combinations that HAVE a kernel. `BF16_OPERAND` maps a member to the
+    ONE position that may hold a `short[]`; a pairing widens that to the SET of positions that
+    may, plus one `instanceof` chain in the bridge entry to pick the kernel. The guard stays a
+    pair of exclusive arms both ending at a kernel call, so no call site grows a null-check rung.
+  - The KERNEL side is a sibling method per combination (`dotBf16Bf16` beside `dotBf16`), decoding
+    both lane groups into the same pinned lanes. One small method per combination -- the C2
+    inlining cliff (`.todo/482` round 2) is a rule about method SIZE, and a decoder shared behind
+    a flag is what tripped it.
+  - The one real cost is the RESULT width: `vec:matvec`'s product follows `x` (`vec::%make-like`),
+    so a narrow `x` means a narrow result and a NARROWING store per row -- cheap at one per row,
+    unlike the element-wise case. A narrow `-into` destination is the same store.
+  This answers the question for `bfloat16` AND for whatever Q8_0 lands as.
 - The JVM fused kernels read the two-slot header like every other kernel in
   `JvmSimdVectorTemplate`; `bf16Off` / `bf16Dim` are the only two places in it that spell the
   layout. `eval/VecSimdKernels`' mirror takes bare arrays, as its f32 kernels do. Only
@@ -212,17 +232,55 @@ needed"). No `linalg:` acceleration seam takes it: `--simd`, `--blas` and `--gpu
   pair at both widths for it, `.kb/gpu.md`, "The GEMV, and the matrix that stays"). Metal
   declines the width (`GpuDevice.supportsBfloat16()`); every other pairing declines to the rung
   below on either backend. A `short[]` is a residency key like any other host array.
-- **No element-wise bf16 kernel**: widening is one shift but NARROWING is not vectorized
-  (round-to-nearest-even with a NaN guard), so an element-wise arm would be a scalar store loop.
-  `.todo/696`.
+- **No element-wise bf16 kernel YET, and the reason recorded here until 2026-09-08 was
+  wrong.** The claim was: widening is one shift but NARROWING is not vectorized
+  (round-to-nearest-even with a NaN guard), so an element-wise arm would be a scalar store
+  loop wearing a vector load. Measured on 2026-09-08 (`.todo/696`, x64/AVX2, both JITs,
+  numbers and harness in
+  `.todo/artefacts/696-the-narrow-width-element-wise-kernels/README.md`):
+  - **The narrowing vectorizes.** A branch-free lane form -- the bias-add and odd-bit carry
+    as int lanes, the NaN arm as a second expression, a mask choosing between them, an
+    `I2S` narrowing store -- is **1.4-3.2x** the scalar `narrowBf16Into` at every size on
+    both JITs, and agrees with it on **all 2^32 f32 patterns**. It vectorizes BETTER than
+    the widening does: the scalar narrow is compute-bound at 0.7-1.1 Gelem/s, while the
+    widen is already memory-bound at one shift per element.
+  - **The composite is 2.3-2.7x**: widen both operands, add in f32, narrow on store, against
+    the wholly scalar loop -- and above 16 M elements it beats the f32 element-wise kernel
+    outright, moving half the bytes.
+  - The predicted "vector load in front of a scalar store loop" shape IS worthless
+    (0.89-1.07x of plain scalar). The prediction about that shape was right; the inference
+    that it was the only available shape was not.
+  - **And the f32 intermediate is exactly the defun's answer.** An element-wise kernel must
+    equal the DEFUN (which reads doubles, computes in f64 and narrows through
+    `BFloat16.bits(double)`), not another kernel, so "compute in f32" rounds a third time in
+    between. It is harmless, structurally: `bits(double)` itself falls through to
+    `bits((float) value)`, and binary64 carries 53 >= 2*24+2 bits, the classical innocuous
+    double-rounding condition for `+ - * /`. Swept over all 65536x65536 operand pairs per
+    operation: **0 mismatches** for add, sub, mul and div.
+  What is NOT decided is the arm's design -- which pairings the guard admits, the result
+  width when operands differ, which of the ~40 members earn the mirror across the two kernel
+  files. That is a plan decision of the same kind as the GEMV's pairing, and it is filed as
+  `.todo/747`.
 - **What it costs where it does not pay.** The fused GEMV is BELOW f32 on one thread while the
   matrix is cache-resident and above it once it is not: on a GB10, 1024x1024 loses and 4096x4096
   wins clearly (the numbers, both JITs, in `.todo/488`'s README). The crossover is a cache
-  hierarchy and moves with the box. There is no size gate, deliberately: the only BIT-IDENTICAL
+  hierarchy and moves with the box. **Measured on x64 too** (2026-09-08, `.todo/696`;
+  Broadwell AVX2, both JITs, table beside the aarch64 one in the same README): the SHAPE holds
+  and the headline reproduces -- 1.63-1.85x at 4096x4096 -- and the cache-resident loss is
+  MILDER, 0.88-0.93x at 1024x1024 against the GB10's 0.72-0.84x, with 288x288 at parity or
+  ahead. So the no-size-gate decision reads the same on both hierarchies and costs less on the
+  x64 one; `identical=true` printed at every shape there too. There is no size gate,
+  deliberately: the only BIT-IDENTICAL
   alternative -- widen into an f32 scratch, then the f32 kernel -- is slower at EVERY shape on both
   JITs, so there is nothing to switch to; and the other one, declining to the defun above a size,
   would make the ANSWER depend on the matrix size, which no other backend reproduces. Under
   `--parallel` the arm is at or above parity from 1024x1024 up.
+- **The width is documented** since 2026-09-08 (`.todo/696` part 4): the packed array, its
+  literal, its interpreter/JVM-only support and its bulk-pattern I/O in
+  `doc/{en,ja}/reference/data-types.md`, and the one pairing `--simd` fuses in
+  `doc/{en,ja}/guides/simd-acceleration.md` ("The bfloat16 width under `--simd`"). Before that
+  only the scalar `bfloat16-bits` / `bits-bfloat16` pair and the `linalg:` side had pages, which
+  is why `.todo/488`'s fused kernels landed with `.kb` coverage and no `doc/` change.
 - Printing is `_bf16Print` over `FloatText.bfloat16Text`. A program that `read`s or defines a
   `print-object` method goes through `LispMacroExpander.printObjectVectorArm()`, whose
   exclusions are DERIVED from `LispFloatArray.WIDTHS` per permit's own `elementType()` answer

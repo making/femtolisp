@@ -27,6 +27,8 @@ A vector is a rank-1 [packed float array](../reference/data-types.md): the `doub
 
 The kernels are width-polymorphic: they also accept single-float vectors (`#f(...)` / `:element-type 'single-float`, which store elements as `f32` -- half the memory, twice the SIMD lanes). The element-wise kernels preserve the input width on every backend (a `#f` in gives a `#f` out), while the reductions always fold to a scalar `double`.
 
+A third width rides the same kernels: **bfloat16** (`#bf16(...)` / `:element-type 'bfloat16`), sixteen bits an element -- a quarter of `#d` -- on the interpreter and the JVM only, since the WASM backends have no bfloat16 array ([packed float arrays](../reference/data-types.md)). The portable definitions preserve and fold it exactly as they do the other two. What `--simd` does with it is narrower, and has a section of its own: [The bfloat16 width under `--simd`](#the-bfloat16-width-under---simd).
+
 ```lisp
 (vec:arange 5)                         ; => #d(0.0 1.0 2.0 3.0 4.0)
 (vec:add #d(1.0 2.0 3.0) #d(4.0 5.0 6.0)) ; => #d(5.0 7.0 9.0)
@@ -168,6 +170,30 @@ Reading a lane group out of a GC array costs a bounds check that a `v128.load` f
 Because reductions sum in a different order under SIMD, a reduction over inexact inputs can differ from the left-to-right scalar reference in the last ULP; over the exact doubles typical of tests the results match exactly. The element-wise kernels are always bit-identical.
 
 Single-float reductions carry one more caveat. Under `--simd`, an `#f` reduction -- `vec:dot` / `vec:sum` / `vec:matvec` -- accumulates in single precision, in four lanes, on every backend, and widens only the final value. The scalar reference instead reads each element as a double and accumulates in double. So over data that a single-precision accumulator cannot hold, `--simd` can move an `#f` reduction by roughly the single-float epsilon rather than by the last ULP. Every `--simd` backend accumulates the same way, so they agree with one another, and the scalar reference remains the more accurate of the two. A GEMV row goes one step further: from 32 columns up, `vec:matvec` -- and `linalg`'s matrix-by-vector product, which is literally the same kernel -- folds **four** such four-lane accumulators and sums them only at the end, because one accumulator is one dependency chain and a row bounded by it never reaches the machine's memory speed. The lanes are still four wide; there are simply four of them running at once. So a `vec:matvec` row and a `vec:dot` over the same two vectors sum in different orders and can differ in their last bits -- the same value mathematically, not the same bits, so do not write code that assumes they agree. `#d` (`double-float`) reductions are unaffected. If a single-float reduction has to be as accurate as the scalar reference, use `#d` for it -- or leave `--simd` off for that computation.
+
+## The bfloat16 width under `--simd`
+
+`#bf16` is a *storage* width, and `--simd` treats it as one: it accelerates the shapes a checkpoint's weights are actually read in, and leaves everything else to the portable `vec.lisp` definition -- the same answer, just not faster. Three members, on the interpreter and the JVM (the WASM backends have no bfloat16 array to begin with):
+
+| call | accelerated |
+|---|---|
+| `vec:sum` over a `#bf16` vector | yes |
+| `vec:dot` of a `#bf16` vector with a `#f` vector | yes |
+| `vec:matvec` / `vec:matvec-into`, a `#bf16` matrix times a `#f` vector | yes |
+| anything else with a `#bf16` operand | portable definition |
+
+The matrix-by-vector row is the point: a GEMV over a weight matrix is what a decode loop spends its time in, and at this width it streams half the bytes. Each of the three kernels widens the stored patterns *inside* its lane loop -- the decode is one shift -- and is otherwise the single-float kernel, so its answer is the single-float kernel's over the widened operand **bit for bit**. Widening a bfloat16 pattern is exact, so the width adds no precision story of its own; the [single-float reduction rule](#hardware-acceleration-optional) above is the whole story, and `vec:matvec`'s product follows `x`'s width exactly as the portable definition's does.
+
+The pairing is deliberately narrow -- bfloat16 weights against single-float activations, which is how a published checkpoint is decoded and the only combination with a kernel. Every other operand mix runs the portable definition instead: two `#bf16` vectors, `#bf16` against `#d`, and every element-wise call at this width (`vec:add`, `vec:mul`, `vec:relu`, the `-into` siblings, all of them). A mixed-width element-wise call is computed, not refused -- `--simd` never turns an answer into an error.
+
+Whether the fused GEMV is faster than the same weights at single float depends on how big they are. Below roughly 4 MB of weights the matrix is cache-resident, there is no bandwidth to save, and the decode costs a little: on one thread it measured 0.7-0.8x of the single-float kernel on one machine and about parity on another. Above it the halved bytes show up as speed -- 1.3-2.0x at 4096x4096 on both -- and more under [`--parallel`](#using-more-than-one-core---parallel), where the arm is at or above parity from 1024x1024 up. There is no size gate -- the answer must not depend on the matrix size -- so a program that chooses `#bf16` for a small matrix pays that little, and gets half the memory at every size.
+
+```lisp
+(vec:sum #bf16(1.0 2.0 3.0))                          ; => 6.0
+(vec:dot #bf16(1.0 2.0) #f(3.0 4.0))                  ; => 11.0
+(vec:matvec #bf16((1.0 2.0) (3.0 4.0)) #f(1.0 1.0))   ; => #f(3.0 7.0)
+(vec:add #bf16(1.0 2.0) #bf16(3.0 4.0))               ; => #bf16(4.0 6.0)
+```
 
 ## Accelerating linalg
 

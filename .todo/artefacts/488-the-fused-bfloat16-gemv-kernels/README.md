@@ -303,12 +303,84 @@ between 4 MB and 67 MB on this cache hierarchy. It is left in place unconditiona
 Recorded so the next reader does not rediscover it: **fused bf16 stops winning below
 roughly 4 MB of weights on a GB10, and the loss there is 0.72-0.84x.**
 
-## Still open, filed as `.todo/696`
+## The x64 table, 2026-09-08
 
-- The element-wise `vec:` kernels over a narrow width, and the measurement that has to
-  come first (widening vectorizes; round-to-nearest-even narrowing does not).
-- Whether the bridge could take a NARROW x NARROW pairing. Short answer, argued there:
-  yes, as an extension rather than a rewrite.
-- x64. Every number in this file is aarch64.
-- The width has no `doc/` page at all, so the fused kernels' user-visible behaviour has
-  none either.
+Every table above this line is aarch64. `.todo/696` ran the same `bench.sh both` on
+`dorian`, the project's x64 box, so the two hierarchies can be read side by side.
+
+**Base commit `5b1213675`. Intel Xeon E5-2697A v4 (Broadwell-EP), x86-64, AVX2 (256-bit,
+no AVX-512), 2 sockets x 16 cores x 2 threads = 64, 40 MB L3 per socket, Oracle GraalVM
+25.0.4. `RONTOLISP_THREADS` UNSET, so the parallel arm took
+`Runtime.availableProcessors()` = 64. Load average 0.46 immediately before the first JVM
+and 2.84 immediately after the last (the run is its own load).** Two back-to-back runs;
+the single-threaded cells below are the first run's, and the second agreed within 0.06x
+at every one of them.
+
+Every ratio is within-run, exactly as the aarch64 tables are: both arms are timed in the
+same JVM over the same values, and the harness divides one by the other. `identical=true`
+printed at every shape on both JITs, so the fused kernel and the widen-then-f32 route
+answered the same bits here too.
+
+`eval.VecSimdKernels`, one thread:
+
+| shape | Graal f32 | Graal bf16 | Graal | C2 f32 | C2 bf16 | C2 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 288x288 | 0.015 ms | 0.017 | 0.93x | 0.017 | 0.015 | **1.17x** |
+| 1024x1024 | 0.187 | 0.208 | 0.90x | 0.167 | 0.180 | 0.93x |
+| 4096x4096 | 5.286 | 3.090 | **1.71x** | 5.085 | 2.921 | **1.74x** |
+
+`codegen.jvm.JvmSimdVectorTemplate` (the copy embedded in a `--simd` `.class`):
+
+| shape | Graal f32 | Graal bf16 | Graal | C2 f32 | C2 bf16 | C2 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 288x288 | 0.018 ms | 0.020 | 0.92x | 0.020 | 0.017 | **1.18x** |
+| 1024x1024 | 0.198 | 0.224 | 0.88x | 0.166 | 0.183 | 0.91x |
+| 4096x4096 | 5.537 | 3.389 | **1.63x** | 5.179 | 2.799 | **1.85x** |
+
+**The shape holds and the headline reproduces.** A left shift is a left shift: the fused
+kernel loses a little while the matrix is cache-resident and wins clearly once it is not,
+on Broadwell exactly as on a GB10, and the crossover is again between 4 MB and 67 MB of
+f32 weights.
+
+**What moved is the size of the loss, and it moved in bf16's favour.** The
+cache-resident regression that `.todo/488` recorded as 0.72-0.84x on a GB10 is
+**0.88-0.93x** here at 1024x1024, and at 288x288 the x64 box is at parity or ahead
+(0.92-0.93x under Graal, 1.17-1.18x under C2). So the "no size gate" decision reads the
+same on both boxes and costs less on this one. The absolute f32 GEMV is 1.7-2.4x slower
+here than on the GB10 (5.29 ms against 2.17 at 4096x4096), in line with `.todo/482`'s
+2.6-2.9x for its own f32 GEMV, so this is the slower machine measuring the friendlier
+ratio -- the decode's cost is a smaller share of a slower baseline.
+
+Two x64-specific observations, neither of which touches a shipped kernel:
+
+- **The `f32 4acc+fma` probe is SLOWER than the shipped f32 kernel here**: 6.47 ms
+  against 5.29 under Graal at 4096x4096, 6.24 against 5.09 under C2 (0.82x either way).
+  On the GB10 the two were level. Four accumulators plus an FMA is not a free win on
+  every hierarchy -- worth knowing before anyone reads `.todo/480`'s numbers as portable
+  -- but the shipped kernels do not use the FMA (wasm has no deterministic one to mirror
+  it with) and the accumulator count is fixed by the equivalence contract, so nothing
+  here is actionable.
+- **The parallel column is wilder here than on the GB10 and points the same way.** At
+  4096x4096 the parallel f32 arm sits at 26-27 Gelem/s in every cell of both runs while
+  the bf16 arm reaches 55-100, a within-run ratio of 2.3-3.6x rather than the GB10's
+  1.0-1.4x. The obvious candidate is this box's 80 MB of L3 (40 MB per socket): 33.6 MB
+  of bf16 weights can live in one socket's slice and 67.1 MB of f32 cannot. That is a
+  HYPOTHESIS with one supporting number, not a measurement -- `.todo/702` is the standing
+  warning about reading a parallel GEMV rate as a ceiling -- and the experiment that
+  would settle it is a shape sweep across the L3 boundary, as 702 ran on the other box.
+  **Do not quote the parallel cells as rates.** The single-threaded columns are the ones
+  to quote, here as there.
+
+## Still open
+
+- The element-wise `vec:` kernels over a narrow width. The measurement that had to come
+  first was run on 2026-09-08 and **overturned its own premise**: the narrowing DOES
+  vectorize, and the kernels are worth writing. Numbers, harness and what they decided:
+  `../696-the-narrow-width-element-wise-kernels/README.md`, the durable summary in
+  `.kb/bfloat16.md`, the work itself in `.todo/747`.
+- Whether the bridge could take a NARROW x NARROW pairing. Answered (yes, an extension
+  rather than a rewrite) and recorded in `.kb/bfloat16.md`.
+- x64 -- done, above.
+- The `doc/` coverage -- done: the packed `#bf16` array is in
+  `doc/{en,ja}/reference/data-types.md` and its `--simd` behaviour in
+  `doc/{en,ja}/guides/simd-acceleration.md`, both since 2026-09-08.
