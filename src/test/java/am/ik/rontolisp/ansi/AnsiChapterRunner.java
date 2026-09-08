@@ -10,10 +10,13 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+import am.ik.rontolisp.LispCons;
+import am.ik.rontolisp.LispSymbol;
 import am.ik.rontolisp.LispVal;
 import am.ik.rontolisp.eval.LispEvaluator;
 import am.ik.rontolisp.reader.Features;
 import am.ik.rontolisp.reader.LispReader;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Runs ONE chapter of the ANSI test suite in this JVM and writes a result line per
@@ -88,8 +91,42 @@ public final class AnsiChapterRunner {
 			evaluator.eval(form);
 		}
 		catch (Throwable t) {
-			report.println("%%%EVAL " + idx + " " + oneLine(t));
+			// A form the shim's own handler-case cannot catch -- every raw Java
+			// exception the evaluation seam does not classify into a Lisp condition
+			// (see .kb/error-handling.md) -- still belongs to exactly the ONE test it
+			// came from when that form is a deftest: report it the same way
+			// %ansi-run-test reports a caught one (an ERROR line), instead of losing
+			// the whole form and every test the chapter's own accounting attributes to
+			// it. A non-deftest form (an aux defparameter/defun) keeps costing every
+			// test behind it, so %%%EVAL is unchanged for those.
+			String testName = deftestName(form);
+			if (testName != null) {
+				report.println("ERROR " + testName + " " + oneLine(t));
+			}
+			else {
+				report.println("%%%EVAL " + idx + " " + oneLine(t));
+			}
 		}
+	}
+
+	/**
+	 * The test name of a top-level {@code (deftest name form expected...)} form, or
+	 * {@code null} when {@code form} is not a {@code deftest} call. Mirrors
+	 * {@code rt-shim.lisp}'s {@code %ansi-test-name}: a name may itself carry properties
+	 * as {@code (name :notes ...)}, in which case only the {@code car} is the name.
+	 */
+	private static @Nullable String deftestName(LispVal form) {
+		if (!(form instanceof LispCons cons) || !(cons.car() instanceof LispSymbol head)
+				|| !head.name().equals("DEFTEST")) {
+			return null;
+		}
+		List<LispVal> parts = cons.toList();
+		if (parts.size() < 2) {
+			return null;
+		}
+		LispVal nameArg = parts.get(1);
+		LispVal name = nameArg instanceof LispCons nameCons ? nameCons.car() : nameArg;
+		return name.display();
 	}
 
 	private static String oneLine(Throwable t) {
