@@ -184,8 +184,14 @@ Model by difficulty, `effort=high` throughout: **High -> Fable, Medium -> Opus, 
 Sonnet.** A dead worker is RESUMED, never respawned. An item the lane's work turns up is
 FILED and left for the next lane's planning, never worked recursively.
 
-**The pool is split by the one thing the boxes do not share.** Every item that needs the
-DEVICE is B's; **every GPU-free item is A's.**
+**Two questions, and only one of them is the box.** WHO may take an item is split by the one
+thing the boxes do not share: an item that needs the DEVICE is B's, and a GPU-free one can be
+A's. **WHAT belongs in a lane is a different question, and it is the umbrella's subject** --
+running a published checkpoint: the container readers, the tokenizer, the narrow widths and
+the kernels that stream them, the four backends they must agree on. Answering the second
+question with the first is how this file once carried a printer margin, four ANSI operator
+families and a `cons` set-operation row in A's lane -- every one of them real work, none of
+them about a checkpoint (rule 15).
 
 ### Orchestrator A -- dorian, GPU-free, the model side
 
@@ -227,40 +233,42 @@ sides** -- and in four of the six the thing measured was the instrument, not the
   open deliberately: it is a standing READING, re-taken at the close of the lane that spends
   it.
 
-**The current lane spends the ranking that re-reading produced.** The first item is the only
-one BOTH instruments name; the next two are `680`'s own residue and decay if left, because
-they are legible only while its mechanism is fresh; the last three are the ranking in payoff
-order.
+**The current lane is the narrow width's remainder.** `482`'s eight children all closed and
+the width shipped, but three arms of it are still refused in the tree and one of them names a
+CLOSED item as its owner -- so the surface reads as finished from the umbrella and as
+"does not yet" from the source. The lane's own first item is the map the next two need.
 
 | # | item | difficulty | why here, why now |
 | --- | --- | --- | --- |
-| A-1 | `041` readtable and printing control -- the right-margin half | High | FIRST by the standing axis: an item BOTH instruments name is taken before one either names alone, and after `715`'s re-read this is the only one left. The ANSI `printer` chapter sits at 40.7%, and the right margin is the sole live gap remaining in the _Practical Common Lisp_ corpus -- four systems differ from SBCL by it and by nothing else. Scope it to the margin; `041`'s stream column is a separate half and does not come with it |
-| A-2 | `736` the `substitute` / `remove` family rejects `:count` `:start` `:end` `:from-end` | Medium | Second, and the largest operator row the ranking has: 578 tests. It exists as a filed item only because `680` made the refusal CATCHABLE -- before that these were raw throws counted under one message, and what they report now is a real gap rather than a report artefact |
-| A-3 | `735` a wrong-arity `funcall` is not signalled on the compiled backends | Medium | Third: `680`'s other residue, and the one that outranks its test count. The interpreter signals, the JVM answers NIL, wasm traps -- **three answers to one call**, which is a cross-backend divergence and not a missing feature. It is the half `680` could not reach because the check has no expansion-time site |
-| A-4 | `732` a row slice of a quantized matrix without a scratch file | Medium | Fourth, and the lane's only checkpoint-path item. Filed by B's `728`, and GPU-free, so the partition makes it A's. `examples/llm` splits Qwen3.5's `attn_q` through a byte copy in `$TMPDIR` because a `quantized-matrix` is immutable and `file-position` does not seek -- so the program's correctness depends on a writable temp directory on four backends |
-| A-5 | `740` the cons set and tree operator family is unowned | Medium | Fifth: 458 tests, and it is the row `715` found pointing at a CLOSED owner. Cheaper than it reads -- CLHS permits the `n*` forms to be aliases of their non-destructive twins, so the family is smaller than its name count |
-| A-6 | `742` the standard limit and `boole-` constants are unbound | Low | Last because it is cheap and because of where it sits: `array-rank-limit` is one of the five links in the `universe.lsp` cascade that costs 504 tests, so a Low item feeds a chapter-sized one. Taking it last also puts a small item after the lane's two mechanisms, where a re-read of `715` closes the lane |
+| A-1 | `746` the hand-written bf16 conversion census has no owner and no current number | Low | FIRST, and cheap, because it is the MAP for A-2 and A-3: both of them risk adding another copy of the same rounding, and the census is exactly which sites spell it, which of those had no choice (a backend emitter cannot call `BFloat16`, which does not travel with the output) and whether they agree in the narrow / NaN direction. Every break this arithmetic has had was in a copy, in that direction. Taking it after the two would be reading the map after the walk |
+| A-2 | `745` the bulk float-bits pair declines `bfloat16` in both directions | Medium | Second: it is the STAGING primitive on the checkpoint path, and its refusal is a `"does not yet"` naming `.todo/487`, closed 2026-09-05 -- so it has been reading as scheduled while nothing owned it. The cost is narrow and real: a published F16 checkpoint reaches the narrow width only by widening into `#f` and narrowing back, allocating exactly the f32 array the width exists to avoid. `read-sequence`'s bulk pattern transfer is why this was survivable, not why it is done |
+| A-3 | `689` the `jvm-export` handle does not carry `bfloat16` | Medium | Third, directly after `745` and against A-1's classification, because it is the same question one layer out: a Java caller of a compiled model can neither hand a bf16 weight matrix across nor receive one, and `runtime` imports nothing, so the arm is a THIRD spelling of the conversion. The refusal is correct today (`checkPacked`, "not a packed float array: [S") and nothing is silently misread -- which is why it is third and not first |
+| A-4 | `696` the narrow-width element-wise kernels and the operand pairing | Medium | Fourth: the one bf16 arm that is a KERNEL rather than a boundary. `.kb/bfloat16.md` states the gap -- widening is one shift, narrowing is not vectorized, so an element-wise arm is a scalar store loop -- and the item also holds the NARROW x NARROW pairing question the bridge has never been asked. Its x64 half is A's, every `.todo/488` number behind it being aarch64 |
+| A-5 | `732` a row slice of a quantized matrix without a scratch file | Medium | Fifth, and the other width: `examples/llm` splits Qwen3.5's `attn_q` through a byte copy in `$TMPDIR`, because a `quantized-matrix` is immutable and `file-position` does not seek. **A program's correctness depends on a writable temp directory on four backends**, which is the kind of dependency the checkpoint path is supposed to have shed. Filed by B's `728` and GPU-free, so the box question makes it takeable here |
+| A-6 | `482` the `bfloat16` umbrella itself | High | LAST because it is the only item the lane's own results decide. All eight children (483-490) are closed and the file still reads as an open plan; after A-1 through A-4 the remainder is known, and the honest close is either a rewritten `482` scoped to what is left or a deletion with the width's account moved into `.kb/bfloat16.md`. **Not a formality**: `.todo/487`'s close is what stranded two arms, and closing an umbrella has the same failure available to it |
 
-**A's pool, not in the lane.** All GPU-free.
+**A's pool for THIS umbrella.** GPU-free and on the subject:
 
-- `739` (Low) -- the ANSI report's three remaining accounting defects plus the unit-mixing
-  `715` found. **Instrument work, and it gates a price**: `741`'s 370 tests are held under
-  reservation until the `in-package` skip stops limiting the `packages` chapter.
-- `741` (High) -- the runtime package API, unowned for the same reason `740` was.
-- `744` (Medium, 156 tests, 104 of them `arrays` alone) and `743` (Low, 51 tests behind one
-  predicate) -- the next two ranking rows after the lane's.
-- `679` (High) -- `'pi` reads as a double. **Its own headline was wrong and is corrected in
-  place**: 715 traced the `universe.lsp` cascade form by form and `679` is one of five
-  links, worth ~95 tests alone rather than the 618 it claimed.
-- `731` (Medium) -- half of it is a person's action: filing the wasmtime bug is an external
-  submission. The toolchain half (move off 47.0.3, re-verify every wasm leg) is takeable by
-  any lane; the narrowing question is answered by the PIN, never by the version.
-- `684` (Low) and `696` (Medium) each hold an **x64 half that is A's**, every `.todo/488`
-  number behind them being aarch64.
-- `721` (Medium) wants a quiet box and does not decay. `597` (Medium, the other four `geom:`
-  model readers have no interpreter native), `689` (Medium, `jvm-export` handles do not
-  carry bfloat16), `699` (Low, one UTF-8 lead-byte table and two hand-written copies),
-  `737` (Low, pin that `.kb/README.md` lists every topic file exactly once).
+- `731` (Medium) -- the wasmtime landing-pad report and the toolchain floor. On the subject
+  by descent: `722` earned its place as the corpus INSTRUMENT, because a cross-backend pin an
+  unrelated later case can turn red is not a pin, and the checkpoint path is pinned on four
+  backends. Half of it is a person's action -- filing the bug upstream is an external
+  submission. The narrowing question is answered by the PIN, never by the version.
+- `721` (Medium) -- a character `read-sequence` costs ~1.2 us/char. Adjacent rather than on
+  the path: the checkpoint readers use the BYTE and packed transfers, not the character one.
+  It is here because it wants a quiet box and does not decay, and it should move out if a
+  lane ever has to choose.
+
+**Not this umbrella's, and moved out of A's pool.** Every one is real work and GPU-free, and
+none is about running a checkpoint. They belong to their own tracks and any lane may take
+them; 670 should not own them: `041` (the printer's right margin, and the one item both the
+ANSI suite and the _Practical Common Lisp_ corpus name), `735` / `736` / `739` / `740` /
+`741` / `742` / `743` / `744` (the ANSI ranking `715` produced -- `715` is its own standing
+reading and is not this file's either), `679` (`'pi` reads as a double), `597` (the four
+`geom:` MODEL readers -- solid models, not checkpoints; the name is the whole reason it
+drifted in here), `699` (the UTF-8 lead-byte table), `737` (the `.kb` index pin), `684` (the
+f64 `--simd` GEMV row -- f64 is not a model width, so its x64 half is A's by box and nobody's
+by subject).
 
 ### Orchestrator B -- GB10, the device
 
@@ -287,9 +295,11 @@ B's previous lane closed `726`, `727` and `728`. What outlived them:
 | B-1 | `729` the binary's downcalls through SubstrateVM's own AOT route | High | The lane, and open-ended: `727` left the measurement done and the COST accepted rather than the design. 10.7 ns against 2-7 us on the same address in the same image, ~5 ms of a decode forward's ~1300 driver calls, and a `--blas` floor that exists only to pay for it. What is unsettled is the SHAPE -- a `-Pnative` source set substituting the binding halves of `am.ik.gpu.CudaDriver`, `eval/LinalgBlasKernels` and `am.ik.objc`, one interface method per shape across 45 CUDA + 6 BLAS + the objc table, against core libraries that import nothing. **The honest first step is deciding whether that seam is payable, and "not worth it" is a close** |
 
 **The device pool did not refill this time.** Two lanes ago both closers filed a device
-successor and the partition held on that; `728` filed `732`, which is GPU-FREE and went to
-A. So B's lane is one item, and the aarch64/x64 axis that `684` and `696` hold is the next
-thing to settle rather than to wait on.
+successor and the partition held on that; `728` filed `732`, which is GPU-free and on this
+umbrella's subject, so it went to A. B's lane is therefore one item. The **aarch64/x64 axis**
+is what to settle next rather than wait on, and after rule 15 it is smaller than it looked:
+only `696` carries a half of it that this plan is about (the narrow width's element-wise
+kernels, now A-4), and `684`'s f64 GEMV row belongs to its own track.
 
 **Not either lane's.** `730` (report the SVM findings upstream) is finished as writing and
 needs a person to post it. `514` (`LinalgGpuTest` never finishes on Apple silicon) and `516`
@@ -373,6 +383,16 @@ Cited by number from other items -- **the numbering is fixed.**
     worker as off-limits. **So the exclusion is per-FILE and has to be stated when the lane
     is designed, not discovered when it bites** -- and "documentation-only" means it, since
     an item that must MEASURE to write the doc is a lane item wearing a doc's clothes.
+15. **The box partition answers WHO, not WHAT, and using it to pick lane CONTENT drags the
+    whole backlog under one umbrella.** "Every GPU-free item is A's" was written to say which
+    box may take an item and was read as which items belong to this plan, so a lane of six
+    arrived holding a printer margin, three ANSI operator families and a `cons` set-operation
+    row -- all real work, none of it about running a checkpoint, and one of them (`597`, the
+    four `geom:` MODEL readers) pulled in by a NAME COLLISION with the subject. The
+    correction is two questions asked separately: **the umbrella's subject selects the item,
+    the box constraint selects the taker**, and an item that passes only the second belongs
+    to its own track. `.kb`-style test: name the item's connection to the umbrella's goal in
+    one clause without using the word "and".
 
 ## What is deliberately not in the plan
 
