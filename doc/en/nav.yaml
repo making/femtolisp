@@ -99,6 +99,8 @@ sections:
         title: GPU Acceleration (--gpu)
       - file: guides/neural-networks.md
         title: Neural Networks (torch)
+      - file: guides/running-a-checkpoint.md
+        title: Reading a Model Checkpoint (gguf, safetensors)
       - file: guides/solid-modeling.md
         title: Solid Modeling (geom)
       - file: guides/java-interop.md
