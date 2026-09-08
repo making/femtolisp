@@ -17,9 +17,12 @@ and the set of files `.kb/README.md` links: every file listed at least once (the
 test covers), and no file listed twice (a duplicate line means two sections claim the same
 topic). Both directions in one assertion, with the offending names in the message.
 
-Beware the two shapes already in the file: the header sentence writes `.kb/*.md` as prose,
-which a naive `[a-z0-9._-]*\.md` scan reads as a filename, and every entry contributes TWO
-textual matches because the link text is the filename too.
+Count LINKS, not filename-shaped text. Three shapes in the file defeat a naive
+`[a-z0-9._-]*\.md` scan: the header writes `.kb/*.md` as prose, every entry contributes two
+textual matches because the link text is the filename too, and the header paragraph names
+four topic files (`string-index-cost.md`, `bfloat16.md`, `instance-syntax.md`,
+`checkpoint-readers.md`) as evidence for a measurement. Matching `[name](name)` gives 130
+entries for 130 files with no special cases.
 
 ## Not in scope
 
