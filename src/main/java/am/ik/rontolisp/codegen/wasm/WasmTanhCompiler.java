@@ -20,11 +20,11 @@ import am.ik.wasm.Instruction;
  * {@code f64.max}/{@code f64.min}, which propagate NaN, so {@code (tanh NaN)} stays NaN.
  *
  * <p>
- * Like {@code exp} itself, the result matches {@code Math.tanh} to roughly 1e-6 relative
- * error but is not bit-identical to the interpreter/JVM value (for a tiny {@code x} the
- * {@code e^(2x) - 1} subtraction additionally loses a few low-order digits). The IEEE
- * edges DO match: NaN survives the clamp, and a zero short-circuits to the argument so
- * {@code (tanh -0.0)} is {@code -0.0} as on every other backend.
+ * Like {@code exp} itself, the result matches {@code Math.tanh} to a few dozen ulps for
+ * {@code |x|} down to ~1e-3 (for a tinier {@code x} the {@code e^(2x) - 1} subtraction
+ * additionally loses low-order digits) but is not bit-identical to the interpreter/JVM
+ * value. The IEEE edges DO match: NaN survives the clamp, and a zero short-circuits to
+ * the argument so {@code (tanh -0.0)} is {@code -0.0} as on every other backend.
  */
 final class WasmTanhCompiler {
 
@@ -67,7 +67,8 @@ final class WasmTanhCompiler {
 		ctx.writer.writeUnsignedLeb128(xSlot);
 		ctx.writer.write(Instruction.ELSE);
 
-		// e = exp(clamp(2x)), boxed into accSlot by the shared exp core.
+		// e = exp(clamp(2x)), boxed into accSlot by the shared exp core (which runs on
+		// xSlot / tSlot / accSlot -- x is not needed afterwards).
 		WasmExpCompiler.unboxF64Local(ctx, xSlot);
 		ctx.writer.write(Instruction.F64_CONST);
 		ctx.writer.writeF64(2.0);
@@ -78,7 +79,7 @@ final class WasmTanhCompiler {
 		ctx.writer.write(Instruction.F64_CONST);
 		ctx.writer.writeF64(CLAMP);
 		ctx.writer.write(Instruction.F64_MIN);
-		WasmExpCompiler.emitExpCore(ctx, tSlot, accSlot);
+		WasmExpCompiler.emitExpCore(ctx, xSlot, tSlot, accSlot);
 		ctx.writer.write(Instruction.DROP);
 
 		// (e - 1) / (e + 1), boxed.

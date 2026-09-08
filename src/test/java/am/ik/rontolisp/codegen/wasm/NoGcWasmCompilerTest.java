@@ -1218,8 +1218,8 @@ class NoGcWasmCompilerTest {
 		// vec:exp / vec:sign (and -into) reuse the
 		// GC backend's raw-f64 emitters (WasmVecSimdRuntimeBuilder.emitExpF64 /
 		// emitSignumF64), so BOTH lowerings drive the same scalar element loop -- no
-		// 0xFD SIMD opcode even under --simd, and the exp argument-reduction constant
-		// (f64.const 1/256, WasmExpCompiler.INV_SCALE) appears in the body. The probe
+		// 0xFD SIMD opcode even under --simd, and the exp range-reduction constant
+		// (f64.const 1/ln2, WasmExpCompiler.INV_LN2) appears in the body. The probe
 		// avoids vec:sum (whose --simd lowering IS v128) so 0xFD absence is exp/sign's.
 		String source = """
 				(defun f (n)
@@ -1231,13 +1231,13 @@ class NoGcWasmCompilerTest {
 				""";
 		int[] invScale = new int[9];
 		invScale[0] = 0x44; // f64.const
-		long bits = Double.doubleToRawLongBits(WasmExpCompiler.INV_SCALE);
+		long bits = Double.doubleToRawLongBits(WasmExpCompiler.INV_LN2);
 		for (int i = 0; i < 8; i++) {
 			invScale[1 + i] = (int) ((bits >>> (8 * i)) & 0xFF);
 		}
 		for (boolean simd : new boolean[] { false, true }) {
 			byte[] code = Objects.requireNonNull(sections(simd ? compileSimd(source) : compile(source)).get(10));
-			assertThat(containsSequence(code, invScale)).as("exp INV_SCALE constant, simd=%s", simd).isTrue();
+			assertThat(containsSequence(code, invScale)).as("exp INV_LN2 constant, simd=%s", simd).isTrue();
 			assertThat(containsSequence(code, 0xFD)).as("no SIMD prefix in the exp/sign lowering, simd=%s", simd)
 				.isFalse();
 		}

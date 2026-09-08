@@ -101,14 +101,15 @@ Everything strided bottoms out here, so there is exactly one place a strided rea
 ## `-inf` through `where` -> `softmax`
 Masked attention is `(linalg:where mask score -inf)` then `softmax`, and it works only because
 `where` SELECTS: the older multiply-by-a-0.0/1.0-mask spelling turns `0.0 * -inf` into `NaN`.
-It was not free. `WasmExpCompiler`'s software `exp` is a degree-5 Taylor polynomial on
+It was not free. `WasmExpCompiler`'s software `exp` used to be a degree-5 Taylor polynomial on
 `t = x / 256` followed by 8 squarings, and that polynomial has a real root near `t = -2.18`
 (`x = -558`) below which `p(t)` is NEGATIVE and an even number of squarings makes it hugely
 POSITIVE -- `(exp -1000)` was `2.4e125`, so a masked softmax returned `NaN` on WASM. A large
-finite negative mask would NOT have been safer. Fix: one instruction, `f64.max(p(t), 0.0)` before
-the squarings (`WasmExpCompiler.UNDERFLOW_CLAMP`, mirrored in
-`WasmVecSimdRuntimeBuilder.emitExpF64` so `--simd`/`--no-gc` kernels stay bit-identical). NaN
-still propagates, `+inf` untouched. Rest of the WASM transcendental contract: [[vec]].
+finite negative mask would NOT have been safer. Fix (todo-456): the standard range reduction
+`x = k*ln2 + r`, a degree-12 Taylor polynomial for `e^r`, and a scale by `2^k` through the
+exponent bits (`WasmExpCompiler.UNDERFLOW_LO`, mirrored in
+`WasmVecSimdRuntimeBuilder.emitExpF64` so `--simd`/`--no-gc` kernels stay bit-identical).
+NaN still propagates, `+inf` untouched. Rest of the WASM transcendental contract: [[vec]].
 
 `softmax`/`log-softmax`/`erf` live here rather than in the differentiable layer because a second
 copy would fork the array math; `erf` exists for the EXACT GELU `x * (1 + erf(x/sqrt 2)) / 2`

@@ -217,7 +217,7 @@ final class WasmExptCompiler {
 		boxInto(ctx, rSlot);
 		ctx.writer.write(Instruction.ELSE);
 		// r = exp(y * ln(x)) -- ln reuses xSlot/scratchSlot/doneSlot as its temps
-		// (x is consumed first), exp reuses scratchSlot/doneSlot.
+		// (x is consumed first), exp reuses xSlot/scratchSlot/doneSlot the same way.
 		unbox(ctx, xSlot);
 		WasmLogCompiler.emitLogCore(ctx, xSlot, scratchSlot, doneSlot);
 		ctx.writer.write(Instruction.GC_PREFIX, Instruction.REF_CAST);
@@ -227,7 +227,7 @@ final class WasmExptCompiler {
 		ctx.writer.writeUnsignedLeb128(0);
 		unbox(ctx, ySlot);
 		ctx.writer.write(Instruction.F64_MUL);
-		WasmExpCompiler.emitExpCore(ctx, scratchSlot, doneSlot);
+		WasmExpCompiler.emitExpCore(ctx, xSlot, scratchSlot, doneSlot);
 		ctx.writer.write(Instruction.SET_LOCAL);
 		ctx.writer.writeUnsignedLeb128(rSlot);
 		ctx.writer.write(Instruction.END);

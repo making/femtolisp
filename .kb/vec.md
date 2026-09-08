@@ -160,19 +160,22 @@ The seventeen ufuncs (+ `-into`) exist in BOTH packages under their numpy names.
 `BuiltinFunctionWrappers.WASM_UNSUPPORTED` -- every transcendental built-in now compiles on WASM.
 WASM software scalars: `WasmAtanCompiler` (~1e-15, `-0.0` PRESERVED since there is no `i32.trunc`;
 acos = `2*atan(sqrt((1-x)/(1+x)))` NOT `pi/2 - asin`, so `(acos 1)` is exactly 0.0),
-`WasmSinhCoshCompiler` (NaN/+-inf branches must PRECEDE the exponential, whose Horner maps -inf to
-+inf), `WasmSinCosCompiler` (Cody-Waite, ~1e-11 for |x| <= ~1e6), `WasmLogCompiler` (~1e-10),
+`WasmSinhCoshCompiler` (NaN/+-inf branches must PRECEDE the exponential), `WasmSinCosCompiler`
+(Cody-Waite, ~1e-11 for |x| <= ~1e6), `WasmLogCompiler` (~1e-10),
 `WasmTanhCompiler` (argument clamped to +-40, so large inputs saturate to exactly +-1.0).
+`WasmExpCompiler` itself is the standard range reduction `x = k*ln2 + r` (two-part ln2
+split, like Cody-Waite), a degree-12 Taylor polynomial for `e^r`, and a scale by `2^k`
+through the exponent bits -- ~3e-14 relative over the full finite range, with the edges
+`x > 709.8 -> +inf`, `x < -745.2 -> 0.0`, NaN -> NaN.
 `(sin -0.0)`/`(tan -0.0)`/`(tanh -0.0)` are `0.0`; wasm `signum` maps `-0.0`/NaN to `0.0`.
 
 - **The oracle is each backend's OWN scalar defun** (the emap rule: read widened to f64, apply the
   backend's scalar op, narrow on store), so cross-backend `-0.0`/NaN/low-digit output stays OUT of
   ci-spec. The one edge where wasm's `exp` is EXACTLY the JVM's is underflow:
-  `WasmExpCompiler.UNDERFLOW_CLAMP` clamps the reduced Horner polynomial at `f64.max(p(t), 0.0)`
-  before the squarings, because `p` goes negative below its root (`t = -2.18`, `x = -558`) and the
-  even squaring count turned that into a huge POSITIVE value (`(exp -1000)` was `2.4e125`). It is
-  what makes a `-infinity` mask reach `linalg:softmax` as `0.0` (`.kb/linalg.md`); `emitExpF64`
-  carries the same instruction so `--simd`/`--no-gc` stay bit-identical to the defun.
+  `WasmExpCompiler.UNDERFLOW_LO` answers `0.0` below the smallest denormal, exactly where
+  `Math.exp` does. It is what makes a `-infinity` mask reach `linalg:softmax` as `0.0`
+  (`.kb/linalg.md`); `emitExpF64` carries the same sequence so `--simd`/`--no-gc` stay
+  bit-identical to the defun.
 - **Lane forms only where they equal the defun.** Interpreter/JVM and wasm-GC lane-ize sqrt, abs,
   negative and reciprocal only (`VectorOperators.EXP` is not bit-identical to `Math.exp`; gate
   `JvmSimdVectorTemplate.hasLaneForm`); exp/log/tanh/sin/cos/tan/sign walk element loops over
