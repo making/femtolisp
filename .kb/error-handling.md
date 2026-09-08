@@ -60,10 +60,10 @@ A condition is a CLOS-subset instance ([instance-syntax.md](instance-syntax.md))
   consumers that must keep READING it, never a copy: the constructor, and
   `PackageRegistry.CL_CONDITION_TYPES` = `ClosRegistry.CONDITION_CLASS_NAMES`, which makes every
   seeded name a `cl` symbol ([packages.md](packages.md)).
-- Four classes carry `format-control`/`format-arguments` beyond CLHS's slot lists -- `type-error`,
-  `arithmetic-error`, `unbound-variable`, `undefined-function` -- because that pair is how a
-  BUILT-IN error carries its message. `simple-type-error` therefore adds nothing, so both keep their
-  old `%obj-ref` indexes.
+- Five classes carry `format-control`/`format-arguments` beyond CLHS's slot lists -- `type-error`,
+  `arithmetic-error`, `program-error`, `unbound-variable`, `undefined-function` -- because that pair
+  is how a BUILT-IN error carries its message. `simple-type-error` therefore adds nothing, so both
+  keep their old `%obj-ref` indexes.
 - `define-condition` = `defineConditionToDefclass` -> `expandDefclass` (top-level-only on the
   compile path); `(:report x)` registered (string or lambda AST), `:documentation` dropped. **Lite
   multiple parents**: the FIRST parent provides the slot layout, the rest join the ancestor set only
@@ -371,7 +371,11 @@ Built from `compiler/UncaughtReport.PREFIX` at all three emission sites; the rep
 on the interpreter, the JVM and both wasm-GC backends.** No backend has a per-form compiler class; a
 divergence can only come from the primitives underneath (`catch`/`throw`, `unwind-protect`, globals,
 closures), all pinned cross-backend. `--no-gc` keeps the lite lowering.
-
+- **The six operators the lowering serves**: `restart-case`/`restart-bind`/`with-simple-restart`
+  expand via `LispMacroExpander.expandRestartCase`/`expandRestartBind`/`expandWithSimpleRestart`;
+  `find-restart`/`invoke-restart`/`compute-restarts` are runtime defuns assembled by
+  `LispMacroExpander.restartRuntimeForms` (injected by `expandTopLevelDefinitions` at compile time,
+  `ensureRestartRuntimeLoaded()` at interpret time).
 - **Two dynamic stacks, both TOP-LEVEL GLOBALS** (`%HANDLER-CLUSTERS%`, `%RESTART-CLUSTERS%`,
   injected as `defvar`s; plus `%HANDLERS-RAN%`, the completed-walk mark), mutated with plain `setq`
   and restored through an `unwind-protect` cleanup over a LEXICALLY saved value. **Deliberately NOT
