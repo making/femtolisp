@@ -2009,7 +2009,7 @@ class LispEvaluatorTest {
 
 	@Test
 	void evalFormatNotEnoughArguments() {
-		assertThatThrownBy(() -> eval("(format t \"~a ~a\" 1)")).isInstanceOf(IllegalArgumentException.class)
+		assertThatThrownBy(() -> eval("(format t \"~a ~a\" 1)")).isInstanceOf(LispEvalException.class)
 			.hasMessageContaining("not enough arguments");
 	}
 
@@ -3192,7 +3192,7 @@ class LispEvaluatorTest {
 		// A fifth name is not a type-spec spelling: it must stay an error, or a typo'd
 		// subclause keyword becomes a silently ignored token.
 		assertThatThrownBy(() -> eval("(loop for v bogus = 0 then (1+ v) collect v)"))
-			.isInstanceOf(IllegalArgumentException.class)
+			.isInstanceOf(LispEvalException.class)
 			.hasMessageContaining("incomplete for clause");
 	}
 
@@ -3240,7 +3240,7 @@ class LispEvaluatorTest {
 				(setq h (make-hash-table))
 				(setf (gethash "foo" h) 10 (gethash "bar" h) 20)
 				(list (gethash "foo" h) (gethash "bar" h))""").print()).isEqualTo("(10 20)");
-		assertThatThrownBy(() -> eval("(setf a 1 b)")).isInstanceOf(IllegalArgumentException.class)
+		assertThatThrownBy(() -> eval("(setf a 1 b)")).isInstanceOf(LispEvalException.class)
 			.hasMessageContaining("odd number");
 	}
 
@@ -3303,8 +3303,7 @@ class LispEvaluatorTest {
 			.isEqualTo(LispNil.INSTANCE);
 		assertThat(eval("(let ((r nil)) (loop for x in '(1) always (< x 5) finally (setq r t)) r)"))
 			.isEqualTo(LispTrue.INSTANCE);
-		assertThatThrownBy(() -> eval("(loop for x in '(1) thereis x collect x)"))
-			.isInstanceOf(IllegalArgumentException.class)
+		assertThatThrownBy(() -> eval("(loop for x in '(1) thereis x collect x)")).isInstanceOf(LispEvalException.class)
 			.hasMessageContaining("always/never/thereis");
 	}
 
@@ -6294,11 +6293,11 @@ class LispEvaluatorTest {
 
 	@Test
 	void evalFletErrors() {
-		assertThatThrownBy(() -> eval("(flet ((f () 1) (f () 2)) (f))")).isInstanceOf(IllegalArgumentException.class)
+		assertThatThrownBy(() -> eval("(flet ((f () 1) (f () 2)) (f))")).isInstanceOf(LispEvalException.class)
 			.hasMessageContaining("more than once");
-		assertThatThrownBy(() -> eval("(flet ((if (x) x)) 1)")).isInstanceOf(IllegalArgumentException.class)
+		assertThatThrownBy(() -> eval("(flet ((if (x) x)) 1)")).isInstanceOf(LispEvalException.class)
 			.hasMessageContaining("special operator");
-		assertThatThrownBy(() -> eval("(labels (f () 1) 2)")).isInstanceOf(IllegalArgumentException.class)
+		assertThatThrownBy(() -> eval("(labels (f () 1) 2)")).isInstanceOf(LispEvalException.class)
 			.hasMessageContaining("definition must be");
 	}
 
@@ -7284,9 +7283,8 @@ class LispEvaluatorTest {
 
 	@Test
 	void evalMultipleValueBindErrors() {
-		assertThatThrownBy(() -> eval("(multiple-value-bind (a) )")).isInstanceOf(IllegalArgumentException.class);
-		assertThatThrownBy(() -> eval("(multiple-value-bind (1) (values 1) 'x)"))
-			.isInstanceOf(IllegalArgumentException.class)
+		assertThatThrownBy(() -> eval("(multiple-value-bind (a) )")).isInstanceOf(LispEvalException.class);
+		assertThatThrownBy(() -> eval("(multiple-value-bind (1) (values 1) 'x)")).isInstanceOf(LispEvalException.class)
 			.hasMessageContaining("must be a symbol");
 	}
 
@@ -10213,6 +10211,69 @@ class LispEvaluatorTest {
 		// built-in seam wraps them into conditions.
 		assertThat(eval("(handler-case (aref (vector 1 2) 5) (error (e) :caught))").print()).isEqualTo(":CAUGHT");
 		assertThat(eval("(handler-case (make-array -1) (error (e) :caught))").print()).isEqualTo(":CAUGHT");
+	}
+
+	@Test
+	void argumentShapeErrorsSignalACatchableProgramError() {
+		// A bad keyword, an odd keyword tail, a non-keyword in keyword position and a
+		// wrong argument count used to leave the evaluator as raw Java exceptions that
+		// no handler-case could see (.kb/error-handling.md, "Argument-shape errors
+		// signal a catchable program-error"). The JVM twin is
+		// compileAndRunArgumentShapeErrorsSignalACatchableProgramError, the wasm one
+		// ehArgumentShapeErrorsSignalACatchableProgramError.
+		assertThat(eval(
+				"(handler-case (remove 1 '(1 2 3) :bogus 4) (program-error (c) :program-error) (error (c) :plain))")
+			.print()).isEqualTo(":PROGRAM-ERROR");
+		assertThat(eval("(handler-case (remove 1 '(1 2 3) :bogus 4) (error (c) (princ-to-string c)))").print())
+			.isEqualTo("\"REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY, got: :BOGUS\"");
+		assertThat(eval("(handler-case (find 1 '(1 2) :key) (program-error (c) :odd-tail))").print())
+			.isEqualTo(":ODD-TAIL");
+		assertThat(eval("(handler-case (remove 'a nil 'bad t) (program-error (c) :not-a-keyword))").print())
+			.isEqualTo(":NOT-A-KEYWORD");
+		assertThat(eval("(handler-case (remove-duplicates '(1 1 2) :bogus t) (program-error (c) :rd))").print())
+			.isEqualTo(":RD");
+		assertThat(eval("(handler-case (position 1 '(1 2) :bogus 4) (program-error (c) :pos))").print())
+			.isEqualTo(":POS");
+		assertThat(eval("(handler-case (make-string-output-stream 1) (program-error (c) :positional))").print())
+			.isEqualTo(":POSITIONAL");
+		// First-class use goes through the runtime validators, which agree.
+		assertThat(eval("(handler-case (funcall #'member 1 '(1 2) :bogus 4) (program-error (c) :fc))").print())
+			.isEqualTo(":FC");
+		assertThat(eval("(handler-case (funcall #'position 1 '(1 2) :bogus 4) (program-error (c) :fc-pos))").print())
+			.isEqualTo(":FC-POS");
+		assertThat(eval("(handler-case (funcall #'find 1 '(1 2) :key) (program-error (c) :fc-odd))").print())
+			.isEqualTo(":FC-ODD");
+		// A wrong argument count is a program-error too, for a lambda, a defun and a
+		// built-in (CLHS 3.5.1.2 / 3.5.1.3).
+		assertThat(eval("(handler-case (funcall (lambda (x) x) 1 2) (program-error (c) :arity))").print())
+			.isEqualTo(":ARITY");
+		assertThat(eval("(handler-case (funcall #'car) (program-error (c) :builtin-arity))").print())
+			.isEqualTo(":BUILTIN-ARITY");
+		assertThat(
+				eval("(handler-case (funcall (lambda (x &key y) (list x y)) 1 :z 2) (program-error (c) :unknown-key))")
+					.print())
+			.isEqualTo(":UNKNOWN-KEY");
+		// An expansion-time shape rejection that is not lowered per site still
+		// arrives as a program-error through the evaluation seam.
+		assertThat(eval("(handler-case (setf a 1 b) (program-error (c) :odd-setf))").print()).isEqualTo(":ODD-SETF");
+	}
+
+	@Test
+	void allowOtherKeysSuppressesTheKeywordCheck() {
+		// CLHS 3.4.1.4.1.1: a true :allow-other-keys makes every other keyword legal,
+		// the LEFTMOST pair decides, and the key itself is always accepted.
+		assertThat(eval("(remove 'a '(a b c a d) :bad t :allow-other-keys t)").print()).isEqualTo("(B C D)");
+		assertThat(eval("(remove 'a '(a b c a d) :allow-other-keys t :bad t :bad nil)").print()).isEqualTo("(B C D)");
+		assertThat(eval("(remove 'a '(a b c a d) :bad1 t :allow-other-keys t :bad2 t :allow-other-keys nil :bad3 t)")
+			.print()).isEqualTo("(B C D)");
+		assertThat(eval("(remove 'a '(a b c a d) :allow-other-keys nil)").print()).isEqualTo("(B C D)");
+		assertThat(eval("(handler-case (remove 'a '(a b) :allow-other-keys nil :bad t) (program-error (c) :checked))")
+			.print()).isEqualTo(":CHECKED");
+		assertThat(eval("(funcall #'member 'a '(b a c) :bad t :allow-other-keys t)").print()).isEqualTo("(A C)");
+		assertThat(eval("(funcall #'find 'a '(b a) :bad t :allow-other-keys t)").print()).isEqualTo("A");
+		assertThat(eval("(funcall #'find-if #'null '(1 nil) :test #'eq :allow-other-keys t)").print()).isEqualTo("NIL");
+		assertThat(eval("(funcall (lambda (x &key y) (list x y)) 1 :z 2 :allow-other-keys t)").print())
+			.isEqualTo("(1 NIL)");
 	}
 
 	@Test
@@ -14247,8 +14308,7 @@ class LispEvaluatorTest {
 
 	@Test
 	void defstructIncludeUnknownParentSignals() {
-		assertThatThrownBy(() -> eval("(defstruct (point (:include base)) x y)"))
-			.isInstanceOf(IllegalArgumentException.class)
+		assertThatThrownBy(() -> eval("(defstruct (point (:include base)) x y)")).isInstanceOf(LispEvalException.class)
 			.hasMessageContaining(":include names an unknown struct");
 	}
 
@@ -14752,7 +14812,7 @@ class LispEvaluatorTest {
 	@Test
 	void defmethodLambdaListMustMatchTheGeneric() {
 		assertThatThrownBy(() -> evalMulti("(defgeneric g (x y)) (defmethod g (x) x)"))
-			.isInstanceOf(IllegalArgumentException.class)
+			.isInstanceOf(LispEvalException.class)
 			.hasMessageContaining("does not match the generic function");
 	}
 
@@ -15799,7 +15859,7 @@ class LispEvaluatorTest {
 				(defclass cy-c (cy-a cy-b) ())
 				(defclass cy-d (cy-b cy-a) ())
 				(defclass cy-e (cy-c cy-d) ())
-				""")).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("class precedence");
+				""")).isInstanceOf(LispEvalException.class).hasMessageContaining("class precedence");
 	}
 
 	@Test

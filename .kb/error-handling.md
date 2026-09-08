@@ -13,9 +13,13 @@ a build that never knew about EH.
   running every `unwind-protect` cleanup -- cross-lambda `return-from`/`go` and `catch`/`throw`
   share one exit channel ([do-return-block.md](do-return-block.md), which owns the
   `ctx.blockExitTag`/`blockExitChannel` gate).
-- **The three-point catchability spectrum**: interpreter catches `LispEvalException` only, JVM any
-  `RuntimeException`, wasm-GC only `$lisp-cond` throws -- raw traps there (failed ref.cast, integer
-  divide by zero, `unreachable`) are uncatchable and skip unwind-protect cleanups.
+- **The three-point catchability spectrum**: interpreter catches `LispEvalException` only -- with
+  the evaluation seam classifying an escaping `IllegalArgumentException` /
+  `IndexOutOfBoundsException` (`program-error`) and cast / arithmetic / negative-size failure (the
+  raw-failure classes) into one first, and only an `UnsupportedOperationException` (a limitation)
+  left raw ("Argument-shape errors" below) -- JVM any `RuntimeException`, wasm-GC only `$lisp-cond`
+  throws -- raw traps there (failed ref.cast, integer divide by zero, `unreachable`) are uncatchable
+  and skip unwind-protect cleanups.
 
 ## Phase 1 -- unwind-protect
 `LispEvaluator.evalUnwindProtect` (try/finally over both Java unwind channels, `LispEvalException`
@@ -593,6 +597,69 @@ operands select -- `(+ 1 nil)` exact, `(+ 1.5 nil)` float.
   `simple-error`. Pre-existing edge unchanged: a condition thrown from INSIDE a wasm to-string
   capture leaves the capture flag set.
 
+## Argument-shape errors signal a catchable program-error
+**Invariant: a keyword the operator does not accept, an odd keyword tail and a non-keyword in
+keyword position signal a CATCHABLE `program-error` carrying one text -- `REMOVE expects keyword
+arguments :TEST/:TEST-NOT/:KEY, got: :BOGUS` -- on all four backends, from a call form and from a
+first-class call alike, and `:allow-other-keys` suppresses the check per CLHS 3.4.1.4.1.1.** They
+used to leave the expander as `IllegalArgumentException`s no `handler-case` could see (the ANSI
+report's two top rows: 370 + 299 lost forms) and to fail the COMPILE on the compiled backends.
+
+- **One validator, `LispMacroExpander.keywordTailProblem(name, parts, start, allowed)`**: the
+  complaint or null, over argument FORMS (the expansion-time check behind `keywordTailError` /
+  `testKeyKeywordTailError`, 27 operators) and over argument VALUES (the interpreter's first-class
+  validators, `LispEvaluator.requireKeywordTail`, and `Environment`'s `make-string-output-stream`),
+  so the two cannot disagree on the rule or the text. The LEFTMOST `:allow-other-keys` pair decides;
+  a value that is not a literal nil counts as true (a computed one suppresses statically -- the
+  lenient direction); the key itself is always accepted; an odd tail is malformed whatever the
+  suppression says. Every message spells the allowed set upcased and `/`-joined.
+- **The expander RETURNS the signal instead of throwing.** `programErrorForm(call, text)` is
+  `(%program-error "text")`, `SourceProvenance.inherit`ing the call's position, and the rejected
+  call EXPANDS to it (the keyword checks and the eleven `X expects N arguments, got M` arity checks;
+  `LambdaLists.unknownKeyCheck`'s unknown-`&key` signal is the same primitive over a runtime-built
+  message). Interpreter: `evalConsRareOperator` throws
+  `LispEvalException.ofClass(PROGRAM_ERROR_CLASS_NAME, text)` -- class-named, the instance synthesized
+  at the catch like a bad `car`'s. Compiled: `lowerProgramError` emits
+  `(%error-cond (%obj-new '%class-PROGRAM-ERROR ... text) text)` behind a handler landing pad
+  (`Ctx.hasLandingPad` = `establishesLandingPad(program)`, an operator-position scan for the
+  `LANDING_PAD_HEADS`, which implies the instance gate) and a plain `(%error text)` otherwise --
+  nothing can observe the class without a pad and the top-level line is identical either way. Both
+  compilers first call `CompileWarnings.warnStaticProgramError`: `warning: <text>; compiled as a
+  call-time program-error` at the call's position (the undefined-function precedent), for a LITERAL
+  message only. `PROGRAM-ERROR` is seeded with `format-control`/`format-arguments` (the fifth
+  reporting class) so the instance reports its text through the ordinary `simple-condition` report.
+- **Three gates stand in for the construction, which happens during BODY compilation where no scan
+  sees it**: `conditionNarrowing` marks `%class-PROGRAM-ERROR` constructible behind a pad, beside the
+  raw-failure classes; `WasmLispCompiler.usedLayoutTags` bakes the layout on the same predicate; and
+  `WasmErrorCompiler.compileCond` compiles the message operand when the program has NO report
+  renderer (`routesConditionReports` off -- every source-visible `%error-cond` producer flips routing
+  on, so only this lowering can reach it), because the entry landing pad's report of the instance can
+  then come only from the payload cdr. Without the third, `(print (handler-case (error "warm") (error
+  (e) :ok))) (remove 1 '(1 2) :bogus 4)` printed `Unhandled condition: ` and nothing else.
+- **The interpreter's evaluation seam**, `LispEvaluator.evalConsClassifyingRawFailures` around every
+  `evalCons`: an `IllegalArgumentException` / `IndexOutOfBoundsException` escaping a form is a
+  `program-error` (that is how the expander and the special forms report a malformed form), a cast /
+  arithmetic / negative-size failure takes `rawFailureConditionClass`'s rule, and an
+  `UnsupportedOperationException` -- a rontolisp LIMITATION (`setf does not support place`, `map
+  supports only the 'list ...`) -- stays raw, since catching a limitation would let a program run on
+  past what this implementation cannot do. So the long tail of per-site rejections that are NOT
+  lowered (`setf: odd number of arguments`, `make-sequence: unsupported result type`) is catchable
+  interpreted and a compile-time `error:` compiled -- the CL-conformant asymmetry: a compiler may
+  reject at compile time what the evaluator signals at run time. `handler-bind` handlers for these
+  run at the pad, not at the signal point (the compiled-backend semantics).
+- **Arity**: the interpreter's `Function expects N argument(s), got M` (lambda application), `Macro X
+  expects ...`, `Environment.requireArgCount*` and every inline `X expects N arguments, got M` built-in
+  check are `program-error`s (the ANSI suite's next six rows). **The compiled backends do NOT signal a
+  wrong-arity `funcall`/`apply` at all** -- the JVM dispatcher answers nil, wasm-GC traps
+  (`.todo/735`); only a DIRECT call is checked, at compile time. First-class `#'remove` stays
+  fixed-arity everywhere (the one-arity wrapper rule, [lambda-lists.md](lambda-lists.md)), so the
+  first-class twins are pinned on `#'member` / `#'find` / `#'position`.
+- ANSI `sequences` chapter, interpreter, 2026-09-08 (`ansi-test/measure.sh sequences`): 1,850 /
+  2,454 pass with 849 forms lost before; 2,191 / 3,274 pass with 29 lost after. The
+  `X expects keyword arguments ...` rows that remain (350 + 228) are now counted test ERRORS naming
+  real gaps -- `:count`/`:start`/`:end`/`:from-end` on the substitute / remove family, `:from-end`
+  on `count` (`.todo/736`) -- where they used to be forms the driver could not evaluate.
+
 ## Out of scope (still)
 The interactive debugger (`break`, `*debugger-hook*`, rendering a restart's `:report` or running its
 `:interactive` function), condition-restart association, a `store-value` restart for
@@ -611,6 +678,11 @@ all, so **`restart-case` alone unblocks nothing real**.
   `readCharEndOfFileIsCatchableAsEndOfFile`, `noApplicableMethodIsCatchableAndReportsTheSameText`,
   `handlerBindSees*`, `handlerBindRunsEachClusterOnceForABuiltInErrorInnermostFirst`,
   `arefOutOfBoundsAndNegativeMakeArrayAreCatchable`,
+  `argumentShapeErrorsSignalACatchableProgramError` (+2, the compiled twins being
+  `compileAndRunArgumentShapeErrorsSignalACatchableProgramError` and
+  `ehArgumentShapeErrorsSignalACatchableProgramError`), `allowOtherKeysSuppressesTheKeywordCheck`,
+  `compileAndRunAnUncaughtArgumentShapeErrorReportsTheSameLine`,
+  `ehAnUncaughtArgumentShapeErrorReportsTheInterpreterLineBeforeTrapping`,
   `anInnerHandlerCaseShadowsAnEnclosingHandlerBind` (+3),
   `signalFallsThroughAHandlerCaseWhoseClausesDoNotMatch` (+3),
   `nonNumberArithmeticOperandsSignalCatchableTypeErrors`, the restart block (15-16 cases each),
@@ -625,7 +697,10 @@ all, so **`restart-case` alone unblocks nothing real**.
   `a{ThrowOnlyConstructionDoesNot,HeldConditionStill}RouteReportsWhereMessagesAreLazy`,
   `aNonOperatorRestartNameDoesNotFlipRestartMode`,
   `anOperatorPositionRestartFormStillFlipsRestartMode`,
-  `needsSignalClauseMatchRequiresBothASignalAndACatchingForm`; plus
+  `needsSignalClauseMatchRequiresBothASignalAndACatchingForm`,
+  `keywordTailProblemHonoursAllowOtherKeys`,
+  `conditionNarrowingMarksProgramErrorConstructibleOnlyBehindALandingPad`,
+  `establishesLandingPadReadsOperatorPositionOnly`; plus
   `WasmLispCompilerTest.typedErrorWithLambdaReportCompilesOutsideEhMode`,
   `ByteCodeWriterTest.generateAndRun{TypedCatch,CatchAny}Handler`,
   `WasmTreeShakerTest.shakesEhModeModules`, `RontoLispCliTest`, `JvmFloatArrayTest`.
@@ -633,7 +708,8 @@ all, so **`restart-case` alone unblocks nothing real**.
   `signal-runtime-control-string`, `handler-case-catches-typed-and-plain-errors` (+2),
   `handler-case-in-argument-position`, `restart-system`,
   `signal-declines-an-unmatched-handler-case`, `no-applicable-method-report`,
-  `non-number-arithmetic-operands-are-catchable`, `runtime-type-dispatch-residue`,
+  `non-number-arithmetic-operands-are-catchable`, `argument-shape-errors-signal-program-error`,
+  `runtime-type-dispatch-residue`,
   `runtime-type-dispatch-and-symbol-designators`, `postmodern-language-incidentals`, plus the
   `standalone:` list. Their presence puts the concatenated program in EH mode, so
   `CiSpecE2eTest.runBackend` passes `-W exceptions=y` to both wasmtime invocations.

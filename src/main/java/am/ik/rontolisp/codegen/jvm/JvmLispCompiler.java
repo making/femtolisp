@@ -655,6 +655,10 @@ public final class JvmLispCompiler implements LispCompiler {
 		// instances. Restart mode forces it on: the signal hook synthesizes simple-*
 		// instances for plain string signals.
 		boolean mayUseInstances = LispMacroExpander.mayCreateInstances(program, closRegistry) || restartMode;
+		// Whether a handler landing pad exists -- the gate for a %program-error signal
+		// carrying its program-error INSTANCE (LispMacroExpander.lowerProgramError).
+		// Decided on the same snapshot as the instance gate, which a pad forces on.
+		boolean hasLandingPad = LispMacroExpander.establishesLandingPad(program);
 		// The stream-value gate is decided on the SAME program snapshot, because
 		// mayCreateInstances above already answers for it: read them apart and a later
 		// desugaring could turn one on without the other, which is a %obj-new with no
@@ -1865,6 +1869,7 @@ public final class JvmLispCompiler implements LispCompiler {
 			.usesSeqString(usesSeqString)
 			.mutableStringProducers(mutableStringProducers)
 			.mayUseInstances(mayUseInstances)
+			.hasLandingPad(hasLandingPad)
 			.usesSynonymStreams(programUsesSymbol(program, LispNames.MAKE_SYNONYM_STREAM))
 			.usesStreamValues(usesStreamValues)
 			.mayUseAsyncValues(usesAsyncRuntime)
@@ -5986,6 +5991,15 @@ public final class JvmLispCompiler implements LispCompiler {
 		boolean mayUseInstances = false;
 
 		/**
+		 * True when the program establishes a handler landing pad
+		 * ({@code LispMacroExpander.establishesLandingPad}): a {@code %program-error}
+		 * signal then carries a fresh {@code program-error} instance, so a
+		 * {@code program-error} clause matches it. Without a pad nothing can observe the
+		 * class and the signal takes the plain {@code %error} channel, byte-identically.
+		 */
+		boolean hasLandingPad = false;
+
+		/**
 		 * True when the program can build a SYNONYM STREAM ({@code make-synonym-stream}
 		 * is the only way to, and it has no read syntax), so every stream-designator
 		 * resolution has to run through {@code %STREAM-TARGET}. A program that never
@@ -6282,6 +6296,7 @@ public final class JvmLispCompiler implements LispCompiler {
 			this.usesSeqString = builder.usesSeqString;
 			this.mutableStringProducers = builder.mutableStringProducers;
 			this.mayUseInstances = builder.mayUseInstances;
+			this.hasLandingPad = builder.hasLandingPad;
 			this.usesSynonymStreams = builder.usesSynonymStreams;
 			this.usesStreamValues = builder.usesStreamValues;
 			this.mayUseAsyncValues = builder.mayUseAsyncValues;
@@ -6591,6 +6606,8 @@ public final class JvmLispCompiler implements LispCompiler {
 			private boolean mutableStringProducers = false;
 
 			private boolean mayUseInstances = false;
+
+			private boolean hasLandingPad = false;
 
 			private boolean usesSynonymStreams = false;
 
@@ -7078,6 +7095,11 @@ public final class JvmLispCompiler implements LispCompiler {
 
 			Builder mayUseInstances(boolean mayUseInstances) {
 				this.mayUseInstances = mayUseInstances;
+				return this;
+			}
+
+			Builder hasLandingPad(boolean hasLandingPad) {
+				this.hasLandingPad = hasLandingPad;
 				return this;
 			}
 

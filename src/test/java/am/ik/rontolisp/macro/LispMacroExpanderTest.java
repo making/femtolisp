@@ -639,6 +639,60 @@ class LispMacroExpanderTest {
 	}
 
 	@Test
+	void conditionNarrowingMarksProgramErrorConstructibleOnlyBehindALandingPad() {
+		// The %program-error lowering constructs the class during BODY compilation,
+		// after this scan, and only where a pad can observe it -- so a pad stands in
+		// for the tag exactly as it does for the raw-failure classes.
+		assertThat(narrowingOf("""
+				(defun boom () (error 'simple-error :format-control "x"))
+				(handler-case (boom) (error (e) (princ e)))
+				""").constructibleTags()).contains("%class-PROGRAM-ERROR");
+		assertThat(narrowingOf("""
+				(defun boom () (error 'simple-error :format-control "x"))
+				(boom)
+				""").constructibleTags()).isNotNull().doesNotContain("%class-PROGRAM-ERROR");
+	}
+
+	@Test
+	void establishesLandingPadReadsOperatorPositionOnly() {
+		assertThat(LispMacroExpander
+			.establishesLandingPad(LispReader.readAllFromString("(defun f () (ignore-errors (g)))"))).isTrue();
+		assertThat(LispMacroExpander
+			.establishesLandingPad(LispReader.readAllFromString("(defun f () (handler-bind ((error #'h)) (g)))")))
+			.isTrue();
+		assertThat(LispMacroExpander
+			.establishesLandingPad(LispReader.readAllFromString("(defun f () '(handler-case ignore-errors))")))
+			.isFalse();
+	}
+
+	@Test
+	void keywordTailProblemHonoursAllowOtherKeys() {
+		// CLHS 3.4.1.4.1.1: the LEFTMOST :allow-other-keys pair decides, a true value
+		// suppresses the check entirely, and the key itself is always accepted.
+		assertThat(problemOf("(remove 'a lst :bad t)"))
+			.isEqualTo("REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY, got: :BAD");
+		assertThat(problemOf("(remove 'a lst :key)")).isEqualTo("REMOVE expects a value after :KEY");
+		assertThat(problemOf("(remove 'a lst 'bad t)"))
+			.isEqualTo("REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY, got: 'BAD");
+		assertThat(problemOf("(remove 'a lst :bad t :allow-other-keys t)")).isNull();
+		assertThat(problemOf("(remove 'a lst :allow-other-keys t 'bad t)")).isNull();
+		assertThat(problemOf("(remove 'a lst :bad1 t :allow-other-keys t :bad2 t :allow-other-keys nil :bad3 t)"))
+			.isNull();
+		assertThat(problemOf("(remove 'a lst :allow-other-keys nil)")).isNull();
+		assertThat(problemOf("(remove 'a lst :allow-other-keys nil :bad t)"))
+			.isEqualTo("REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY, got: :BAD");
+		// An odd tail is malformed whatever :allow-other-keys says.
+		assertThat(problemOf("(remove 'a lst :allow-other-keys t :bad)"))
+			.isEqualTo("REMOVE expects a value after :BAD");
+	}
+
+	private static @org.jspecify.annotations.Nullable String problemOf(String call) {
+		LispCons cons = (LispCons) LispReader.readAllFromString(call).get(0);
+		return LispMacroExpander.keywordTailProblem("REMOVE", cons.toList(), 3,
+				List.of(LispNames.TEST_KEYWORD, LispNames.TEST_NOT_KEYWORD, LispNames.KEY_KEYWORD));
+	}
+
+	@Test
 	void anExplicitFormatControlInitargForcesTheRenderer() {
 		// An explicit :format-control initarg can carry directives into the slot, so
 		// the identity fast path is not enough and the renderer stays.

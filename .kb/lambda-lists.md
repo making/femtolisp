@@ -5,8 +5,10 @@ interpreter and both compilers -- rewrites every extension into the only native 
 required symbols plus an optional trailing rest param, via a generated `let*` prologue.
 User docs: `doc/en/reference/special-forms/defun.md`, `lambda.md`.
 
-- Unknown keywords signal `Unknown keyword argument: ~a` unless `&allow-other-keys` is
-  declared or the caller passes `:allow-other-keys t`; `&whole` is rejected.
+- Unknown keywords signal `Unknown keyword argument: <prin1>` -- a `program-error`, through
+  the `%program-error` primitive of [error-handling.md](error-handling.md) ("Argument-shape
+  errors") -- unless `&allow-other-keys` is declared or the caller passes
+  `:allow-other-keys t`; `&whole` is rejected.
 - **Trap**: `&key` with NO key params still switches the tail to keyword convention
   (`Parsed.sawKey`); losing that marker makes the function fixed-arity.
 - Helpers use the `__ll_` prefix; `PackageResolver` passes `&`-prefixed symbols through

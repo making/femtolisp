@@ -930,7 +930,8 @@ public final class LispEvaluator {
 		this.globalEnv.setReadTimeEvalResolver(this::resolveReadTimeEval);
 		this.globalEnv.defineFunction(LispNames.EVAL, new LispFunction(LispNames.EVAL, args -> {
 			if (args.size() != 1) {
-				throw new LispEvalException(LispNames.EVAL + " expects 1 argument, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.EVAL + " expects 1 argument, got " + args.size());
 			}
 			return eval(args.get(0));
 		}));
@@ -988,13 +989,15 @@ public final class LispEvaluator {
 		// code walker's (macroexpand form env) load on every backend.
 		this.globalEnv.defineFunction(LispNames.MACROEXPAND_1, new LispFunction(LispNames.MACROEXPAND_1, args -> {
 			if (args.isEmpty() || args.size() > 2) {
-				throw new LispEvalException(LispNames.MACROEXPAND_1 + " expects 1 or 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.MACROEXPAND_1 + " expects 1 or 2 arguments, got " + args.size());
 			}
 			return expandedWithFlag(args.get(0), macroexpand1(args.get(0)));
 		}));
 		this.globalEnv.defineFunction(LispNames.MACROEXPAND, new LispFunction(LispNames.MACROEXPAND, args -> {
 			if (args.isEmpty() || args.size() > 2) {
-				throw new LispEvalException(LispNames.MACROEXPAND + " expects 1 or 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.MACROEXPAND + " expects 1 or 2 arguments, got " + args.size());
 			}
 			return expandedWithFlag(args.get(0), macroexpand(args.get(0)));
 		}));
@@ -1009,7 +1012,8 @@ public final class LispEvaluator {
 		// body runs, so the global answer is the only one).
 		this.globalEnv.defineFunction(LispNames.MACRO_FUNCTION, new LispFunction(LispNames.MACRO_FUNCTION, args -> {
 			if (args.isEmpty() || args.size() > 2) {
-				throw new LispEvalException(LispNames.MACRO_FUNCTION + " expects 1 or 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.MACRO_FUNCTION + " expects 1 or 2 arguments, got " + args.size());
 			}
 			if (!(args.get(0) instanceof LispSymbol sym) || !isMacroName(sym.name())) {
 				return LispNil.INSTANCE;
@@ -1017,14 +1021,16 @@ public final class LispEvaluator {
 			String name = sym.name();
 			return new LispFunction(LispNames.MACRO_FUNCTION + " " + name, callArgs -> {
 				if (callArgs.isEmpty() || callArgs.size() > 2) {
-					throw new LispEvalException("a macro function expects 1 or 2 arguments, got " + callArgs.size());
+					throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+							"a macro function expects 1 or 2 arguments, got " + callArgs.size());
 				}
 				return macroexpand1(macroCallForm(name, callArgs.get(0)));
 			});
 		}));
 		this.globalEnv.defineFunction(LispNames.SYMBOL_FUNCTION, new LispFunction(LispNames.SYMBOL_FUNCTION, args -> {
 			if (args.size() != 1) {
-				throw new LispEvalException(LispNames.SYMBOL_FUNCTION + " expects 1 argument, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.SYMBOL_FUNCTION + " expects 1 argument, got " + args.size());
 			}
 			if (!(args.get(0) instanceof LispSymbol sym)) {
 				throw new LispEvalException(
@@ -1035,7 +1041,8 @@ public final class LispEvaluator {
 		// fdefinition = symbol-function for symbol designators (no setf-function names).
 		this.globalEnv.defineFunction(LispNames.FDEFINITION, new LispFunction(LispNames.FDEFINITION, args -> {
 			if (args.size() != 1) {
-				throw new LispEvalException(LispNames.FDEFINITION + " expects 1 argument, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.FDEFINITION + " expects 1 argument, got " + args.size());
 			}
 			if (!(args.get(0) instanceof LispSymbol sym)) {
 				throw new LispEvalException(LispNames.FDEFINITION + " expects a symbol, got " + args.get(0).print());
@@ -1055,7 +1062,8 @@ public final class LispEvaluator {
 		// primary value: t when sub is known to be a subtype of super, nil otherwise.
 		this.globalEnv.defineFunction(LispNames.SUBTYPEP, new LispFunction(LispNames.SUBTYPEP, args -> {
 			if (args.size() < 2) {
-				throw new LispEvalException(LispNames.SUBTYPEP + " expects 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.SUBTYPEP + " expects 2 arguments, got " + args.size());
 			}
 			return subtypep(args.get(0), args.get(1)) ? LispTrue.INSTANCE : LispNil.INSTANCE;
 		}));
@@ -1098,7 +1106,8 @@ public final class LispEvaluator {
 		}));
 		this.globalEnv.defineFunction(LispNames.OBJ_SET, new LispFunction(LispNames.OBJ_SET, args -> {
 			if (args.size() != 3) {
-				throw new LispEvalException(LispNames.OBJ_SET + " expects 3 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.OBJ_SET + " expects 3 arguments, got " + args.size());
 			}
 			LispInstance inst = requireInstance(LispNames.OBJ_SET, args);
 			inst.setSlot(requireSlotIndex(LispNames.OBJ_SET, inst, args), args.get(2));
@@ -1175,7 +1184,8 @@ public final class LispEvaluator {
 			// else signals unless errorp is nil. Defined here, ahead of the prelude's
 			// always-nil stub, because the answer needs the class registry.
 			if (args.isEmpty() || args.size() > 3) {
-				throw new LispEvalException(LispNames.FIND_CLASS + " expects 1 to 3 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.FIND_CLASS + " expects 1 to 3 arguments, got " + args.size());
 			}
 			boolean errorp = args.size() < 2 || !(args.get(1) instanceof LispNil);
 			if (args.get(0) instanceof LispSymbol sym) {
@@ -1403,7 +1413,8 @@ public final class LispEvaluator {
 				}));
 		this.globalEnv.defineFunction(LispNames.SLOT_BOUNDP, new LispFunction(LispNames.SLOT_BOUNDP, args -> {
 			if (args.size() != 2) {
-				throw new LispEvalException(LispNames.SLOT_BOUNDP + " expects 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.SLOT_BOUNDP + " expects 2 arguments, got " + args.size());
 			}
 			// Bound = the type declares the slot AND it does not hold the unbound
 			// marker (a slot written with no :initform, or emptied by
@@ -1418,7 +1429,7 @@ public final class LispEvaluator {
 		this.globalEnv.defineFunction(LispNames.SLOT_VALUE_RUNTIME,
 				new LispFunction(LispNames.SLOT_VALUE_RUNTIME, args -> {
 					if (args.size() != 2) {
-						throw new LispEvalException(
+						throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
 								LispNames.SLOT_VALUE_RUNTIME + " expects 2 arguments, got " + args.size());
 					}
 					SlotRef slot = instanceSlotRef(args.get(0), args.get(1));
@@ -1431,7 +1442,7 @@ public final class LispEvaluator {
 		this.globalEnv.defineFunction(LispNames.SLOT_VALUE_SET_RUNTIME,
 				new LispFunction(LispNames.SLOT_VALUE_SET_RUNTIME, args -> {
 					if (args.size() != 3) {
-						throw new LispEvalException(
+						throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
 								LispNames.SLOT_VALUE_SET_RUNTIME + " expects 3 arguments, got " + args.size());
 					}
 					SlotRef slot = instanceSlotRef(args.get(0), args.get(1));
@@ -1444,7 +1455,8 @@ public final class LispEvaluator {
 				}));
 		this.globalEnv.defineFunction(LispNames.SLOT_EXISTS_P, new LispFunction(LispNames.SLOT_EXISTS_P, args -> {
 			if (args.size() != 2) {
-				throw new LispEvalException(LispNames.SLOT_EXISTS_P + " expects 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.SLOT_EXISTS_P + " expects 2 arguments, got " + args.size());
 			}
 			// Exists = the value is an instance whose layout declares the slot; an
 			// unbound slot exists (slot-boundp is the boundness test).
@@ -1646,7 +1658,7 @@ public final class LispEvaluator {
 		this.globalEnv.defineFunction(LispNames.PROBE_FILE_INTERNAL,
 				new LispFunction(LispNames.PROBE_FILE_INTERNAL, args -> {
 					if (args.size() != 1) {
-						throw new LispEvalException(
+						throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
 								LispNames.PROBE_FILE_INTERNAL + " expects 1 argument, got " + args.size());
 					}
 					if (!(args.get(0) instanceof LispString path)) {
@@ -1660,7 +1672,8 @@ public final class LispEvaluator {
 		// nil Common Lisp already prescribes for "cannot be determined".
 		this.globalEnv.defineFunction(LispNames.FILE_WRITE_DATE, new LispFunction(LispNames.FILE_WRITE_DATE, args -> {
 			if (args.size() != 1) {
-				throw new LispEvalException(LispNames.FILE_WRITE_DATE + " expects 1 argument, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.FILE_WRITE_DATE + " expects 1 argument, got " + args.size());
 			}
 			String path = PathnameOps.designatorNamestring(args.get(0));
 			if (path == null) {
@@ -1678,7 +1691,8 @@ public final class LispEvaluator {
 		// LispPreludeLibrary, so no listing rule can drift between backends.
 		this.globalEnv.defineFunction(LispNames.LIST_DIRECTORY, new LispFunction(LispNames.LIST_DIRECTORY, args -> {
 			if (args.size() != 1) {
-				throw new LispEvalException(LispNames.LIST_DIRECTORY + " expects 1 argument, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.LIST_DIRECTORY + " expects 1 argument, got " + args.size());
 			}
 			if (!(args.get(0) instanceof LispString path)) {
 				throw new LispEvalException(LispNames.LIST_DIRECTORY + " expects a string pathname");
@@ -1701,7 +1715,8 @@ public final class LispEvaluator {
 		// backends.
 		this.globalEnv.defineFunction(LispNames.HOST_ARGV, new LispFunction(LispNames.HOST_ARGV, args -> {
 			if (!args.isEmpty()) {
-				throw new LispEvalException(LispNames.HOST_ARGV + " expects no arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.HOST_ARGV + " expects no arguments, got " + args.size());
 			}
 			LispVal argv = LispNil.INSTANCE;
 			for (int i = this.commandLineArguments.size() - 1; i >= 0; i--) {
@@ -1732,7 +1747,8 @@ public final class LispEvaluator {
 		// effect for the forms read after it, as it does in Common Lisp.
 		this.globalEnv.defineFunction(LispNames.USE_PACKAGE, new LispFunction(LispNames.USE_PACKAGE, args -> {
 			if (args.isEmpty() || args.size() > 2) {
-				throw new LispEvalException(LispNames.USE_PACKAGE + " expects 1 or 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.USE_PACKAGE + " expects 1 or 2 arguments, got " + args.size());
 			}
 			List<String> used = new ArrayList<>();
 			// A designator or a LIST of designators, like CL.
@@ -1758,7 +1774,8 @@ public final class LispEvaluator {
 			boolean export = LispNames.EXPORT.equals(name);
 			this.globalEnv.defineFunction(name, new LispFunction(name, args -> {
 				if (args.isEmpty() || args.size() > 2) {
-					throw new LispEvalException(name + " expects 1 or 2 arguments, got " + args.size());
+					throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+							name + " expects 1 or 2 arguments, got " + args.size());
 				}
 				List<String> symbols = new ArrayList<>();
 				// A symbol or a LIST of symbols, like CL.
@@ -1778,7 +1795,8 @@ public final class LispEvaluator {
 		}
 		this.globalEnv.defineFunction(LispNames.SLOT_MAKUNBOUND, new LispFunction(LispNames.SLOT_MAKUNBOUND, args -> {
 			if (args.size() != 2) {
-				throw new LispEvalException(LispNames.SLOT_MAKUNBOUND + " expects 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.SLOT_MAKUNBOUND + " expects 2 arguments, got " + args.size());
 			}
 			SlotRef slot = instanceSlotRef(args.get(0), args.get(1));
 			if (slot == null) {
@@ -2072,7 +2090,7 @@ public final class LispEvaluator {
 		this.globalEnv.defineFunction(LispNames.SYMBOL_PRINT_BARE_P_INTERNAL,
 				new LispFunction(LispNames.SYMBOL_PRINT_BARE_P_INTERNAL, args -> {
 					if (args.size() != 3) {
-						throw new LispEvalException(
+						throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
 								LispNames.SYMBOL_PRINT_BARE_P_INTERNAL + " expects 3 arguments, got " + args.size());
 					}
 					return args.get(0) instanceof LispSymbol sym && this.packageResolver.printsBare(sym.name())
@@ -2098,7 +2116,7 @@ public final class LispEvaluator {
 		this.globalEnv.defineFunction(LispNames.PRINT_PACKAGE_RAW_P_INTERNAL,
 				new LispFunction(LispNames.PRINT_PACKAGE_RAW_P_INTERNAL, args -> {
 					if (!args.isEmpty()) {
-						throw new LispEvalException(
+						throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
 								LispNames.PRINT_PACKAGE_RAW_P_INTERNAL + " expects 0 arguments, got " + args.size());
 					}
 					return this.packageResolver.currentPackageIsPristineClUser() ? LispTrue.INSTANCE : LispNil.INSTANCE;
@@ -2111,7 +2129,7 @@ public final class LispEvaluator {
 		this.globalEnv.defineFunction(LispNames.LIST_ALL_PACKAGES,
 				new LispFunction(LispNames.LIST_ALL_PACKAGES, args -> {
 					if (!args.isEmpty()) {
-						throw new LispEvalException(
+						throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
 								LispNames.LIST_ALL_PACKAGES + " expects 0 arguments, got " + args.size());
 					}
 					return packageKeywordList(this.packageResolver.runtimePackageUseTable().keySet());
@@ -2141,7 +2159,8 @@ public final class LispEvaluator {
 		// after it.
 		this.globalEnv.defineFunction(LispNames.IMPORT, new LispFunction(LispNames.IMPORT, args -> {
 			if (args.isEmpty() || args.size() > 2) {
-				throw new LispEvalException(LispNames.IMPORT + " expects 1 or 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.IMPORT + " expects 1 or 2 arguments, got " + args.size());
 			}
 			List<String> symbols = new ArrayList<>();
 			// A symbol or a LIST of symbols, like CL.
@@ -2230,7 +2249,8 @@ public final class LispEvaluator {
 		String asyncRunName = LispNames.ASYNC_RUN_QUALIFIED;
 		this.globalEnv.defineFunction(asyncRunName, new LispFunction(asyncRunName, args -> {
 			if (args.size() != 1) {
-				throw new LispEvalException(LispNames.ASYNC_RUN + " expects 1 argument, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.ASYNC_RUN + " expects 1 argument, got " + args.size());
 			}
 			LispVal thunk = args.get(0);
 			return AsyncRuntime.run(() -> apply(thunk, List.of(), this.globalEnv));
@@ -2242,7 +2262,7 @@ public final class LispEvaluator {
 		String futureForceName = LispNames.FUTURE_FORCE_QUALIFIED;
 		this.globalEnv.defineFunction(futureForceName, new LispFunction(futureForceName, args -> {
 			if (args.size() != 1) {
-				throw new LispEvalException(
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
 						LispNames.FUTURE_FORCE_INTERNAL + " expects 1 argument, got " + args.size());
 			}
 			return awaitValue(args.get(0));
@@ -2256,7 +2276,8 @@ public final class LispEvaluator {
 		String streamNewName = LispNames.STREAM_NEW_INTERNAL_QUALIFIED;
 		this.globalEnv.defineFunction(streamNewName, new LispFunction(streamNewName, args -> {
 			if (args.size() != 2) {
-				throw new LispEvalException(LispNames.STREAM_NEW_INTERNAL + " expects 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.STREAM_NEW_INTERNAL + " expects 2 arguments, got " + args.size());
 			}
 			LispVal readFn = args.get(0);
 			LispVal closeFn = args.get(1);
@@ -2273,7 +2294,8 @@ public final class LispEvaluator {
 		String makeThreadName = PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.MAKE_THREAD);
 		this.globalEnv.defineFunction(makeThreadName, new LispFunction(makeThreadName, args -> {
 			if (args.isEmpty() || args.size() > 2) {
-				throw new LispEvalException(LispNames.MAKE_THREAD + " expects 1 or 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.MAKE_THREAD + " expects 1 or 2 arguments, got " + args.size());
 			}
 			LispVal fn = args.get(0);
 			List<String> bindingNames = new ArrayList<>();
@@ -2333,7 +2355,8 @@ public final class LispEvaluator {
 		String threadpName = PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.THREADP);
 		this.globalEnv.defineFunction(threadpName, new LispFunction(threadpName, args -> {
 			if (args.size() != 1) {
-				throw new LispEvalException(LispNames.THREADP + " expects 1 argument, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.THREADP + " expects 1 argument, got " + args.size());
 			}
 			return args.get(0) instanceof LispThread ? LispTrue.INSTANCE : LispNil.INSTANCE;
 		}));
@@ -2351,7 +2374,8 @@ public final class LispEvaluator {
 		String currentThreadName = PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.CURRENT_THREAD);
 		this.globalEnv.defineFunction(currentThreadName, new LispFunction(currentThreadName, args -> {
 			if (!args.isEmpty()) {
-				throw new LispEvalException(LispNames.CURRENT_THREAD + " expects no arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.CURRENT_THREAD + " expects no arguments, got " + args.size());
 			}
 			return AsyncRuntime.currentThreadHandle();
 		}));
@@ -2364,7 +2388,8 @@ public final class LispEvaluator {
 		String httpHandlerName = PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.HTTP_HANDLER);
 		this.globalEnv.defineFunction(httpHandlerName, new LispFunction(httpHandlerName, args -> {
 			if (args.isEmpty() || args.size() > 4) {
-				throw new LispEvalException(LispNames.HTTP_HANDLER + " expects 1 to 4 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.HTTP_HANDLER + " expects 1 to 4 arguments, got " + args.size());
 			}
 			int port = 8080;
 			if (args.size() >= 2 && !(args.get(1) instanceof LispSymbol)) {
@@ -2451,14 +2476,16 @@ public final class LispEvaluator {
 		String jsonParseName = PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.JSON_PARSE);
 		this.globalEnv.defineFunction(jsonParseName, new LispFunction(jsonParseName, args -> {
 			if (args.size() != 1) {
-				throw new LispEvalException(LispNames.JSON_PARSE + " expects 1 argument, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.JSON_PARSE + " expects 1 argument, got " + args.size());
 			}
 			return applyJsonHelper(JsonLibrary.HELPER_PARSE, List.of(args.get(0)));
 		}));
 		String jsonStringifyName = PackageRegistry.qualify(LispNames.RONTOLISP_PKG, LispNames.JSON_STRINGIFY);
 		this.globalEnv.defineFunction(jsonStringifyName, new LispFunction(jsonStringifyName, args -> {
 			if (args.size() != 1) {
-				throw new LispEvalException(LispNames.JSON_STRINGIFY + " expects 1 argument, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.JSON_STRINGIFY + " expects 1 argument, got " + args.size());
 			}
 			return applyJsonHelper(JsonLibrary.HELPER_STRINGIFY, List.of(args.get(0)));
 		}));
@@ -2478,7 +2505,8 @@ public final class LispEvaluator {
 				args -> mapForEffect(args.get(0), requireMapLists(LispNames.MAPL, args), true)));
 		this.globalEnv.defineFunction(LispNames.MAPHASH, new LispFunction(LispNames.MAPHASH, args -> {
 			if (args.size() != 2) {
-				throw new LispEvalException(LispNames.MAPHASH + " expects 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.MAPHASH + " expects 2 arguments, got " + args.size());
 			}
 			if (!(args.get(1) instanceof LispHashTable table)) {
 				throw new LispEvalException(LispNames.MAPHASH + " expects a hash table, got " + args.get(1).print());
@@ -2537,19 +2565,22 @@ public final class LispEvaluator {
 				args -> positionScanValues(LispNames.POSITION_IF_NOT, args, PositionScanMode.PREDICATE_NOT, false)));
 		this.globalEnv.defineFunction(LispNames.COUNT_IF, new LispFunction(LispNames.COUNT_IF, args -> {
 			if (args.size() != 2) {
-				throw new LispEvalException(LispNames.COUNT_IF + " expects 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.COUNT_IF + " expects 2 arguments, got " + args.size());
 			}
 			return countIfValues(args.get(0), Environment.seqAsList(args.get(1)));
 		}));
 		this.globalEnv.defineFunction(LispNames.MEMBER_IF, new LispFunction(LispNames.MEMBER_IF, args -> {
 			if (args.size() != 2) {
-				throw new LispEvalException(LispNames.MEMBER_IF + " expects 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.MEMBER_IF + " expects 2 arguments, got " + args.size());
 			}
 			return memberIfValues(args.get(0), args.get(1));
 		}));
 		this.globalEnv.defineFunction(LispNames.MEMBER, new LispFunction(LispNames.MEMBER, args -> {
 			if (args.size() < 2) {
-				throw new LispEvalException(LispNames.MEMBER + " expects at least 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.MEMBER + " expects at least 2 arguments, got " + args.size());
 			}
 			// (member item list) compares with eql; (member item list :test fn) applies
 			// fn
@@ -2572,19 +2603,22 @@ public final class LispEvaluator {
 		}));
 		this.globalEnv.defineFunction(LispNames.ASSOC_IF, new LispFunction(LispNames.ASSOC_IF, args -> {
 			if (args.size() != 2) {
-				throw new LispEvalException(LispNames.ASSOC_IF + " expects 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.ASSOC_IF + " expects 2 arguments, got " + args.size());
 			}
 			return assocIfValues(args.get(0), args.get(1));
 		}));
 		this.globalEnv.defineFunction(LispNames.RASSOC_IF, new LispFunction(LispNames.RASSOC_IF, args -> {
 			if (args.size() != 2) {
-				throw new LispEvalException(LispNames.RASSOC_IF + " expects 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.RASSOC_IF + " expects 2 arguments, got " + args.size());
 			}
 			return rassocIfValues(args.get(0), args.get(1));
 		}));
 		this.globalEnv.defineFunction(LispNames.ASSOC, new LispFunction(LispNames.ASSOC, args -> {
 			if (args.size() < 2) {
-				throw new LispEvalException(LispNames.ASSOC + " expects at least 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.ASSOC + " expects at least 2 arguments, got " + args.size());
 			}
 			// (assoc key alist) compares with eql; (assoc key alist :test fn) applies fn
 			// as (funcall fn key (car pair)), and :key applies a selector to each pair's
@@ -2607,7 +2641,8 @@ public final class LispEvaluator {
 		}));
 		this.globalEnv.defineFunction(LispNames.RASSOC, new LispFunction(LispNames.RASSOC, args -> {
 			if (args.size() < 2) {
-				throw new LispEvalException(LispNames.RASSOC + " expects at least 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.RASSOC + " expects at least 2 arguments, got " + args.size());
 			}
 			// The mirror of assoc: matches each pair's cdr instead of its car.
 			requireTestKeyKeywords(LispNames.RASSOC, args, 2);
@@ -2628,7 +2663,8 @@ public final class LispEvaluator {
 		}));
 		this.globalEnv.defineFunction(LispNames.REMOVE_IF, new LispFunction(LispNames.REMOVE_IF, args -> {
 			if (args.size() < 2) {
-				throw new LispEvalException(LispNames.REMOVE_IF + " expects 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.REMOVE_IF + " expects 2 arguments, got " + args.size());
 			}
 			requireKeyKeyword(LispNames.REMOVE_IF, args, 2);
 			return Environment.seqResult(args.get(1), removeIfValues(args.get(0), Environment.seqAsList(args.get(1)),
@@ -2636,7 +2672,8 @@ public final class LispEvaluator {
 		}));
 		this.globalEnv.defineFunction(LispNames.REMOVE_IF_NOT, new LispFunction(LispNames.REMOVE_IF_NOT, args -> {
 			if (args.size() < 2) {
-				throw new LispEvalException(LispNames.REMOVE_IF_NOT + " expects 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.REMOVE_IF_NOT + " expects 2 arguments, got " + args.size());
 			}
 			requireKeyKeyword(LispNames.REMOVE_IF_NOT, args, 2);
 			return Environment.seqResult(args.get(1), removeIfValues(args.get(0), Environment.seqAsList(args.get(1)),
@@ -2661,13 +2698,15 @@ public final class LispEvaluator {
 		// value).
 		this.globalEnv.defineFunction(LispNames.DELETE_IF, new LispFunction(LispNames.DELETE_IF, args -> {
 			if (args.size() != 2) {
-				throw new LispEvalException(LispNames.DELETE_IF + " expects 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.DELETE_IF + " expects 2 arguments, got " + args.size());
 			}
 			return deleteIfValues(args.get(0), args.get(1), true);
 		}));
 		this.globalEnv.defineFunction(LispNames.DELETE_IF_NOT, new LispFunction(LispNames.DELETE_IF_NOT, args -> {
 			if (args.size() != 2) {
-				throw new LispEvalException(LispNames.DELETE_IF_NOT + " expects 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.DELETE_IF_NOT + " expects 2 arguments, got " + args.size());
 			}
 			return deleteIfValues(args.get(0), args.get(1), false);
 		}));
@@ -2675,7 +2714,8 @@ public final class LispEvaluator {
 				args -> mapcanValues(args.get(0), requireMapLists(LispNames.MAPCAN, args), false)));
 		this.globalEnv.defineFunction(LispNames.SORT, new LispFunction(LispNames.SORT, args -> {
 			if (args.size() != 2) {
-				throw new LispEvalException(LispNames.SORT + " expects 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.SORT + " expects 2 arguments, got " + args.size());
 			}
 			// A string/vector argument sorts as a list of its elements and is written
 			// back into its own storage (Common Lisp sequences; .todo/623 keeps a
@@ -2690,18 +2730,12 @@ public final class LispEvaluator {
 		// macro expansion the call position routes through.
 		this.globalEnv.defineFunction(LispNames.STABLE_SORT, new LispFunction(LispNames.STABLE_SORT, args -> {
 			if (args.size() < 2) {
-				throw new LispEvalException(
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
 						LispNames.STABLE_SORT + " expects at least 2 arguments, got " + args.size());
 			}
-			LispVal keyFn = null;
-			for (int i = 2; i < args.size(); i += 2) {
-				if (!(args.get(i) instanceof LispSymbol kw) || !LispNames.KEY_KEYWORD.equals(kw.name())
-						|| i + 1 >= args.size()) {
-					throw new LispEvalException(
-							LispNames.STABLE_SORT + " expects keyword arguments :key, got: " + args.get(i).print());
-				}
-				keyFn = args.get(i + 1) instanceof LispNil ? null : args.get(i + 1);
-			}
+			requireKeyKeyword(LispNames.STABLE_SORT, args, 2);
+			LispVal keyArg = optionalKeywordArg(args, 2, LispNames.KEY_KEYWORD);
+			LispVal keyFn = keyArg instanceof LispNil ? null : keyArg;
 			LispVal pred = args.get(1);
 			List<LispVal[]> decorated = new java.util.ArrayList<>();
 			LispVal cur = Environment.seqAsList(args.get(0));
@@ -2726,7 +2760,8 @@ public final class LispEvaluator {
 		}));
 		this.globalEnv.defineFunction(LispNames.APPLY, new LispFunction(LispNames.APPLY, args -> {
 			if (args.size() < 2) {
-				throw new LispEvalException(LispNames.APPLY + " expects at least 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.APPLY + " expects at least 2 arguments, got " + args.size());
 			}
 			return applyValues(args);
 		}));
@@ -2764,7 +2799,8 @@ public final class LispEvaluator {
 		}));
 		this.globalEnv.defineFunction(LispNames.PROVIDE, new LispFunction(LispNames.PROVIDE, args -> {
 			if (args.size() != 1) {
-				throw new LispEvalException(LispNames.PROVIDE + " expects 1 argument, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.PROVIDE + " expects 1 argument, got " + args.size());
 			}
 			String name = moduleDesignator(LispNames.PROVIDE, args.get(0));
 			// A duplicate provide is a no-op, like Common Lisp. Module names go onto
@@ -2778,7 +2814,8 @@ public final class LispEvaluator {
 		}));
 		this.globalEnv.defineFunction(LispNames.REQUIRE, new LispFunction(LispNames.REQUIRE, args -> {
 			if (args.size() != 1 && args.size() != 2) {
-				throw new LispEvalException(LispNames.REQUIRE + " expects 1 or 2 arguments, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.REQUIRE + " expects 1 or 2 arguments, got " + args.size());
 			}
 			String name = moduleDesignator(LispNames.REQUIRE, args.get(0));
 			if (!providedModules().contains(name)) {
@@ -2806,7 +2843,8 @@ public final class LispEvaluator {
 		String loadSystemName = PackageRegistry.qualify(LispNames.ASDF_PKG, LispNames.LOAD_SYSTEM);
 		this.globalEnv.defineFunction(loadSystemName, new LispFunction(loadSystemName, args -> {
 			if (args.isEmpty()) {
-				throw new LispEvalException(LispNames.ASDF_LOAD_SYSTEM + " expects 1 argument, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.ASDF_LOAD_SYSTEM + " expects 1 argument, got " + args.size());
 			}
 			// Keyword options are accepted and ignored, like the compile path's --
 			// a library that loads a system at run time spells the call that way
@@ -2870,7 +2908,8 @@ public final class LispEvaluator {
 		String testSystemName = PackageRegistry.qualify(LispNames.ASDF_PKG, LispNames.TEST_SYSTEM);
 		this.globalEnv.defineFunction(testSystemName, new LispFunction(testSystemName, args -> {
 			if (args.size() != 1) {
-				throw new LispEvalException(LispNames.ASDF_TEST_SYSTEM + " expects 1 argument, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.ASDF_TEST_SYSTEM + " expects 1 argument, got " + args.size());
 			}
 			ensureAsdfRuntimeLoaded();
 			String name = asdfDesignator(LispNames.ASDF_TEST_SYSTEM, args.get(0));
@@ -2924,7 +2963,8 @@ public final class LispEvaluator {
 		String quickloadName = PackageRegistry.qualify(LispNames.QL_PKG, LispNames.QUICKLOAD);
 		this.globalEnv.defineFunction(quickloadName, new LispFunction(quickloadName, args -> {
 			if (args.isEmpty()) {
-				throw new LispEvalException(LispNames.QL_QUICKLOAD + " expects 1 argument, got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.QL_QUICKLOAD + " expects 1 argument, got " + args.size());
 			}
 			// (ql:quickload "x" :silent t) -- the options are ignored, see load-system.
 			ignoreLoadOptions(LispNames.QL_QUICKLOAD, args.subList(1, args.size()));
@@ -2948,7 +2988,8 @@ public final class LispEvaluator {
 		String installDistName = PackageRegistry.qualify(LispNames.QL_DIST_PKG, LispNames.INSTALL_DIST);
 		this.globalEnv.defineFunction(installDistName, new LispFunction(installDistName, args -> {
 			if (args.isEmpty()) {
-				throw new LispEvalException(LispNames.QL_DIST_INSTALL_DIST + " expects 1 argument, got 0");
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.QL_DIST_INSTALL_DIST + " expects 1 argument, got 0");
 			}
 			// (ql-dist:install-dist "..." :prompt nil) -- real Quicklisp asks before it
 			// downloads; nothing here prompts, so the options are ignored like
@@ -2967,7 +3008,8 @@ public final class LispEvaluator {
 		String updateDistName = PackageRegistry.qualify(LispNames.QL_PKG, LispNames.UPDATE_DIST);
 		this.globalEnv.defineFunction(updateDistName, new LispFunction(updateDistName, args -> {
 			if (args.isEmpty()) {
-				throw new LispEvalException(LispNames.QL_UPDATE_DIST + " expects 1 argument, got 0");
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.QL_UPDATE_DIST + " expects 1 argument, got 0");
 			}
 			ignoreLoadOptions(LispNames.QL_UPDATE_DIST, args.subList(1, args.size()));
 			String name = AsdfSystems.designator(LispNames.QL_UPDATE_DIST, args.get(0));
@@ -4300,8 +4342,43 @@ public final class LispEvaluator {
 			// instance rather than a carrier leaking into user data.
 			case LispStructLiteral literal -> StructLiteralFolder.fold(literal, this.closRegistry);
 			case LispSymbol sym -> evalSymbolRef(sym, env);
-			case LispCons cons -> evalCons(cons, env);
+			case LispCons cons -> evalConsClassifyingRawFailures(cons, env);
 		};
+	}
+
+	/**
+	 * The evaluation seam: a raw Java failure escaping the evaluation of one form --
+	 * where no built-in seam ({@link #apply}) caught it first -- becomes a condition the
+	 * program can handle, classified where it is DETECTED: an
+	 * {@code IllegalArgumentException} or an {@code IndexOutOfBoundsException} is how the
+	 * macro expander and the special forms report a malformed form, so it is a
+	 * {@code program-error} (CLHS 3.5.1); a cast, an arithmetic failure or a negative
+	 * size takes {@link #rawFailureConditionClass}'s rule, as at the built-in seam. The
+	 * innermost frame converts, so the message is the one closest to the failure. An
+	 * {@code UnsupportedOperationException} (a rontolisp limitation, not a program error)
+	 * and anything else stay raw: catching a limitation would let a program run on past
+	 * what this implementation cannot do.
+	 */
+	private LispVal evalConsClassifyingRawFailures(LispCons cons, Environment env) {
+		try {
+			return evalCons(cons, env);
+		}
+		catch (IllegalArgumentException | IndexOutOfBoundsException raw) {
+			throw rawEvaluationFailure(ClosRegistry.PROGRAM_ERROR_CLASS_NAME, raw);
+		}
+		catch (ClassCastException | ArithmeticException | NegativeArraySizeException raw) {
+			throw rawEvaluationFailure(rawFailureConditionClass(raw), raw);
+		}
+	}
+
+	private static LispEvalException rawEvaluationFailure(String className, RuntimeException raw) {
+		String message = raw instanceof ClassCastException ? ClosRegistry.TYPE_ERROR_MESSAGE : raw.getMessage();
+		if (message == null || message.isBlank()) {
+			message = raw.getClass().getSimpleName();
+		}
+		LispEvalException wrapped = LispEvalException.ofClass(className, message);
+		wrapped.initCause(raw);
+		return wrapped;
 	}
 
 	/**
@@ -5406,6 +5483,13 @@ public final class LispEvaluator {
 		switch (name) {
 			case LispNames.HB_GUARD_INTERNAL:
 				return evalHbGuard(cons, env);
+			case LispNames.PROGRAM_ERROR_INTERNAL: {
+				// The lowered argument-shape rejection: a class-named error with no
+				// instance until a handler synthesizes one (LispEvalException.ofClass).
+				LispVal message = cons.cdr() instanceof LispCons rest ? eval(rest.car(), env) : LispNil.INSTANCE;
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						message instanceof LispString s ? s.value() : message.display());
+			}
 			case LispNames.PRINT, LispNames.PRINC, LispNames.PRIN1, LispNames.PRINC_TO_STRING,
 					LispNames.PRIN1_TO_STRING, LispNames.WRITE_TO_STRING, LispNames.PRINC_PIECE_INTERNAL,
 					LispNames.PRIN1_PIECE_INTERNAL: {
@@ -7200,7 +7284,7 @@ public final class LispEvaluator {
 	private LispVal expandMacroCall(String name, UserMacro macro, LispCons form) {
 		List<LispVal> args = form.cdr() instanceof LispCons argCons ? argCons.toList() : List.of();
 		if (args.size() < macro.required().size() || (macro.rest() == null && args.size() > macro.required().size())) {
-			throw new LispEvalException(
+			throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
 					"Macro " + name + " expects " + (macro.rest() == null ? String.valueOf(macro.required().size())
 							: "at least " + macro.required().size()) + " arguments, got " + args.size());
 		}
@@ -7485,7 +7569,8 @@ public final class LispEvaluator {
 
 	private static void requireSingleArg(String name, List<LispVal> args) {
 		if (args.size() != 1) {
-			throw new LispEvalException(name + " expects 1 argument, got " + args.size());
+			throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+					name + " expects 1 argument, got " + args.size());
 		}
 	}
 
@@ -9284,7 +9369,8 @@ public final class LispEvaluator {
 	// all of them, not just mapcar.
 	private List<LispVal> requireMapLists(String name, List<LispVal> args) {
 		if (args.size() < 2) {
-			throw new LispEvalException(name + " expects at least 2 arguments, got " + args.size());
+			throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+					name + " expects at least 2 arguments, got " + args.size());
 		}
 		List<LispVal> lists = args.subList(1, args.size());
 		for (LispVal list : lists) {
@@ -9426,7 +9512,8 @@ public final class LispEvaluator {
 	private LispVal positionScanValues(String opName, List<LispVal> args, PositionScanMode mode,
 			boolean elementResult) {
 		if (args.size() < 2) {
-			throw new LispEvalException(opName + " expects at least 2 arguments, got " + args.size());
+			throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+					opName + " expects at least 2 arguments, got " + args.size());
 		}
 		LispVal test = null;
 		LispVal testNot = null;
@@ -9434,16 +9521,24 @@ public final class LispEvaluator {
 		boolean fromEnd = false;
 		long start = 0;
 		Long end = null;
+		List<String> allowed = mode == PositionScanMode.ITEM
+				? List.of(LispNames.TEST_KEYWORD, LispNames.TEST_NOT_KEYWORD, LispNames.KEY_KEYWORD,
+						LispNames.START_KEYWORD, LispNames.END_KEYWORD, LispNames.FROM_END_KEYWORD)
+				: List.of(LispNames.KEY_KEYWORD, LispNames.START_KEYWORD, LispNames.END_KEYWORD,
+						LispNames.FROM_END_KEYWORD);
+		requireKeywordTail(opName, args, 2, allowed);
 		for (int i = 2; i < args.size(); i += 2) {
-			if (!(args.get(i) instanceof LispSymbol kw) || i + 1 >= args.size()) {
-				throw new LispEvalException(opName + " expects :keyword value pairs, got: " + args.get(i).print());
+			if (!(args.get(i) instanceof LispSymbol kw)) {
+				// Admitted by :allow-other-keys t.
+				continue;
 			}
 			LispVal value = args.get(i + 1);
 			boolean absent = value instanceof LispNil;
 			switch (kw.name()) {
 				case LispNames.TEST_KEYWORD, LispNames.TEST_NOT_KEYWORD -> {
 					if (mode != PositionScanMode.ITEM) {
-						throw new LispEvalException(opName + " does not take " + kw.name());
+						// Admitted by :allow-other-keys t (the predicate IS the test).
+						continue;
 					}
 					if (LispNames.TEST_KEYWORD.equals(kw.name())) {
 						test = absent ? null : value;
@@ -9456,8 +9551,9 @@ public final class LispEvaluator {
 				case LispNames.FROM_END_KEYWORD -> fromEnd = !absent;
 				case LispNames.START_KEYWORD -> start = absent ? 0 : Environment.requireIndex(opName, value);
 				case LispNames.END_KEYWORD -> end = absent ? null : (long) Environment.requireIndex(opName, value);
-				default -> throw new LispEvalException(opName
-						+ " expects keyword arguments :test/:test-not/:key/:start/:end/:from-end, got: " + kw.name());
+				default -> {
+					// :allow-other-keys itself, or a key it admitted.
+				}
 			}
 		}
 		LispVal item = args.get(0);
@@ -9738,7 +9834,8 @@ public final class LispEvaluator {
 	// result keeps the argument's sequence kind, like substitute.
 	private LispVal substituteIfValues(String name, List<LispVal> args) {
 		if (args.size() < 3) {
-			throw new LispEvalException(name + " expects at least 3 arguments, got " + args.size());
+			throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+					name + " expects at least 3 arguments, got " + args.size());
 		}
 		requireKeyKeyword(name, args, 3);
 		LispVal keyFn = optionalKeywordArg(args, 3, LispNames.KEY_KEYWORD);
@@ -9765,7 +9862,8 @@ public final class LispEvaluator {
 	// (.todo/623).
 	private LispVal nsubstituteIfValues(String name, List<LispVal> args) {
 		if (args.size() < 3) {
-			throw new LispEvalException(name + " expects at least 3 arguments, got " + args.size());
+			throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+					name + " expects at least 3 arguments, got " + args.size());
 		}
 		requireKeyKeyword(name, args, 3);
 		boolean negated = LispNames.NSUBSTITUTE_IF_NOT.equals(name);
@@ -9794,13 +9892,20 @@ public final class LispEvaluator {
 	// The -if family takes :key only (no :test -- the predicate IS the test), so its
 	// keyword tail gets its own validator rather than requireTestKeyKeywords.
 	private static void requireKeyKeyword(String name, List<LispVal> args, int start) {
-		for (int i = start; i < args.size(); i += 2) {
-			if (!(args.get(i) instanceof LispSymbol kw) || !LispNames.KEY_KEYWORD.equals(kw.name())) {
-				throw new LispEvalException(name + " expects keyword argument :key, got: " + args.get(i).print());
-			}
-			if (i + 1 >= args.size()) {
-				throw new LispEvalException(name + " expects a value after " + kw.name());
-			}
+		requireKeywordTail(name, args, start, List.of(LispNames.KEY_KEYWORD));
+	}
+
+	/**
+	 * Signals the {@code program-error} a malformed keyword tail of a first-class call
+	 * deserves, through the SAME rule and text the expansion-time check applies to a call
+	 * form ({@code LispMacroExpander.keywordTailProblem}) -- including
+	 * {@code :allow-other-keys} suppression -- so {@code (funcall #'remove ...)} and
+	 * {@code (remove ...)} cannot disagree.
+	 */
+	private static void requireKeywordTail(String name, List<LispVal> args, int start, List<String> allowed) {
+		String problem = LispMacroExpander.keywordTailProblem(name, args, start, allowed);
+		if (problem != null) {
+			throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME, problem);
 		}
 	}
 
@@ -9970,7 +10075,8 @@ public final class LispEvaluator {
 	private LispVal evalAwait(LispCons cons, Environment env) {
 		List<LispVal> parts = cons.toList();
 		if (parts.size() != 2) {
-			throw new LispEvalException(LispNames.AWAIT + " expects 1 argument, got " + (parts.size() - 1));
+			throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+					LispNames.AWAIT + " expects 1 argument, got " + (parts.size() - 1));
 		}
 		return awaitValue(eval(parts.get(1), env));
 	}
@@ -10003,7 +10109,8 @@ public final class LispEvaluator {
 	// The single-argument thread-handle check shared by the thread primitives.
 	private static LispThread requireThread(String fn, List<LispVal> args) {
 		if (args.size() != 1) {
-			throw new LispEvalException(fn + " expects 1 argument, got " + args.size());
+			throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+					fn + " expects 1 argument, got " + args.size());
 		}
 		if (!(args.get(0) instanceof LispThread thread)) {
 			throw new LispEvalException(fn + " expects a thread handle, got " + args.get(0).print());
@@ -10440,12 +10547,13 @@ public final class LispEvaluator {
 		if (function instanceof LispLambda lambda) {
 			int required = lambda.params().size();
 			if (args.size() < required) {
-				throw new LispEvalException("Function expects " + (lambda.rest() == null ? "" : "at least ") + required
-						+ " argument" + (required == 1 ? "" : "s") + ", got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						"Function expects " + (lambda.rest() == null ? "" : "at least ") + required + " argument"
+								+ (required == 1 ? "" : "s") + ", got " + args.size());
 			}
 			if (lambda.rest() == null && args.size() > required) {
-				throw new LispEvalException("Function expects " + required + " argument" + (required == 1 ? "" : "s")
-						+ ", got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME, "Function expects " + required
+						+ " argument" + (required == 1 ? "" : "s") + ", got " + args.size());
 			}
 			Environment lambdaEnv = new Environment((Environment) lambda.closure());
 			// A parameter whose name is proclaimed special binds DYNAMICALLY, as in CL:
@@ -10561,16 +10669,8 @@ public final class LispEvaluator {
 	// :start, ...) are rejected loudly rather than silently ignored, mirroring the
 	// compile-time check in LispMacroExpander.
 	private static void requireTestKeyKeywords(String name, List<LispVal> args, int start) {
-		for (int i = start; i < args.size(); i += 2) {
-			if (!(args.get(i) instanceof LispSymbol kw) || (!LispNames.TEST_KEYWORD.equals(kw.name())
-					&& !LispNames.TEST_NOT_KEYWORD.equals(kw.name()) && !LispNames.KEY_KEYWORD.equals(kw.name()))) {
-				throw new LispEvalException(
-						name + " expects keyword arguments :test/:test-not/:key, got: " + args.get(i).print());
-			}
-			if (i + 1 >= args.size()) {
-				throw new LispEvalException(name + " expects a value after " + kw.name());
-			}
-		}
+		requireKeywordTail(name, args, start,
+				List.of(LispNames.TEST_KEYWORD, LispNames.TEST_NOT_KEYWORD, LispNames.KEY_KEYWORD));
 	}
 
 	private boolean isTruthy(LispVal val) {
