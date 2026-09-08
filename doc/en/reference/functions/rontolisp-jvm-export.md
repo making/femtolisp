@@ -70,8 +70,9 @@ silently wrapped, masked or mis-decoded.
 
 `:float-vector` and `:float-matrix` both cross as
 `am.ik.rontolisp.runtime.RontoFloatArray`, the handle that holds a packed float
-array's own representation — `of(double[])` / `of(float[])` copies into it once,
-`get`/`set`/`size`/`dims` index in place, `toArray()` copies out once. Every
+array's own representation — `of(double[])` / `of(float[])` / `of(short[])`
+copies into it once, `get`/`set`/`size`/`dims` index in place, `toArray()`
+copies out once. Every
 crossing in between is a **reference**, not a conversion: a plain `double[]`
 parameter type would be both silently mis-readable (a packed array carries a
 dimension header, so a bare Java array is not one) and about ten times the cost
@@ -82,9 +83,11 @@ Consequences worth stating:
 - **A returned handle aliases the Lisp array.** Writing through it is visible to
   a Lisp closure over the same array, and the other way round. Nothing is
   defensively copied.
-- **Both element widths use the one designator.** `double-float` and
-  `single-float` arrays are disjoint representations; `width()` reports which,
-  and accessors read and write in `double` either way, exactly as `aref` does.
+- **All three element widths use the one designator.** `double-float`,
+  `single-float` and `bfloat16` arrays are disjoint representations; `width()`
+  reports which, and accessors read and write in `double` at every one of them,
+  exactly as `aref` does. `of(short[])` and `toShortArray()` are the `bfloat16`
+  pair, and they take bit patterns rather than values.
 - **The rank is checked at the boundary.** `:float-vector` accepts and answers
   rank 1, `:float-matrix` rank 2; anything else throws.
 - **The handle's class files travel with the compiled class**, written beside it

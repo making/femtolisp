@@ -113,6 +113,15 @@ twelve files; sorted into what each actually is:
     2026-09-08 to the `u | (((u & 0x7f) - 1) >>> 31)` shape; pinned by
     `JvmSimdVectorTemplateBf16Test#theNarrowingAgreesWithTheAuthorityOnEveryBf16WidenedPattern`
     (all 65536 bf16-widened patterns, direct vs. `BFloat16.bits`, not just round-trip).
+  - `runtime/RontoFloatArray` (`bfloat16Value`/`bfloat16Float`/`bfloat16Bits`, the
+    `rontolisp:jvm-export` handle's element access at this width; added 2026-09-08, `.todo/689`)
+    -- AGREES, the same sweep shape as `JvmFloatArrayRuntimeBuilder`'s: all 65536 patterns
+    widening, all 2^32 f32 patterns through BOTH narrow arms plus the double NaN space, directly
+    against `BFloat16` (`RontoFloatArrayTest`). It is a necessary emission for the same reason
+    the emitted pair is -- `am.ik.rontolisp.runtime` imports NOTHING so that it can travel inside
+    someone else's artifact (`.kb/jvm-export.md`, "What travels"), and `BFloat16` does not
+    travel. `toFloatArray` widens by the shift alone rather than through `value`, per the
+    widening rule above.
 - **The avoidable copy, folded**: `eval/FloatBitsWidening#bfloat16BitsOfFloat` -- host Java that
   could call `BFloat16.bits(float)` directly (that overload exists specifically for this call site,
   added 2026-09-03) but reimplemented its body instead, on a stale comment claiming the call would
@@ -130,9 +139,11 @@ twelve files; sorted into what each actually is:
   `VecSimdBf16KernelsTest#theNarrowingAgreesWithTheAuthorityOnEveryBf16WidenedPattern`.
 
 **Result: not seven sites, and not twelve.** One authority, one non-duplicate caller, three grep
-false positives, five necessary emissions (all now agreeing with the authority, one fixed by this
-item), one avoidable copy (folded), and one duplicate kept deliberately (fixed, not folded, for the
-reason above). The finding this discharges: a fused-kernel NaN bug, unreachable from any `rontolisp:`
+false positives, six necessary emissions (all agreeing with the authority; one fixed 2026-09-08,
+one added 2026-09-08), one avoidable copy (folded), and one duplicate kept deliberately (fixed,
+not folded, for the reason above).
+
+The finding this discharges: a fused-kernel NaN bug, unreachable from any `rontolisp:`
 primitive today (`narrowBf16Into`/`floatToBf16` have no Lisp-callable call site yet -- `.todo/696`
 is what will wire one up), sitting unfixed for five days after its twin was fixed elsewhere. Filed
 because the fix was small and the bug was already fully diagnosed by the census; not filed as a
@@ -152,10 +163,18 @@ needed"). No `linalg:` acceleration seam takes it: `--simd`, `--blas` and `--gpu
 `short[]` operand to the defun, so a `linalg:` answer at this width is the portable one bit for bit.
 - **JVM representation: a bare `short[]` with a TWO-SLOTS-PER-DIMENSION header**
   `[rank, hi_0, lo_0, ..., e_0, ...]`, data offset `1 + 2 * rank` (a `short` caps at 32767).
-  `codegen/jvm/JvmPackedFloatWidth` is the ONE place that knows the layout at every width.
+  `codegen/jvm/JvmPackedFloatWidth` is the ONE place that knows the layout at every width --
+  except `runtime/RontoFloatArray`, which cannot import it and names the offset itself
+  (`BFLOAT16_HEADER_SLOTS_PER_DIM`) for the same reason it hand-writes the conversion pair.
 - Access goes through the program's own `_bf16Value(I)D` / `_bf16Bits(D)I`, pinned by
   `JvmBFloat16ArrayTest` over ALL 2^32 f32 patterns plus the double NaN space -- exhaustive in the
   NARROW direction on purpose. Element cap: `short[]`, 2^31-1 elements.
+- **The `rontolisp:jvm-export` boundary carries it** since 2026-09-08 (`.todo/689`):
+  `RontoFloatArray.Width.BFLOAT16`, `of(short[], int...)` / `toShortArray()` in BIT PATTERNS,
+  the same `:float-vector` / `:float-matrix` designators the other two widths cross
+  (`.kb/jvm-export.md`, "The packed float array handle"). Before that `checkPacked` refused a
+  `short[]` -- a correct refusal, never a wrong number, but a Java caller of a compiled model
+  could not pass or receive a bf16 weight matrix.
 - **`--simd` FUSES the decode shape and DECLINES every other pairing** (`.todo/488`). `vec:sum` over
   a bf16 vector, `vec:dot` with a bf16 FIRST operand, and `vec:matvec` / `matvec-into` over a bf16
   matrix run kernels that decode inside the lane loop -- provided every OTHER array operand is

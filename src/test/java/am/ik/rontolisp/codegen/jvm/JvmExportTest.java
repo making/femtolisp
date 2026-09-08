@@ -345,6 +345,72 @@ class JvmExportTest {
 	}
 
 	@Test
+	void theThirdWidthCrossesTheSameDesignatorAsTheOtherTwo() throws Exception {
+		// bfloat16 is a short[] with a TWO-SLOTS-PER-DIMENSION header, so it is not the
+		// float[] arm with a smaller element: the boundary has to read the header the
+		// width's own way (.kb/bfloat16.md). Elements go in as BIT PATTERNS --
+		// 0x3f80 is 1.0, 0x4020 is 2.5.
+		Class<?> clazz = compileToClass("""
+				(defun total (v)
+				  (let ((acc 0.0d0))
+				    (dotimes (i (length v) acc) (setq acc (+ acc (aref v i))))))
+				(defun bump (v)
+				  (dotimes (i (length v) v) (setf (aref v i) (+ 1.0d0 (aref v i)))))
+				(rontolisp:jvm-export 'total :params '(:float-vector) :returns :float)
+				(rontolisp:jvm-export 'bump :params '(:float-vector) :returns :float-vector)
+				""");
+		RontoFloatArray vector = RontoFloatArray.of(new short[] { (short) 0x3f80, (short) 0x4020 });
+		assertThat(vector.width()).isEqualTo(RontoFloatArray.Width.BFLOAT16);
+		assertThat(vector.packed()).isInstanceOf(short[].class);
+		assertThat(vector.toArray()).containsExactly(1.0, 2.5);
+		assertThat(clazz.getMethod("total", RontoFloatArray.class).invoke(null, vector)).isEqualTo(3.5);
+		// Aliasing is the contract at this width too: the Lisp side wrote into the
+		// caller's own short[], and the narrowing it performed is the handle's.
+		Object out = clazz.getMethod("bump", RontoFloatArray.class).invoke(null, vector);
+		assertThat(((RontoFloatArray) out).packed()).isSameAs(vector.packed());
+		assertThat(vector.toArray()).containsExactly(2.0, 3.5);
+		assertThat(vector.toShortArray()).containsExactly((short) 0x4000, (short) 0x4060);
+	}
+
+	@Test
+	void aBfloat16MatrixIndexesThroughItsOwnHeaderAcrossTheBoundary() throws Exception {
+		Class<?> clazz = compileToClass("""
+				(defun cell (m i j) (aref m i j))
+				(defun weights () (make-array '(2 2) :element-type 'bfloat16 :initial-element 0.5))
+				(rontolisp:jvm-export 'cell :params '(:float-matrix :s32 :s32) :returns :float)
+				(rontolisp:jvm-export 'weights :returns :float-matrix)
+				""");
+		RontoFloatArray matrix = RontoFloatArray.of(new short[] { (short) 0x3f80, (short) 0x4000, (short) 0x4040,
+				(short) 0x4080, (short) 0x40a0, (short) 0x40c0 }, 2, 3);
+		assertThat(matrix.dims()).containsExactly(2, 3);
+		assertThat(clazz.getMethod("cell", RontoFloatArray.class, int.class, int.class).invoke(null, matrix, 1, 2))
+			.isEqualTo(6.0);
+		// And the other direction: a bf16 array the program allocated comes back as a
+		// handle at that width, header and all.
+		RontoFloatArray produced = (RontoFloatArray) clazz.getMethod("weights").invoke(null);
+		assertThat(produced.width()).isEqualTo(RontoFloatArray.Width.BFLOAT16);
+		assertThat(produced.packed()).isInstanceOf(short[].class);
+		assertThat(produced.dims()).containsExactly(2, 2);
+		assertThat(produced.toArray()).containsExactly(0.5, 0.5, 0.5, 0.5);
+	}
+
+	@Test
+	void aBfloat16DimensionAShortCannotHoldSurvivesTheBoundary() throws Exception {
+		// The regression the two-slot header exists for: 40000 does not fit a short, so
+		// a one-slot read answers -25536 and every index past it is wrong.
+		Class<?> clazz = compileToClass("""
+				(defun last-of (v) (aref v (- (length v) 1)))
+				(rontolisp:jvm-export 'last-of :params '(:float-vector) :returns :float :as "lastOf")
+				""");
+		short[] data = new short[40000];
+		data[39999] = (short) 0x4120; // 10.0
+		RontoFloatArray vector = RontoFloatArray.of(data);
+		assertThat(vector.dims()).containsExactly(40000);
+		assertThat(vector.size()).isEqualTo(40000);
+		assertThat(clazz.getMethod("lastOf", RontoFloatArray.class).invoke(null, vector)).isEqualTo(10.0);
+	}
+
+	@Test
 	void aFloatMatrixIsTheSameHandleAtRankTwo() throws Exception {
 		Class<?> clazz = compileToClass("""
 				(defun cell (m i j) (aref m i j))

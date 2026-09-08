@@ -31,14 +31,39 @@ float array ([vec.md](vec.md)); `jvmOnly()` has `WasmExportCompiler.typeDesignat
 BY NAME instead of failing later in a component lift.
 
 - **Aliasing is the CONTRACT**: `RontoBoundary.floatArrayArgument`/`floatArrayResult` pass
-  `handle.packed()` uncopied, only `of(...)`/`toArray()` copy. Width dispatches in ONE place
-  (`widthOf`/`headerAt`) as `Width`; a declared handle forces `usesFloatArray` on.
+  `handle.packed()` uncopied, only `of(...)`/`to*Array()` copy. Width dispatches in ONE place
+  (`widthOf`/`headerAt`/`dimAt`/`dataOffset`) as `Width`; a declared handle forces
+  `usesFloatArray` on.
+- **`Width` has THREE members** -- it shipped with two, and a caller must not assume the count
+  it has now. All three cross the ONE designator pair; the handle reads each width's header its
+  own way, which is why the enum is not a `double[]`/`float[]` boolean:
+
+  | `Width` | backing | header | copy-in / copy-out |
+  | --- | --- | --- | --- |
+  | `DOUBLE_FLOAT` | `double[]` | `1 + rank` | `of(double[], int...)` / `toArray()` |
+  | `SINGLE_FLOAT` | `float[]` | `1 + rank` | `of(float[], int...)` / `toFloatArray()` |
+  | `BFLOAT16` | `short[]` | `1 + 2 * rank` | `of(short[], int...)` / `toShortArray()` |
+
+  `BFLOAT16` arrived 2026-09-08 (`.todo/689`); before it, a `#bf16` weight matrix reaching the
+  boundary was REFUSED by `checkPacked` ("not a packed float array: [S") -- a correct refusal
+  and never a wrong number, but a Java caller of a compiled model could not hand a bf16 weight
+  matrix across or receive one. `of(short[], ...)`/`toShortArray()` take BIT PATTERNS, not
+  values; `get`/`set`/`toArray` still read and write `double` at every width, `toFloatArray`
+  widens a bf16 by the SHIFT ALONE (never by way of a `double`, which quiets 126 of the 65536
+  patterns). Two slots per dimension because a `short` caps at 32767; the offset is named
+  (`BFLOAT16_HEADER_SLOTS_PER_DIM`) and applied in `dataOffset` alone, since `runtime` cannot
+  import the emitter's authority `codegen.jvm.JvmPackedFloatWidth`. Same reason the widen /
+  narrow pair is a THIRD hand-written copy of `am.ik.rontolisp.BFloat16` (`.kb/bfloat16.md`,
+  "The conversion arithmetic census"), swept against it by
+  `RontoFloatArrayTest#theNarrowingMatchesTheAuthorityOnEveryF32PatternAndEveryDoubleNaN` and
+  `#everyBfloat16PatternWidensExactlyAsTheAuthorityDoes`.
 - They travel VERBATIM at canonical names, NOT renamed per program like the acceleration
   bridges ([template-class-embedding.md](template-class-embedding.md)) — one canonical boundary
   TYPE is what keeps two rontolisp libraries' vectors interoperable.
 - `--gpu`: the handle does NOT materialize; it adopts the generated class (`ldc thisClass`) and
   resolves its private `_gpuMaterialize`/`_gpuWritten` through `MethodHandles` ([gpu.md](gpu.md)).
-  A lazy result's host array is the HEADER ALONE, so `checkPacked` requires exactly `1 + rank`.
+  A lazy result's host array is the HEADER ALONE, so `checkPacked` requires only the header
+  (`1 + rank`, or `1 + 2 * rank` at `BFLOAT16`) and not the elements.
 
 ## What travels
 
