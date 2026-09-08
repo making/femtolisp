@@ -26,14 +26,12 @@ import am.ik.wasm.Type;
  * subtracting, so it needs no small branch.
  *
  * <p>
- * Accuracy elsewhere follows the software {@code exp} itself: ~1e-7 relative for
- * {@code |x|} up to ~20, degrading as {@code |x|} grows (the {@code exp} Taylor argument
- * {@code x/256} leaves its accurate range; ~1e-3 at {@code |x| = 100}, documented like
- * the {@code exp}/{@code log} low-digit divergence), and overflowing to {@code inf} near
- * {@code |x| ~ 755} rather than the true 710.5. Edges: NaN -> NaN; {@code (sinh
- * +-inf) = +-inf}, {@code (cosh +-inf) = +inf} (checked BEFORE the exponential --
- * {@code exp(-inf)}'s Horner polynomial would yield {@code +inf}, not 0). Exact anchors:
- * {@code (sinh 0) = 0.0}, {@code (cosh 0) = 1.0} (the exp core is exactly 1.0 at 0).
+ * Accuracy elsewhere follows the software {@code exp} itself: a few dozen ulps (~3e-14
+ * relative, measured over the full finite range), and the overflow edge matches the JVM's
+ * -- {@code |x| > 709.8} overflows to {@code inf} on every backend. Edges: NaN -> NaN;
+ * {@code (sinh +-inf) = +-inf}, {@code (cosh +-inf) = +inf} (checked BEFORE the
+ * exponential). Exact anchors: {@code (sinh 0) = 0.0}, {@code (cosh 0) = 1.0} (the exp
+ * core is exactly 1.0 at 0).
  *
  * <p>
  * Intermediate f64 values are boxed as {@code TYPE_FLOAT} structs in ref-typed
@@ -63,6 +61,7 @@ final class WasmSinhCoshCompiler {
 		}
 		int xSlot = ctx.allocTemp(); // x
 		int tSlot = ctx.allocTemp(); // the exp core's reduced argument / z / s scratch
+		int kSlot = ctx.allocTemp(); // the exp core's range index
 		int accSlot = ctx.allocTemp(); // the exp core's accumulator (holds e after it)
 
 		WasmExprCompiler.compileExpr(args.get(1), ctx);
@@ -80,7 +79,8 @@ final class WasmSinhCoshCompiler {
 		unbox(ctx, xSlot);
 		ctx.writer.write(Instruction.ELSE);
 		// if (|x| == +inf) -> x for sinh (odd), |x| for cosh (even). Must precede the
-		// exponential: the exp core's Horner polynomial maps -inf to +inf, not 0.
+		// exponential: the exp core answers +inf for -inf only through its edge ladder,
+		// and the derivation below would turn that into NaN, not the required edge.
 		unbox(ctx, xSlot);
 		ctx.writer.write(Instruction.F64_ABS);
 		f64Const(ctx, Double.POSITIVE_INFINITY);
@@ -93,8 +93,8 @@ final class WasmSinhCoshCompiler {
 		}
 		ctx.writer.write(Instruction.ELSE);
 		switch (name) {
-			case LispNames.SINH -> emitSinhMain(ctx, xSlot, tSlot, accSlot);
-			case LispNames.COSH -> emitCoshMain(ctx, xSlot, tSlot, accSlot);
+			case LispNames.SINH -> emitSinhMain(ctx, xSlot, tSlot, kSlot, accSlot);
+			case LispNames.COSH -> emitCoshMain(ctx, xSlot, tSlot, kSlot, accSlot);
 			default -> throw new IllegalArgumentException("not a sinh/cosh operator: " + name);
 		}
 		ctx.writer.write(Instruction.END);
@@ -103,7 +103,7 @@ final class WasmSinhCoshCompiler {
 	}
 
 	// The finite sinh path; leaves the f64 result on the stack.
-	private static void emitSinhMain(WasmLispCompiler.Ctx ctx, int xSlot, int tSlot, int accSlot) {
+	private static void emitSinhMain(WasmLispCompiler.Ctx ctx, int xSlot, int tSlot, int kSlot, int accSlot) {
 		// if (|x| > SMALL) exp derivation else the odd Taylor series.
 		unbox(ctx, xSlot);
 		ctx.writer.write(Instruction.F64_ABS);
@@ -112,7 +112,7 @@ final class WasmSinhCoshCompiler {
 		ctx.writer.write(Instruction.IF);
 		ctx.writer.write(Type.F64);
 		// e = exp(|x|); s = (e - 1/e) * 0.5, boxed into tSlot.
-		emitExpOfAbs(ctx, xSlot, tSlot, accSlot);
+		emitExpOfAbs(ctx, xSlot, tSlot, kSlot, accSlot);
 		unbox(ctx, accSlot);
 		f64Const(ctx, 1.0);
 		unbox(ctx, accSlot);
@@ -153,9 +153,9 @@ final class WasmSinhCoshCompiler {
 	}
 
 	// The finite cosh path; leaves the f64 result on the stack.
-	private static void emitCoshMain(WasmLispCompiler.Ctx ctx, int xSlot, int tSlot, int accSlot) {
+	private static void emitCoshMain(WasmLispCompiler.Ctx ctx, int xSlot, int tSlot, int kSlot, int accSlot) {
 		// e = exp(|x|); (e + 1/e) * 0.5.
-		emitExpOfAbs(ctx, xSlot, tSlot, accSlot);
+		emitExpOfAbs(ctx, xSlot, tSlot, kSlot, accSlot);
 		unbox(ctx, accSlot);
 		f64Const(ctx, 1.0);
 		unbox(ctx, accSlot);
@@ -165,11 +165,12 @@ final class WasmSinhCoshCompiler {
 		ctx.writer.write(Instruction.F64_MUL);
 	}
 
-	// Runs the shared exp core on |x|; leaves e = exp(|x|) boxed in accSlot.
-	private static void emitExpOfAbs(WasmLispCompiler.Ctx ctx, int xSlot, int tSlot, int accSlot) {
+	// Runs the shared exp core on |x|; leaves e = exp(|x|) boxed in accSlot. The
+	// core runs on tSlot / kSlot / accSlot so xSlot survives for the sign restore.
+	private static void emitExpOfAbs(WasmLispCompiler.Ctx ctx, int xSlot, int tSlot, int kSlot, int accSlot) {
 		unbox(ctx, xSlot);
 		ctx.writer.write(Instruction.F64_ABS);
-		WasmExpCompiler.emitExpCore(ctx, tSlot, accSlot);
+		WasmExpCompiler.emitExpCore(ctx, tSlot, kSlot, accSlot);
 		ctx.writer.write(Instruction.DROP);
 	}
 

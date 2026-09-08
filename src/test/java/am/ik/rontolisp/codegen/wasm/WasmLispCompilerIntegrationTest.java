@@ -12783,9 +12783,11 @@ class WasmLispCompilerIntegrationTest {
 
 	@Test
 	void expSoftwareApproximation() throws Exception {
-		// WASM has no native exp instruction; it is approximated in f64 (argument
-		// reduction + Taylor polynomial), so results match Math.exp closely but not
-		// bit-exactly. exp(0) is exactly 1.0.
+		// WASM has no native exp instruction; it is approximated in f64 (range reduction
+		// x = k*ln2 + r plus a Taylor polynomial plus an exponent-bit scale, ~3e-14
+		// relative over the full finite range), so results match Math.exp closely but not
+		// bit-exactly. exp(0) is exactly 1.0. The full-range edges live in
+		// expFullDoubleRange.
 		assertThat(compileAndRun("(print (exp 0))")).isEqualTo("1.0");
 		assertThat(Double.parseDouble(compileAndRun("(print (exp 1))"))).isCloseTo(Math.exp(1), within(1e-4));
 		assertThat(Double.parseDouble(compileAndRun("(print (exp 2.0))"))).isCloseTo(Math.exp(2), within(1e-3));
@@ -12797,6 +12799,32 @@ class WasmLispCompilerIntegrationTest {
 			.isCloseTo(1.0 / (1.0 + Math.exp(-2.0)), within(1e-5));
 		// exp as a first-class value over an integer argument.
 		assertThat(Double.parseDouble(compileAndRun("(print (funcall #'exp 1))"))).isCloseTo(Math.exp(1), within(1e-4));
+	}
+
+	@Test
+	void expFullDoubleRange() throws Exception {
+		// .todo/456: the software exp must hold its accuracy past |x| ~ 20 and answer
+		// the edges exactly -- the old (P5(x/256))^256 core degraded to ~1e-3 relative
+		// by |x| = 100 and exploded to huge positives (even to Infinity) for large
+		// negative arguments, NaN-ing a masked softmax on WASM only.
+		assertThat(Double.parseDouble(compileAndRun("(print (exp 100.0))"))).isCloseTo(Math.exp(100),
+				within(Math.exp(100) * 1e-12));
+		assertThat(Double.parseDouble(compileAndRun("(print (exp -100.0))"))).isCloseTo(Math.exp(-100),
+				within(Math.exp(-100) * 1e-12));
+		assertThat(Double.parseDouble(compileAndRun("(print (exp 709.0))"))).isCloseTo(Math.exp(709),
+				within(Math.exp(709) * 1e-12));
+		assertThat(Double.parseDouble(compileAndRun("(print (exp -700.0))"))).isCloseTo(Math.exp(-700),
+				within(Math.exp(-700) * 1e-12));
+		// The IEEE edges match Math.exp: overflow to +inf, underflow to 0.0, NaN to
+		// NaN -- including the -1e30 causal mask that used to answer Infinity.
+		assertThat(compileAndRun("(print (exp 710.0))")).isEqualTo("Infinity");
+		assertThat(compileAndRun("(print (exp 1e30))")).isEqualTo("Infinity");
+		assertThat(compileAndRun("(print (exp (/ 1.0 0.0)))")).isEqualTo("Infinity");
+		assertThat(compileAndRun("(print (exp -1000.0))")).isEqualTo("0.0");
+		assertThat(compileAndRun("(print (exp -1e30))")).isEqualTo("0.0");
+		assertThat(compileAndRun("(print (exp (/ -1.0 0.0)))")).isEqualTo("0.0");
+		assertThat(compileAndRun("(print (exp (/ 0.0 0.0)))")).isEqualTo("NaN");
+		assertThat(compileAndRun("(print (exp -0.0))")).isEqualTo("1.0");
 	}
 
 	@Test
@@ -13035,8 +13063,8 @@ class WasmLispCompilerIntegrationTest {
 		// members of BuiltinFunctionWrappers.WASM_UNSUPPORTED -- every transcendental
 		// built-in now has a WASM software approximation. atan = odd/reciprocal folds +
 		// two half-angle folds + a 10-term Taylor series (~1e-15 relative); asin/acos
-		// derive from it; sinh/cosh derive from the software exp (~1e-7 relative for
-		// |x| up to ~20, degrading beyond like exp itself), sinh switching to its odd
+		// derive from it; sinh/cosh derive from the software exp (a few dozen ulps like
+		// exp itself, overflowing at the same edge), sinh switching to its odd
 		// Taylor series below |x| = 0.25 to dodge the e - 1/e cancellation. Exact
 		// anchors and IEEE edges are exact; everything else matches java.lang.Math to
 		// the printer's six decimal places but not bit-exactly.

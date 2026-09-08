@@ -704,9 +704,9 @@ final class WasmLinalgSimdRuntimeBuilder {
 	// laneUop >= 0 runs whole lane groups (WasmVecLoops.gcMap1: sqrt / abs / negative,
 	// each mirroring the wasm defun's own scalar semantics); laneUop < 0 walks elements
 	// through _v_get / _v_set with the defun's exact f64 sequence (scalarOp names it:
-	// the WasmExpCompiler Horner approximation, the WasmLogCompiler atanh series, the
-	// WasmTanhCompiler clamped exp derivation, the WasmSinCosCompiler Cody-Waite
-	// reduction, or WasmSignumCompiler's (x>0)-(x<0)).
+	// the WasmExpCompiler range-reduced Taylor + exponent-bit scale, the WasmLogCompiler
+	// atanh series, the WasmTanhCompiler clamped exp derivation, the WasmSinCosCompiler
+	// Cody-Waite reduction, or WasmSignumCompiler's (x>0)-(x<0)).
 	//
 	// params: 0 = a
 	// i32: count 1, kind 2, shift 3, ng 4, g 5, rem 6, i 7, len 8
@@ -780,20 +780,20 @@ final class WasmLinalgSimdRuntimeBuilder {
 	// (abs x) has no double literal among its argument forms, so it compiles to
 	// _rat_cmp's float path -- x < 0 ? 0 - x : x, which leaves -0.0 alone where
 	// Math.abs would not -- and (- (* ax ax)) / (- v) are the generic unary minus,
-	// which is _rat_sub(0, x), i.e. 0 - x. exp is WasmExpCompiler's Horner
+	// which is _rat_sub(0, x), i.e. 0 - x. exp is WasmExpCompiler's range-reduced
 	// approximation, emitted here by emitExpF64 from the same constants.
 	//
 	// params: 0 = a
 	// i32: count 1, kind 2, shift 3, ng 4, i 5, len 6, n 7
-	// f64: x 8, ax 9, term 10, total 11, xx 12, expT 13, expAcc 14
-	// eq: res 15, vbD 16, vbA 17, nd 18, da 19
+	// f64: x 8, ax 9, term 10, total 11, xx 12, expT 13, expAcc 14, expK 15
+	// eq: res 16, vbD 17, vbA 18, nd 19, da 20
 	private static byte[] buildErf(int vecBase) {
 		ByteArrayOutputStream b = new ByteArrayOutputStream();
 		WasmWriter w = new WasmWriter(b);
 		int a = 0;
 		int count = 1, kind = 2, shift = 3, ng = 4, i = 5, len = 6, n = 7;
-		int x = 8, ax = 9, term = 10, total = 11, xx = 12, expT = 13, expAcc = 14;
-		int res = 15, vbD = 16, vbA = 17, nd = 18, da = 19;
+		int x = 8, ax = 9, term = 10, total = 11, xx = 12, expT = 13, expAcc = 14, expK = 15;
+		int res = 16, vbD = 17, vbA = 18, nd = 19, da = 20;
 
 		block(w); // B0: the declined exit -- res stays null
 		isFarray(w, a);
@@ -806,7 +806,7 @@ final class WasmLinalgSimdRuntimeBuilder {
 		get(w, vbD);
 		get(w, i);
 		vget(w, vbA, i, vecBase);
-		emitErf1F64(w, x, ax, term, total, xx, expT, expAcc, n);
+		emitErf1F64(w, x, ax, term, total, xx, expT, expAcc, expK, n);
 		w.write(Instruction.CALL).writeUnsignedLeb128(vecBase + WasmVecSimdRuntimeBuilder.V_SET);
 		w.write(Instruction.DROP);
 		WasmVecLoops.closeIndexLoop(w, i);
@@ -816,7 +816,7 @@ final class WasmLinalgSimdRuntimeBuilder {
 		w.write(Instruction.END); // B0
 		get(w, res);
 		w.write(Instruction.END);
-		return withLocals(b.toByteArray(), 7, 7, 0, 0, 5, 0);
+		return withLocals(b.toByteArray(), 7, 8, 0, 0, 5, 0);
 	}
 
 	// --- the seeded generator: %la-rng-fill --------------------------------------------
@@ -1282,7 +1282,7 @@ final class WasmLinalgSimdRuntimeBuilder {
 	 * step for step as the compiled defun computes it.
 	 */
 	private static void emitErf1F64(WasmWriter w, int x, int ax, int term, int total, int xx, int expT, int expAcc,
-			int n) {
+			int expK, int n) {
 		set(w, x);
 		// ax = (abs x): f64.abs, the sign-bit clear the compiled defun now emits on
 		// its float branch (and exactly Math.abs, so -0.0 folds to 0.0 here too).
@@ -1364,7 +1364,7 @@ final class WasmLinalgSimdRuntimeBuilder {
 		get(w, ax);
 		w.write(Instruction.F64_MUL);
 		w.write(Instruction.F64_NEG);
-		WasmVecSimdRuntimeBuilder.emitExpF64(w, expT, expAcc);
+		WasmVecSimdRuntimeBuilder.emitExpF64(w, expT, expK, expAcc);
 		w.write(Instruction.F64_MUL);
 		get(w, total);
 		w.write(Instruction.F64_MUL);
