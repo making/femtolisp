@@ -35,7 +35,13 @@ Two properties of the driver decide what the numbers mean:
   (`TopLevelSplitter`), read, and evaluated on its own under `catch (Throwable)`. A form
   the reader rejects, or one that leaves a raw Java exception or a `StackOverflowError`,
   costs exactly that form -- without this, one such form early in a 700-test file would
-  hide every test behind it and the chapter would score zero for one gap.
+  hide every test behind it and the chapter would score zero for one gap. When the failing
+  form is itself a `deftest`, a raw exception the shim's own `handler-case` cannot catch
+  (an `UnsupportedOperationException`, or a condition type it does not recognize as
+  `error`) is attributed to that one test as an `error` line, exactly like a caught one --
+  it costs nothing beyond the test it came from. Only a non-`deftest` form (an aux
+  `defparameter`/`defun`) that fails this way still costs every test behind it, since the
+  driver has no test name to charge it to.
 - **A hang is the only thing that costs more than one form.** The child prints a progress
   marker per form; when the parent sees no output for `-Drontolisp.ansi.stall` seconds
   (45 by default) it kills the child, reads the form index off the last marker, and
@@ -57,6 +63,30 @@ call comes from the suite's real `auxiliary/*.lsp`.
 - `top-level forms lost` counts FORMS the driver could not read, could not evaluate, or had
   to skip. Every test such a form would have defined is missing from the other columns, so
   a chapter with a high count is measured optimistically.
+
+## What the count is
+
+The denominator counts EXECUTED `deftest` forms -- a macro that generates several tests
+(`do-tests`-style, or a `dotimes` around a template) counts each one, not the one static
+`deftest` call in the source. That is why a chapter's `tests` column runs well above a
+plain `grep -c '(deftest' <chapter>/*.lsp` of its source: at the pinned revision
+(`ca06bd919661af162c67407c9d994e881870bdb3`) `structures` holds 147 static `deftest` forms
+but executes 1,007, `reader` 167 static / 575 executed, `conditions` 321 static / 673
+executed -- a factor of up to seven.
+
+**This figure is not comparable with another implementation's published ANSI number.**
+Beyond how much of the standard each implementation actually gets right, the two counts
+differ in ways that have nothing to do with conformance:
+
+- a different suite revision -- the suite has no numbered releases, so "the ANSI test
+  suite" means whatever commit was checked out; this repo pins one commit and prints it in
+  every report;
+- a different unit -- the suite's own RT framework keys its test database by name, so a
+  redefinition (a duplicate `deftest` name) REPLACES an entry rather than adding one; a
+  per-form report like this one counts every execution;
+- macro-generated tests, per the paragraph above -- a chapter that unrolls its `deftest`
+  macro more aggressively reports a denominator many times another driver's, independent of
+  how much of the chapter passes.
 
 ## What the numbers are not
 

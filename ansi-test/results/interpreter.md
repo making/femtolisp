@@ -2,61 +2,55 @@
 
 Suite: `ca06bd919661af162c67407c9d994e881870bdb3`
 
-**9,262 / 18,053 tests pass (51.3%)** -- 2,788 fail, 6,003 signal an error.
+**10,807 / 19,459 tests pass (55.5%)** -- 2,823 fail, 5,829 signal an error.
 
-7 top-level forms could not be read, 1,938 could not be evaluated, 4 did not terminate; every test those forms would have defined is missing from the counts above.
+7 top-level forms could not be read, 575 could not be evaluated, 6 did not terminate; every test those forms would have defined is missing from the counts above.
 
 | chapter | tests | pass | fail | error | pass rate | top-level forms lost |
 |---|---:|---:|---:|---:|---:|---:|
-| arrays | 1,355 | 616 | 87 | 652 | 45.5% | 17 |
-| characters | 255 | 144 | 18 | 93 | 56.5% | 20 |
-| conditions | 665 | 370 | 226 | 69 | 55.6% | 24 |
-| cons | 1,812 | 768 | 153 | 891 | 42.4% | 83 |
-| data-and-control-flow | 1,390 | 898 | 203 | 289 | 64.6% | 55 |
-| environment | 209 | 100 | 11 | 98 | 47.8% | 17 |
-| eval-and-compile | 295 | 188 | 54 | 53 | 63.7% | 27 |
-| files | 87 | 15 | 8 | 64 | 17.2% | 16 |
-| hash-tables | 156 | 101 | 23 | 32 | 64.7% | 19 |
-| iteration | 780 | 512 | 202 | 66 | 65.6% | 81 |
-| misc | 737 | 587 | 18 | 132 | 79.6% | 19 |
-| numbers | 1,371 | 587 | 75 | 709 | 42.8% | 103 |
-| objects | 777 | 288 | 188 | 301 | 37.1% | 111 |
-| packages | 448 | 27 | 47 | 374 | 6.0% | 78 |
-| pathnames | 214 | 97 | 26 | 91 | 45.3% | 17 |
-| printer | 494 | 193 | 123 | 178 | 39.1% | 102 |
+| arrays | 1,356 | 646 | 87 | 623 | 47.6% | 16 |
+| characters | 258 | 173 | 17 | 68 | 67.1% | 17 |
+| conditions | 673 | 381 | 226 | 66 | 56.6% | 16 |
+| cons | 1,879 | 1,056 | 157 | 666 | 56.2% | 16 |
+| data-and-control-flow | 1,428 | 1,012 | 213 | 203 | 70.9% | 17 |
+| environment | 210 | 119 | 11 | 80 | 56.7% | 16 |
+| eval-and-compile | 306 | 204 | 54 | 48 | 66.7% | 16 |
+| files | 87 | 26 | 8 | 53 | 29.9% | 16 |
+| hash-tables | 157 | 126 | 23 | 8 | 80.3% | 18 |
+| iteration | 843 | 521 | 207 | 115 | 61.8% | 18 |
+| misc | 740 | 588 | 18 | 134 | 79.5% | 16 |
+| numbers | 1,444 | 727 | 75 | 642 | 50.3% | 30 |
+| objects | 846 | 333 | 189 | 324 | 39.4% | 42 |
+| packages | 492 | 48 | 51 | 393 | 9.8% | 34 |
+| pathnames | 214 | 120 | 26 | 68 | 56.1% | 17 |
+| printer | 543 | 221 | 123 | 199 | 40.7% | 53 |
 | rctest | 0 | 0 | 0 | 0 | 0.0% | 18 |
-| reader | 569 | 58 | 286 | 225 | 10.2% | 30 |
-| sequences | 2,456 | 1,850 | 147 | 459 | 75.3% | 847 |
-| streams | 722 | 188 | 85 | 449 | 26.0% | 98 |
-| strings | 495 | 252 | 94 | 149 | 50.9% | 31 |
-| structures | 960 | 374 | 178 | 408 | 39.0% | 45 |
-| symbols | 1,135 | 767 | 293 | 75 | 67.6% | 26 |
-| system-construction | 58 | 22 | 4 | 32 | 37.9% | 35 |
-| types-and-classes | 613 | 260 | 239 | 114 | 42.4% | 30 |
-| **total** | **18,053** | **9,262** | **2,788** | **6,003** | **51.3%** | **1,949** |
+| reader | 575 | 59 | 286 | 230 | 10.3% | 24 |
+| sequences | 3,287 | 2,191 | 149 | 947 | 66.7% | 16 |
+| streams | 759 | 224 | 82 | 453 | 29.5% | 61 |
+| strings | 509 | 365 | 95 | 49 | 71.7% | 17 |
+| structures | 1,007 | 577 | 190 | 240 | 57.3% | 42 |
+| symbols | 1,144 | 795 | 293 | 56 | 69.5% | 17 |
+| system-construction | 77 | 23 | 4 | 50 | 29.9% | 16 |
+| types-and-classes | 625 | 272 | 239 | 114 | 43.5% | 19 |
+| **total** | **19,459** | **10,807** | **2,823** | **5,829** | **55.5%** | **588** |
 
 ## Most frequent failure reasons
 
 | count | reason |
 |---:|---|
-| 370 | `IllegalArgumentException: X expects keyword arguments :X, got: :X` |
-| 299 | `IllegalArgumentException: X expects keyword arguments :test/:test-not/:key, got: :X` |
+| 350 | `X expects keyword arguments :X, got: :X` |
 | 233 | `The variable *MINI-UNIVERSE* is unbound` |
-| 229 | `Function expects 1 argument, got 2` |
+| 228 | `X expects keyword arguments :X:X:X, got: :X` |
 | 217 | `The function MAKE-PACKAGE is undefined` |
-| 200 | `The variable *UNIVERSE* is unbound` |
-| 153 | `X: there is no class named X` |
-| 152 | `X expects 1 arguments, got 2` |
-| 147 | `Function expects 1 argument, got 0` |
-| 102 | `X expects 2 arguments, got 4` |
+| 202 | `The variable *UNIVERSE* is unbound` |
+| 156 | `X: there is no class named X` |
 | 101 | `UnsupportedOperationException: setf does not support place: X` |
-| 93 | `X expects 2 arguments, got 1` |
-| 86 | `X expects 1 arguments, got 0` |
-| 82 | `Unknown keyword argument: :X` |
+| 92 | `Function expects 1 argument, got 2` |
+| 89 | `X expects 2 arguments, got 4` |
 | 80 | `The function FLOAT-RADIX is undefined` |
 | 80 | `The variable *NUMBERS* is unbound` |
-| 77 | `complex numbers are not supported (imaginary part X)` |
-| 69 | `Index 1 out of bounds for length 1` |
+| 76 | `complex numbers are not supported (imaginary part X)` |
 | 65 | `The variable *FLOATS* is unbound` |
 | 63 | `The function CLASS-PRECEDENCE-LIST-FOO is undefined` |
 | 62 | `X is a macro or special operator, not a function` |
@@ -64,19 +58,25 @@ Suite: `ca06bd919661af162c67407c9d994e881870bdb3`
 | 56 | `The variable #C is unbound` |
 | 54 | `The function NUNION is undefined` |
 | 53 | `The function MAKE-TWO-WAY-STREAM is undefined` |
+| 51 | `Unknown keyword argument: :X` |
 | 50 | `LispEvalException: X cannot redefine the standard operator X` |
 | 50 | `The variable *REALS* is unbound` |
 | 50 | `X supports :input and :output directions` |
 | 49 | `The function NSET-EXCLUSIVE-OR is undefined` |
 | 48 | `X: :X supports only the native default value` |
-| 48 | `a macro function expects 1 or 2 arguments, got 0` |
-| 46 | `IllegalArgumentException: Unsupported type specifier: X` |
 | 46 | `The function FIND-METHOD is undefined` |
 | 46 | `The function NINTERSECTION is undefined` |
-| 44 | `X expects 2 arguments, got 3` |
+| 46 | `Unsupported type specifier: X` |
 | 43 | `The function NSET-DIFFERENCE is undefined` |
 | 40 | `The function MAKE-CONCATENATED-STREAM is undefined` |
 | 40 | `X: :displaced-to is not supported` |
 | 39 | `The variable CALL-ARGUMENTS-LIMIT is unbound` |
-| 38 | `X expects 2 arguments, got 0` |
+| 37 | `The variable ARRAY-RANK-LIMIT is unbound` |
+| 36 | `The variable #:FOR is unbound` |
+| 34 | `X expects a tag: (X X)` |
+| 33 | `The function MAKE-ECHO-STREAM is undefined` |
+| 31 | `The function COPY-STRUCTURE is undefined` |
+| 31 | `UnsupportedOperationException: X :element-type must be the literal 'character or '(unsigned-byte 8)` |
+| 31 | `X expects 2 arguments, got 6` |
+| 30 | `The function DELETE-PACKAGE is undefined` |
 
