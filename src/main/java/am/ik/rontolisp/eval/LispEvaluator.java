@@ -9038,6 +9038,7 @@ public final class LispEvaluator {
 			}
 		}
 		LispVal value;
+		List<LispVal> allValues = null;
 		try {
 			List<LispVal> clauseTypes = new ArrayList<>(errorClauses.size());
 			for (LispVal clauseVal : errorClauses) {
@@ -9051,7 +9052,27 @@ public final class LispEvaluator {
 			LispVal protectedForm = LispMacroExpander.handlerCaseProtectedForm(parts.get(1), clauseTypes,
 					this.closRegistry, this.restartRuntimeLoaded);
 			try {
-				value = eval(protectedForm, env);
+				// :no-error is a multiple-value consumer. Clear the spill channel first
+				// so
+				// anything published before the protected form runs (a prior top-level
+				// values call) does not bleed in; capture the protected form's extras
+				// from %mv-spill, then clear the channel again so the clause body starts
+				// fresh. The same channel is what multiple-value-bind reads (see
+				// .kb/multiple-values.md).
+				//
+				// A syntactic producer (gethash, floor-family, find-symbol, intern,
+				// array-displacement) only emits its secondary values THROUGH its macro
+				// lowering -- a direct eval of (gethash k h) returns one value. Apply the
+				// compiler's tail-position rewrite (spillEscapingMvProducers) so the
+				// protected form publishes them to spill just as the compile path does.
+				this.globalEnv.define(LispNames.MV_SPILL, LispNil.INSTANCE);
+				LispVal protectedForEval = LispMacroExpander.spillEscapingMvProducers(protectedForm);
+				value = eval(protectedForEval, env);
+				List<LispVal> spilled = spilledValues(this.globalEnv.lookup(LispNames.MV_SPILL));
+				this.globalEnv.define(LispNames.MV_SPILL, LispNil.INSTANCE);
+				allValues = new ArrayList<>(spilled.size() + 1);
+				allValues.add(value);
+				allValues.addAll(spilled);
 			}
 			finally {
 				frames.removeLast();
@@ -9083,8 +9104,22 @@ public final class LispEvaluator {
 		if (noErrorClause != null) {
 			List<LispVal> clauseParts = noErrorClause.toList();
 			Environment clauseEnv = new Environment(env);
-			if (clauseParts.get(1) instanceof LispCons varList && varList.car() instanceof LispSymbol var) {
-				clauseEnv.define(var.name(), value);
+			// Bind the protected form's full value list to the :no-error variable list,
+			// missing values as nil and surplus values dropped -- the same shape
+			// multiple-value-bind uses (.kb/multiple-values.md, "missing -> nil,
+			// surplus evaluated and dropped"). The variable list here is the
+			// required-only shape; &optional/&rest/&key are not accepted in this
+			// backend (see .kb/multiple-values.md, "The :no-error variable list").
+			if (clauseParts.get(1) instanceof LispCons varList) {
+				List<LispVal> varVals = varList.toList();
+				for (int i = 0; i < varVals.size(); i++) {
+					LispVal varVal = varVals.get(i);
+					if (!(varVal instanceof LispSymbol sym)) {
+						throw new LispEvalException(
+								LispNames.HANDLER_CASE + " :no-error variable must be a symbol: " + varVal.print());
+					}
+					clauseEnv.define(sym.name(), i < allValues.size() ? allValues.get(i) : LispNil.INSTANCE);
+				}
 			}
 			LispVal result = LispNil.INSTANCE;
 			for (int i = 2; i < clauseParts.size(); i++) {

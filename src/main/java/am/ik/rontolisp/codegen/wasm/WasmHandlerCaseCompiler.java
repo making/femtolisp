@@ -5,6 +5,7 @@ import java.util.List;
 
 import am.ik.rontolisp.LispCons;
 import am.ik.rontolisp.macro.LispMacroExpander;
+import am.ik.rontolisp.LispInteger;
 import am.ik.rontolisp.LispLayout;
 import am.ik.rontolisp.LispNames;
 import am.ik.rontolisp.LispNil;
@@ -145,9 +146,21 @@ final class WasmHandlerCaseCompiler {
 		// handler-bind's handler for a condition this form is nearer to, and
 		// %signal-cond can decline this handler-case when no clause matches
 		// (%hc-match-p). With both gates off the form is unchanged, byte for byte.
-		WasmAsyncEmit.spine(LispMacroExpander.handlerCaseProtectedForm(parts.get(1),
+		//
+		// The protected form is ALSO rewritten through spillEscapingMvProducers when
+		// the form has a :no-error clause: the consumer binds the protected form's
+		// full VALUES list (a (values ...) tail, a values-list, a producing call), so
+		// a syntactic producer (gethash, floor-family, find-symbol, intern,
+		// array-displacement) must publish its secondary value to %mv-spill for the
+		// no-error clause to read it. Programs with no :no-error clause keep the
+		// unchanged protected form, byte for byte.
+		LispVal protectedForm = LispMacroExpander.handlerCaseProtectedForm(parts.get(1),
 				errorClauses.stream().map(clauseParts -> clauseParts.get(0)).toList(), ctx.closRegistry,
-				ctx.restartMode || ctx.signalClauseMatch), ctx);
+				ctx.restartMode || ctx.signalClauseMatch);
+		if (noErrorClause != null) {
+			protectedForm = LispMacroExpander.spillEscapingMvProducers(protectedForm);
+		}
+		WasmAsyncEmit.spine(protectedForm, ctx);
 		ctx.unwindScopes.pop();
 		ctx.wasmCtrlDepth--;
 		ctx.writer.write(Instruction.END); // try_table
@@ -158,7 +171,7 @@ final class WasmHandlerCaseCompiler {
 		ctx.writer.writeUnsignedLeb128(resultSlot);
 		emitDepthAdjust(ctx, false);
 		if (noErrorClause != null) {
-			compileClauseBody(noErrorClause, resultSlot, resultSlot, ctx);
+			compileNoErrorClauseBody(noErrorClause, resultSlot, resultSlot, ctx);
 		}
 		ctx.writer.write(Instruction.GET_LOCAL);
 		ctx.writer.writeUnsignedLeb128(resultSlot);
@@ -346,6 +359,103 @@ final class WasmHandlerCaseCompiler {
 		WasmErrorCompiler.emitThrowPayload(ctx);
 		ctx.wasmCtrlDepth--;
 		ctx.writer.write(Instruction.END); // block $done
+	}
+
+	/**
+	 * Compiles a {@code :no-error} clause body -- {@code (:no-error ([var...]) body...)}
+	 * -- binding each variable to the protected form's VALUES, the same shape
+	 * {@code multiple-value-bind} uses (.kb/multiple-values.md, "missing -> nil, surplus
+	 * evaluated and dropped"). The variable list here is the required-only shape:
+	 * {@code &optional}/{@code &rest}/{@code &key} are not accepted.
+	 *
+	 * <p>
+	 * The primary value is already in {@code valueSlot} (the protected form's result),
+	 * and the {@code %mv-spill} global carries the secondary values (or nil when no
+	 * secondary values were published). The spill global exists only when the program
+	 * uses a multiple-value operator (or a {@code handler-case} with a {@code :no-error}
+	 * clause, .kb/multiple-values.md); when it does not, no spill was ever published, so
+	 * we initialize the local to nil and every extra variable binds to nil. Either way
+	 * the consumer reads {@code (nth i spill)}, which is well-defined on nil (returns
+	 * nil) -- so a missing value is nil and a surplus value (beyond the variable count)
+	 * is simply not read, never observed.
+	 *
+	 * <p>
+	 * The spill global is cleared after the snapshot so the clause body runs on a clean
+	 * channel (a clause that itself publishes through the spill starts fresh).
+	 */
+	private static void compileNoErrorClauseBody(List<LispVal> clauseParts, int valueSlot, int resultSlot,
+			WasmLispCompiler.Ctx ctx) {
+		List<LispVal> varVals = clauseParts.get(1) instanceof LispCons varList ? varList.toList() : List.of();
+		int spillSlot = ctx.allocTemp();
+		Integer spillGlobal = ctx.globalIndices.get(LispNames.MV_SPILL);
+		if (spillGlobal != null) {
+			ctx.writer.write(Instruction.GET_GLOBAL);
+			ctx.writer.writeUnsignedLeb128(spillGlobal);
+			ctx.writer.write(Instruction.SET_LOCAL);
+			ctx.writer.writeUnsignedLeb128(spillSlot);
+			ctx.writer.write(Instruction.REF_NULL);
+			ctx.writer.writeHeapType(Type.EQ.code());
+			ctx.writer.write(Instruction.SET_GLOBAL);
+			ctx.writer.writeUnsignedLeb128(spillGlobal);
+		}
+		else {
+			ctx.writer.write(Instruction.REF_NULL);
+			ctx.writer.writeHeapType(Type.EQ.code());
+			ctx.writer.write(Instruction.SET_LOCAL);
+			ctx.writer.writeUnsignedLeb128(spillSlot);
+		}
+		String spillVarName = "__hc_ne_spill$" + spillSlot;
+		java.util.Map<String, Integer> shadowedSlots = new java.util.HashMap<>();
+		ctx.locals.put(spillVarName, spillSlot);
+		try {
+			for (int i = 0; i < varVals.size(); i++) {
+				LispVal varVal = varVals.get(i);
+				if (!(varVal instanceof LispSymbol sym)) {
+					throw new IllegalArgumentException(
+							LispNames.HANDLER_CASE + " :no-error variable must be a symbol: " + varVal.print());
+				}
+				String varName = sym.name();
+				int slot;
+				if (i == 0) {
+					slot = valueSlot;
+				}
+				else {
+					slot = ctx.allocTemp();
+					LispVal nthCall = new LispCons(new LispSymbol(LispNames.NTH), new LispCons(new LispInteger(i - 1),
+							new LispCons(new LispSymbol(spillVarName), LispNil.INSTANCE)));
+					WasmExprCompiler.compileExpr(nthCall, ctx);
+					ctx.writer.write(Instruction.SET_LOCAL);
+					ctx.writer.writeUnsignedLeb128(slot);
+				}
+				shadowedSlots.put(varName, ctx.locals.put(varName, slot));
+			}
+			if (clauseParts.size() <= 2) {
+				ctx.writer.write(Instruction.REF_NULL);
+				ctx.writer.writeHeapType(Type.EQ.code());
+			}
+			else {
+				for (int i = 2; i < clauseParts.size(); i++) {
+					if (i > 2) {
+						ctx.writer.write(Instruction.DROP);
+					}
+					WasmExprCompiler.compileExpr(clauseParts.get(i), ctx);
+				}
+			}
+			ctx.writer.write(Instruction.SET_LOCAL);
+			ctx.writer.writeUnsignedLeb128(resultSlot);
+		}
+		finally {
+			ctx.locals.remove(spillVarName);
+			for (java.util.Map.Entry<String, Integer> e : shadowedSlots.entrySet()) {
+				Integer prev = e.getValue();
+				if (prev != null) {
+					ctx.locals.put(e.getKey(), prev);
+				}
+				else {
+					ctx.locals.remove(e.getKey());
+				}
+			}
+		}
 	}
 
 	/**

@@ -9819,6 +9819,32 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void handlerCaseNoErrorClauseReceivesAllValues() {
+		// :no-error is a multiple-value consumer: a (values ...) tail, a values-list,
+		// and a producing call all spread into the variable list. Missing values are
+		// nil and surplus values are dropped, as in multiple-value-bind.
+		assertThat(eval("(handler-case (values 1 2 3) (:no-error (a b c) (list a b c)))").print()).isEqualTo("(1 2 3)");
+		assertThat(eval("(handler-case (values 1 2) (:no-error (a b c) (list a b c)))").print()).isEqualTo("(1 2 NIL)");
+		assertThat(eval("(handler-case (values 1 2 3 4) (:no-error (a b) (list a b)))").print()).isEqualTo("(1 2)");
+		assertThat(eval("(handler-case (values) (:no-error (a) (list :none a)))").print()).isEqualTo("(:NONE NIL)");
+	}
+
+	@Test
+	void handlerCaseNoErrorClauseReceivesValuesFromValuesList() {
+		assertThat(eval("(handler-case (values-list (list 1 2 3)) (:no-error (a b c) (list a b c)))").print())
+			.isEqualTo("(1 2 3)");
+	}
+
+	@Test
+	void handlerCaseNoErrorClauseReceivesValuesFromProducerCall() {
+		// gethash is a syntactic multiple-value producer: a found key yields a second
+		// value of T. The :no-error clause binds (a b) so a is the value and b is T.
+		assertThat(eval(
+				"(let ((h (make-hash-table))) (setf (gethash 'k h) 99) (handler-case (gethash 'k h) (:no-error (a b) (list a b))))")
+			.print()).isEqualTo("(99 T)");
+	}
+
+	@Test
 	void handlerCaseValueWithoutClauses() {
 		assertThat(eval("(handler-case (+ 1 2) (error (e) :err))")).isEqualTo(new LispInteger(3));
 	}

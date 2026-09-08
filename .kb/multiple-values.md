@@ -45,8 +45,32 @@ run with the caught `exnref` / escaping value beneath them).
   copies a `return-from`/`go` inlines at an escape site (`WasmTagbodyCompiler.compileGo`).
 - Two exclusions keep unaffected programs byte-identical: the `injectMvSpillGlobal` gate, and an
   `UnwindScope` whose cleanup is the compiler's own `(%hc-depth-dec)` bookkeeping (`internalOnly`).
-- Open gap: `handler-case`'s `:no-error` clause is not a multiple-value consumer at all --
-  `(handler-case (values 1 2 3) (:no-error (a b c) ...))` leaves `b`/`c` unbound.
+
+## `handler-case`'s `:no-error` clause is a multiple-value consumer
+`(handler-case expr (:no-error ([var...]) body...))` binds the variable list to the protected
+form's full VALUES list -- primary first, then the spill extras, with missing values nil-padded
+and surplus values dropped, the same shape `multiple-value-bind` uses. Both backends apply
+`LispMacroExpander.spillEscapingMvProducers` to the protected form when a `:no-error` clause
+exists (so a syntactic producer -- gethash, floor-family, find-symbol, intern,
+array-displacement -- publishes its secondary through the spill), snapshot the spill into a
+local on the success path, clear the channel, and bind each variable through `(nth i spill)`,
+well-defined on nil.
+- The variable list is REQUIRED-ONLY here, not the full CL lambda list: `&optional`/`&rest`/
+  `&key` are not accepted (signalled on parse). SBCL lowers `:no-error` to a function call
+  with `multiple-value-call`, which actually requires exact arity for the required shape and
+  errors otherwise; rontolisp nil-pads missing required values instead -- a deliberate
+  divergence, the same one `multiple-value-bind` makes.
+- The spill global exists only when the program uses a multiple-value operator OR a
+  `handler-case` with a `:no-error` clause (`usesMvOperator` includes `HANDLER_CASE`), so a
+  `handler-case` without `:no-error` stays byte-identical and a `:no-error` in a program
+  with no other multiple-value operator still publishes through the spill. When the global
+  does not exist the consumer reads nil.
+- Interpreter: `LispEvaluator.evalHandlerCase`'s `noErrorClause` tail snapshots the spill
+  and binds each variable in order.
+- JVM: `JvmHandlerCaseCompiler.compileNoErrorClauseBody`, gated on the spill field's
+  existence.
+- WASM: `WasmHandlerCaseCompiler.compileNoErrorClauseBody`, gated on the spill global's
+  existence.
 
 ## A syntactic producer's tail escapes through the spill
 **Invariant: the tier boundary is not observable through a function return.** A recognized

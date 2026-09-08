@@ -35911,6 +35911,10 @@ public final class LispMacroExpander {
 						LispNames.MULTIPLE_VALUE_CALL, LispNames.NTH_VALUE, LispNames.VALUES_LIST,
 						LispNames.PARSE_INTEGER ->
 					true;
+				// handler-case's :no-error clause is a multiple-value consumer (.kb/
+				// multiple-values.md): the protected form's VALUES ride the spill,
+				// so the global must exist whenever a handler-case is reachable.
+				case LispNames.HANDLER_CASE -> true;
 				default -> false;
 			};
 		}

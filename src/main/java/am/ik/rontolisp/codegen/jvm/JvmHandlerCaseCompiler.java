@@ -10,6 +10,7 @@ import am.ik.jvm.Opcode;
 import am.ik.rontolisp.ClosRegistry;
 import am.ik.rontolisp.LispCons;
 import am.ik.rontolisp.macro.LispMacroExpander;
+import am.ik.rontolisp.LispInteger;
 import am.ik.rontolisp.LispLayout;
 import am.ik.rontolisp.LispNames;
 import am.ik.rontolisp.LispNil;
@@ -84,9 +85,21 @@ final class JvmHandlerCaseCompiler {
 		// handler-bind's handler for a condition this form is nearer to, and
 		// %signal-cond can decline this handler-case when no clause matches
 		// (%hc-match-p). With both gates off the form is unchanged, byte for byte.
-		JvmExprCompiler.compileExpr(LispMacroExpander.handlerCaseProtectedForm(parts.get(1),
+		//
+		// The protected form is ALSO rewritten through spillEscapingMvProducers when
+		// the form has a :no-error clause: the consumer binds the protected form's
+		// full VALUES list (a (values ...) tail, a values-list, a producing call), so
+		// a syntactic producer (gethash, floor-family, find-symbol, intern,
+		// array-displacement) must publish its secondary value to %mv-spill for the
+		// no-error clause to read it. Programs with no :no-error clause keep the
+		// unchanged protected form, byte for byte.
+		LispVal protectedForm = LispMacroExpander.handlerCaseProtectedForm(parts.get(1),
 				errorClauses.stream().map(clauseParts -> clauseParts.get(0)).toList(), ctx.closRegistry,
-				ctx.restartMode || ctx.signalClauseMatch), ctx, className);
+				ctx.restartMode || ctx.signalClauseMatch);
+		if (noErrorClause != null) {
+			protectedForm = LispMacroExpander.spillEscapingMvProducers(protectedForm);
+		}
+		JvmExprCompiler.compileExpr(protectedForm, ctx, className);
 		int end = ctx.code.size();
 		ctx.unwindScopes.pop();
 		ctx.emit(Opcode.ASTORE);
@@ -95,7 +108,7 @@ final class JvmHandlerCaseCompiler {
 		// region -- an error signaled by it is not caught by this handler-case).
 		emitDepthAdjust(ctx, className, false);
 		if (noErrorClause != null) {
-			compileClauseBody(noErrorClause, resultSlot, resultSlot, ctx, className);
+			compileNoErrorClauseBody(noErrorClause, resultSlot, resultSlot, ctx, className);
 		}
 		int gotoDonePos = ctx.code.size();
 		ctx.emit(Opcode.GOTO);
@@ -439,6 +452,132 @@ final class JvmHandlerCaseCompiler {
 				}
 				ctx.boxedVars = savedBoxedVars;
 			}
+		}
+	}
+
+	/**
+	 * Compiles a {@code :no-error} clause body -- {@code (:no-error ([var...]) body...)}
+	 * -- binding each variable to the protected form's VALUES, the same shape
+	 * {@code multiple-value-bind} uses (.kb/multiple-values.md, "missing -> nil, surplus
+	 * evaluated and dropped"). The variable list here is the required-only shape:
+	 * {@code &optional}/{@code &rest}/{@code &key} are not accepted.
+	 *
+	 * <p>
+	 * The primary value is already in {@code valueSlot} (the protected form's result),
+	 * and the {@code %mv-spill} channel carries the secondary values (a list, or nil when
+	 * the program never publishes). The spill global exists only when the program uses a
+	 * multiple-value operator ({@link LispMacroExpander#injectMvSpillGlobal}); when it
+	 * does not, no spill was ever published, so we initialize the local to nil and every
+	 * extra variable binds to nil. Either way the consumer reads {@code (nth i spill)},
+	 * which is well-defined on nil (returns nil) -- so a missing value is nil and a
+	 * surplus value (beyond the variable count) is simply not read, never observed.
+	 *
+	 * <p>
+	 * The spill global is cleared after the snapshot so the clause body runs on a clean
+	 * channel (a clause that itself publishes through the spill starts fresh).
+	 */
+	private static void compileNoErrorClauseBody(List<LispVal> clauseParts, int valueSlot, int resultSlot,
+			JvmLispCompiler.Ctx ctx, String className) {
+		List<LispVal> varVals = clauseParts.get(1) instanceof LispCons varList ? varList.toList() : List.of();
+		// The spill snapshot: the protected form's secondary values list. Allocated
+		// unconditionally so the (nth N spill) form below has a real local to read;
+		// when the program has no spill global we seed it with nil directly.
+		int spillSlot = ctx.allocTemp();
+		am.ik.jvm.ConstantPool.FieldrefConstant spillField = ctx.globalFields.get(LispNames.MV_SPILL);
+		if (spillField != null) {
+			ctx.emit(Opcode.GETSTATIC);
+			ctx.emitU2(spillField.index());
+			ctx.emit(Opcode.ASTORE);
+			ctx.emit(spillSlot);
+			ctx.emit(Opcode.ACONST_NULL);
+			ctx.emit(Opcode.PUTSTATIC);
+			ctx.emitU2(spillField.index());
+		}
+		else {
+			ctx.emit(Opcode.ACONST_NULL);
+			ctx.emit(Opcode.ASTORE);
+			ctx.emit(spillSlot);
+		}
+		String spillVarName = "__hc_ne_spill$" + spillSlot;
+		// Save any shadowed bindings (one per clause variable) and a fresh boxed-vars
+		// set, restore them on the way out.
+		java.util.Map<String, Integer> shadowedSlots = new java.util.HashMap<>();
+		java.util.Map<String, JvmIntFusionCompiler.RawLocal> shadowedRaws = new java.util.HashMap<>();
+		java.util.Map<String, Integer> shadowedRawDoubles = new java.util.HashMap<>();
+		java.util.Set<String> savedBoxedVars = ctx.boxedVars;
+		ctx.boxedVars = new java.util.HashSet<>(savedBoxedVars);
+		ctx.locals.put(spillVarName, spillSlot);
+		try {
+			for (int i = 0; i < varVals.size(); i++) {
+				LispVal varVal = varVals.get(i);
+				if (!(varVal instanceof LispSymbol sym)) {
+					throw new IllegalArgumentException(
+							LispNames.HANDLER_CASE + " :no-error variable must be a symbol: " + varVal.print());
+				}
+				String varName = sym.name();
+				int slot;
+				if (i == 0) {
+					// Primary value: the protected form's resultSlot already holds it.
+					slot = valueSlot;
+				}
+				else {
+					slot = ctx.allocTemp();
+					// (nth (i-1) spill) -- nth on nil returns nil, the missing-value
+					// fill.
+					LispVal nthCall = new LispCons(new LispSymbol(LispNames.NTH), new LispCons(new LispInteger(i - 1),
+							new LispCons(new LispSymbol(spillVarName), LispNil.INSTANCE)));
+					JvmExprCompiler.compileExpr(nthCall, ctx, className);
+					ctx.emit(Opcode.ASTORE);
+					ctx.emit(slot);
+				}
+				// Same shadowing discipline as the error-clause path: an outer unboxed /
+				// raw-double / boxed binding of the same name must not answer reads
+				// inside the clause body.
+				shadowedSlots.put(varName, ctx.locals.put(varName, slot));
+				JvmIntFusionCompiler.RawLocal raw = ctx.rawLocals.remove(varName);
+				if (raw != null) {
+					shadowedRaws.put(varName, raw);
+				}
+				Integer rawDouble = ctx.rawDoubleLocals.remove(varName);
+				if (rawDouble != null) {
+					shadowedRawDoubles.put(varName, rawDouble);
+				}
+				if (ctx.boxedVars.contains(varName)) {
+					ctx.boxedVars.remove(varName);
+				}
+			}
+			if (clauseParts.size() <= 2) {
+				ctx.emit(Opcode.ACONST_NULL);
+			}
+			else {
+				for (int i = 2; i < clauseParts.size(); i++) {
+					if (i > 2) {
+						ctx.emit(Opcode.POP);
+					}
+					JvmExprCompiler.compileExpr(clauseParts.get(i), ctx, className);
+				}
+			}
+			ctx.emit(Opcode.ASTORE);
+			ctx.emit(resultSlot);
+		}
+		finally {
+			ctx.locals.remove(spillVarName);
+			for (java.util.Map.Entry<String, Integer> e : shadowedSlots.entrySet()) {
+				Integer prev = e.getValue();
+				if (prev != null) {
+					ctx.locals.put(e.getKey(), prev);
+				}
+				else {
+					ctx.locals.remove(e.getKey());
+				}
+			}
+			for (java.util.Map.Entry<String, JvmIntFusionCompiler.RawLocal> e : shadowedRaws.entrySet()) {
+				ctx.rawLocals.put(e.getKey(), e.getValue());
+			}
+			for (java.util.Map.Entry<String, Integer> e : shadowedRawDoubles.entrySet()) {
+				ctx.rawDoubleLocals.put(e.getKey(), e.getValue());
+			}
+			ctx.boxedVars = savedBoxedVars;
 		}
 	}
 

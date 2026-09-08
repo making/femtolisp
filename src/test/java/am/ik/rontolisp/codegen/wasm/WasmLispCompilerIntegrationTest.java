@@ -19667,6 +19667,25 @@ class WasmLispCompilerIntegrationTest {
 	}
 
 	@Test
+	void ehHandlerCaseNoErrorClauseReceivesAllValues() throws Exception {
+		// :no-error binds the protected form's full VALUES -- a (values ...) tail, a
+		// values-list and a producing call all spread. Missing values are nil, surplus
+		// values are dropped.
+		assertThat(compileAndRunEh("(print (handler-case (values 1 2 3) (:no-error (a b c) (list a b c))))"))
+			.isEqualTo("(1 2 3)");
+		assertThat(compileAndRunEh("(print (handler-case (values 1 2) (:no-error (a b c) (list a b c))))"))
+			.isEqualTo("(1 2 NIL)");
+		assertThat(compileAndRunEh("(print (handler-case (values 1 2 3 4) (:no-error (a b) (list a b))))"))
+			.isEqualTo("(1 2)");
+		assertThat(
+				compileAndRunEh("(print (handler-case (values-list (list 1 2 3)) (:no-error (a b c) (list a b c))))"))
+			.isEqualTo("(1 2 3)");
+		assertThat(compileAndRunEh(
+				"(let ((h (make-hash-table))) (setf (gethash 'k h) 99) (print (handler-case (gethash 'k h) (:no-error (a b) (list a b)))))"))
+			.isEqualTo("(99 T)");
+	}
+
+	@Test
 	void ehHandlerCaseCatchesSignal() throws Exception {
 		assertThat(compileAndRunEh(
 				"(print (handler-case (progn (signal \"quiet\") :not-raised) (condition (c) :raised))) (print (signal \"quiet\"))"))

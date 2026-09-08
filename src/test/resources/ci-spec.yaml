@@ -10124,6 +10124,25 @@ cases:
       (:OK 3)
       :RAISED
       NIL
+  # :no-error binds the protected form's full VALUES -- a (values ...) tail, a
+  # values-list and a producing call (gethash) all spread. Missing values are
+  # nil, surplus values are dropped, as in multiple-value-bind.
+  - name: handler-case-no-error-multiple-values
+    source: |
+      (print (handler-case (values 1 2 3) (:no-error (a b c) (list a b c))))
+      (print (handler-case (values 1 2) (:no-error (a b c) (list a b c))))
+      (print (handler-case (values 1 2 3 4) (:no-error (a b) (list a b))))
+      (print (handler-case (values) (:no-error (a) (list :none a))))
+      (print (handler-case (values-list (list 1 2 3)) (:no-error (a b c) (list a b c))))
+      (let ((h (make-hash-table))) (setf (gethash 'k h) 99)
+        (print (handler-case (gethash 'k h) (:no-error (a b) (list a b)))))
+    expected: |
+      (1 2 3)
+      (1 2 NIL)
+      (1 2)
+      (:NONE NIL)
+      (1 2 3)
+      (99 T)
   # CLHS 9.1.4.1: signal returns nil when no applicable handler transfers
   # control, and a handler-case whose clauses do not match the condition is not
   # an applicable handler -- it declines, the forms after the signal run, and

@@ -1014,6 +1014,24 @@ class JvmLispCompilerTest {
 	}
 
 	@Test
+	void compileAndRunHandlerCaseNoErrorClauseReceivesAllValues() throws Exception {
+		// :no-error binds the protected form's full VALUES -- a (values ...) tail, a
+		// values-list and a producing call all spread. Missing values are nil, surplus
+		// values are dropped.
+		assertThat(compileAndRun("(print (handler-case (values 1 2 3) (:no-error (a b c) (list a b c))))"))
+			.isEqualTo("(1 2 3)");
+		assertThat(compileAndRun("(print (handler-case (values 1 2) (:no-error (a b c) (list a b c))))"))
+			.isEqualTo("(1 2 NIL)");
+		assertThat(compileAndRun("(print (handler-case (values 1 2 3 4) (:no-error (a b) (list a b))))"))
+			.isEqualTo("(1 2)");
+		assertThat(compileAndRun("(print (handler-case (values-list (list 1 2 3)) (:no-error (a b c) (list a b c))))"))
+			.isEqualTo("(1 2 3)");
+		assertThat(compileAndRun(
+				"(let ((h (make-hash-table))) (setf (gethash 'k h) 99) (print (handler-case (gethash 'k h) (:no-error (a b) (list a b)))))"))
+			.isEqualTo("(99 T)");
+	}
+
+	@Test
 	void compileAndRunRestartCaseNormalCompletionReturnsPrimaryValues() throws Exception {
 		assertThat(compileAndRun("(print (restart-case (+ 1 2) (retry () :retried)))")).isEqualTo("3");
 		assertThat(compileAndRun("(print (multiple-value-list (restart-case (values 1 2) (retry () nil))))"))
