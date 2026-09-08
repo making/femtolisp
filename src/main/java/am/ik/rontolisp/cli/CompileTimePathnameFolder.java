@@ -65,10 +65,24 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * Scope: only pattern-recognized call shapes are rewritten. Any bare symbol reference
  * substituted for a folded {@code *NAME*} happens INSIDE a foldable primitive's argument
- * position, never as a general AST rewrite; a {@code (let ((*NAME* ...))
- * ...)} rebinding is therefore left intact -- its inner-scope value is never substituted.
- * A {@code (quote DATUM)} form is passed through untouched so quoted data structures are
- * never rewritten.
+ * or a {@code defparameter}/{@code defvar} init position, never as a general AST rewrite;
+ * a {@code (let ((*NAME* ...)) ...)} rebinding is therefore left intact -- its
+ * inner-scope value is never substituted. A {@code (quote DATUM)} form is passed through
+ * untouched so quoted data structures are never rewritten.
+ *
+ * <p>
+ * A recorded value is a constant only while NOTHING assigns the variable, and this pass
+ * runs before anything executes, so it cannot ORDER a write against a use -- hence two
+ * conservative rules. {@link #collectMutableNames}, a pre-pass over the whole program,
+ * collects every name any form assigns ({@code setq} and friends, INCLUDING inside a
+ * {@code defun} body, because a top-level call may run between the recording
+ * {@code defparameter} and a later fold site); such a name is never recorded, so it is
+ * never substituted -- the top-level {@code (setq *s* ...)} between a
+ * {@code (defvar *s* "...")} and a {@code (defvar *v* *s*)} would otherwise bake the
+ * replaced value into {@code *V*}. And recording is confined to a top-level position
+ * (through {@code progn}/{@code eval-when}): a {@code defparameter} inside a function
+ * body binds only when the body runs. A {@code defvar} never overwrites a recorded value,
+ * mirroring the runtime rule that it binds only an UNBOUND variable.
  */
 final class CompileTimePathnameFolder {
 
@@ -88,14 +102,91 @@ final class CompileTimePathnameFolder {
 	public static List<LispVal> fold(List<LispVal> program, Map<String, AsdfSystems.LispSystem> systems) {
 		Map<String, LispVal> parameters = new HashMap<>();
 		java.util.Set<String> writtenPaths = new java.util.HashSet<>();
+		java.util.Set<String> mutableNames = new java.util.HashSet<>();
 		for (LispVal form : program) {
 			collectWrittenPaths(form, writtenPaths);
+			collectMutableNames(form, mutableNames);
 		}
 		List<LispVal> out = new ArrayList<>(program.size());
 		for (LispVal form : program) {
-			out.add(foldForm(form, systems, parameters, writtenPaths));
+			out.add(foldForm(form, systems, parameters, writtenPaths, mutableNames, true));
 		}
 		return out;
+	}
+
+	/**
+	 * Collects the names the program assigns anywhere -- the recorded-parameter
+	 * invalidator described in the class docs. Matched on the operator's MEMBER name so a
+	 * qualified {@code cl:setq} counts too, and over-collection only costs a missed fold.
+	 * Both the symbol's own spelling and its unqualified member are collected: the
+	 * recorded name is the defvar's spelling, and a write may spell it differently
+	 * ({@code (setq cl:*dir* ...)} invalidates a recorded {@code *DIR*}). A
+	 * {@code (quote DATUM)} form is opaque here as everywhere else; an {@code eval} of a
+	 * quoted assignment is beyond this pass's reach, as it is beyond the fold's.
+	 */
+	private static void collectMutableNames(LispVal form, java.util.Set<String> names) {
+		if (!(form instanceof LispCons cons) || !cons.isProperList()) {
+			return;
+		}
+		List<LispVal> items = cons.toList();
+		if (!items.isEmpty() && items.get(0) instanceof LispSymbol op) {
+			if (LispNames.QUOTE.equals(op.name())) {
+				return;
+			}
+			switch (operatorMember(op)) {
+				case LispNames.SETQ, LispNames.PSETQ, LispNames.SETF -> {
+					for (int i = 1; i < items.size(); i += 2) {
+						addName(items.get(i), names);
+					}
+				}
+				case LispNames.PUSH, LispNames.PUSHNEW -> {
+					if (items.size() >= 3) {
+						addName(items.get(2), names);
+					}
+				}
+				case LispNames.POP, LispNames.INCF, LispNames.DECF -> {
+					if (items.size() >= 2) {
+						addName(items.get(1), names);
+					}
+				}
+				case LispNames.SHIFTF, LispNames.ROTATEF -> {
+					for (int i = 1; i < items.size(); i++) {
+						addName(items.get(i), names);
+					}
+				}
+				case LispNames.MULTIPLE_VALUE_SETQ -> {
+					if (items.size() >= 2 && items.get(1) instanceof LispCons places && places.isProperList()) {
+						for (LispVal place : places.toList()) {
+							addName(place, names);
+						}
+					}
+				}
+				default -> {
+				}
+			}
+		}
+		for (LispVal item : items) {
+			collectMutableNames(item, names);
+		}
+	}
+
+	// Records a place symbol under both its spelling and its unqualified member (see
+	// collectMutableNames); a non-symbol place (a car/cdr form) names no global variable.
+	private static void addName(LispVal place, java.util.Set<String> names) {
+		if (place instanceof LispSymbol sym) {
+			names.add(sym.name());
+			PackageRegistry.QualifiedName qn = PackageRegistry.splitQualified(sym.name());
+			if (qn != null) {
+				names.add(qn.member());
+			}
+		}
+	}
+
+	// The operator's MEMBER name: `foo:bar` and `foo::bar` both answer `bar`, an
+	// unqualified name answers itself.
+	private static String operatorMember(LispSymbol op) {
+		PackageRegistry.QualifiedName qn = PackageRegistry.splitQualified(op.name());
+		return qn == null ? op.name() : qn.member();
 	}
 
 	/**
@@ -158,13 +249,14 @@ final class CompileTimePathnameFolder {
 	 * nested inside a larger expression still folds.
 	 */
 	private static LispVal foldForm(LispVal form, Map<String, AsdfSystems.LispSystem> systems,
-			Map<String, LispVal> parameters, java.util.Set<String> writtenPaths) {
+			Map<String, LispVal> parameters, java.util.Set<String> writtenPaths, java.util.Set<String> mutableNames,
+			boolean atTop) {
 		if (!(form instanceof LispCons cons) || !cons.isProperList()) {
 			return form;
 		}
 		List<LispVal> items = cons.toList();
 		if (items.isEmpty() || !(items.get(0) instanceof LispSymbol op)) {
-			return recurseCons(cons, items, systems, parameters, writtenPaths);
+			return recurseCons(cons, items, systems, parameters, writtenPaths, mutableNames, false);
 		}
 		String opName = op.name();
 		// Quoted data is opaque: never recurse into a datum, otherwise we would
@@ -173,10 +265,10 @@ final class CompileTimePathnameFolder {
 			return form;
 		}
 		if (LispNames.DEFPARAMETER.equals(opName) || LispNames.DEFVAR.equals(opName)) {
-			return foldDefParam(cons, items, systems, parameters, writtenPaths);
+			return foldDefParam(cons, items, systems, parameters, writtenPaths, mutableNames, atTop);
 		}
 		if (LispNames.WITH_OPEN_FILE.equals(opName)) {
-			return foldWithOpenFile(cons, items, systems, parameters, writtenPaths);
+			return foldWithOpenFile(cons, items, systems, parameters, writtenPaths, mutableNames, atTop);
 		}
 		if (isFoldablePrimitiveHead(op)) {
 			LispVal reduced = reduce(form, systems, parameters, writtenPaths);
@@ -184,7 +276,11 @@ final class CompileTimePathnameFolder {
 				return reduced;
 			}
 		}
-		return recurseCons(cons, items, systems, parameters, writtenPaths);
+		// A top-level progn/eval-when evaluates its forms IN PLACE, so a defparameter
+		// inside one records just like a bare top-level one; every other operator drops
+		// the flag -- the form's children may never run, or run later (a defun body).
+		return recurseCons(cons, items, systems, parameters, writtenPaths, mutableNames, atTop
+				&& (LispNames.PROGN.equals(operatorMember(op)) || LispNames.EVAL_WHEN.equals(operatorMember(op))));
 	}
 
 	/**
@@ -194,9 +290,9 @@ final class CompileTimePathnameFolder {
 	 */
 	private static LispVal foldDefParam(LispCons original, List<LispVal> items,
 			Map<String, AsdfSystems.LispSystem> systems, Map<String, LispVal> parameters,
-			java.util.Set<String> writtenPaths) {
+			java.util.Set<String> writtenPaths, java.util.Set<String> mutableNames, boolean atTop) {
 		if (items.size() < 2 || !(items.get(1) instanceof LispSymbol nameSym)) {
-			return recurseCons(original, items, systems, parameters, writtenPaths);
+			return recurseCons(original, items, systems, parameters, writtenPaths, mutableNames, false);
 		}
 		List<LispVal> out = new ArrayList<>(items.size());
 		out.add(items.get(0));
@@ -207,17 +303,28 @@ final class CompileTimePathnameFolder {
 			LispVal reduced = reduce(valueExpr, systems, parameters, writtenPaths);
 			if (reduced instanceof LispString
 					|| (reduced instanceof LispInstance inst && inst.layout().kind() == LispLayout.Kind.PATHNAME)) {
-				parameters.put(nameSym.name(), reduced);
+				// The recorded name must be one NOTHING assigns and the binding must be a
+				// top-level one, or the recorded value is not what a later reference sees
+				// (class docs). defvar binds only an UNBOUND variable, so it records at
+				// most once; defparameter rebinds, so the LAST value wins.
+				if (atTop && !mutableNames.contains(nameSym.name())) {
+					if (LispNames.DEFVAR.equals(((LispSymbol) items.get(0)).name())) {
+						parameters.putIfAbsent(nameSym.name(), reduced);
+					}
+					else {
+						parameters.put(nameSym.name(), reduced);
+					}
+				}
 				out.add(reduced);
 				changed |= reduced != valueExpr;
 			}
 			else {
-				LispVal foldedValue = foldForm(valueExpr, systems, parameters, writtenPaths);
+				LispVal foldedValue = foldForm(valueExpr, systems, parameters, writtenPaths, mutableNames, false);
 				out.add(foldedValue);
 				changed |= foldedValue != valueExpr;
 			}
 			for (int i = 3; i < items.size(); i++) {
-				LispVal foldedDoc = foldForm(items.get(i), systems, parameters, writtenPaths);
+				LispVal foldedDoc = foldForm(items.get(i), systems, parameters, writtenPaths, mutableNames, false);
 				out.add(foldedDoc);
 				changed |= foldedDoc != items.get(i);
 			}
@@ -236,23 +343,23 @@ final class CompileTimePathnameFolder {
 	 */
 	private static LispVal foldWithOpenFile(LispCons original, List<LispVal> items,
 			Map<String, AsdfSystems.LispSystem> systems, Map<String, LispVal> parameters,
-			java.util.Set<String> writtenPaths) {
+			java.util.Set<String> writtenPaths, java.util.Set<String> mutableNames, boolean atTop) {
 		if (items.size() < 2 || !(items.get(1) instanceof LispCons spec) || !spec.isProperList()) {
-			return recurseCons(original, items, systems, parameters, writtenPaths);
+			return recurseCons(original, items, systems, parameters, writtenPaths, mutableNames, false);
 		}
 		List<LispVal> specParts = spec.toList();
 		if (specParts.size() < 2 || !(specParts.get(0) instanceof LispSymbol var)) {
-			return recurseCons(original, items, systems, parameters, writtenPaths);
+			return recurseCons(original, items, systems, parameters, writtenPaths, mutableNames, false);
 		}
 		LispVal pathExpr = specParts.get(1);
 		LispVal reducedPath = reduce(pathExpr, systems, parameters, writtenPaths);
 		LispVal foldedPathExpr = reducedPath != null ? reducedPath
-				: foldForm(pathExpr, systems, parameters, writtenPaths);
+				: foldForm(pathExpr, systems, parameters, writtenPaths, mutableNames, false);
 		boolean changed = foldedPathExpr != pathExpr;
 		List<LispVal> options = specParts.subList(2, specParts.size());
 		List<LispVal> body = new ArrayList<>();
 		for (int i = 2; i < items.size(); i++) {
-			LispVal foldedBody = foldForm(items.get(i), systems, parameters, writtenPaths);
+			LispVal foldedBody = foldForm(items.get(i), systems, parameters, writtenPaths, mutableNames, atTop);
 			changed |= foldedBody != items.get(i);
 			body.add(foldedBody);
 		}
@@ -267,7 +374,7 @@ final class CompileTimePathnameFolder {
 		newSpec.add(var);
 		newSpec.add(foldedPathExpr);
 		for (LispVal opt : options) {
-			LispVal foldedOpt = foldForm(opt, systems, parameters, writtenPaths);
+			LispVal foldedOpt = foldForm(opt, systems, parameters, writtenPaths, mutableNames, false);
 			changed |= foldedOpt != opt;
 			newSpec.add(foldedOpt);
 		}
@@ -430,11 +537,11 @@ final class CompileTimePathnameFolder {
 	 */
 	private static LispVal recurseCons(LispCons original, List<LispVal> items,
 			Map<String, AsdfSystems.LispSystem> systems, Map<String, LispVal> parameters,
-			java.util.Set<String> writtenPaths) {
+			java.util.Set<String> writtenPaths, java.util.Set<String> mutableNames, boolean atTop) {
 		List<LispVal> out = new ArrayList<>(items.size());
 		boolean changed = false;
 		for (LispVal item : items) {
-			LispVal folded = foldForm(item, systems, parameters, writtenPaths);
+			LispVal folded = foldForm(item, systems, parameters, writtenPaths, mutableNames, atTop);
 			changed |= folded != item;
 			out.add(folded);
 		}
