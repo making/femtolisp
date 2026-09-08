@@ -18,4 +18,4 @@ SINGLE-FLOAT
 
 ## Backend support
 
-Every backend that has a filesystem: the interpreter and a compiled `.class`/`.jar` today; the WASM backends once `rontolisp:widen-float-bits` is there (F32 tensors need no widening and read everywhere).
+Every backend that has a filesystem: the interpreter, a compiled `.class`/`.jar`, and both WASM backends. What is narrower is the `bfloat16` destination element type, which stays interpreter and JVM only (every other backend refuses that width by name).
