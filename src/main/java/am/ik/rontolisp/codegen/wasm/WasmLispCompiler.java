@@ -1534,7 +1534,15 @@ public final class WasmLispCompiler implements LispCompiler {
 	// index above shifts.
 	static final int FUNC_F64_FDIV = FUNC_ARR_UNDISPLACE + 1;
 
-	static final int FX_FUNC_LAST = FUNC_F64_FDIV;
+	// _fun_name (i32 funcId) -> (): the closure-value name printer both escape modes
+	// call -- binary-search the funcId -> name table and write "#<function NAME>", or
+	// "#<lambda>" when the id has no row (see
+	// WasmRuntimeBuilder.buildFunNameBody). Reuses the historical TYPE_PRINT_I32
+	// ((i32) -> ()), so no new type entry; appended after the last fixed helper so no
+	// index above shifts.
+	static final int FUNC_FUN_NAME = FUNC_F64_FDIV + 1;
+
+	static final int FX_FUNC_LAST = FUNC_FUN_NAME;
 
 	// The vec: SIMD block (_v_new/_v_get/_v_set + the twelve v128 kernels), emitted ONLY
 	// under --simd. Fixed indices relative to FX_FUNC_LAST, so every constant
@@ -4606,6 +4614,42 @@ public final class WasmLispCompiler implements LispCompiler {
 		else {
 			lookupBody = WasmEvalRuntimeBuilder.buildLookupStub();
 		}
+		// The funcId -> name table _fun_name binary-searches to print a closure value
+		// as #<function NAME> (interpreter parity). One 12-byte {funcId, nameOff,
+		// nameLen} row per defun whose funcId MATERIALIZES as a callable value
+		// (valueFuncIds) -- printing names VALUES, never call targets: a computed
+		// designator lowers to the SYMBOL itself (see
+		// WasmFunctionFormCompiler.compileSymbolFunction), so a funcId only the registry
+		// could resolve never reaches a printer and needs no row. Rows come out in
+		// ascending funcId order (the defun index IS the funcId), which is what the
+		// search relies on. The blob is shakeable on its BASE -- its one reader is
+		// _fun_name's own i32.const -- and each interned name joins the droppable ranges
+		// PROBED ON THAT SAME WORD (see shakeableRanges): the search reaches the names
+		// only through words inside the blob, a citation the constant scan cannot
+		// follow, so blob and names live and fall together with _fun_name
+		// (.kb/optimize-dead-code-elimination.md). A hello-shaped program whose internal
+		// #'identity/#'eql values are dead-code-eliminated keeps NEITHER. The placement
+		// is unaligned (appendShakeableBlobUnalignedProbedOnBase): an alignment pad here
+		// would charge a quoted u16/u8 vector's next element for the pad it shifts,
+		// breaking the per-element cost pin
+		// (WasmLispCompilerTest#aLiteralLookupTableCostsItsOwnBytesAndNotThreeTimesThem).
+		ByteArrayOutputStream funNameRows = new ByteArrayOutputStream();
+		List<StringTable.StringEntry> funNameEntries = new ArrayList<>();
+		for (int i = 0; i < defuns.size(); i++) {
+			if (!valueFuncIds.contains(i)) {
+				continue;
+			}
+			StringTable.StringEntry funName = stringTable.addString(defuns.get(i).name);
+			funNameEntries.add(funName);
+			writeLittleEndian32(funNameRows, i); // funcId == defun index
+			writeLittleEndian32(funNameRows, funName.offset());
+			writeLittleEndian32(funNameRows, funName.length());
+		}
+		final int funNameCount = funNameRows.size() / 12;
+		// No rows: no bytes appended, so a program with no nameable function value is
+		// byte-identical to the one from before this table existed.
+		final int funNameBase = funNameCount == 0 ? -1
+				: stringTable.appendShakeableBlobUnalignedProbedOnBase(funNameRows.toByteArray());
 		if (usesEval) {
 			WasmEvalRuntimeBuilder.SpecialFormOffsets offsets = WasmEvalRuntimeBuilder.SpecialFormOffsets.builder()
 				.add(stringTable, LispNames.QUOTE)
@@ -5849,6 +5893,8 @@ public final class WasmLispCompiler implements LispCompiler {
 															// (FUNC_ARR_UNDISPLACE)
 				fnDef.addFunction(TYPE_BIG_TRIPLE); // _f64_fdiv (a, b, mode) -> quotient
 													// | null (FUNC_F64_FDIV)
+				fnDef.addFunction(TYPE_PRINT_I32); // _fun_name (funcId) -> write name tag
+													// (FUNC_FUN_NAME)
 				// vec: SIMD block (--simd only): the three element helpers + twelve
 				// kernels
 				if (this.simd) {
@@ -6671,6 +6717,9 @@ public final class WasmLispCompiler implements LispCompiler {
 				code.addFunction(WasmArrayRuntimeBuilder.buildArrUndisplaceBody(this.simd));
 				// exact float floor-family division body (FUNC_F64_FDIV)
 				code.addFunction(WasmFloatFdivRuntimeBuilder.buildBody());
+				// closure-value name tag body (FUNC_FUN_NAME); a constant when the
+				// funcId -> name table has no rows
+				code.addFunction(WasmRuntimeBuilder.buildFunNameBody(stringTable, funNameBase, funNameCount));
 				// vec: SIMD block bodies (--simd only), in FUNC_VEC_BASE index order.
 				if (this.simd) {
 					// Each helper is handed the function index of the scalar vec.lisp
@@ -6833,7 +6882,8 @@ public final class WasmLispCompiler implements LispCompiler {
 		// exactly that reason).
 		int stringDataSegIndex = upperFoldSegIndex - 1;
 		List<am.ik.wasm.WasmTreeShaker.DroppableDataRange> stringRanges = stringData.length == 0 ? List.of()
-				: stringTable.shakeableRanges(stringDataSegIndex, dataBase, internBase, internRows);
+				: stringTable.shakeableRanges(stringDataSegIndex, dataBase, internBase, internRows, funNameBase,
+						funNameEntries);
 		@Nullable Map<Integer, String> funcSizeNames = debugFuncSizes()
 				? funcSizeNames(functions, lambdaDecls, dispatchPageFuncBase, dispatchPageBodies.size()) : null;
 		if (this.component) {
@@ -9368,7 +9418,12 @@ public final class WasmLispCompiler implements LispCompiler {
 
 		final StringEntry newline;
 
-		final StringEntry funcStr;
+		// Closure-value printing (see WasmRuntimeBuilder.buildFunNameBody): the helper
+		// writes lambdaStr for a funcId with no name row, and funcPrefix + the row's
+		// name + hashTableEnd (">") for one with a row.
+		final StringEntry lambdaStr;
+
+		final StringEntry funcPrefix;
 
 		final StringEntry futureStr;
 
@@ -9459,7 +9514,8 @@ public final class WasmLispCompiler implements LispCompiler {
 			this.space = addBodyString(" ");
 			this.dot = addBodyString(" . ");
 			this.newline = addBodyString("\n");
-			this.funcStr = addBodyString("#<function>");
+			this.lambdaStr = addBodyString("#<lambda>");
+			this.funcPrefix = addBodyString("#<function ");
 			this.futureStr = addBodyString("#<FUTURE>");
 			this.quoteMark = addBodyString("'");
 			this.functionMark = addBodyString("#'");
@@ -9590,11 +9646,18 @@ public final class WasmLispCompiler implements LispCompiler {
 		 * @param internBase the runtime intern table's absolute base address, or -1 when
 		 * the program does not intern
 		 * @param internRows the intern table's rows in blob order (empty when absent)
+		 * @param funNameBase the funcId -> name blob's absolute base address, or -1 when
+		 * the program has no nameable function value
+		 * @param funNameEntries the names the fun-name blob cites, in row order (empty
+		 * when absent) -- each offered as a range PROBED ON THE BLOB'S FIRST WORD, since
+		 * _fun_name is their only reader and reaches them through words inside the blob,
+		 * a citation the constant scan cannot follow; name, blob and _fun_name therefore
+		 * live and fall together
 		 * @return the candidate ranges, each string range followed by its row range (the
 		 * shaker orders cuts itself; this order is fixed so the module is deterministic)
 		 */
 		List<am.ik.wasm.WasmTreeShaker.DroppableDataRange> shakeableRanges(int segmentIndex, int dataBase,
-				int internBase, List<StringEntry> internRows) {
+				int internBase, List<StringEntry> internRows, int funNameBase, List<StringEntry> funNameEntries) {
 			List<StringEntry> entries = new ArrayList<>(this.shakeable.size());
 			for (String s : this.shakeable) {
 				entries.add(this.cache.get(s));
@@ -9618,9 +9681,18 @@ public final class WasmLispCompiler implements LispCompiler {
 			}
 			for (int[] blob : this.shakeableBlobs) {
 				int start = blob[0] - dataBase;
+				int probeStart = blob.length > 3 ? blob[3] - dataBase : start;
 				int probeLen = blob[2] > 0 ? blob[2] : blob[1];
-				ranges.add(new am.ik.wasm.WasmTreeShaker.DroppableDataRange(segmentIndex, start, start + blob[1], start,
-						start + probeLen));
+				ranges.add(new am.ik.wasm.WasmTreeShaker.DroppableDataRange(segmentIndex, start, start + blob[1],
+						probeStart, probeStart + probeLen));
+			}
+			if (funNameBase >= 0) {
+				int blobStart = funNameBase - dataBase;
+				for (StringEntry e : funNameEntries) {
+					int start = e.offset() - dataBase;
+					ranges.add(new am.ik.wasm.WasmTreeShaker.DroppableDataRange(segmentIndex, start, start + e.length(),
+							blobStart, blobStart + 4));
+				}
 			}
 			return ranges;
 		}
@@ -9666,13 +9738,37 @@ public final class WasmLispCompiler implements LispCompiler {
 		 * droppable range is probed on the first word only, so an unrelated small
 		 * constant landing somewhere inside a wide blob cannot pin it -- with a 755-byte
 		 * table that false retention was near-certain (todo-431's Schubfach tables are
-		 * the one user today).
+		 * the one user today). The {@code appendBlob} alignment padding BEFORE the blob
+		 * joins the cut range (probing still on the blob's own base word): padding that
+		 * exists only because this blob needed it must not survive as a zero segment when
+		 * the blob is cut.
 		 * @param blob the bytes to place
 		 * @return the absolute offset where the blob was placed
 		 */
 		int appendShakeableBlobProbedOnBase(byte[] blob) {
+			int beforePadding = this.nextOffset;
 			int offset = appendBlob(blob);
-			this.shakeableBlobs.add(new int[] { offset, blob.length, 4 });
+			this.shakeableBlobs.add(new int[] { beforePadding, offset - beforePadding + blob.length, 4, offset });
+			return offset;
+		}
+
+		/**
+		 * {@link #appendShakeableBlobProbedOnBase} WITHOUT the 4-byte alignment. The
+		 * funcId -> name table is its user: its only reader loads rows with plain
+		 * {@code i32.load}s, and wasm linear memory defines an access at ANY address, so
+		 * the alignment bought nothing while making the blob's leading padding depend on
+		 * the phase of the packed literals placed before it -- one more u16 element in a
+		 * quoted vector then cost 4 module bytes instead of its own 2. With no padding
+		 * there is no leading pad to join the cut range either: the range is the blob
+		 * exactly.
+		 * @param blob the bytes to place
+		 * @return the absolute offset where the blob was placed
+		 */
+		int appendShakeableBlobUnalignedProbedOnBase(byte[] blob) {
+			int offset = this.nextOffset;
+			this.data.write(blob, 0, blob.length);
+			this.nextOffset += blob.length;
+			this.shakeableBlobs.add(new int[] { offset, blob.length, 4, offset });
 			return offset;
 		}
 

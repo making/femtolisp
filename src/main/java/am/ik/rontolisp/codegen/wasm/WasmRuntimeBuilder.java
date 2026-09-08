@@ -1239,6 +1239,25 @@ final class WasmRuntimeBuilder {
 		w.writeUnsignedLeb128(elementFunc);
 		w.write(Instruction.RETURN);
 		w.write(Instruction.END);
+		// kind == OPAQUE (the %STREAM value): "#<NAME>" with NO slots in either escape
+		// mode. The HANDLE slot is backend-local (a WASI fd, a table index, a wasm
+		// linear-memory address) and must never reach the output
+		// (.kb/emitted-output-determinism.md); same text as the async #<STREAM> tag and
+		// the other two backends. Before the cycle guard, which its slot-free rendering
+		// cannot need.
+		emitLoadLayoutWord(w, addrSlot, WasmInstanceLayouts.OFF_KIND);
+		w.write(Instruction.I32_CONST);
+		w.writeSignedLeb128(WasmInstanceLayouts.KIND_OPAQUE);
+		w.write(Instruction.I32_EQ);
+		w.write(Instruction.IF, 0x40);
+		emitWriteString(w, openClass);
+		emitLoadLayoutWord(w, addrSlot, WasmInstanceLayouts.OFF_NAME_OFF);
+		emitLoadLayoutWord(w, addrSlot, WasmInstanceLayouts.OFF_NAME_LEN);
+		w.write(Instruction.CALL);
+		w.writeUnsignedLeb128(WasmLispCompiler.FUNC_WRITE_STR);
+		emitWriteString(w, closeClass);
+		w.write(Instruction.RETURN);
+		w.write(Instruction.END);
 		// The cycle guard (see the method comment).
 		emitRenderGuardEnter(w, depthMarker, renderPathGlobalIndex, renderDepthGlobalIndex, idxSlot);
 		// kind == CLASS ? "#<" : "#S("
@@ -3133,6 +3152,126 @@ final class WasmRuntimeBuilder {
 	}
 
 	/**
+	 * Builds the {@code _fun_name} body: the closure-value printer both escape modes
+	 * call. It binary-searches the compiler-appended {@code {funcId, nameOff, nameLen}}
+	 * table (sorted by funcId, one 12-byte row per NAMED defun the gate kept) and writes
+	 * the interpreter's tag: {@code "#<function " + NAME + ">"} for an id with a row,
+	 * {@code "#<lambda>"} for one without (anonymous lambdas, and the interpreted
+	 * sentinel -1). The whole tag lives here rather than in the two printer arms so prin1
+	 * and princ answer a function value identically and the printers need no scratch
+	 * local for the entry address.
+	 * @param st the string table holding the tag pieces
+	 * @param tableBase absolute linear address of the table, meaningless when count is 0
+	 * @param count the number of rows (0 degenerates the body to the lambda constant)
+	 * @return the function body
+	 */
+	static byte[] buildFunNameBody(WasmLispCompiler.StringTable st, int tableBase, int count) {
+		ByteArrayOutputStream body = new ByteArrayOutputStream();
+		WasmWriter w = new WasmWriter(body);
+		// Locals: slot 0 = funcId (parameter), slots 1-2 = the scan bounds, slot 3 =
+		// the midpoint, slot 4 = the address of the row under test.
+		w.write(1);
+		w.write(4);
+		w.write(Type.I32);
+		if (count > 0) {
+			w.write(Instruction.I32_CONST);
+			w.writeSignedLeb128(0);
+			w.write(Instruction.SET_LOCAL);
+			w.writeUnsignedLeb128(1);
+			w.write(Instruction.I32_CONST);
+			w.writeSignedLeb128(count - 1);
+			w.write(Instruction.SET_LOCAL);
+			w.writeUnsignedLeb128(2);
+			w.write(Instruction.BLOCK);
+			w.write(0x40);
+			w.write(Instruction.LOOP);
+			w.write(0x40);
+			// lo > hi -> miss
+			w.write(Instruction.GET_LOCAL);
+			w.writeUnsignedLeb128(1);
+			w.write(Instruction.GET_LOCAL);
+			w.writeUnsignedLeb128(2);
+			w.write(Instruction.I32_GT_S);
+			w.write(Instruction.BR_IF);
+			w.writeUnsignedLeb128(1);
+			// mid = (lo + hi) >>> 1; entry = tableBase + mid * 12
+			w.write(Instruction.GET_LOCAL);
+			w.writeUnsignedLeb128(1);
+			w.write(Instruction.GET_LOCAL);
+			w.writeUnsignedLeb128(2);
+			w.write(Instruction.I32_ADD);
+			w.write(Instruction.I32_CONST);
+			w.writeSignedLeb128(1);
+			w.write(Instruction.I32_SHR_U);
+			w.write(Instruction.SET_LOCAL);
+			w.writeUnsignedLeb128(3);
+			w.write(Instruction.I32_CONST);
+			w.writeSignedLeb128(tableBase);
+			w.write(Instruction.GET_LOCAL);
+			w.writeUnsignedLeb128(3);
+			w.write(Instruction.I32_CONST);
+			w.writeSignedLeb128(12);
+			w.write(Instruction.I32_MUL);
+			w.write(Instruction.I32_ADD);
+			w.write(Instruction.SET_LOCAL);
+			w.writeUnsignedLeb128(4);
+			// id < entry.funcId -> hi = mid - 1, continue
+			w.write(Instruction.GET_LOCAL);
+			w.writeUnsignedLeb128(0);
+			w.write(Instruction.GET_LOCAL);
+			w.writeUnsignedLeb128(4);
+			w.write(Instruction.I32_LOAD, 0x02, 0);
+			w.write(Instruction.I32_LT_S);
+			w.write(Instruction.IF, 0x40);
+			w.write(Instruction.GET_LOCAL);
+			w.writeUnsignedLeb128(3);
+			w.write(Instruction.I32_CONST);
+			w.writeSignedLeb128(1);
+			w.write(Instruction.I32_SUB);
+			w.write(Instruction.SET_LOCAL);
+			w.writeUnsignedLeb128(2);
+			w.write(Instruction.ELSE);
+			// id > entry.funcId -> lo = mid + 1; otherwise the hit: write the named tag
+			w.write(Instruction.GET_LOCAL);
+			w.writeUnsignedLeb128(0);
+			w.write(Instruction.GET_LOCAL);
+			w.writeUnsignedLeb128(4);
+			w.write(Instruction.I32_LOAD, 0x02, 0);
+			w.write(Instruction.I32_GT_S);
+			w.write(Instruction.IF, 0x40);
+			w.write(Instruction.GET_LOCAL);
+			w.writeUnsignedLeb128(3);
+			w.write(Instruction.I32_CONST);
+			w.writeSignedLeb128(1);
+			w.write(Instruction.I32_ADD);
+			w.write(Instruction.SET_LOCAL);
+			w.writeUnsignedLeb128(1);
+			w.write(Instruction.ELSE);
+			emitWriteString(w, st.funcPrefix);
+			w.write(Instruction.GET_LOCAL);
+			w.writeUnsignedLeb128(4);
+			w.write(Instruction.I32_LOAD, 0x02, 4);
+			w.write(Instruction.GET_LOCAL);
+			w.writeUnsignedLeb128(4);
+			w.write(Instruction.I32_LOAD, 0x02, 8);
+			w.write(Instruction.CALL);
+			w.writeUnsignedLeb128(WasmLispCompiler.FUNC_WRITE_STR);
+			emitWriteString(w, st.hashTableEnd);
+			w.write(Instruction.RETURN);
+			w.write(Instruction.END);
+			w.write(Instruction.END);
+			w.write(Instruction.BR);
+			w.writeUnsignedLeb128(0);
+			w.write(Instruction.END); // loop
+			w.write(Instruction.END); // block
+		}
+		// Miss -- or no table at all: the value is anonymous.
+		emitWriteString(w, st.lambdaStr);
+		w.write(Instruction.END);
+		return body.toByteArray();
+	}
+
+	/**
 	 * Builds the _print_val helper function that prints any Lisp value without a trailing
 	 * newline. Handles null (nil), i31ref (integer), string struct, closure struct, and
 	 * cons struct (list).
@@ -3305,18 +3444,25 @@ final class WasmRuntimeBuilder {
 		w.write(Instruction.RETURN);
 		w.write(Instruction.END);
 
-		// Check closure struct -> print "#<function>"
+		// Check closure struct -> print its name tag: _fun_name writes
+		// "#<function NAME>" for a funcId the table has a row for and "#<lambda>" for
+		// one it has not -- the interpreter's LispLambda.print() answer. Both escape
+		// modes call the same helper, so prin1 and princ cannot drift on a function
+		// value.
 		w.write(Instruction.GET_LOCAL);
 		w.writeUnsignedLeb128(0);
 		w.write(Instruction.GC_PREFIX, Instruction.REF_TEST);
 		w.writeHeapType(WasmLispCompiler.TYPE_CLOSURE);
 		w.write(Instruction.IF, 0x40);
-		w.write(Instruction.I32_CONST);
-		w.writeSignedLeb128(st.funcStr.offset());
-		w.write(Instruction.I32_CONST);
-		w.writeSignedLeb128(st.funcStr.length());
+		w.write(Instruction.GET_LOCAL);
+		w.writeUnsignedLeb128(0);
+		w.write(Instruction.GC_PREFIX, Instruction.REF_CAST);
+		w.writeHeapType(WasmLispCompiler.TYPE_CLOSURE);
+		w.write(Instruction.GC_PREFIX, Instruction.STRUCT_GET);
+		w.writeUnsignedLeb128(WasmLispCompiler.TYPE_CLOSURE);
+		w.writeUnsignedLeb128(0); // field 0: funcId
 		w.write(Instruction.CALL);
-		w.writeUnsignedLeb128(WasmLispCompiler.FUNC_WRITE_STR);
+		w.writeUnsignedLeb128(WasmLispCompiler.FUNC_FUN_NAME);
 		w.write(Instruction.RETURN);
 		w.write(Instruction.END);
 
@@ -3583,18 +3729,25 @@ final class WasmRuntimeBuilder {
 		w.write(Instruction.RETURN);
 		w.write(Instruction.END);
 
-		// Check closure struct -> print "#<function>"
+		// Check closure struct -> print its name tag: _fun_name writes
+		// "#<function NAME>" for a funcId the table has a row for and "#<lambda>" for
+		// one it has not -- the interpreter's LispLambda.print() answer. Both escape
+		// modes call the same helper, so prin1 and princ cannot drift on a function
+		// value.
 		w.write(Instruction.GET_LOCAL);
 		w.writeUnsignedLeb128(0);
 		w.write(Instruction.GC_PREFIX, Instruction.REF_TEST);
 		w.writeHeapType(WasmLispCompiler.TYPE_CLOSURE);
 		w.write(Instruction.IF, 0x40);
-		w.write(Instruction.I32_CONST);
-		w.writeSignedLeb128(st.funcStr.offset());
-		w.write(Instruction.I32_CONST);
-		w.writeSignedLeb128(st.funcStr.length());
+		w.write(Instruction.GET_LOCAL);
+		w.writeUnsignedLeb128(0);
+		w.write(Instruction.GC_PREFIX, Instruction.REF_CAST);
+		w.writeHeapType(WasmLispCompiler.TYPE_CLOSURE);
+		w.write(Instruction.GC_PREFIX, Instruction.STRUCT_GET);
+		w.writeUnsignedLeb128(WasmLispCompiler.TYPE_CLOSURE);
+		w.writeUnsignedLeb128(0); // field 0: funcId
 		w.write(Instruction.CALL);
-		w.writeUnsignedLeb128(WasmLispCompiler.FUNC_WRITE_STR);
+		w.writeUnsignedLeb128(WasmLispCompiler.FUNC_FUN_NAME);
 		w.write(Instruction.RETURN);
 		w.write(Instruction.END);
 

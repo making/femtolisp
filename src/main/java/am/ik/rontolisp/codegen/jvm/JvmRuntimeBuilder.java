@@ -6,6 +6,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.SortedMap;
 
 import am.ik.jvm.ConstantPool;
 import am.ik.jvm.ConstantPool.ClassConstant;
@@ -523,7 +524,7 @@ final class JvmRuntimeBuilder {
 			ClassConstant stringClass, ClassConstant objectArrayClass, ClassConstant integerClass,
 			MethodrefConstant longToString, MethodrefConstant doubleToString, FloatPrint floatPrint,
 			MethodrefConstant objectToString, MethodrefConstant consToStringMethod, ConstantPool.StringConstant nilStr,
-			ConstantPool.StringConstant funcStr, ClassConstant ratioArrayClass, MethodrefConstant stringConcat,
+			FuncPrint funcPrint, ClassConstant ratioArrayClass, MethodrefConstant stringConcat,
 			ConstantPool.StringConstant slashStr, ClassConstant charBoxClass, MethodrefConstant charPrin1Method,
 			@org.jspecify.annotations.Nullable ClassConstant arrayListClass,
 			@org.jspecify.annotations.Nullable MethodrefConstant arrayToStringMethod,
@@ -685,9 +686,8 @@ final class JvmRuntimeBuilder {
 		int ifNotFuncPos = code.size();
 		code.add(Opcode.IFEQ);
 		emitU2(code, 0);
-		// It's a function value
-		emitLdc(code, funcStr.index());
-		code.add(Opcode.ARETURN);
+		// It's a function value: #<function NAME> under a name, #<lambda> without one
+		emitFuncValPrint(code, funcPrint);
 		// Not a function: an instance (arr[0] is its String[] layout), else a cons list.
 		// The empty-array escape jumps PAST the instance test, which probes arr[0].
 		patchBranch(code, ifNotFuncPos, code.size());
@@ -1309,7 +1309,7 @@ final class JvmRuntimeBuilder {
 			ClassConstant stringClass, ClassConstant objectArrayClass, ClassConstant integerClass,
 			MethodrefConstant longToString, MethodrefConstant doubleToString, FloatPrint floatPrint,
 			MethodrefConstant objectToString, MethodrefConstant consToDisplayStringMethod,
-			ConstantPool.StringConstant nilStr, ConstantPool.StringConstant funcStr, MethodrefConstant stringCharAt,
+			ConstantPool.StringConstant nilStr, FuncPrint funcPrint, MethodrefConstant stringCharAt,
 			MethodrefConstant stringLength, MethodrefConstant stringSubstring, MethodrefConstant stringLastIndexOf,
 			ClassConstant ratioArrayClass, MethodrefConstant stringConcat, ConstantPool.StringConstant slashStr,
 			ClassConstant charBoxClass, MethodrefConstant characterToString,
@@ -1504,8 +1504,8 @@ final class JvmRuntimeBuilder {
 		int ifNotFuncPos = code.size();
 		code.add(Opcode.IFEQ);
 		emitU2(code, 0);
-		emitLdc(code, funcStr.index());
-		code.add(Opcode.ARETURN);
+		// Function value: the same naming the readable renderer gives
+		emitFuncValPrint(code, funcPrint);
 		patchBranch(code, ifNotFuncPos, code.size());
 		int ifNotInstPos = emitInstanceBranch(code, instPrint, true);
 		if (ifNotInstPos >= 0) {
@@ -1699,6 +1699,26 @@ final class JvmRuntimeBuilder {
 			ConstantPool.@org.jspecify.annotations.Nullable StringConstant streamMarker,
 			ConstantPool.@org.jspecify.annotations.Nullable StringConstant readMarker,
 			ConstantPool.@org.jspecify.annotations.Nullable StringConstant streamStr) {
+	}
+
+	/**
+	 * Constant-pool references for printing a closure value as the interpreter's
+	 * {@code #<function NAME>} (named function) or {@code #<lambda>} (anonymous): the
+	 * name comes from the {@code _funName(funcId)} table, which is empty — and the whole
+	 * lookup degenerates to the constant {@code lambdaStr} — in a program that never
+	 * turns a named function into a value. {@code integerClass}/{@code integerValue}
+	 * unbox the closure's funcId slot; {@code stringConcat} assembles the tag around the
+	 * name.
+	 *
+	 * @param funNameMethod the {@code _funName(int)String} lookup, null when no function
+	 * can reach printing under a name
+	 * @param prefix {@code "#<function "}
+	 * @param suffix {@code ">"}
+	 * @param lambdaStr {@code "#<lambda>"}
+	 */
+	record FuncPrint(@org.jspecify.annotations.Nullable MethodrefConstant funNameMethod, ClassConstant integerClass,
+			MethodrefConstant integerValue, MethodrefConstant stringConcat, ConstantPool.StringConstant prefix,
+			ConstantPool.StringConstant suffix, ConstantPool.StringConstant lambdaStr) {
 	}
 
 	/**
@@ -1933,6 +1953,10 @@ final class JvmRuntimeBuilder {
 	 * @param pathnameKindStr the {@code "P"} kind marker of the pathname layout
 	 * @param pathnamePrefixStr the {@code "#P"} prefix a pathname prints under prin1, or
 	 * null for the princ variant (CLHS 22.1.3.11: princ writes the bare namestring)
+	 * @param opaqueKindStr the {@code "O"} kind marker of an OPAQUE layout (the
+	 * {@code %STREAM} value): it prints {@code #<NAME>} with NO slots in either escape
+	 * mode -- its HANDLE slot is backend-local and must never reach the output
+	 * ({@code .kb/emitted-output-determinism.md})
 	 * @return the method body
 	 */
 	static List<Integer> buildInstToStringBody(ClassConstant objectArrayClass, ClassConstant stringArrayClass,
@@ -1942,7 +1966,8 @@ final class JvmRuntimeBuilder {
 			ConstantPool.StringConstant openClassStr, ConstantPool.StringConstant closeStructStr,
 			ConstantPool.StringConstant closeClassStr, ConstantPool.StringConstant keySepStr,
 			ConstantPool.StringConstant spaceStr, ConstantPool.StringConstant pathnameKindStr,
-			ConstantPool.@org.jspecify.annotations.Nullable StringConstant pathnamePrefixStr, RenderGuardRefs guard) {
+			ConstantPool.@org.jspecify.annotations.Nullable StringConstant pathnamePrefixStr,
+			ConstantPool.StringConstant opaqueKindStr, RenderGuardRefs guard) {
 		List<Integer> code = new ArrayList<>();
 		// layout = (String[]) arr[0]
 		code.add(Opcode.ALOAD_0);
@@ -1992,6 +2017,40 @@ final class JvmRuntimeBuilder {
 			code.add(Opcode.ARETURN);
 		}
 		patchBranch(code, ifNotPathnamePos, code.size());
+		// An OPAQUE layout (the %STREAM value) short-circuits to "#<NAME>" with no slots
+		// in EITHER escape mode: the HANDLE slot is backend-local (a table index here, a
+		// WASI fd there, a wasm linear-memory address) and must never reach the output
+		// (.kb/emitted-output-determinism.md). Same text as the async #<STREAM> tag and
+		// the other two backends; placed before the cycle guard, which its slot-free
+		// rendering cannot need.
+		code.add(Opcode.ALOAD_2);
+		code.add(Opcode.ICONST_2);
+		code.add(Opcode.AALOAD);
+		emitLdc(code, opaqueKindStr.index());
+		code.add(Opcode.INVOKEVIRTUAL);
+		emitU2(code, objectEquals.index());
+		int ifNotOpaquePos = code.size();
+		code.add(Opcode.IFEQ);
+		emitU2(code, 0);
+		// return new StringBuilder("#<").append(layout[1]).append(">").toString()
+		code.add(Opcode.NEW);
+		emitU2(code, stringBuilderClass.index());
+		code.add(Opcode.DUP);
+		emitLdc(code, openClassStr.index());
+		code.add(Opcode.INVOKESPECIAL);
+		emitU2(code, sbInitStr.index());
+		code.add(Opcode.ALOAD_2);
+		code.add(Opcode.ICONST_1);
+		code.add(Opcode.AALOAD);
+		code.add(Opcode.INVOKEVIRTUAL);
+		emitU2(code, sbAppendStr.index());
+		emitLdc(code, closeClassStr.index());
+		code.add(Opcode.INVOKEVIRTUAL);
+		emitU2(code, sbAppendStr.index());
+		code.add(Opcode.INVOKEVIRTUAL);
+		emitU2(code, sbToString.index());
+		code.add(Opcode.ARETURN);
+		patchBranch(code, ifNotOpaquePos, code.size());
 		// The cycle guard (the shared RenderGuardRefs discipline, kept in step by
 		// JvmLispCompilerTest.compileAndRunPrintOfACyclicInstanceGraphIsFinite): an
 		// instance already on the current rendering path -- a scene graph's
@@ -2243,6 +2302,74 @@ final class JvmRuntimeBuilder {
 		emitU2(code, display ? instPrint.instToDisplayString().index() : instPrint.instToString().index());
 		code.add(Opcode.ARETURN);
 		return ifNotInstPos;
+	}
+
+	// Emits the function-value arm of the two renderers, at the position where the
+	// value is known to be an Object[] whose slot 1 holds an Integer funcId (arr is in
+	// local slot 1). Reads as: String name = _funName(((Integer)arr[0]).intValue());
+	// return name == null ? "#<lambda>" : "#<function " + name + ">"; -- the
+	// interpreter's LispLambda.print() answer, where the funcId not in the table is the
+	// runtime sentinel for interpreted lambdas and prints anonymous. A funcId the table
+	// answers null for is the ONLY route to "#<lambda>" beyond an empty table, so the
+	// two renderers cannot drift on which closures are named. Uses local slot 2.
+	private static void emitFuncValPrint(List<Integer> code, FuncPrint fp) {
+		if (fp.funNameMethod() == null) {
+			// No named function can reach printing: every closure value is anonymous.
+			emitLdc(code, fp.lambdaStr().index());
+			code.add(Opcode.ARETURN);
+			return;
+		}
+		code.add(Opcode.ALOAD_1);
+		code.add(Opcode.ICONST_0);
+		code.add(Opcode.AALOAD);
+		code.add(Opcode.CHECKCAST);
+		emitU2(code, fp.integerClass().index());
+		code.add(Opcode.INVOKEVIRTUAL);
+		emitU2(code, fp.integerValue().index());
+		code.add(Opcode.INVOKESTATIC);
+		emitU2(code, fp.funNameMethod().index());
+		code.add(Opcode.ASTORE_2);
+		code.add(Opcode.ALOAD_2);
+		int ifNamedPos = code.size();
+		code.add(Opcode.IFNONNULL);
+		emitU2(code, 0);
+		emitLdc(code, fp.lambdaStr().index());
+		code.add(Opcode.ARETURN);
+		patchBranch(code, ifNamedPos, code.size());
+		emitLdc(code, fp.prefix().index());
+		code.add(Opcode.ALOAD_2);
+		code.add(Opcode.INVOKEVIRTUAL);
+		emitU2(code, fp.stringConcat().index());
+		emitLdc(code, fp.suffix().index());
+		code.add(Opcode.INVOKEVIRTUAL);
+		emitU2(code, fp.stringConcat().index());
+		code.add(Opcode.ARETURN);
+	}
+
+	/**
+	 * Builds the body of {@code _funName}: a static {@code (I)Ljava/lang/String;}
+	 * linear-scan table from funcId to the name it was defined under, or null for a
+	 * funcId with no name (the runtime sentinel, and any funcId the gate dropped). The
+	 * reverse direction of the {@code _lookup} registry, gated on the same funcId set so
+	 * the two agree on which functions carry names at run time.
+	 * @param entries funcId to name string constant, in ascending funcId order
+	 * @return the bytecode body
+	 */
+	static List<Integer> buildFunNameBody(SortedMap<Integer, ConstantPool.StringConstant> entries) {
+		List<Integer> code = new ArrayList<>();
+		for (Map.Entry<Integer, ConstantPool.StringConstant> entry : entries.entrySet()) {
+			code.add(Opcode.ILOAD_0);
+			emitIntConstStatic(code, entry.getKey());
+			int skip = code.size();
+			code.add(Opcode.IF_ICMPNE);
+			emitU2(code, 0);
+			emitLdc(code, entry.getValue().index());
+			code.add(Opcode.ARETURN);
+			patchBranch(code, skip, code.size());
+		}
+		code.add(Opcode.ACONST_NULL);
+		code.add(Opcode.ARETURN);
+		return code;
 	}
 
 	// Emits "if (val instanceof CompletableFuture) return "#<FUTURE>";" at the current

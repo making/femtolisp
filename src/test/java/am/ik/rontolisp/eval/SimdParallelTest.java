@@ -141,7 +141,9 @@ class SimdParallelTest {
 		for (LispVal expr : LispReader.readAllFromString("(vec:zeros 1) #'vec:matvec")) {
 			result = scalar.eval(expr);
 		}
-		assertThat(result.print()).isEqualTo("#<lambda>");
+		// The defun's own name tag -- identical to what the lane kernel prints, since
+		// defuns carry names now; the pair is told apart by type, not text.
+		assertThat(result.print()).isEqualTo("#<function VEC:MATVEC>");
 	}
 
 }

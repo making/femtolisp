@@ -65,6 +65,11 @@ Parameters that genuinely carry emission order are all typed `SequencedSet`:
   to let a host `toString` reach a printer (the default ends in an identity hash) — the JVM
   backend did that for a hash table and still does for the mutex handle, hence
   `.kb/mutexes.md`'s opaque/unprintable handle; the fix shape is in `.kb/hash-tables.md`.
+  The same rule settled the two remaining backend-dependent printables: a FUNCTION value prints
+  the registered NAME (never a funcId or closure address; `.kb/core-representation.md`, "A function
+  value prints its registered NAME") and a STREAM the plain `#<STREAM>` tag (never its handle — a
+  table index on one backend is not an address on another; `.kb/read-load-streams.md`). The ci-spec
+  case `function-and-stream-values-print-one-text-on-every-backend` is the standing pin.
 
 ## Why CI cannot catch this
 `native-image` freezes `ImmutableCollections.SALT` at BUILD time, so the native binary is

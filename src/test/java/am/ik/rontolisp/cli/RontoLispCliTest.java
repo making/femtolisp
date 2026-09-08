@@ -639,42 +639,34 @@ class RontoLispCliTest {
 
 	@Test
 	void replWithSimdInterceptsVecKernels() {
-		// A vec.lisp defun prints as #<lambda>; the installed Vector API kernel prints
-		// as #<function vec:dot>. The surefire JVM has jdk.incubator.vector on the
-		// module path, so VecSimd.available() is true here.
+		// The installed Vector API kernel prints #<function VEC:DOT> -- and so does the
+		// vec.lisp defun it replaces, since defuns carry names now. The REPL text can no
+		// longer tell the pair apart; VecSimdTest's type guards (LispFunction vs
+		// LispLambda) hold the interception line. The surefire JVM has
+		// jdk.incubator.vector on the module path, so VecSimd.available() is true here.
 		String output = runCli("(vec:dot #d(1.0) #d(1.0)) #'vec:dot\n", "--simd");
 		assertThat(output).contains("#<function VEC:DOT>");
 	}
 
 	@Test
-	void replWithBlasInterceptsTheLinalgProductWhenTheMachineHasATunedLibrary() {
-		// Conditional on the machine, not on the build: with a tuned CBLAS the
-		// linalg.lisp
-		// defun (#<lambda>) is replaced by the library kernel, and without one the REPL
-		// says so on stderr and keeps running the defun. Both are correct outcomes, so
-		// this pins the pair rather than one of them.
+	void replPrintsTheLinalgProductByNameWhetherOrNotTheMachineHasATunedLibrary() {
+		// Whether a tuned CBLAS exists is a property of the MACHINE, and the printed
+		// value may not depend on it: the library kernel and the linalg.lisp defun it
+		// replaces answer the same #<function LINALG:DOT> now that defuns carry names.
+		// Which of the two is installed is pinned in-process by LinalgBlasTest's type
+		// guards (LispFunction vs LispLambda), not by the REPL text.
 		String output = runCli("(linalg:zeros 1) #'linalg:dot\n", "--blas");
-		if (am.ik.rontolisp.eval.LinalgBlas.available()) {
-			assertThat(output).contains("#<function LINALG:DOT>");
-		}
-		else {
-			assertThat(output).contains("#<lambda>").doesNotContain("#<function LINALG:DOT>");
-		}
+		assertThat(output).contains("#<function LINALG:DOT>");
 	}
 
 	@Test
-	void replWithGpuInterceptsTheLinalgProductWhenTheMachineHasADevice() {
-		// The same pair --blas pins, one layer up and conditional on the machine rather
-		// than on the build: with a device the linalg.lisp defun (#<lambda>) is replaced
-		// by the interceptor, and without one the REPL says so on stderr and keeps
-		// running the defun. Both are correct outcomes.
+	void replPrintsTheLinalgProductByNameWhetherOrNotTheMachineHasADevice() {
+		// The same machine-independence --gpu installs buys for the REPL text: with a
+		// device the defun is replaced by the interceptor, without one the REPL says so
+		// on stderr and keeps the defun, and both print #<function LINALG:DOT>. The
+		// interception itself is pinned by LinalgGpuTest's type guards.
 		String output = runCli("(linalg:zeros 1) #'linalg:dot\n", "--gpu");
-		if (am.ik.rontolisp.eval.LinalgGpu.available()) {
-			assertThat(output).contains("#<function LINALG:DOT>");
-		}
-		else {
-			assertThat(output).contains("#<lambda>").doesNotContain("#<function LINALG:DOT>");
-		}
+		assertThat(output).contains("#<function LINALG:DOT>");
 	}
 
 	@Test
@@ -786,9 +778,12 @@ class RontoLispCliTest {
 	}
 
 	@Test
-	void replWithoutSimdKeepsScalarVecKernels() {
+	void replPrintsVecDotByNameWithoutSimdToo() {
+		// Without --simd the defun stays scalar -- and still prints #<function VEC:DOT>,
+		// the same text the lane kernel answers with. The flag may not move the printed
+		// name; whether the kernel is installed is pinned by VecSimdTest's type guards.
 		String output = runCli("(vec:dot #d(1.0) #d(1.0)) #'vec:dot\n");
-		assertThat(output).contains("#<lambda>").doesNotContain("#<function VEC:DOT>");
+		assertThat(output).contains("#<function VEC:DOT>");
 	}
 
 	@Test

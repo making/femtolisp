@@ -11,6 +11,7 @@ import java.util.List;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
 
+import am.ik.rontolisp.LispFunction;
 import am.ik.rontolisp.LispNil;
 import am.ik.rontolisp.LispVal;
 import am.ik.rontolisp.reader.LispReader;
@@ -68,11 +69,13 @@ class IroncladNativeTest {
 
 	@Test
 	void loadingIroncladReplacesPbkdf2DeriveKeyWithTheNative() {
-		// An ironclad defun is a LispLambda ("#<lambda>"); the installed kernel is a
-		// native LispFunction. This is the only assertion in the file that fails if the
-		// install never reaches loadSystem.
-		assertThat(eval("#'ironclad::pbkdf2-derive-key").print())
-			.isEqualTo("#<function " + IroncladNative.PBKDF2_DERIVE_KEY + ">");
+		// The installed kernel is a native LispFunction, the ironclad defun a LispLambda
+		// -- both print "#<function " + IroncladNative.PBKDF2_DERIVE_KEY + ">" now that
+		// defuns carry names, so the TYPE is the guard. This is the only assertion in the
+		// file that fails if the install never reaches loadSystem.
+		LispVal installed = eval("#'ironclad::pbkdf2-derive-key");
+		assertThat(installed).isInstanceOf(LispFunction.class);
+		assertThat(installed.print()).isEqualTo("#<function " + IroncladNative.PBKDF2_DERIVE_KEY + ">");
 	}
 
 	// --- published vectors -------------------------------------------------------

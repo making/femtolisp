@@ -23,7 +23,8 @@ import am.ik.rontolisp.LispLayout;
  *
  * <pre>
  * +0  kind      0 = struct (prints "#S(" ... ")"), 1 = class (prints "#&lt;" ... "&gt;"),
- *               2 = pathname (prints #P"ns" / the bare namestring from slot 0)
+ *               2 = pathname (prints #P"ns" / the bare namestring from slot 0),
+ *               3 = opaque (prints "#&lt;NAME&gt;", no slot syntax)
  * +4  tagOff    byte offset of the tag text, e.g. "%struct-POINT"  (%obj-tag reads this)
  * +8  tagLen
  * +12 nameOff   byte offset of the printed type name, e.g. "POINT" (the printer reads this)
@@ -95,6 +96,14 @@ final class WasmInstanceLayouts {
 	static final int KIND_PATHNAME = 2;
 
 	/**
+	 * The kind word of the fixed OPAQUE layout ({@code LispLayout.STREAM}): the printer
+	 * renders {@code #<NAME>} with no slot syntax -- the {@code %STREAM} handle is
+	 * backend-local and must never reach the output
+	 * ({@code .kb/emitted-output-determinism.md}).
+	 */
+	static final int KIND_OPAQUE = 3;
+
+	/**
 	 * Interns every layout's strings and appends its record to the static data segment.
 	 * @param registry the compilation's CLOS/struct registry
 	 * @param stringTable the module's string table, still open for appends
@@ -134,6 +143,7 @@ final class WasmInstanceLayouts {
 				case STRUCT -> KIND_STRUCT;
 				case CLASS -> KIND_CLASS;
 				case PATHNAME -> KIND_PATHNAME;
+				case OPAQUE -> KIND_OPAQUE;
 			});
 			write32(record, tag.offset());
 			write32(record, tag.length());

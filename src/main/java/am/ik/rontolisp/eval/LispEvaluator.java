@@ -6079,8 +6079,11 @@ public final class LispEvaluator {
 		blockForm = LispMacroExpander.spillEscapingMvProducers(blockForm);
 		// defun installs into the global function namespace, capturing the current
 		// lexical environment, and returns the function name like Common Lisp.
+		// The funcName rides on the value so it prints #<function NAME>, the text both
+		// compiled backends answer from their function-name table (a defun's value is a
+		// lambda here, a funcId there -- the name is the one identity either keeps).
 		this.globalEnv.defineFunction(funcName,
-				new LispLambda(expanded.required(), expanded.rest(), List.of(blockForm), env));
+				new LispLambda(expanded.required(), expanded.rest(), List.of(blockForm), env, funcName));
 		return nameForm;
 	}
 

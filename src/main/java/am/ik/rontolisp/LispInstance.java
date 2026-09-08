@@ -152,6 +152,15 @@ public final class LispInstance implements LispVal {
 		if (this.layout.kind() == LispLayout.Kind.PATHNAME) {
 			return escape ? "#P" + this.slots[0].print() : this.slots[0].display();
 		}
+		// An OPAQUE layout (the %STREAM value) prints its tag alone -- no slot syntax in
+		// either escape mode. The HANDLE slot is backend-local (a table index here, a
+		// WASI
+		// fd there, a wasm linear-memory address) and must never reach the output
+		// (.kb/emitted-output-determinism.md); the same text as the async stream tag and
+		// both compiled backends.
+		if (this.layout.kind() == LispLayout.Kind.OPAQUE) {
+			return "#<" + this.layout.printName() + ">";
+		}
 		// The cycle guard (RenderCycleGuard, shared with the cons and array renderers):
 		// an instance whose slots reach back to an instance still being rendered would
 		// recurse without end (a scene graph's parent/children pair is the everyday

@@ -3,6 +3,8 @@ package am.ik.rontolisp.eval;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 
+import am.ik.rontolisp.LispFunction;
+import am.ik.rontolisp.LispLambda;
 import am.ik.rontolisp.LispNil;
 import am.ik.rontolisp.LispVal;
 import am.ik.rontolisp.reader.LispReader;
@@ -50,6 +52,19 @@ class LinalgSimdTest {
 		assertThat(eval(input, true).print()).as(input).isEqualTo(eval(input, false).print());
 	}
 
+	/**
+	 * The dead-flag guard's discriminator: a named defun and the native kernel installed
+	 * over it print the SAME {@code #<function NAME>} text (todo 434 gave defuns names),
+	 * so the pair is told apart by the Java type -- {@link LispFunction} is the installed
+	 * kernel, {@link LispLambda} the {@code linalg.lisp} defun -- while the printed tag
+	 * stays pinned alongside.
+	 */
+	private void assertValueIs(String form, boolean simd, Class<?> type, String printedName) {
+		LispVal value = eval(form, simd);
+		assertThat(value).as(form + " simd=" + simd).isInstanceOf(type);
+		assertThat(value.print()).as(form + " simd=" + simd).isEqualTo("#<function " + printedName + ">");
+	}
+
 	@Test
 	void theVectorApiIsAvailableUnderTheSurefireAddModules() {
 		assertThat(LinalgSimd.available()).isTrue();
@@ -59,15 +74,15 @@ class LinalgSimdTest {
 
 	@Test
 	void simdReplacesTheAcceleratedDefunsWithNativeFunctions() {
-		// A linalg.lisp defun is a LispLambda ("#<lambda>"); the installed kernel is a
-		// native LispFunction. This is the only assertion in the file that fails if the
-		// --simd flag never reaches the interceptor.
+		// The installed kernel is a native LispFunction, the linalg.lisp defun a
+		// LispLambda -- both print the same #<function LINALG:NAME> tag (see
+		// assertValueIs). This is the only assertion in the file that fails if the --simd
+		// flag never reaches the interceptor.
 		for (String member : new String[] { "add", "sub", "mul", "div", "sum", "norm", "amax", "amin", "argmax",
 				"argmin", "trace", "transpose", "reshape", "dot", "outer" }) {
 			String form = "(linalg:zeros 1) #'linalg:" + member;
-			assertThat(eval(form, true).print()).as(member)
-				.isEqualTo("#<function LINALG:" + member.toUpperCase(java.util.Locale.ROOT) + ">");
-			assertThat(eval(form, false).print()).as(member).isEqualTo("#<lambda>");
+			assertValueIs(form, true, LispFunction.class, "LINALG:" + member.toUpperCase(java.util.Locale.ROOT));
+			assertValueIs(form, false, LispLambda.class, "LINALG:" + member.toUpperCase(java.util.Locale.ROOT));
 		}
 	}
 
@@ -79,7 +94,8 @@ class LinalgSimdTest {
 		// their bodies call sum/dot/reshape -- so they stay lambdas too.
 		for (String member : new String[] { "emap", "det", "inv", "solve", "array-equal", "mean", "matmul", "flatten",
 				"zeros", "eye" }) {
-			assertThat(eval("(linalg:zeros 1) #'linalg:" + member, true).print()).as(member).isEqualTo("#<lambda>");
+			assertValueIs("(linalg:zeros 1) #'linalg:" + member, true, LispLambda.class,
+					"LINALG:" + member.toUpperCase(java.util.Locale.ROOT));
 		}
 	}
 
@@ -230,15 +246,14 @@ class LinalgSimdTest {
 	void simdReplacesTheComparisonSelectDefunsWithNativeFunctions() {
 		for (String member : new String[] { "maximum", "minimum" }) {
 			String form = "(linalg:zeros 1) #'linalg:" + member;
-			assertThat(eval(form, true).print()).as(member)
-				.isEqualTo("#<function LINALG:" + member.toUpperCase(java.util.Locale.ROOT) + ">");
-			assertThat(eval(form, false).print()).as(member).isEqualTo("#<lambda>");
+			assertValueIs(form, true, LispFunction.class, "LINALG:" + member.toUpperCase(java.util.Locale.ROOT));
+			assertValueIs(form, false, LispLambda.class, "LINALG:" + member.toUpperCase(java.util.Locale.ROOT));
 		}
 		// clip / relu are accelerated transitively -- their defuns compose
 		// linalg:maximum / linalg:minimum -- so they stay lambdas, like
 		// square/reciprocal.
-		assertThat(eval("(linalg:zeros 1) #'linalg:clip", true).print()).isEqualTo("#<lambda>");
-		assertThat(eval("(linalg:zeros 1) #'linalg:relu", true).print()).isEqualTo("#<lambda>");
+		assertValueIs("(linalg:zeros 1) #'linalg:clip", true, LispLambda.class, "LINALG:CLIP");
+		assertValueIs("(linalg:zeros 1) #'linalg:relu", true, LispLambda.class, "LINALG:RELU");
 	}
 
 	@Test
@@ -580,14 +595,13 @@ class LinalgSimdTest {
 		for (String member : new String[] { "exp", "log", "tanh", "sin", "cos", "tan", "asin", "acos", "atan", "sinh",
 				"cosh", "sqrt", "abs", "negative", "sign", "erf" }) {
 			String form = "(linalg:zeros 1) #'linalg:" + member;
-			assertThat(eval(form, true).print()).as(member)
-				.isEqualTo("#<function LINALG:" + member.toUpperCase(java.util.Locale.ROOT) + ">");
-			assertThat(eval(form, false).print()).as(member).isEqualTo("#<lambda>");
+			assertValueIs(form, true, LispFunction.class, "LINALG:" + member.toUpperCase(java.util.Locale.ROOT));
+			assertValueIs(form, false, LispLambda.class, "LINALG:" + member.toUpperCase(java.util.Locale.ROOT));
 		}
 		// square/reciprocal are accelerated transitively -- their bodies call
 		// linalg:mul / linalg:div -- so they stay lambdas.
-		assertThat(eval("(linalg:zeros 1) #'linalg:square", true).print()).isEqualTo("#<lambda>");
-		assertThat(eval("(linalg:zeros 1) #'linalg:reciprocal", true).print()).isEqualTo("#<lambda>");
+		assertValueIs("(linalg:zeros 1) #'linalg:square", true, LispLambda.class, "LINALG:SQUARE");
+		assertValueIs("(linalg:zeros 1) #'linalg:reciprocal", true, LispLambda.class, "LINALG:RECIPROCAL");
 	}
 
 	@Test
@@ -721,9 +735,8 @@ class LinalgSimdTest {
 		// is a native LispFunction, the default a linalg.lisp lambda.
 		for (String member : new String[] { "%la-im2col", "%la-col2im" }) {
 			String form = "(linalg:zeros 1) #'linalg::" + member;
-			assertThat(eval(form, true).print()).as(member)
-				.isEqualTo("#<function LINALG::" + member.toUpperCase(java.util.Locale.ROOT) + ">");
-			assertThat(eval(form, false).print()).as(member).isEqualTo("#<lambda>");
+			assertValueIs(form, true, LispFunction.class, "LINALG::" + member.toUpperCase(java.util.Locale.ROOT));
+			assertValueIs(form, false, LispLambda.class, "LINALG::" + member.toUpperCase(java.util.Locale.ROOT));
 		}
 	}
 
@@ -762,8 +775,8 @@ class LinalgSimdTest {
 		// The dead-flag guard for this member: a --simd run that silently fell back
 		// would still pass every value test below.
 		String form = "(linalg:zeros 1) #'linalg::%la-matmul-nd";
-		assertThat(eval(form, true).print()).isEqualTo("#<function LINALG::%LA-MATMUL-ND>");
-		assertThat(eval(form, false).print()).isEqualTo("#<lambda>");
+		assertValueIs(form, true, LispFunction.class, "LINALG::%LA-MATMUL-ND");
+		assertValueIs(form, false, LispLambda.class, "LINALG::%LA-MATMUL-ND");
 	}
 
 	@Test
@@ -846,9 +859,8 @@ class LinalgSimdTest {
 		// fell back would still pass every value assertion below.
 		for (String member : new String[] { "%la-adam-step", "%la-rng-fill" }) {
 			String form = "(linalg:zeros 1) #'linalg::" + member;
-			assertThat(eval(form, true).print()).as(member)
-				.isEqualTo("#<function LINALG::" + member.toUpperCase(java.util.Locale.ROOT) + ">");
-			assertThat(eval(form, false).print()).as(member).isEqualTo("#<lambda>");
+			assertValueIs(form, true, LispFunction.class, "LINALG::" + member.toUpperCase(java.util.Locale.ROOT));
+			assertValueIs(form, false, LispLambda.class, "LINALG::" + member.toUpperCase(java.util.Locale.ROOT));
 		}
 	}
 
@@ -1000,16 +1012,14 @@ class LinalgSimdTest {
 		for (String member : new String[] { "greater", "greater-equal", "less", "less-equal", "equal", "where",
 				"take-rows" }) {
 			String form = "(linalg:zeros 1) #'linalg:" + member;
-			assertThat(eval(form, true).print()).as(member)
-				.isEqualTo("#<function LINALG:" + member.toUpperCase(java.util.Locale.ROOT) + ">");
-			assertThat(eval(form, false).print()).as(member).isEqualTo("#<lambda>");
+			assertValueIs(form, true, LispFunction.class, "LINALG:" + member.toUpperCase(java.util.Locale.ROOT));
+			assertValueIs(form, false, LispLambda.class, "LINALG:" + member.toUpperCase(java.util.Locale.ROOT));
 		}
 		for (String member : new String[] { "%la-gather-strided", "%la-scatter-rows", "%la-sum-squares",
 				"%la-scale" }) {
 			String form = "(linalg:zeros 1) #'linalg::" + member;
-			assertThat(eval(form, true).print()).as(member)
-				.isEqualTo("#<function LINALG::" + member.toUpperCase(java.util.Locale.ROOT) + ">");
-			assertThat(eval(form, false).print()).as(member).isEqualTo("#<lambda>");
+			assertValueIs(form, true, LispFunction.class, "LINALG::" + member.toUpperCase(java.util.Locale.ROOT));
+			assertValueIs(form, false, LispLambda.class, "LINALG::" + member.toUpperCase(java.util.Locale.ROOT));
 		}
 	}
 

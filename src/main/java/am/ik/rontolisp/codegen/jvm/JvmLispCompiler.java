@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.SequencedSet;
 import java.util.Set;
+import java.util.TreeMap;
 
 import am.ik.rontolisp.ClosRegistry;
 import am.ik.rontolisp.compiler.DeadTypeBranchPruner;
@@ -1109,7 +1110,6 @@ public final class JvmLispCompiler implements LispCompiler {
 				cp.addNameAndType(cp.addUtf8("toString"), cp.addUtf8("()Ljava/lang/String;")));
 		ClassConstant ratioArrayClass = cp.addClass(cp.addUtf8("[Ljava/math/BigInteger;"));
 		ConstantPool.StringConstant nilStr = cp.addString("NIL");
-		ConstantPool.StringConstant funcStr = cp.addString("#<function>");
 		ConstantPool.StringConstant slashStr = cp.addString("/");
 		ConstantPool.StringConstant openParenStr = cp.addString("(");
 		ConstantPool.StringConstant closeParenStr = cp.addString(")");
@@ -2603,6 +2603,32 @@ public final class JvmLispCompiler implements LispCompiler {
 						cp.addString(JvmAsyncRuntimeBuilder.RMARKER), cp.addString("#<STREAM>"))
 				: null;
 
+		// A function value prints as the interpreter's #<function NAME>, or #<lambda>
+		// when the funcId has no name (anonymous lambdas, and the runtime sentinel).
+		// _funName is the funcId -> name table, carrying a row for exactly the funcIds
+		// dispatchableFuncIds can reach by name or materializes as a value -- the two
+		// directions of one gate, so a name is in the table exactly when the same run
+		// could have resolved that name to this funcId. A program that never lets a
+		// NAMED function become a value emits no table at all, and its closures print
+		// anonymous from a constant.
+		TreeMap<Integer, ConstantPool.StringConstant> funNameEntries = new TreeMap<>();
+		for (Map.Entry<String, FunctionInfo> entry : functions.entrySet()) {
+			if (dispatchableFuncIds.contains(entry.getValue().funcId())) {
+				funNameEntries.put(entry.getValue().funcId(), cp.addString(entry.getKey()));
+			}
+		}
+		Utf8Constant funNameName = funNameEntries.isEmpty() ? null : cp.addUtf8("_funName");
+		Utf8Constant funNameDescUtf = funNameEntries.isEmpty() ? null : cp.addUtf8("(I)Ljava/lang/String;");
+		final JvmRuntimeBuilder.FuncPrint funcPrint = new JvmRuntimeBuilder.FuncPrint(
+				funNameName == null ? null
+						: cp.addMethodref(thisClass,
+								cp.addNameAndType(Objects.requireNonNull(funNameName),
+										Objects.requireNonNull(funNameDescUtf))),
+				integerClass, integerValue, stringConcat, cp.addString("#<function "), cp.addString(">"),
+				cp.addString("#<lambda>"));
+		List<Integer> funNameCode = funNameEntries.isEmpty() ? List.of()
+				: JvmRuntimeBuilder.buildFunNameBody(funNameEntries);
+
 		// Instances print as #S(NAME :SLOT v ...) / #<NAME :SLOT v ...>. Every constant
 		// is minted here, AFTER the body passes have interned whatever layouts the
 		// program references and BEFORE .writeConstantPool(cp) freezes the pool, so an
@@ -2658,7 +2684,7 @@ public final class JvmLispCompiler implements LispCompiler {
 		// Build _lispToString and _consToString helper method bodies
 		List<Integer> ltsCode = JvmRuntimeBuilder.buildLispToStringBody(longClass, doubleClass, stringClass,
 				objectArrayClass, integerClass, longToString, doubleToString, floatPrint, objectToString,
-				consToStringMethod, nilStr, funcStr, ratioArrayClass, stringConcat, slashStr, charBoxClass,
+				consToStringMethod, nilStr, funcPrint, ratioArrayClass, stringConcat, slashStr, charBoxClass,
 				charPrin1Method, arrayListClassForPrint, arrayToStringMethod, strvMethod, javaPrint, objcPrint,
 				ffiPrint, futurePrint, packedPrint, packedIntPrint, instPrint, strEscMethod, hashPrint);
 		List<Integer> ctsCode = JvmRuntimeBuilder.buildConsToStringBody(objectArrayClass, stringBuilderClass, sbInitStr,
@@ -2666,20 +2692,20 @@ public final class JvmLispCompiler implements LispCompiler {
 				ratioArrayClass, renderGuard, quoteAbbrev);
 		List<Integer> ltdsCode = JvmRuntimeBuilder.buildLispToDisplayStringBody(longClass, doubleClass, stringClass,
 				objectArrayClass, integerClass, longToString, doubleToString, floatPrint, objectToString,
-				consToDisplayStringMethod, nilStr, funcStr, stringCharAt, stringLength, stringSubstring,
+				consToDisplayStringMethod, nilStr, funcPrint, stringCharAt, stringLength, stringSubstring,
 				stringLastIndexOf, ratioArrayClass, stringConcat, slashStr, charBoxClass, characterToString,
 				arrayListClassForPrint, arrayToDisplayStringMethod, strvMethod, javaPrint, objcPrint, ffiPrint,
 				futurePrint, packedPrint, packedIntPrint, instPrint, hashPrint);
-		List<Integer> instCode = usesInstances
-				? JvmRuntimeBuilder.buildInstToStringBody(objectArrayClass, mainCtx.layoutPool.stringArrayClass(cp),
-						stringBuilderClass, sbInitStr, sbAppendStr, sbToString, objectEquals, lispToStringMethod,
-						cp.addString("S"), cp.addString("#S("), cp.addString("#<"), closeParenStr, cp.addString(">"),
-						cp.addString(" :"), spaceStr, cp.addString("P"), cp.addString("#P"), renderGuard)
-				: List.of();
-		List<Integer> instDisplayCode = usesInstances ? JvmRuntimeBuilder.buildInstToStringBody(objectArrayClass,
+		List<Integer> instCode = usesInstances ? JvmRuntimeBuilder.buildInstToStringBody(objectArrayClass,
 				mainCtx.layoutPool.stringArrayClass(cp), stringBuilderClass, sbInitStr, sbAppendStr, sbToString,
-				objectEquals, lispToDisplayStringMethod, cp.addString("S"), cp.addString("#S("), cp.addString("#<"),
-				closeParenStr, cp.addString(">"), cp.addString(" :"), spaceStr, cp.addString("P"), null, renderGuard)
+				objectEquals, lispToStringMethod, cp.addString("S"), cp.addString("#S("), cp.addString("#<"),
+				closeParenStr, cp.addString(">"), cp.addString(" :"), spaceStr, cp.addString("P"), cp.addString("#P"),
+				cp.addString("O"), renderGuard) : List.of();
+		List<Integer> instDisplayCode = usesInstances
+				? JvmRuntimeBuilder.buildInstToStringBody(objectArrayClass, mainCtx.layoutPool.stringArrayClass(cp),
+						stringBuilderClass, sbInitStr, sbAppendStr, sbToString, objectEquals, lispToDisplayStringMethod,
+						cp.addString("S"), cp.addString("#S("), cp.addString("#<"), closeParenStr, cp.addString(">"),
+						cp.addString(" :"), spaceStr, cp.addString("P"), null, cp.addString("O"), renderGuard)
 				: List.of();
 		List<Integer> charPrin1Code = JvmRuntimeBuilder.buildCharPrin1Body(cp, stringConcat, characterToString);
 		List<Integer> ctdsCode = JvmRuntimeBuilder.buildConsToDisplayStringBody(objectArrayClass, stringBuilderClass,
@@ -3570,10 +3596,23 @@ public final class JvmLispCompiler implements LispCompiler {
 								.writeU2(0)
 								.writeU2(0);
 						})));
+				if (!funNameCode.isEmpty()) {
+					// _funName: the funcId -> name table behind #<function NAME>. Emitted
+					// only when the gate found a nameable function value (see above).
+					methods.add(AccessFlag.ACC_PRIVATE | AccessFlag.ACC_STATIC, Objects.requireNonNull(funNameName),
+							Objects.requireNonNull(funNameDescUtf),
+							method -> method.writeAttributes(attrs -> attrs.add(codeUtf8, attr -> {
+								attr.writeU2(2)
+									.writeU2(1)
+									.writeCode((Object[]) funNameCode.toArray(new Integer[0]))
+									.writeU2(0)
+									.writeU2(0);
+							})));
+				}
 				methods.add(AccessFlag.ACC_PRIVATE | AccessFlag.ACC_STATIC, lispToStringName, lispToStringDescUtf,
 						method -> method.writeAttributes(attrs -> attrs.add(codeUtf8, attr -> {
 							attr.writeU2(3)
-								.writeU2(2)
+								.writeU2(3)
 								.writeCode((Object[]) ltsCode.toArray(new Integer[0]))
 								.writeU2(0)
 								.writeU2(0);
@@ -4069,7 +4108,7 @@ public final class JvmLispCompiler implements LispCompiler {
 				methods.add(AccessFlag.ACC_PRIVATE | AccessFlag.ACC_STATIC, lispToDisplayStringName,
 						lispToStringDescUtf, method -> method.writeAttributes(attrs -> attrs.add(codeUtf8, attr -> {
 							attr.writeU2(4)
-								.writeU2(2)
+								.writeU2(3)
 								.writeCode((Object[]) ltdsCode.toArray(new Integer[0]))
 								.writeU2(0)
 								.writeU2(0);
@@ -5244,6 +5283,7 @@ public final class JvmLispCompiler implements LispCompiler {
 					case STRUCT -> "S";
 					case CLASS -> "C";
 					case PATHNAME -> "P";
+					case OPAQUE -> "O";
 				});
 				parts.addAll(lf.layout().slotNames());
 				JvmRuntimeBuilder.emitIntConstStatic(code, parts.size());

@@ -18,6 +18,12 @@ render it with one fixed loop.
   `#P"namestring"` under `prin1`, bare namestring under `princ` — a per-kind arm in all three printer
   loops, never the slot-name syntax. Seeded layout-only (never in `classes()`, never a struct tag,
   excluded from the `#S` reader directories), and reads back through `#P`.
+- The fourth kind `OPAQUE` prints the bare tag `#<NAME>` with NO slots — the render early-returns
+  before the slot loop, on every escape mode and all four backends. Its one user is `LispLayout.STREAM`
+  (`.kb/read-load-streams.md`): the stream carries a backend-LOCAL handle slot (needed so `equal`
+  keeps CL's "two streams are the same only when they are the same stream"), and a handle number —
+  a table index on one backend, a linear-memory address on another — must never reach the output
+  (`.kb/emitted-output-determinism.md`). A user `defstruct`/`defclass` can never join the kind.
 - The `#S`/`#<` frame and each slot key's `:` are LITERAL syntax, emitted under `princ` too (CLHS
   22.1.3.12, matching SBCL); only slot VALUES follow the ambient escape mode, and `prin1`/`princ`/
   `format ~s`/`~a`/`print`/`*-to-string` all agree. ONE exception: a CONDITION under `princ`/`~A`

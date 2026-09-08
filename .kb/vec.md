@@ -552,7 +552,8 @@ chain, decoded to TEXT so a moved argmax fails loudly rather than shifting a dig
 - `eval/VecSimdTest` (every kernel vs the oracle at both widths, below/above `THRESHOLD`; the bf16
   fused-equals-widened equivalence at eight shapes, the bf16 lane-count probe, the declined pairings
   and the mixed bf16/f32 element-wise VALUES; the
-  `#<function vec:dot>` vs `#<lambda>` interception guard; `-into` aliasing and alias errors;
+  `LispFunction`-vs-`LispLambda` interception guard (the printed text no longer tells the
+  pair apart -- both answer `#<function VEC:DOT>`); `-into` aliasing and alias errors;
   mixed-width and rank errors), `eval/LinalgSimdTest`, `FloatWidthTest`.
 - `JvmSimdAccelCompilerTest`, `JvmLinalgSimdAccelCompilerTest`, `JvmSimdModuleFallbackTest`,
   `JvmBFloat16ArrayTest` (every case on both backends; its `--simd` section pins the fused decode
