@@ -1,14 +1,12 @@
 package am.ik.rontolisp.reader;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
 import java.util.function.Predicate;
 
 import org.jspecify.annotations.Nullable;
 
+import am.ik.rontolisp.ClConstants;
 import am.ik.rontolisp.FloatWidth;
 import am.ik.rontolisp.LispArray;
 import am.ik.rontolisp.LispBigInteger;
@@ -451,67 +449,28 @@ public final class LispReader {
 	}
 
 	private LispVal readSymbol(Token.SymbolToken sym) {
-		String name = unqualifyClConstant(sym.name());
+		// A cl:-qualified spelling of a standard constant means the standard name
+		// (cl:pi is pi), so it is stripped here rather than left for a per-backend
+		// binding to reproduce -- while the BARE spelling one line above answers the
+		// same global. Every other qualified spelling keeps its prefix for
+		// PackageResolver. cl:nil/cl:t strip the same way: the cl package does not
+		// export the self-evaluating symbols, so the qualified spelling would die
+		// in the resolver as "not external".
+		String name = unqualifySelfEval(ClConstants.memberOf(sym.name()));
 		if ("NIL".equals(name)) {
 			return LispNil.INSTANCE;
 		}
 		if ("T".equals(name)) {
 			return LispTrue.INSTANCE;
 		}
-		if ("PI".equals(name)) {
-			// The mathematical constant pi, read as a self-evaluating double like
-			// nil/t. This gives all three backends parity for free.
-			return new LispDouble(Math.PI);
-		}
-		if (LispNames.MOST_POSITIVE_FIXNUM.equals(name) || LispNames.MOST_NEGATIVE_FIXNUM.equals(name)) {
-			// The fixnum range constants, read as self-evaluating integers like pi.
-			// The value is backend-dependent (fixed at read time like *features*):
-			// WASM fixnums are unboxed i31 references, the interpreter and the JVM
-			// backend use Java longs.
-			boolean wasm = this.features.contains("rontolisp-wasm");
-			long value = LispNames.MOST_POSITIVE_FIXNUM.equals(name) ? (wasm ? (1L << 30) - 1 : Long.MAX_VALUE)
-					: (wasm ? -(1L << 30) : Long.MIN_VALUE);
-			return new LispInteger(value);
-		}
-		if (LispNames.ARRAY_DIMENSION_LIMIT.equals(name) || LispNames.ARRAY_TOTAL_SIZE_LIMIT.equals(name)) {
-			// The array-dimension-limit constant, read like most-positive-fixnum: the
-			// interpreter/JVM value matches the interpreter's global binding, WASM stays
-			// inside the i31 fixnum range.
-			boolean wasm = this.features.contains("rontolisp-wasm");
-			return new LispInteger(wasm ? (1L << 30) - 1 : 2147483639L);
-		}
-		if (LispNames.CHAR_CODE_LIMIT.equals(name)) {
-			// The char-code-limit constant, read like array-dimension-limit. char-code
-			// returns full Unicode code points on every backend (and the value fits the
-			// WASM i31 fixnum range), so one value serves all of them.
-			return new LispInteger(0x110000);
-		}
-		Double floatConstant = CL_FLOAT_CONSTANTS.get(name);
-		if (floatConstant != null) {
-			// The float-range constants, read as self-evaluating doubles like pi. Every
-			// backend's float IS a double, so the single/short spellings answer the
-			// widened IEEE-754 binary32 bound rather than a value of their own type --
-			// the number is the standard one, only its printed digits are the double's.
-			return new LispDouble(floatConstant);
-		}
-		if (LispNames.INTERNAL_TIME_UNITS_PER_SECOND.equals(name)) {
-			// The internal-time-units-per-second constant, read like char-code-limit:
-			// every backend's get-internal-real-time counts milliseconds.
-			return new LispInteger(1000);
-		}
-		if (LispNames.LAMBDA_LIST_KEYWORDS.equals(name)) {
-			// The lambda-list-keywords constant, substituted like *features*: a quoted
-			// list of the &-symbols (alexandria's parse-ordinary-lambda-list walks it).
-			// &whole/&environment are included -- they name positions the reader knows,
-			// even where a consumer's support for them is partial.
-			LispVal list = LispNil.INSTANCE;
-			List<String> keywords = List.of("&ALLOW-OTHER-KEYS", "&AUX", "&BODY", "&ENVIRONMENT", "&KEY", "&OPTIONAL",
-					"&REST", "&WHOLE");
-			for (int i = keywords.size() - 1; i >= 0; i--) {
-				list = new LispCons(new LispSymbol(keywords.get(i)), list);
-			}
-			return new LispCons(new LispSymbol(LispNames.QUOTE), new LispCons(list, LispNil.INSTANCE));
-		}
+		// The standard constants (pi, the float-range names, the fixnum and array
+		// limits, char-code-limit, internal-time-units-per-second,
+		// lambda-list-keywords) deliberately read as SYMBOLS here -- including under
+		// quote and in binding positions. Each backend binds the name as a global
+		// with its own value (Environment.createGlobal for the interpreter,
+		// LispMacroExpander.injectMvSpillGlobal on the compile paths), so a
+		// reference in code position answers the constant while a quoted reference
+		// stays the symbol. See .kb/read-time-constants.md.
 		// *features* is deliberately NOT substituted here, unlike pi and the limits
 		// above: it is a VARIABLE, not a constant, and CL programs bind it
 		// ((let ((*features* nil)) ...)), push onto it and read it back. Substituting
@@ -528,85 +487,18 @@ public final class LispReader {
 	}
 
 	/**
-	 * The standard float-range constants {@link #readSymbol} substitutes, by name.
-	 *
-	 * <p>
-	 * {@code short-float} is {@code single-float} and {@code long-float} is
-	 * {@code double-float} here, the same two-format reading SBCL takes, so the four
-	 * spellings collapse onto two sets of values. The single-float bounds are the exact
-	 * doubles of the binary32 numbers CL names, which is what a runtime with one float
-	 * type can answer: {@code most-positive-single-float} prints as
-	 * {@code 3.4028234663852886e38} where a single-float implementation prints
-	 * {@code 3.4028235e38} -- the same number, spelled with the digits a double
-	 * round-trips through.
-	 */
-	private static final Map<String, Double> CL_FLOAT_CONSTANTS = clFloatConstants();
-
-	private static Map<String, Double> clFloatConstants() {
-		Map<String, Double> table = new LinkedHashMap<>();
-		for (String single : List.of("SHORT", "SINGLE")) {
-			table.put("MOST-POSITIVE-" + single + "-FLOAT", (double) Float.MAX_VALUE);
-			table.put("MOST-NEGATIVE-" + single + "-FLOAT", (double) -Float.MAX_VALUE);
-			table.put("LEAST-POSITIVE-" + single + "-FLOAT", (double) Float.MIN_VALUE);
-			table.put("LEAST-NEGATIVE-" + single + "-FLOAT", (double) -Float.MIN_VALUE);
-			table.put("LEAST-POSITIVE-NORMALIZED-" + single + "-FLOAT", (double) Float.MIN_NORMAL);
-			table.put("LEAST-NEGATIVE-NORMALIZED-" + single + "-FLOAT", (double) -Float.MIN_NORMAL);
-			// The SMALLEST e with (/= (+ 1 e) 1) -- one ulp above b^(1-p)/2, which itself
-			// rounds away (p = 24 for binary32) -- and its (- 1 e) twin.
-			table.put(single + "-FLOAT-EPSILON", (double) Math.nextUp(Math.scalb(1.0f, -24)));
-			table.put(single + "-FLOAT-NEGATIVE-EPSILON", (double) Math.nextUp(Math.scalb(1.0f, -25)));
-		}
-		for (String doubl : List.of("DOUBLE", "LONG")) {
-			table.put("MOST-POSITIVE-" + doubl + "-FLOAT", Double.MAX_VALUE);
-			table.put("MOST-NEGATIVE-" + doubl + "-FLOAT", -Double.MAX_VALUE);
-			table.put("LEAST-POSITIVE-" + doubl + "-FLOAT", Double.MIN_VALUE);
-			table.put("LEAST-NEGATIVE-" + doubl + "-FLOAT", -Double.MIN_VALUE);
-			table.put("LEAST-POSITIVE-NORMALIZED-" + doubl + "-FLOAT", Double.MIN_NORMAL);
-			table.put("LEAST-NEGATIVE-NORMALIZED-" + doubl + "-FLOAT", -Double.MIN_NORMAL);
-			// The same rule for binary64 (p = 53).
-			table.put(doubl + "-FLOAT-EPSILON", Math.nextUp(Math.scalb(1.0, -53)));
-			table.put(doubl + "-FLOAT-NEGATIVE-EPSILON", Math.nextUp(Math.scalb(1.0, -54)));
-		}
-		return Map.copyOf(table);
-	}
-
-	/**
-	 * The standard constants {@link #readSymbol} substitutes at READ time, before any
-	 * package resolution runs.
-	 */
-	private static final Set<String> CL_READ_TIME_CONSTANTS = clReadTimeConstants();
-
-	private static Set<String> clReadTimeConstants() {
-		Set<String> names = new java.util.LinkedHashSet<>(CL_FLOAT_CONSTANTS.keySet());
-		names.addAll(Set.of("NIL", "T", "PI", LispNames.MOST_POSITIVE_FIXNUM, LispNames.MOST_NEGATIVE_FIXNUM,
-				LispNames.ARRAY_DIMENSION_LIMIT, LispNames.ARRAY_TOTAL_SIZE_LIMIT, LispNames.CHAR_CODE_LIMIT,
-				LispNames.INTERNAL_TIME_UNITS_PER_SECOND, LispNames.LAMBDA_LIST_KEYWORDS));
-		return Set.copyOf(names);
-	}
-
-	/**
-	 * The member name of a {@code cl:}-qualified standard constant, or the name unchanged
-	 * when it is not one.
-	 *
-	 * <p>
-	 * The substitutions in {@link #readSymbol} run BEFORE {@code PackageResolver}, so
-	 * they only ever see the spelling as written: without this strip, {@code cl:pi} /
-	 * {@code cl:most-positive-fixnum} / {@code cl:char-code-limit} reach the resolver as
-	 * ordinary symbol references and end up as an unbound variable (or, for the names the
-	 * registry does not own, a "not external in the CL package" error) while the bare
-	 * spelling one line above answers the constant. A qualified spelling of a standard
-	 * name means the standard name, so it is stripped here rather than left for a
-	 * per-backend binding to reproduce.
+	 * The member name of a {@code cl:}-qualified {@code nil}/{@code t}, or the name
+	 * unchanged when it is neither.
 	 * @param name the symbol name as read (upcased, package prefix intact)
-	 * @return the unqualified constant name, or {@code name}
+	 * @return the unqualified name, or {@code name}
 	 */
-	private static String unqualifyClConstant(String name) {
+	private static String unqualifySelfEval(String name) {
 		PackageRegistry.QualifiedName qualified = PackageRegistry.splitQualified(name);
-		if (qualified == null || !LispNames.CL_PKG.equals(PackageRegistry.canonicalBuiltinName(qualified.pkg()))
-				|| !CL_READ_TIME_CONSTANTS.contains(qualified.member())) {
-			return name;
+		if (qualified != null && LispNames.CL_PKG.equals(PackageRegistry.canonicalBuiltinName(qualified.pkg()))
+				&& ("NIL".equals(qualified.member()) || "T".equals(qualified.member()))) {
+			return qualified.member();
 		}
-		return qualified.member();
+		return name;
 	}
 
 	/**

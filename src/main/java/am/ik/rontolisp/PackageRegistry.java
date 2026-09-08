@@ -179,21 +179,24 @@ public final class PackageRegistry {
 			LispNames.COMPILE_FILE_PATHNAME);
 
 	/** The {@code cl} variables. */
-	private static final Set<String> CL_VARIABLES = Set.of(LispNames.PACKAGE_VAR, LispNames.READ_DEFAULT_FLOAT_FORMAT,
-			LispNames.ARRAY_DIMENSION_LIMIT, LispNames.ARRAY_TOTAL_SIZE_LIMIT, LispNames.CHAR_CODE_LIMIT,
-			LispNames.MOST_POSITIVE_FIXNUM, LispNames.MOST_NEGATIVE_FIXNUM, LispNames.INTERNAL_TIME_UNITS_PER_SECOND,
-			LispNames.PRINT_CIRCLE_VAR, LispNames.PRINT_ESCAPE_VAR, LispNames.PRINT_READABLY_VAR,
-			LispNames.FEATURES_VAR, LispNames.STANDARD_OUTPUT_VAR, LispNames.ERROR_OUTPUT_VAR,
-			LispNames.STANDARD_INPUT_VAR, LispNames.READTABLE_VAR, LispNames.LAMBDA_LIST_KEYWORDS,
-			LispNames.LOAD_PATHNAME_VAR, LispNames.LOAD_TRUENAME_VAR, LispNames.COMPILE_FILE_PATHNAME_VAR,
-			LispNames.COMPILE_FILE_TRUENAME_VAR, LispNames.LOAD_VERBOSE_VAR, LispNames.LOAD_PRINT_VAR,
-			LispNames.COMPILE_VERBOSE_VAR, LispNames.COMPILE_PRINT_VAR, LispNames.READ_EVAL_VAR,
-			LispNames.PRINT_PRETTY_VAR, LispNames.PRINT_RIGHT_MARGIN_VAR, LispNames.PRINT_MISER_WIDTH_VAR,
-			LispNames.PRINT_LINES_VAR, LispNames.PRINT_PPRINT_DISPATCH_VAR, LispNames.PRINT_LENGTH_VAR,
-			LispNames.PRINT_LEVEL_VAR, LispNames.PRINT_BASE_VAR, LispNames.PRINT_RADIX_VAR, LispNames.PRINT_CASE_VAR,
-			LispNames.PRINT_ARRAY_VAR, LispNames.PRINT_GENSYM_VAR, LispNames.MODULES_VAR, LispNames.TRACE_OUTPUT_VAR,
-			LispNames.DEBUG_IO_VAR, LispNames.QUERY_IO_VAR, LispNames.TERMINAL_IO_VAR,
-			LispNames.DEFAULT_PATHNAME_DEFAULTS_VAR);
+	private static final Set<String> CL_VARIABLES = union(Set.of(LispNames.PACKAGE_VAR,
+			LispNames.READ_DEFAULT_FLOAT_FORMAT, LispNames.PI, LispNames.ARRAY_DIMENSION_LIMIT,
+			LispNames.ARRAY_TOTAL_SIZE_LIMIT, LispNames.CHAR_CODE_LIMIT, LispNames.MOST_POSITIVE_FIXNUM,
+			LispNames.MOST_NEGATIVE_FIXNUM, LispNames.INTERNAL_TIME_UNITS_PER_SECOND, LispNames.PRINT_CIRCLE_VAR,
+			LispNames.PRINT_ESCAPE_VAR, LispNames.PRINT_READABLY_VAR, LispNames.FEATURES_VAR,
+			LispNames.STANDARD_OUTPUT_VAR, LispNames.ERROR_OUTPUT_VAR, LispNames.STANDARD_INPUT_VAR,
+			LispNames.READTABLE_VAR, LispNames.LAMBDA_LIST_KEYWORDS, LispNames.LOAD_PATHNAME_VAR,
+			LispNames.LOAD_TRUENAME_VAR, LispNames.COMPILE_FILE_PATHNAME_VAR, LispNames.COMPILE_FILE_TRUENAME_VAR,
+			LispNames.LOAD_VERBOSE_VAR, LispNames.LOAD_PRINT_VAR, LispNames.COMPILE_VERBOSE_VAR,
+			LispNames.COMPILE_PRINT_VAR, LispNames.READ_EVAL_VAR, LispNames.PRINT_PRETTY_VAR,
+			LispNames.PRINT_RIGHT_MARGIN_VAR, LispNames.PRINT_MISER_WIDTH_VAR, LispNames.PRINT_LINES_VAR,
+			LispNames.PRINT_PPRINT_DISPATCH_VAR, LispNames.PRINT_LENGTH_VAR, LispNames.PRINT_LEVEL_VAR,
+			LispNames.PRINT_BASE_VAR, LispNames.PRINT_RADIX_VAR, LispNames.PRINT_CASE_VAR, LispNames.PRINT_ARRAY_VAR,
+			LispNames.PRINT_GENSYM_VAR, LispNames.MODULES_VAR, LispNames.TRACE_OUTPUT_VAR, LispNames.DEBUG_IO_VAR,
+			LispNames.QUERY_IO_VAR, LispNames.TERMINAL_IO_VAR, LispNames.DEFAULT_PATHNAME_DEFAULTS_VAR),
+			// The float-range constants (most-positive-single-float &c): constant
+			// variables like pi, bound as globals (see ClConstants).
+			ClConstants.FLOAT_NAMES);
 
 	/**
 	 * The {@code cl} type-specifier (and clause-keyword) names that are not also

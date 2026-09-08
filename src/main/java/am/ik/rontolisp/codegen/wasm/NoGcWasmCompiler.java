@@ -20,6 +20,7 @@ import am.ik.rontolisp.LispDouble;
 import am.ik.rontolisp.LispFloatArray;
 import am.ik.rontolisp.LispInteger;
 import am.ik.rontolisp.macro.LispMacroExpander;
+import am.ik.rontolisp.ClConstants;
 import am.ik.rontolisp.LispNames;
 import am.ik.rontolisp.LispNil;
 import am.ik.rontolisp.LispString;
@@ -721,6 +722,19 @@ public final class NoGcWasmCompiler implements LispCompiler {
 	// call sites are reported to the sink; in a frozen compile-time query both are
 	// read-only. Assumes the expression already passed collectCalls (well-formed,
 	// eligible).
+	// A standard INTEGER/DOUBLE constant's literal for a code-position reference,
+	// or null when the spelling names no scalar constant. The reader binds these
+	// names as symbols (even under quote), and scalar mode has no globals, so the
+	// reference answers the literal directly -- with the WASM values, the ones the
+	// --no-gc frontend read the program with. A list-valued constant
+	// (lambda-list-keywords) has no scalar spelling and stays unsupported here.
+	// @param spelling the symbol name as written (upcased, package prefix intact)
+	// @return the literal, or null
+	private static @Nullable LispVal scalarConstant(String spelling) {
+		LispVal constant = ClConstants.value(ClConstants.memberOf(spelling), true);
+		return (constant instanceof LispDouble || constant instanceof LispInteger) ? constant : null;
+	}
+
 	private Ty typeOf(LispVal expr, Map<String, Ty> env, TC tc) {
 		return switch (expr) {
 			case LispInteger ignored -> Ty.INT;
@@ -737,7 +751,16 @@ public final class NoGcWasmCompiler implements LispCompiler {
 			case LispChar ignored -> Ty.INT;
 			case LispTrue ignored -> Ty.INT;
 			case LispNil ignored -> Ty.INT;
-			case LispSymbol sym -> env.getOrDefault(sym.name(), Ty.INT);
+			case LispSymbol sym -> {
+				Ty local = env.get(sym.name());
+				if (local != null) {
+					yield local;
+				}
+				// A standard scalar constant in code position has its literal's type
+				// (the reader no longer substitutes the value; see
+				// .kb/read-time-constants.md).
+				yield scalarConstant(sym.name()) instanceof LispDouble ? Ty.FLOAT : Ty.INT;
+			}
 			case LispCons cons -> typeOfCall(cons, env, tc);
 			default -> Ty.INT;
 		};
@@ -2366,12 +2389,25 @@ public final class NoGcWasmCompiler implements LispCompiler {
 			}
 			case LispSymbol sym -> {
 				Integer slot = fn.locals.get(sym.name());
-				if (slot == null) {
-					throw new UnsupportedOperationException("--no-gc: '" + sym.name() + "' in function '" + fn.fnName
-							+ "' is not a parameter or let binding (scalar mode has no globals or heap values)");
+				if (slot != null) {
+					fn.writer.write(Instruction.GET_LOCAL).writeUnsignedLeb128(slot);
+					return Objects.requireNonNull(fn.localTypes.get(sym.name()));
 				}
-				fn.writer.write(Instruction.GET_LOCAL).writeUnsignedLeb128(slot);
-				return Objects.requireNonNull(fn.localTypes.get(sym.name()));
+				// A standard scalar constant in code position answers its literal (the
+				// reader no longer substitutes the value, and scalar mode has no
+				// globals to read it from; see .kb/read-time-constants.md). A lexical
+				// binding still wins, checked above.
+				LispVal constant = scalarConstant(sym.name());
+				if (constant instanceof LispDouble d) {
+					fn.writer.write(Instruction.F64_CONST).writeF64(d.value());
+					return Ty.FLOAT;
+				}
+				if (constant instanceof LispInteger i) {
+					i64Const(fn.writer, i.value());
+					return Ty.INT;
+				}
+				throw new UnsupportedOperationException("--no-gc: '" + sym.name() + "' in function '" + fn.fnName
+						+ "' is not a parameter or let binding (scalar mode has no globals or heap values)");
 			}
 			case LispCons cons -> {
 				return compileCall(cons, fn);
@@ -5259,7 +5295,10 @@ public final class NoGcWasmCompiler implements LispCompiler {
 			case LispNil ignored -> {
 			}
 			case LispSymbol sym -> {
-				if (!bound.contains(sym.name())) {
+				// A standard scalar constant in code position is a literal, not a
+				// global to resolve (see .kb/read-time-constants.md). A lexical
+				// binding still wins, checked first.
+				if (!bound.contains(sym.name()) && scalarConstant(sym.name()) == null) {
 					throw new UnsupportedOperationException("--no-gc: '" + sym.name() + "' in function '" + fnName
 							+ "' is not a parameter or let binding (scalar mode has no globals or heap values)");
 				}

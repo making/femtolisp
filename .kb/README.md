@@ -49,6 +49,7 @@ deliberate boundaries the audit must not undo: user-facing operator catalogues l
 - [make-load-form.md](make-load-form.md) -- a literal object is dumped by its own `make-load-form` method
 - [reader-case-upcase.md](reader-case-upcase.md) -- uppercase-canonical reader model, verbatim `intern`/`find-symbol`
 - [reader-features.md](reader-features.md) -- `#+`/`#-`, `*features*` as a runtime variable, `#|...|#`, `#.`, `--feature`
+- [read-time-constants.md](read-time-constants.md) -- `pi`/float-range/fixnum/array limits as bound symbols, not reader substitutions; per-backend values
 - [source-positions.md](source-positions.md) -- `file:line:column` in reader and frontend errors; the cons-identity rule every AST pass honours
 - [format.md](format.md) -- `format`'s two renderings of one directive set, and the shared Schubfach float printer
 - [pretty-printer.md](pretty-printer.md) -- `write`/`pprint`, dispatch tables, `pprint-logical-block`, printer-control variables

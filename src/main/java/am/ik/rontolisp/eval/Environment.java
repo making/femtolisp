@@ -42,6 +42,7 @@ import am.ik.rontolisp.ArrayElementTypes;
 import am.ik.rontolisp.BFloat16;
 import am.ik.rontolisp.ArrayGrowth;
 import am.ik.rontolisp.ClosRegistry;
+import am.ik.rontolisp.ClConstants;
 import am.ik.rontolisp.FloatArrayAccessHook;
 import am.ik.rontolisp.FloatText;
 import am.ik.rontolisp.LispArray;
@@ -604,8 +605,15 @@ public final class Environment implements Scope {
 		// Informational (every float is the one double representation); predefined so
 		// library code reading it works. The compilers inject an equivalent setq.
 		env.define(LispNames.READ_DEFAULT_FLOAT_FORMAT, new LispSymbol("DOUBLE-FLOAT"));
-		// The maximum array dimension: Java arrays cap just below Integer.MAX_VALUE.
-		env.define(LispNames.ARRAY_DIMENSION_LIMIT, new LispInteger(2147483639L));
+		// The standard constant variables (pi, the float-range names, the fixnum and
+		// array limits, char-code-limit, internal-time-units-per-second,
+		// lambda-list-keywords): bound as globals holding the interpreter's values,
+		// so a reference in code position answers the constant while a quoted
+		// reference stays the symbol (see .kb/read-time-constants.md). The maximum
+		// array dimension answers what Java arrays cap just below Integer.MAX_VALUE.
+		for (String name : ClConstants.sortedNames()) {
+			env.define(name, java.util.Objects.requireNonNull(ClConstants.value(name, false)));
+		}
 		// The pathname operators' default `defaults`. #P"" -- the empty pathname, SBCL's
 		// initial value too -- is the only honest one here: rontolisp absolutizes
 		// nothing and names no working directory
@@ -6435,6 +6443,8 @@ public final class Environment implements Scope {
 					|| v instanceof LispDouble || v instanceof LispString || v instanceof LispChar
 					|| v instanceof LispTrue || v instanceof LispNil
 					|| (v instanceof LispSymbol s && s.name().startsWith(":"))
+			// A quoted constant variable ('pi) is constant too (SBCL answers t).
+					|| (v instanceof LispSymbol s && ClConstants.isSpelling(s.name()))
 					|| (v instanceof LispCons c && c.car() instanceof LispSymbol h && LispNames.QUOTE.equals(h.name()));
 			return constant ? LispTrue.INSTANCE : LispNil.INSTANCE;
 		}));

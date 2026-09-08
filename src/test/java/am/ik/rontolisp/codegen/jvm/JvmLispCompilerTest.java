@@ -2907,6 +2907,22 @@ class JvmLispCompilerTest {
 	}
 
 	@Test
+	void compileAndRunQuotedConstantsStaySymbolsWhileCodePositionAnswersTheValue() throws Exception {
+		// .todo/679: 'pi used to read as a double wherever the spelling appeared.
+		// The names read as symbols now; this backend seeds the globals with its
+		// own values (see ClConstants), so code position still answers.
+		assertThat(compileAndRun("(print (symbolp (car '(pi)))) (print 'pi)"
+				+ " (print (car '(most-positive-fixnum))) (print (boundp 'pi)) (print (symbol-value 'pi))"
+				+ " (print pi) (print (> most-positive-fixnum 1000000))"
+				+ " (print (< most-negative-fixnum -1000000000)) (print (constantp 'pi))"
+				+ " (print (let ((x 'double-float-epsilon)) x)) (print lambda-list-keywords)"
+				+ " (print (symbolp (car '(cl:pi))))"))
+			.isEqualTo("T\nPI\nMOST-POSITIVE-FIXNUM\nT\n3.141592653589793\n3.141592653589793\nT\nT\nT\n"
+					+ "DOUBLE-FLOAT-EPSILON\n"
+					+ "(&ALLOW-OTHER-KEYS &AUX &BODY &ENVIRONMENT &KEY &OPTIONAL &REST &WHOLE)\nT");
+	}
+
+	@Test
 	void theDefineConstantGuardCompilesToTheBareDefinition() {
 		// The portable define-constant guard compiles to exactly the class the bare
 		// definition compiles to: the probe was decided at compile time

@@ -13199,6 +13199,33 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void quotedConstantNamesReadAsSymbolsWhileCodePositionAnswersTheValue() {
+		// .todo/679: 'pi used to read as a double wherever the spelling appeared --
+		// under quote, inside quoted lists, as a binding name. The names read as
+		// symbols now; each backend binds the global with its own value.
+		assertThat(eval("(symbolp (car '(pi)))")).isEqualTo(LispTrue.INSTANCE);
+		assertThat(eval("'pi")).isEqualTo(new LispSymbol("PI"));
+		assertThat(eval("(car '(most-positive-fixnum))")).isEqualTo(new LispSymbol("MOST-POSITIVE-FIXNUM"));
+		assertThat(eval("(car '(single-float-epsilon))")).isEqualTo(new LispSymbol("SINGLE-FLOAT-EPSILON"));
+		assertThat(eval("(car '(lambda-list-keywords))")).isEqualTo(new LispSymbol("LAMBDA-LIST-KEYWORDS"));
+		assertThat(eval("(let ((x 'double-float-epsilon)) x)")).isEqualTo(new LispSymbol("DOUBLE-FLOAT-EPSILON"));
+		// A cl:-qualified spelling means the standard name.
+		assertThat(eval("'cl:pi")).isEqualTo(new LispSymbol("PI"));
+		assertThat(eval("(symbolp (car '(cl:pi)))")).isEqualTo(LispTrue.INSTANCE);
+		// The globals answer in code position and through the symbol API.
+		assertThat(eval("(boundp 'pi)")).isEqualTo(LispTrue.INSTANCE);
+		assertThat(eval("(symbol-value 'pi)")).isEqualTo(new LispDouble(Math.PI));
+		assertThat(eval("pi")).isEqualTo(new LispDouble(Math.PI));
+		assertThat(eval("(* 2 pi)")).isEqualTo(new LispDouble(2 * Math.PI));
+		assertThat(eval("(> most-positive-fixnum 1000000)")).isEqualTo(LispTrue.INSTANCE);
+		assertThat(eval("(constantp 'pi)")).isEqualTo(LispTrue.INSTANCE);
+		assertThat(eval("(constantp 'most-positive-double-float)")).isEqualTo(LispTrue.INSTANCE);
+		assertThat(eval("(funcall #'constantp 'pi)")).isEqualTo(LispTrue.INSTANCE);
+		// A lexical binding still shadows the global.
+		assertThat(eval("(let ((pi 1)) pi)")).isEqualTo(new LispInteger(1));
+	}
+
+	@Test
 	void standardStreamVariablesAreBoundToTheirDefaultsThroughTheSymbolApi() {
 		// The reference answers the three compile backends had to grow (their
 		// eval-runtime
@@ -15192,9 +15219,10 @@ class LispEvaluatorTest {
 
 	@Test
 	void aClQualifiedReadTimeConstantAnswersTheConstant() {
-		// The substitutions run in the READER, before package resolution, so the
-		// qualified spelling has to be stripped there or it reaches the resolver as an
-		// ordinary symbol reference.
+		// A cl:-qualified spelling of a standard constant means the standard name:
+		// the reader strips it before package resolution (which would otherwise
+		// reject e.g. cl:t as "not external"), and the bare name answers the
+		// per-backend global (.todo/679).
 		assertThat(eval("(> cl:most-positive-fixnum 1000000)")).isEqualTo(LispTrue.INSTANCE);
 		assertThat(eval("(< cl:most-negative-fixnum -1000000)")).isEqualTo(LispTrue.INSTANCE);
 		assertThat(eval("(list cl:t cl:nil cl:char-code-limit)").print()).isEqualTo("(T NIL 1114112)");

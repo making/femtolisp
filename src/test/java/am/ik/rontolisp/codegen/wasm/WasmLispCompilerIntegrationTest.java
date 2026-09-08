@@ -13446,6 +13446,24 @@ class WasmLispCompilerIntegrationTest {
 	}
 
 	@Test
+	void quotedConstantsStaySymbolsWhileCodePositionAnswersTheValue() throws Exception {
+		// .todo/679: 'pi used to read as a double wherever the spelling appeared.
+		// The names read as symbols now; this backend seeds the globals with its
+		// own values (see ClConstants), so code position still answers. The fixnum
+		// value legitimately differs from the JVM/interpreter one (an unboxed i31
+		// reference), so the assertions compare relatively.
+		assertThat(compileAndRun("(print (symbolp (car '(pi)))) (print 'pi)"
+				+ " (print (car '(most-positive-fixnum))) (print (boundp 'pi)) (print (symbol-value 'pi))"
+				+ " (print pi) (print (> most-positive-fixnum 1000000))"
+				+ " (print (< most-negative-fixnum -1000000000)) (print (constantp 'pi))"
+				+ " (print (let ((x 'double-float-epsilon)) x)) (print lambda-list-keywords)"
+				+ " (print (symbolp (car '(cl:pi))))"))
+			.isEqualTo("T\nPI\nMOST-POSITIVE-FIXNUM\nT\n3.141592653589793\n3.141592653589793\nT\nT\nT\n"
+					+ "DOUBLE-FLOAT-EPSILON\n"
+					+ "(&ALLOW-OTHER-KEYS &AUX &BODY &ENVIRONMENT &KEY &OPTIONAL &REST &WHOLE)\nT");
+	}
+
+	@Test
 	void aLiteralBoundpCostsNothingWhileAComputedOneStillCarriesTheEvalRuntime() {
 		// A probe the top-level order decides compiles to exactly the module its ANSWER
 		// compiles to (compiler/CompileTimeBoundp), so the eval runtime the boundp arm of

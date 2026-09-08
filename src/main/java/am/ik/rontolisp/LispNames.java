@@ -7767,18 +7767,21 @@ public final class LispNames {
 	public static final String CHAR_CODE_LIMIT = "CHAR-CODE-LIMIT";
 
 	/**
-	 * The {@code lambda-list-keywords} constant variable (substituted at read time as a
-	 * quoted list of the supported {@code &}-symbols).
+	 * The {@code lambda-list-keywords} constant variable, bound as a global holding the
+	 * list of the supported {@code &}-symbols (see {@link ClConstants}).
 	 */
 	public static final String LAMBDA_LIST_KEYWORDS = "LAMBDA-LIST-KEYWORDS";
+
+	/** The {@code pi} constant variable, bound as a global holding the double. */
+	public static final String PI = "PI";
 
 	/** The {@code array-total-size-limit} constant variable. */
 	public static final String ARRAY_TOTAL_SIZE_LIMIT = "ARRAY-TOTAL-SIZE-LIMIT";
 
 	/**
-	 * The {@code most-positive-fixnum} constant variable, substituted at read time
-	 * ({@code LispReader.readSymbol}) because its value is per-backend: the interpreter
-	 * and the JVM backend hold a Java long, a WASM fixnum is an unboxed i31 reference.
+	 * The {@code most-positive-fixnum} constant variable, bound as a global with a
+	 * per-backend value (see {@link ClConstants}): the interpreter and the JVM backend
+	 * hold a Java long, a WASM fixnum is an unboxed i31 reference.
 	 */
 	public static final String MOST_POSITIVE_FIXNUM = "MOST-POSITIVE-FIXNUM";
 

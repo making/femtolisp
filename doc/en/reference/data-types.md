@@ -11,10 +11,10 @@
 | Keyword | `:foo`, `:bar` | Self-evaluating symbol starting with `:` |
 | Nil | `nil` | False / empty list |
 | T | `t` | True |
-| Pi | `pi` | The constant π, read as the double `3.141592653589793` |
-| Fixnum range | `most-positive-fixnum`, `most-negative-fixnum` | Read as self-evaluating integers like `pi`; the value is backend-dependent (a WASM fixnum is an unboxed 31-bit reference, the interpreter and the JVM backend use 64-bit longs) |
-| Other limits | `char-code-limit`, `array-total-size-limit`, `array-dimension-limit` | Read as self-evaluating integers like the fixnum range; `char-code-limit` is `1114112` (full Unicode code points) on every backend, the array limits are backend-dependent |
-| Float range | `most-positive-double-float`, `least-positive-normalized-single-float`, `double-float-epsilon` | The standard float-range constants, read as self-evaluating doubles like `pi`. `short-float` is `single-float` and `long-float` is `double-float`; since every float is a double here, a single-float bound answers the exact double of the binary32 number it names |
+| Pi | `pi` | The constant π, bound as a global holding the double `3.141592653589793`; a quoted `pi` stays the symbol |
+| Fixnum range | `most-positive-fixnum`, `most-negative-fixnum` | Bound as globals like `pi`; the value is backend-dependent (a WASM fixnum is an unboxed 31-bit reference, the interpreter and the JVM backend use 64-bit longs) |
+| Other limits | `char-code-limit`, `array-total-size-limit`, `array-dimension-limit` | Bound as globals like the fixnum range; `char-code-limit` is `1114112` (full Unicode code points) on every backend, the array limits are backend-dependent |
+| Float range | `most-positive-double-float`, `least-positive-normalized-single-float`, `double-float-epsilon` | The standard float-range constants, bound as globals holding doubles like `pi`. `short-float` is `single-float` and `long-float` is `double-float`; since every float is a double here, a single-float bound answers the exact double of the binary32 number it names |
 | Cons | `(1 2 3)`, `(a . 1)` | Linked list built from cons cells; `(a . b)` is dotted-pair notation for a single cell |
 | Function | `#'car`, `(lambda (x) x)` | Function object obtained via `#'`/`function`/`lambda` |
 | Array | `#(1 2 3)`, `#2A((1 2) (3 4))`, `#0A5` | Fixed-size array of any rank (rank 1 = vector, rank 0 = a boxed scalar); `#(...)`, `#nA(...)` and `#0A<datum>` are self-evaluating array literals |
@@ -206,8 +206,9 @@ Notes:
 
 ## Source position literals (`rontolisp:current-file`, `rontolisp:current-line`)
 
-Two symbols the reader substitutes with the position they stand on, the way
-`pi` and `array-dimension-limit` are substituted: `rontolisp:current-file` becomes the
+Two symbols the reader substitutes with the position they stand on -- the last
+read-time substitutions now that `pi` and the limit constants read as symbols
+bound to per-backend globals (see the table above): `rontolisp:current-file` becomes the
 origin file as a string (or `nil` when there is none — a REPL line, a
 `read-from-string`), and `rontolisp:current-line` becomes the 1-based line the
 symbol itself is on. They are ordinary literals afterwards, so they cost

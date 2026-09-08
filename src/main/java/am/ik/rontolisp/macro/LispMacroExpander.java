@@ -1,6 +1,7 @@
 package am.ik.rontolisp.macro;
 
 import am.ik.rontolisp.ClosRegistry;
+import am.ik.rontolisp.ClConstants;
 import am.ik.rontolisp.LambdaLists;
 import am.ik.rontolisp.LispArray;
 import am.ik.rontolisp.LispBigInteger;
@@ -9340,6 +9341,14 @@ public final class LispMacroExpander {
 		List<LispVal> parts = cons.toList();
 		if (parts.size() != 2 && parts.size() != 3) {
 			throw new IllegalArgumentException("constantp expects one or two arguments");
+		}
+		// A quoted standard constant ('pi) is constant (SBCL answers t): fold the
+		// literal at expansion time. A computed designator keeps the runtime test
+		// (a false negative there only narrows a macro's view, per the contract).
+		if (parts.get(1) instanceof LispCons qc && qc.car() instanceof LispSymbol q && LispNames.QUOTE.equals(q.name())
+				&& qc.cdr() instanceof LispCons qd && qd.car() instanceof LispSymbol s && qd.cdr() instanceof LispNil
+				&& ClConstants.isSpelling(s.name())) {
+			return LispTrue.INSTANCE;
 		}
 		LispSymbol c = new LispSymbol("__cp");
 		LispVal quoteForm = fmtCall(LispNames.AND, callOf(LispNames.CONSP, c),
@@ -35922,6 +35931,26 @@ public final class LispMacroExpander {
 				break;
 			}
 		}
+		// The standard constant variables (pi, the float-range names, the fixnum and
+		// array limits, char-code-limit, internal-time-units-per-second,
+		// lambda-list-keywords): bound as globals holding the BACKEND's own value,
+		// exactly as the interpreter seeds them in Environment.createGlobal, so a
+		// reference in code position answers the constant while a quoted reference
+		// stays the symbol (see .kb/read-time-constants.md). The reader used to
+		// substitute the value wherever the spelling appeared -- including under
+		// quote and in binding positions. A mention anywhere (quote included) seeds
+		// the global, in ClConstants order so the emitted program stays
+		// deterministic; a program that never names one stays byte-identical.
+		boolean wasm = runtimeFeatures.contains("rontolisp-wasm");
+		java.util.List<String> constantNames = new java.util.ArrayList<>();
+		for (String name : ClConstants.sortedNames()) {
+			for (LispVal form : program) {
+				if (usesSymbol(form, name)) {
+					constantNames.add(name);
+					break;
+				}
+			}
+		}
 		// *package*: a genuine dynamic variable on every backend (PackageResolver
 		// resolves a read to the bare variable and a top-level in-package to
 		// (setq *package* :P)). It gets its (defvar *package* :cl-user) default -- the
@@ -35956,10 +35985,11 @@ public final class LispMacroExpander {
 			program = kept;
 		}
 		if (!usesMv && !usesFloatFormat && printerVars.isEmpty() && loadContextVars.isEmpty() && !readsPackage
-				&& !usesFeatures) {
+				&& !usesFeatures && constantNames.isEmpty()) {
 			return program;
 		}
-		List<LispVal> out = new java.util.ArrayList<>(program.size() + 4 + printerVars.size() + loadContextVars.size());
+		List<LispVal> out = new java.util.ArrayList<>(
+				program.size() + 4 + printerVars.size() + loadContextVars.size() + constantNames.size());
 		if (readsPackage) {
 			out.add(listToCons(List.of(new LispSymbol(LispNames.DEFVAR), new LispSymbol(LispNames.PACKAGE_VAR),
 					new LispSymbol(":" + LispNames.CL_USER_PKG))));
@@ -35967,6 +35997,11 @@ public final class LispMacroExpander {
 		if (usesFeatures) {
 			out.add(listToCons(List.of(new LispSymbol(LispNames.DEFVAR), new LispSymbol(LispNames.FEATURES_VAR),
 					quotedKeywordList(runtimeFeatures))));
+		}
+		for (String name : constantNames) {
+			LispVal init = ClConstants.initForm(name, wasm);
+			out.add(listToCons(List.of(new LispSymbol(LispNames.DEFCONSTANT), new LispSymbol(name),
+					java.util.Objects.requireNonNull(init))));
 		}
 		for (String name : loadContextVars) {
 			out.add(listToCons(List.of(new LispSymbol(LispNames.DEFVAR), new LispSymbol(name), LispNil.INSTANCE)));

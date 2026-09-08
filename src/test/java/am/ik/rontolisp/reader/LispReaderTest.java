@@ -67,6 +67,26 @@ class LispReaderTest {
 	}
 
 	@Test
+	void readConstantNamesAsSymbolsEvenUnderQuote() {
+		// .todo/679: pi and the limit/float constants used to read as their values
+		// wherever the spelling appeared -- including under quote. They read as
+		// symbols now; each backend binds the global with its own value.
+		assertThat(LispReader.readFromString("pi")).isEqualTo(new LispSymbol("PI"));
+		assertThat(LispReader.readFromString("'pi").print()).isEqualTo("'PI");
+		assertThat(LispReader.readFromString("(car '(pi))").print()).isEqualTo("(CAR '(PI))");
+		assertThat(LispReader.readFromString("most-positive-fixnum")).isEqualTo(new LispSymbol("MOST-POSITIVE-FIXNUM"));
+		assertThat(LispReader.readFromString("'single-float-epsilon").print()).isEqualTo("'SINGLE-FLOAT-EPSILON");
+		assertThat(LispReader.readFromString("'lambda-list-keywords").print()).isEqualTo("'LAMBDA-LIST-KEYWORDS");
+		// A cl:-qualified spelling means the standard name.
+		assertThat(LispReader.readFromString("cl:pi")).isEqualTo(new LispSymbol("PI"));
+		assertThat(LispReader.readFromString("cl:most-positive-fixnum"))
+			.isEqualTo(new LispSymbol("MOST-POSITIVE-FIXNUM"));
+		// nil and t stay self-evaluating.
+		assertThat(LispReader.readFromString("nil")).isEqualTo(LispNil.INSTANCE);
+		assertThat(LispReader.readFromString("t")).isEqualTo(LispTrue.INSTANCE);
+	}
+
+	@Test
 	void readPipeEscapedSymbol() {
 		// CL multiple escape: the pipes are dropped, the case is preserved verbatim.
 		assertThat(LispReader.readFromString("|noChange|")).isEqualTo(new LispSymbol("noChange"));

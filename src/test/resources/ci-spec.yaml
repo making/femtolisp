@@ -3320,6 +3320,33 @@ cases:
     expected: |
       3
       T
+  - name: quoted-constants-read-as-symbols
+    # .todo/679: 'pi used to read as a double wherever the spelling appeared. The
+    # names read as symbols now; each backend binds the global with its own value,
+    # so code position still answers. The fixnum VALUE legitimately differs per
+    # backend (unboxed i31 on WASM), so the assertions compare relatively.
+    source: |
+      (print (symbolp (car '(pi))))
+      (print 'pi)
+      (print (car '(most-positive-fixnum)))
+      (print (boundp 'pi))
+      (print (= pi (symbol-value 'pi)))
+      (print (> most-positive-fixnum 1000000))
+      (print (< most-negative-fixnum -1000000000))
+      (print (constantp 'double-float-epsilon))
+      (print (let ((x 'single-float-epsilon)) x))
+      (print (symbolp (car '(cl:pi))))
+    expected: |
+      T
+      PI
+      MOST-POSITIVE-FIXNUM
+      T
+      T
+      T
+      T
+      T
+      SINGLE-FLOAT-EPSILON
+      T
   - name: do-loop-and-return-non-local-exit-from
     source: |
       (print (do ((i 0 (+ i 1)) (s 0)) ((= i 5) s) (setq s (+ s i))))

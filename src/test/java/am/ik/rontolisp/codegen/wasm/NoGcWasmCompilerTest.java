@@ -41,14 +41,30 @@ class NoGcWasmCompilerTest {
 	}
 
 	@Test
-	void unwindProtectIsCompileError() {
-		// The wasm-GC backends now catch via the exception-handling proposal (todo
+	void unwindProtectIsCompileError() { // The wasm-GC backends now catch via the
+											// exception-handling proposal (todo
 		// 129), but --no-gc keeps the clear rejection: no condition objects in its
 		// unboxed value model, and its contract is a zero-flag plain MVP module.
 		assertThatThrownBy(() -> compile("""
 				(defun up-f (n) (unwind-protect (* n 2) n))
 				(rontolisp:wasm-export 'up-f :params '(:int) :returns :int)
 				""")).isInstanceOf(UnsupportedOperationException.class).hasMessageContaining("UNWIND-PROTECT");
+	}
+
+	@Test
+	void standardConstantsInCodePositionAnswerTheirLiterals() {
+		// .todo/679: the reader binds pi and the limit/float constants as symbols
+		// (even under quote), and scalar mode has no globals -- so a code-position
+		// reference answers the literal directly (see ClConstants), with the WASM
+		// values. Quoted uses need no global either (quote carries no type there).
+		assertThat(compile("""
+				(defun circle-area (r) (* pi r r))
+				(defun get-fixnum () most-positive-fixnum)
+				(defun get-eps () single-float-epsilon)
+				(rontolisp:wasm-export 'circle-area :params '(:float) :returns :float)
+				(rontolisp:wasm-export 'get-fixnum :params '() :returns :int)
+				(rontolisp:wasm-export 'get-eps :params '() :returns :float)
+				""")).isNotEmpty();
 	}
 
 	// The scalar backend has an F32VEC and an F64VEC and nothing else. A bfloat16 literal
