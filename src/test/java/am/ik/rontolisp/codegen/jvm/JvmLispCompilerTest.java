@@ -6918,8 +6918,18 @@ class JvmLispCompilerTest {
 	}
 
 	@Test
-	void compileAndRunPiConstant() throws Exception {
+	void piConstant() throws Exception {
 		assertThat(compileAndRun("(print pi)")).isEqualTo("3.141592653589793");
+	}
+
+	@Test
+	void gensymCounterAndRandomStateAnswerTheInterpreterBindings() throws Exception {
+		// *gensym-counter* and *random-state* are bound by the compile-path defvar
+		// seeding with the interpreter's initial values, so a reference answers 0 / NIL
+		// and a setq updates the global (the operations they name use internal state).
+		assertThat(compileAndRun("(print *gensym-counter*) (print *random-state*)"
+				+ " (setq *gensym-counter* 5) (print *gensym-counter*) (gensym) (random 10)"))
+			.isEqualTo("0\nNIL\n5");
 	}
 
 	@Test
