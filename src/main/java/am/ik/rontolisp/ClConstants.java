@@ -116,10 +116,9 @@ public final class ClConstants {
 	}
 
 	/**
-	 * The {@code lambda-list-keywords} value: the {@code &}-symbols the lambda-list syntax
-	 * knows.
-	 * {@code &whole}/{@code &environment} are included -- they name positions the reader
-	 * knows, even where a consumer's support for them is partial.
+	 * The {@code lambda-list-keywords} value: the {@code &}-symbols the lambda-list
+	 * syntax knows. {@code &whole}/{@code &environment} are included -- they name
+	 * positions the reader knows, even where a consumer's support for them is partial.
 	 */
 	public static final List<String> LAMBDA_LIST_KEYWORD_NAMES = List.of("&ALLOW-OTHER-KEYS", "&AUX", "&BODY",
 			"&ENVIRONMENT", "&KEY", "&OPTIONAL", "&REST", "&WHOLE");
