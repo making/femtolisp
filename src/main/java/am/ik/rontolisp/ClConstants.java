@@ -71,7 +71,12 @@ public final class ClConstants {
 		Set<String> names = new java.util.LinkedHashSet<>(FLOAT_NAMES);
 		names.addAll(Set.of(LispNames.PI, LispNames.MOST_POSITIVE_FIXNUM, LispNames.MOST_NEGATIVE_FIXNUM,
 				LispNames.ARRAY_DIMENSION_LIMIT, LispNames.ARRAY_TOTAL_SIZE_LIMIT, LispNames.CHAR_CODE_LIMIT,
-				LispNames.INTERNAL_TIME_UNITS_PER_SECOND, LispNames.LAMBDA_LIST_KEYWORDS));
+				LispNames.INTERNAL_TIME_UNITS_PER_SECOND, LispNames.LAMBDA_LIST_KEYWORDS, LispNames.ARRAY_RANK_LIMIT,
+				LispNames.CALL_ARGUMENTS_LIMIT, LispNames.LAMBDA_PARAMETERS_LIMIT, LispNames.MULTIPLE_VALUES_LIMIT,
+				LispNames.BOOLE_1, LispNames.BOOLE_2, LispNames.BOOLE_3, LispNames.BOOLE_4, LispNames.BOOLE_5,
+				LispNames.BOOLE_6, LispNames.BOOLE_7, LispNames.BOOLE_8, LispNames.BOOLE_9, LispNames.BOOLE_10,
+				LispNames.BOOLE_11, LispNames.BOOLE_12, LispNames.BOOLE_13, LispNames.BOOLE_14, LispNames.BOOLE_15,
+				LispNames.BOOLE_16));
 		return Set.copyOf(names);
 	}
 
@@ -207,6 +212,23 @@ public final class ClConstants {
 				list = new LispCons(new LispSymbol(keywords.get(i)), list);
 			}
 			return list;
+		}
+		if (LispNames.ARRAY_RANK_LIMIT.equals(member)) {
+			return new LispInteger(wasm ? 32 : 1024);
+		}
+		if (LispNames.CALL_ARGUMENTS_LIMIT.equals(member)) {
+			return new LispInteger(wasm ? 256 : 1024);
+		}
+		if (LispNames.LAMBDA_PARAMETERS_LIMIT.equals(member)) {
+			return new LispInteger(wasm ? 256 : 1024);
+		}
+		if (LispNames.MULTIPLE_VALUES_LIMIT.equals(member)) {
+			return new LispInteger(wasm ? 256 : 1024);
+		}
+		if (member.startsWith("BOOLE-")) {
+			// boole constants are 1..16 as integers
+			int n = Integer.parseInt(member.substring(6));
+			return new LispInteger(n);
 		}
 		return null;
 	}

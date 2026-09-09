@@ -16175,3 +16175,73 @@ standalone:
     stderr: |
       Unhandled condition: boom: 42
     fails: true
+  - name: standard-limits-and-boole-constants
+    source: |
+      (print array-rank-limit)
+      (print call-arguments-limit)
+      (print lambda-parameters-limit)
+      (print multiple-values-limit)
+      (print boole-1)
+      (print boole-2)
+      (print boole-3)
+      (print boole-4)
+      (print boole-5)
+      (print boole-6)
+      (print boole-7)
+      (print boole-8)
+      (print boole-9)
+      (print boole-10)
+      (print boole-11)
+      (print boole-12)
+      (print boole-13)
+      (print boole-14)
+      (print boole-15)
+      (print boole-16)
+      (print *gensym-counter*)
+      (print *random-state*)
+    expected: |
+      1024
+      1024
+      1024
+      1024
+      1
+      2
+      3
+      4
+      5
+      6
+      7
+      8
+      9
+      10
+      11
+      12
+      13
+      14
+      15
+      16
+      0
+      NIL
+    wasm: |
+      32
+      256
+      256
+      256
+      1
+      2
+      3
+      4
+      5
+      6
+      7
+      8
+      9
+      10
+      11
+      12
+      13
+      14
+      15
+      16
+      0
+      NIL

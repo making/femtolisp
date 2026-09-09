@@ -7942,6 +7942,18 @@ public final class LispNames {
 	/** The {@code array-dimension-limit} constant variable. */
 	public static final String ARRAY_DIMENSION_LIMIT = "ARRAY-DIMENSION-LIMIT";
 
+	/** The {@code array-rank-limit} constant variable. */
+	public static final String ARRAY_RANK_LIMIT = "ARRAY-RANK-LIMIT";
+
+	/** The {@code call-arguments-limit} constant variable. */
+	public static final String CALL_ARGUMENTS_LIMIT = "CALL-ARGUMENTS-LIMIT";
+
+	/** The {@code lambda-parameters-limit} constant variable. */
+	public static final String LAMBDA_PARAMETERS_LIMIT = "LAMBDA-PARAMETERS-LIMIT";
+
+	/** The {@code multiple-values-limit} constant variable. */
+	public static final String MULTIPLE_VALUES_LIMIT = "MULTIPLE-VALUES-LIMIT";
+
 	/**
 	 * The {@code internal-time-units-per-second} constant variable: 1000 on every
 	 * backend, since {@code get-internal-real-time}/{@code get-internal-run-time} count
@@ -7973,6 +7985,54 @@ public final class LispNames {
 
 	/** The {@code most-negative-fixnum} constant variable, the sibling of the above. */
 	public static final String MOST_NEGATIVE_FIXNUM = "MOST-NEGATIVE-FIXNUM";
+
+	/** The {@code boole-1} constant. */
+	public static final String BOOLE_1 = "BOOLE-1";
+
+	/** The {@code boole-2} constant. */
+	public static final String BOOLE_2 = "BOOLE-2";
+
+	/** The {@code boole-3} constant. */
+	public static final String BOOLE_3 = "BOOLE-3";
+
+	/** The {@code boole-4} constant. */
+	public static final String BOOLE_4 = "BOOLE-4";
+
+	/** The {@code boole-5} constant. */
+	public static final String BOOLE_5 = "BOOLE-5";
+
+	/** The {@code boole-6} constant. */
+	public static final String BOOLE_6 = "BOOLE-6";
+
+	/** The {@code boole-7} constant. */
+	public static final String BOOLE_7 = "BOOLE-7";
+
+	/** The {@code boole-8} constant. */
+	public static final String BOOLE_8 = "BOOLE-8";
+
+	/** The {@code boole-9} constant. */
+	public static final String BOOLE_9 = "BOOLE-9";
+
+	/** The {@code boole-10} constant. */
+	public static final String BOOLE_10 = "BOOLE-10";
+
+	/** The {@code boole-11} constant. */
+	public static final String BOOLE_11 = "BOOLE-11";
+
+	/** The {@code boole-12} constant. */
+	public static final String BOOLE_12 = "BOOLE-12";
+
+	/** The {@code boole-13} constant. */
+	public static final String BOOLE_13 = "BOOLE-13";
+
+	/** The {@code boole-14} constant. */
+	public static final String BOOLE_14 = "BOOLE-14";
+
+	/** The {@code boole-15} constant. */
+	public static final String BOOLE_15 = "BOOLE-15";
+
+	/** The {@code boole-16} constant. */
+	public static final String BOOLE_16 = "BOOLE-16";
 
 	/** The {@code *print-circle*} variable (accepted and ignored by the printer). */
 	public static final String PRINT_CIRCLE_VAR = "*PRINT-CIRCLE*";
@@ -8061,6 +8121,12 @@ public final class LispNames {
 
 	/** {@code *print-gensym*} -- t, CL's default. */
 	public static final String PRINT_GENSYM_VAR = "*PRINT-GENSYM*";
+
+	/** The {@code *gensym-counter*} special variable. */
+	public static final String GENSYM_COUNTER_VAR = "*GENSYM-COUNTER*";
+
+	/** The {@code *random-state*} special variable. */
+	public static final String RANDOM_STATE_VAR = "*RANDOM-STATE*";
 
 	/**
 	 * {@code *trace-output*} -- the t designator (the process standard output), like

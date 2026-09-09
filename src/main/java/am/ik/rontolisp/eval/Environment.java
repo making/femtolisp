@@ -616,6 +616,10 @@ public final class Environment implements Scope {
 		for (String name : ClConstants.sortedNames()) {
 			env.define(name, java.util.Objects.requireNonNull(ClConstants.value(name, false)));
 		}
+		// *gensym-counter* and *random-state* special variables, bound so they are not
+		// unbound.
+		env.define(LispNames.GENSYM_COUNTER_VAR, new LispInteger(0));
+		env.define(LispNames.RANDOM_STATE_VAR, LispNil.INSTANCE);
 		// The pathname operators' default `defaults`. #P"" -- the empty pathname, SBCL's
 		// initial value too -- is the only honest one here: rontolisp absolutizes
 		// nothing and names no working directory
