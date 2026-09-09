@@ -8735,7 +8735,11 @@ cases:
       ;; components, sorted, the pathspec's own directory prefix kept, subdirectories
       ;; carrying a trailing "/", every entry a PATHNAME value. The entries
       ;; are written by this case so the answer does not depend on what else the run
-      ;; directory holds.
+      ;;       directory holds. The "./*.*" and (uiop:directory-files ".") reads are ONE
+      ;; FLAT listing of the run directory, kept deliberately: anchoring their
+      ;; patterns would drop the pins of bare "*.*" matching everything and of the
+      ;; uiop omitted-pattern default, for a read that costs one directory. The
+      ;; unbounded shape is the RECURSIVE walk -- see wild-pathnames below.
       (with-open-file (out "dls-b.txt" :direction :output) (write-line "b" out))
       (with-open-file (out "dls-a.txt" :direction :output) (write-line "a" out))
       (defun dls-ours (paths)
@@ -14840,9 +14844,21 @@ cases:
       ;; wild-pathname-p and translate-pathname all read the one rule, and every
       ;; expectation was checked against SBCL. **/ is ONE token: it matches zero
       ;; directory levels as well as many, which is why the second translate answers
-      ;; at all. The walk half is filesystem work and cannot build a tree here
-      ;; (neither WASM backend can create a directory), so what is exercised on disk
-      ;; is the zero-level branch over files this case writes itself.
+      ;; at all. The walk half is pinned ANCHORED, not filtered: a `**/` anchored at
+      ;; the run directory is :wild-inferiors over EVERYTHING below the process CWD
+      ;; -- fine in the E2E temp dir, a walk of every directory in the project on
+      ;; the in-process corpus runs (JvmClassShakerCorpusTest runs in the project
+      ;; root, where a box carrying agent checkouts under .claude/worktrees/ turned
+      ;; one print into thousands of directories and ~10k files). A test that reads
+      ;; the filesystem bounds what it reads by CONSTRUCTION; filtering afterwards
+      ;; fixes the assertion, not the work. Neither WASM backend can create a
+      ;; directory, so the harness stages ./wpc-sub/ with the two .txt files
+      ;; (CorpusFixtures, run by every driver that RUNS the corpus) and the walk
+      ;; below enters ONLY that directory: the zero-level **/ branch on disk at
+      ;; bounded cost on all four backends. Descent past zero levels is pinned by
+      ;; harness-built trees -- tempDir trees in
+      ;; wildPathnameComponentsBuildMatchTranslateAndWalk (interpreter, JVM),
+      ;; wildDirectoryComponentsDriveTheRecursiveWalk (both WASM backends).
       (print (namestring (make-pathname :directory '(:absolute "a" :wild-inferiors)
                                         :name :wild :type "lisp")))
       (print (namestring (make-pathname :directory '(:relative :wild) :name "f" :type "lisp")))
@@ -14854,12 +14870,7 @@ cases:
                    (wild-pathname-p "/a/**/x.lisp" :name) (wild-pathname-p "/a/b.c")))
       (print (namestring (translate-pathname "/a/b/d/c.lisp" "/a/**/*.lisp" "/x/**/*.fasl")))
       (print (namestring (translate-pathname "/a/c.lisp" "/a/**/*.lisp" "/x/**/*.fasl")))
-      (with-open-file (out "wpc-b.txt" :direction :output) (write-line "b" out))
-      (with-open-file (out "wpc-a.txt" :direction :output) (write-line "a" out))
-      (print (remove-if-not (lambda (p)
-                              (let ((n (namestring p)))
-                                (and (> (length n) 6) (string= (subseq n 0 6) "./wpc-"))))
-                            (directory "./**/*.txt")))
+      (print (directory "./wpc-sub/**/*.txt"))
       (print (directory "./no-such-directory/**/*.lisp"))
     expected: |
       "/a/**/*.lisp"
@@ -14870,7 +14881,7 @@ cases:
       (T T NIL NIL)
       "/x/b/d/c.fasl"
       "/x/c.fasl"
-      (#P"./wpc-a.txt" #P"./wpc-b.txt")
+      (#P"./wpc-sub/wpc-a.txt" #P"./wpc-sub/wpc-b.txt")
       NIL
 
   - name: clos-reinitialize

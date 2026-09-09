@@ -50,6 +50,10 @@ class JvmClassShakerCorpusTest {
 
 	@Test
 	void optimizesTheWholeCorpusWithoutDecoderGapsAndBehavesIdentically() throws Exception {
+		// The `wild-pathnames` case walks a bounded ./wpc-sub/ tree the driver must
+		// stage (see CorpusFixtures); this run's working directory is the project
+		// root, so the tree is removed again below.
+		am.ik.rontolisp.testsupport.CorpusFixtures.stageWildPathnameTree(Path.of("."));
 		// The CLI's own pass pipeline, not a copy of it: CorpusFrontend calls
 		// CompileFrontend.expand, so the shaker decodes exactly the class the real CLI
 		// emits and no pass or ordering can drift out of this test again. It used to be
@@ -81,6 +85,7 @@ class JvmClassShakerCorpusTest {
 			for (String name : CORPUS_SCRATCH_FILES) {
 				Files.deleteIfExists(Path.of(name));
 			}
+			am.ik.rontolisp.testsupport.CorpusFixtures.removeWildPathnameTree(Path.of("."));
 		}
 	}
 

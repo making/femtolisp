@@ -235,6 +235,11 @@ class CiSpecE2eTest {
 
 		Spec spec = loadSpec();
 		Path program = writeProgram(spec);
+		// The corpus's `wild-pathnames` case walks a harness-staged ./wpc-sub/ tree
+		// (see CorpusFixtures): neither WASM backend can create the directory the
+		// case walks, and every leg of this driver runs with @TempDir as its
+		// working directory.
+		am.ik.rontolisp.testsupport.CorpusFixtures.stageWildPathnameTree(workDir);
 
 		// The SCALAR leg of a backend records its compiled artifact here and the SIMD
 		// leg of the SAME backend reads it back, to assert the flag changed what was

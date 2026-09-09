@@ -77,4 +77,9 @@ definition; `cli/CompileTimePathnameFolder` is the compile-time literal-shape ha
 `#directoryListingResumesPastOneReaddirRound`, `#componentDirectoryListing[WithoutAPreopenAnswersNil]`,
 `#wildDirectoryComponentsDriveTheRecursiveWalk`; ci-spec `directory-listing-and-uiop-walkers`,
 `wild-pathnames`. Trees are built with `mkdir` in the CONTAINER -- neither WASM backend can create
-a directory, which is why `wild-pathnames`' walk half is limited to the zero-level branch.
+a directory. `wild-pathnames`' walk is the zero-level branch over a HARNESS-STAGED `./wpc-sub/`
+(`testsupport/CorpusFixtures`, driven by `CiSpecE2eTest` and `JvmClassShakerCorpusTest`): a corpus
+walk is BOUNDED BY CONSTRUCTION, because a `**/` anchored at the run directory reads EVERYTHING
+below the process CWD -- the project root for an in-process corpus run, and a filter fixes the
+assertion, not the work. The flat `./*.*` / `uiop:directory-files "."` reads of the sibling case are
+ONE listing of the run directory and deliberate.
