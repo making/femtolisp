@@ -71,8 +71,20 @@ the same function everywhere else, per `.kb/wasm-shared-coercion.md`.
 
 `DoubleValuedForms.certainlyDouble` answers false for a float-contagious call
 with a complex operand: `(+ #c(1 2) 1.5)` answers a complex, and the printer
-would otherwise cast it to `TYPE_FLOAT` and trap. Int-fusion needs no change:
-a complex literal or `complex` call classifies as a guarded leaf already.
+would otherwise cast it to `TYPE_FLOAT` and trap. Int-fusion refuses a tree
+carrying a syntactic complex outright (`WasmIntFusionCompiler.tryCompile`,
+`tryCompileRaw` and the `compileRawStore` raw path all bail on
+`containsComplex`, the JVM twin's identical gate): a complex literal or
+`complex` call does classify as a guarded leaf, but the guarded-leaf bail
+falls back to the real-only `_rat_*` helpers, which signal for a holder
+instead of answering complex -- measured 2026-09-09 (.todo/755), where
+`(print (+ #c(1 2) #c(3 4)))` beside a condition-rendering handler trapped
+with `Expected integer, got: #C(1 2)`. The triggering shape is any `let`/`setq`
+value holding the arithmetic tree -- user-written, or the print-hook's
+implicit `__poN_v` let once condition reports route -- because the raw-store
+fusion has no caller-side steering gate to hide behind. Refusing costs nothing
+observable: a complex leaf can never take the integer fast path, so fusion
+over one is a guaranteed bail plus a trap.
 
 ## Errors: the interpreter's texts, the backend's classes
 

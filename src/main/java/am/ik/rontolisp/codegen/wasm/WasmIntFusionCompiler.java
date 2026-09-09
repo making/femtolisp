@@ -30,9 +30,12 @@ import am.ik.wasm.Type;
  * whole tree from the SAME leaf locals through the generic {@code _rat_*}/{@code _big_*}
  * helpers -- identical results (including bignum promotion and the narrowest-tier
  * invariant, {@code .kb/wasm-bignum.md}), the leaves' side effects run exactly once, and
- * a float or ratio reaching a fused site simply always takes the fallback. A node whose
- * immediate argument is a literal double keeps the existing f64 path (it becomes an
- * unfused leaf), matching {@code WasmLispCompiler.hasDoubleLiteral}.
+ * a float or ratio reaching a fused site simply always takes the fallback. A tree
+ * carrying a syntactic complex never fuses at all ({@code containsComplex} voids the
+ * proof up front): the same fallback would signal for a holder through the real-only
+ * helpers instead of answering complex. A node whose immediate argument is a literal
+ * double keeps the existing f64 path (it becomes an unfused leaf), matching
+ * {@code WasmLispCompiler.hasDoubleLiteral}.
  *
  * <p>
  * Fusion triggers only for trees with at least two fusable operations (a single operation
@@ -239,6 +242,13 @@ final class WasmIntFusionCompiler {
 		if (!speedTradesEnabled(ctx) || ctx.asyncResume != null) {
 			return false;
 		}
+		if (LispMacroExpander.containsComplex(cons)) {
+			// A complex literal or complex/conjugate form voids every integer
+			// proof: a bailing leaf would fall back to the real-only _rat_*
+			// helpers, which signal for a holder instead of answering complex
+			// (the JVM twin's identical gate, `.kb/jvm-complex.md`).
+			return false;
+		}
 		Site site = new Site(cons);
 		List<Node> leaves = site.leaves;
 		Node root = classify(cons, ctx, java.util.Map.of(), site, 0);
@@ -395,6 +405,12 @@ final class WasmIntFusionCompiler {
 	 */
 	static boolean tryCompileRaw(LispVal expr, WasmLispCompiler.Ctx ctx) {
 		if (!speedTradesEnabled(ctx) || ctx.asyncResume != null) {
+			return false;
+		}
+		if (LispMacroExpander.containsComplex(expr)) {
+			// Same void proof as tryCompile: the raw store's bail fallback
+			// folds through the real-only _rat_* helpers, which signal for a
+			// holder instead of answering complex.
 			return false;
 		}
 		Site site = new Site(expr);
@@ -560,7 +576,12 @@ final class WasmIntFusionCompiler {
 			emitNullShadow(target, ctx);
 			return;
 		}
-		if (ctx.asyncResume == null) {
+		if (ctx.asyncResume == null && !LispMacroExpander.containsComplex(expr)) {
+			// A complex literal or complex/conjugate form voids every integer
+			// proof (the fused bail would fall back to the real-only _rat_*
+			// helpers, which signal for a holder instead of answering complex
+			// -- the JVM twin's identical gate). The boxed value lands in the
+			// shadow instead, which is then authoritative.
 			if (expr instanceof LispSymbol sym && ctx.rawLocals.get(sym.name()) instanceof RawLocal src) {
 				// A raw-to-raw copy ((setq a b) with both unboxed) transfers BOTH
 				// slots: total for every tier -- whatever the source holds, its shadow

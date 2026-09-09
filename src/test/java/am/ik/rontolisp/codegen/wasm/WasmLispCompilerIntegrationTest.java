@@ -12931,6 +12931,26 @@ class WasmLispCompilerIntegrationTest {
 	}
 
 	@Test
+	void compileAndRunComplexArithmeticUnderRawLocals() throws Exception {
+		// A complex-carrying arithmetic tree in a let/setq value position must not
+		// take the int-fusion raw store: its bail fallback folds through the
+		// real-only _rat_* helpers, which signal for a holder (.todo/755).
+		assertThat(compileAndRun("(print (let ((v (+ #c(1 2) #c(3 4)))) v))")).isEqualTo("#C(4 6)");
+		assertThat(compileAndRun("(print (let ((v (- #c(4 6) #c(1 2)))) v))")).isEqualTo("#C(3 4)");
+		assertThat(compileAndRun("(print (let ((v (* #c(1 2) #c(3 4)))) v))")).isEqualTo("#C(-5 10)");
+		assertThat(compileAndRun("(print (let ((v (/ #c(1 2) #c(3 4)))) v))")).isEqualTo("#C(11/25 2/25)");
+		assertThat(compileAndRun("(print (let ((v (1+ #c(1 2)))) v))")).isEqualTo("#C(2 2)");
+		assertThat(compileAndRun("(print (let ((v (+ #c(1 2) 1))) v))")).isEqualTo("#C(2 2)");
+		assertThat(compileAndRun("(print (let ((v (+ #c(1 1/2) #c(1 1/3)))) v))")).isEqualTo("#C(2 5/6)");
+		assertThat(compileAndRun("(print (let ((v 0)) (setq v (+ #c(1 2) #c(3 4))) v))")).isEqualTo("#C(4 6)");
+		// The .todo/755 repro: the condition-report routing wraps the first print
+		// in the same implicit let, so this is the same path with a handler.
+		assertThat(compileAndRunEh(
+				"(print (+ #c(1 2) #c(3 4))) (print (handler-case (error \"x\") (error (e) (princ-to-string e))))"))
+			.isEqualTo("#C(4 6)\n\"x\"");
+	}
+
+	@Test
 	void compileAndRunComplexAbs() throws Exception {
 		assertThat(Double.parseDouble(compileAndRun("(print (abs #c(3 4)))"))).isCloseTo(5.0, within(1e-12));
 		assertThat(compileAndRun("(print (abs 5))")).isEqualTo("5");
