@@ -10028,6 +10028,21 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void tagbodyAcceptsIntegerTags() {
+		// CLHS 5.3: a tagbody tag is an integer or a symbol, compared with eql -- the
+		// suite's handler-case idiom aborts with (go 10) to a numeric label.
+		assertThat(eval("""
+				(let ((result nil))
+				  (tagbody (go 10) (setq result 'bad) 10 (setq result 'ok))
+				  result)""").print()).isEqualTo("OK");
+		// A backward go to an integer label keeps the tagbody looping.
+		assertThat(eval("""
+				(let ((i 0))
+				  (tagbody 5 (setq i (+ i 1)) (if (< i 3) (go 5)))
+				  i)""").print()).isEqualTo("3");
+	}
+
+	@Test
 	void restartsDisappearOutsideTheirExtent() {
 		assertThat(eval("(progn (restart-case 1 (gone () nil)) (find-restart 'gone))")).isEqualTo(LispNil.INSTANCE);
 		assertThat(eval("(handler-case (invoke-restart :nope) (error (e) :no-restart))").print())

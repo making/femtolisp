@@ -89,6 +89,13 @@ qualification, not the constant, tells them apart.
   NON-CONSTANT catch tag inside an `async-defun` is re-evaluated on the unwind.
 
 ## `tagbody`/`go` + `prog`/`prog*`
+- **A tag is a symbol OR an integer** (CLHS 5.3, compared with `eql` -- the ANSI suite's
+  handler-case idiom aborts with `(go 10)` to a numeric label). Every tag table keys the
+  two uniformly: the interpreter's `evalTagbody` labels map by `plainName` /
+  `String.valueOf`, the backend `labelName` helpers by the same strings, so `go` and the
+  label scan share one predicate. Pinned by `LispEvaluatorTest.tagbodyAcceptsIntegerTags`,
+  `JvmLispCompilerTest.compileAndRunIntegerTagbodyTag`,
+  `WasmLispCompilerIntegrationTest.integerTagbodyTag`, ci-spec `integer-tagbody-tag`.
 - **Interpreter = dynamic `go`** (a superset of CL's lexical `go`): a thrown `GoSignal`
   re-entering at the label, so it **crosses function boundaries**.
 - **Compilers = LEXICAL**: `go` becomes goto/br when its tag is in the SAME compiled function.

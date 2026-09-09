@@ -11262,6 +11262,31 @@ cases:
       (2 (1 (0 NIL)))
       (:EARLY)
       (:LATER)
+  - name: integer-tagbody-tag
+    source: |
+      ;; CLHS 5.3: a tagbody tag is an integer or a symbol, compared with eql -- the
+      ;; suite's handler-case idiom aborts with (go 10) to a numeric label.
+      (print (let ((itb-result nil))
+               (tagbody (go 10) (setq itb-result 'bad) 10 (setq itb-result 'ok))
+               itb-result))
+      ;; A backward go to an integer label keeps the tagbody looping.
+      (print (let ((itb-i 0))
+               (tagbody 5 (setq itb-i (+ itb-i 1)) (if (< itb-i 3) (go 5)))
+               itb-i))
+      ;; A crossing go to an integer label re-enters the tagbody at it.
+      (defun itb-countdown (n)
+        (let ((out nil))
+          (tagbody
+           7
+             (setq out (cons n out))
+             (setq n (- n 1))
+             (funcall (lambda () (if (> n 0) (go 7)))))
+          (reverse out)))
+      (print (itb-countdown 4))
+    expected: |
+      OK
+      3
+      (4 3 2 1)
   - name: catch-throw
     source: |
       ;; catch/throw: a DYNAMIC non-local exit -- the throw only has to run inside the

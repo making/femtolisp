@@ -149,8 +149,10 @@ public final class CrossLambdaExitLowering {
 	 */
 	private static final class TagScope {
 
-		/** Label name -> the label form as it appears in the body (a symbol). */
-		final Map<String, LispSymbol> labels;
+		/**
+		 * Label name -> the label form as it appears in the body (a symbol or integer).
+		 */
+		final Map<String, LispVal> labels;
 
 		final int lambdaDepth;
 
@@ -165,8 +167,8 @@ public final class CrossLambdaExitLowering {
 		/** Label name -> 1-based re-entry index, for the labels a crossing go targets. */
 		final Map<String, Integer> crossed = new LinkedHashMap<>();
 
-		TagScope(Map<String, LispSymbol> labels, int lambdaDepth, LispSymbol idVar, LispSymbol pcVar,
-				LispSymbol resultVar, LispSymbol retryTag) {
+		TagScope(Map<String, LispVal> labels, int lambdaDepth, LispSymbol idVar, LispSymbol pcVar, LispSymbol resultVar,
+				LispSymbol retryTag) {
 			this.labels = labels;
 			this.lambdaDepth = lambdaDepth;
 			this.idVar = idVar;
@@ -485,12 +487,14 @@ public final class CrossLambdaExitLowering {
 		// re-entry index; the establishing tagbody's loop catches it and re-dispatches.
 		private LispVal transformGo(LispCons cons, int lambdaDepth) {
 			List<LispVal> parts = cons.toList();
-			if (parts.size() != 2 || !cons.isProperList() || !(parts.get(1) instanceof LispSymbol tagSym)) {
+			// A tag is a symbol or an integer (CLHS 5.3); labelName answers null for
+			// anything else.
+			String tag = (parts.size() == 2 && cons.isProperList()) ? labelName(parts.get(1)) : null;
+			if (tag == null) {
 				// Not a real (go tag) -- a binding whose variable is `go`, or data;
 				// traverse it so nested forms are still found.
 				return structural(cons, lambdaDepth);
 			}
-			String tag = labelName(tagSym);
 			TagScope target = nearestTagScope(tag);
 			if (target != null && target.lambdaDepth < lambdaDepth) {
 				this.used = true;
@@ -510,13 +514,14 @@ public final class CrossLambdaExitLowering {
 		}
 
 		private TagScope pushTagScope(List<LispVal> items, int lambdaDepth) {
-			Map<String, LispSymbol> labels = new LinkedHashMap<>();
+			Map<String, LispVal> labels = new LinkedHashMap<>();
 			for (LispVal item : items) {
-				// Only symbol labels: `go` takes a symbol on the compile path, so an
-				// integer label can never be a crossing go's target. Keywords count --
-				// quri's with-array-parsing labels its end-of-input segment `:eof`.
-				if (item instanceof LispSymbol sym) {
-					labels.putIfAbsent(labelName(sym), sym);
+				// Symbols AND integers are labels (CLHS 5.3) -- the suite's
+				// handler-case idiom crosses a lambda to a numeric tag. Keywords count
+				// -- quri's with-array-parsing labels its end-of-input segment `:eof`.
+				String name = labelName(item);
+				if (name != null) {
+					labels.putIfAbsent(name, item);
 				}
 			}
 			TagScope scope = new TagScope(labels, lambdaDepth, freshVar("id"), freshVar("pc"), freshVar("r"),
@@ -564,10 +569,16 @@ public final class CrossLambdaExitLowering {
 			return null;
 		}
 
-		/** The label name of a tagbody symbol, package qualification stripped. */
-		private static String labelName(LispSymbol sym) {
-			PackageRegistry.QualifiedName qn = PackageRegistry.splitQualified(sym.name());
-			return qn == null ? sym.name() : qn.member();
+		/** The label name of a tagbody body atom (symbol or integer), null for a form. */
+		private static @Nullable String labelName(LispVal part) {
+			if (part instanceof LispSymbol sym) {
+				PackageRegistry.QualifiedName qn = PackageRegistry.splitQualified(sym.name());
+				return qn == null ? sym.name() : qn.member();
+			}
+			if (part instanceof LispInteger n) {
+				return Long.toString(n.value());
+			}
+			return null;
 		}
 
 		// flet/labels definition bodies expand into lambdas (separately compiled

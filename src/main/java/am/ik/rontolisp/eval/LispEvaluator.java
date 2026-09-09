@@ -5823,10 +5823,16 @@ public final class LispEvaluator {
 			case LispNames.TAGBODY:
 				return evalTagbody(cons, env);
 			case LispNames.GO: {
-				if (!(cons.cdr() instanceof LispCons tagCons) || !(tagCons.car() instanceof LispSymbol tagSym)) {
-					throw new LispEvalException(LispNames.GO + " expects a tag: " + cons.print());
+				// A tag is a symbol or an integer (CLHS 5.3), keyed the way
+				// evalTagbody keys its label table.
+				LispVal tag = (cons.cdr() instanceof LispCons tagCons) ? tagCons.car() : null;
+				if (tag instanceof LispSymbol tagSym) {
+					throw new GoSignal(plainName(tagSym.name()));
 				}
-				throw new GoSignal(plainName(tagSym.name()));
+				if (tag instanceof LispInteger tagInt) {
+					throw new GoSignal(String.valueOf(tagInt.value()));
+				}
+				throw new LispEvalException(LispNames.GO + " expects a tag: " + cons.print());
 			}
 			case LispNames.BYTE:
 				return evalBuiltinMacro(cons, env, LispMacroExpander::expandByte);

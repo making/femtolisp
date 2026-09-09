@@ -26,10 +26,12 @@ final class JvmGoCompiler {
 
 	static void compile(LispCons cons, JvmLispCompiler.Ctx ctx, String className) {
 		List<LispVal> parts = cons.toList();
-		if (parts.size() != 2 || !(parts.get(1) instanceof LispSymbol)) {
+		// A tag is a symbol or an integer (CLHS 5.3) -- labelName keys both the way the
+		// tagbody scopes do.
+		String tag = (parts.size() == 2) ? JvmTagbodyCompiler.labelName(parts.get(1)) : null;
+		if (tag == null) {
 			throw new IllegalArgumentException(LispNames.GO + " expects a tag: " + cons.print());
 		}
-		String tag = JvmTagbodyCompiler.labelName(parts.get(1));
 		JvmLispCompiler.TagbodyScope scope = null;
 		for (JvmLispCompiler.TagbodyScope s : ctx.tagbodyScopes) {
 			if (s.pendingGos().containsKey(tag)) {

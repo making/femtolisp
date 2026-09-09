@@ -8221,6 +8221,31 @@ class JvmLispCompilerTest {
 	}
 
 	@Test
+	void compileAndRunIntegerTagbodyTag() throws Exception {
+		// CLHS 5.3: a tagbody tag is an integer or a symbol, compared with eql -- the
+		// suite's handler-case idiom aborts with (go 10) to a numeric label. Includes
+		// the crossing shape, where the lowering re-enters the tagbody at the integer
+		// label. (Was a compile-time "GO expects a tag".)
+		assertThat(compileAndRun("""
+				(print (let ((result nil))
+				         (tagbody (go 10) (setq result 'bad) 10 (setq result 'ok))
+				         result))
+				(print (let ((i 0))
+				         (tagbody 5 (setq i (+ i 1)) (if (< i 3) (go 5)))
+				         i))
+				(defun countdown (n)
+				  (let ((out nil))
+				    (tagbody
+				     7
+				       (setq out (cons n out))
+				       (setq n (- n 1))
+				       (funcall (lambda () (if (> n 0) (go 7)))))
+				    (reverse out)))
+				(print (countdown 4))
+				""")).isEqualTo("OK\n3\n(4 3 2 1)");
+	}
+
+	@Test
 	void compileAndRunCrossLambdaGoResumesAndLoops() throws Exception {
 		// The re-entry keeps the tagbody running: a crossing go lands on its label and
 		// falls through the rest of the body, and a BACKWARD one re-runs the loop.

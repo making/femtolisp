@@ -115,10 +115,12 @@ final class WasmTagbodyCompiler {
 
 	static void compileGo(LispCons cons, WasmLispCompiler.Ctx ctx) {
 		List<LispVal> parts = cons.toList();
-		if (parts.size() != 2 || !(parts.get(1) instanceof LispSymbol)) {
+		// A tag is a symbol or an integer (CLHS 5.3) -- labelName keys both the way the
+		// tagbody scopes do.
+		String tag = (parts.size() == 2) ? labelName(parts.get(1)) : null;
+		if (tag == null) {
 			throw new IllegalArgumentException(LispNames.GO + " expects a tag: " + cons.print());
 		}
-		String tag = labelName(parts.get(1));
 		TagbodyScope scope = null;
 		for (TagbodyScope s : ctx.tagbodyScopes) {
 			if (s.labelIndex().containsKey(tag)) {
