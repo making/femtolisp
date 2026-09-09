@@ -160,10 +160,15 @@ reference for the SHAPE only.
 - **The two compiled tables ride DIFFERENT gates, and the difference is the measurement.** The
   registry answers NAME to funcId for a computed call, so it needs every DISPATCHABLE name
   (`dispatchableFuncIds`). The print table answers funcId to NAME for a value, so it needs only the
-  funcIds that MATERIALIZE as a callable value (`valueFuncIds`). Riding the registry's gate is wrong
-  in both directions at once, and it cost a 36-byte grow on every module in the corpus: a computed
-  designator lowers to the SYMBOL itself (`WasmFunctionFormCompiler.compileSymbolFunction`), so a
-  funcId only `_lookup` could resolve never reaches a printer and needs no row -- while
+  funcIds that MATERIALIZE as a callable value (`valueFuncIds`) -- PLUS, when the program
+  boxes a run-time resolution (`LispMacroExpander.usesRuntimeFunctionBox`, `.todo/750`
+  fixed 2026-09-09), every dispatchable defun, since no compile-time gate can predict
+  WHICH funcId the box carries. Riding the registry's gate unconditionally is wrong
+  in both directions at once, and it cost a 36-byte grow on every module in the corpus:
+  the conditional keeps a hello-shaped program byte-identical
+  while a boxing program pays exactly the dispatchable rows. A computed
+  designator that never becomes a VALUE (a bare `(funcall sym ...)` symbol arriving
+  at the dispatcher) still needs no print row -- while
   `dispatchableFuncIds`' other half, the name-spelled registry rows, is armed by the wrapper
   catalog's OWN internal `(funcall #'eql ...)` / `(funcall #'identity ...)` expansions, which pin
   EQL and IDENTITY into a `(terpri)` program. `valueFuncIds` holds those two exactly when the
@@ -178,13 +183,13 @@ reference for the SHAPE only.
   nameable function value is byte-identical to a build that never knew the feature.
 - **JVM** keeps its table on `dispatchableFuncIds`: the registry already spells every one of those
   names in the constant pool, so an extra row is a search branch over strings the class holds
-  anyway. A note of honesty about WHY the two gates can differ at all: on the compiled backends a
-  designator resolved at RUN time (a computed `symbol-function`/`coerce`) stays a SYMBOL -- callable
-  (`funcall` works) but `functionp`-NIL and printing as the symbol, not a function tag. No compiled
-  run has ever handed `_funName` a funcId its compile-time gate did not predict; the superset buys
-  margin against runtime paths the analyzer cannot see (eval-built closures), at no size pin's
-  expense. The designator-as-value shape itself is the separate, older divergence, filed as
-  `.todo/750`.
+  anyway. A run-time name resolution boxes the resolved funcId as a function value
+  (`JvmFunctionFormCompiler.compileSymbolFunction`: `_fenv`, then `_lookup`), so the
+  boxed value always finds its row there; `functionp`/`type-of` and the print tag
+  follow automatically -- `type-of` answered `FUNCTION` for a boxed value before this
+  change ever ran, the same divergence its literal `#'name` twin already carries
+  against the interpreter's `T` (pre-existing, not this item's contract, which pins
+  `functionp`/printed-text/`funcall`).
 - **WASM**: `_fun_name(funcId)` reuses `TYPE_PRINT_I32` and WRITES the whole tag itself via
   `emitWriteString` (so prin1/princ cannot drift and no scratch local is needed), binary-searching
   a sorted 12-byte-row blob `[funcId][nameOff][nameLen]` placed with
@@ -197,7 +202,10 @@ reference for the SHAPE only.
   the constant scan cannot follow, so name, blob and `_fun_name` live and fall together. The tag
   pieces are `StringTable.lambdaStr`/`funcPrefix` (`addBodyString`, shakeable) and the shared `>` of
   `hashTableEnd`. The blob and the function are SKIPPED entirely when the table is empty
-  (byte-neutral), and the miss branch falls straight to `#<lambda>`.
+  (byte-neutral), and the miss branch falls straight to `#<lambda>`. The rows cover
+  `valueFuncIds`, or `dispatchableFuncIds` when the program boxes a run-time
+  resolution (`usesRuntimeFunctionBox`, above) -- the one case a funcId the gate did
+  not see materialized still reaches the printer.
   Trap, once bitten: the search's `id < key` branch moves HI down and `id > key` moves LO up --
   inverted, CAR hit its row by coincidence at the first mid and everything else silently printed
   `#<lambda>`.

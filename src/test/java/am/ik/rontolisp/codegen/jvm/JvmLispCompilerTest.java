@@ -3005,6 +3005,37 @@ class JvmLispCompilerTest {
 	}
 
 	@Test
+	void compileAndRunRuntimeResolvedDesignatorsAreFunctionValues() throws Exception {
+		// A run-time name resolution boxes the resolved funcId as a function value, so
+		// functionp answers t, the value prints its registered name through _funName,
+		// and funcall dispatches -- the interpreter's answer on every shape
+		// (LispEvaluatorTest#runtimeResolvedDesignatorsAreFunctionValues, .todo/750).
+		// The print-only leg needs the registry without any call site spelling it.
+		assertThat(compileAndRun("""
+				(defun rrd-add (a b) (+ a b))
+				(defun rrd-mul (a b) (* a b))
+				(defun rrd-sub (a b) (- a b))
+				(defun rrd-div (a b) (/ a b))
+				(print (symbol-function (car (list 'car))))
+				(let ((fn (symbol-function (car (list 'rrd-add)))))
+				  (print (functionp fn)) (print fn) (print (funcall fn 2 3)))
+				(let ((fn (fdefinition (car (list 'rrd-mul)))))
+				  (print (functionp fn)) (print fn) (print (funcall fn 2 3)))
+				(let ((fn (coerce (car (list 'rrd-sub)) 'function)))
+				  (print (functionp fn)) (print fn) (print (funcall fn 5 3)))
+				(let ((ty 'function))
+				  (let ((fn (coerce (car (list 'rrd-div)) ty)))
+				    (print (functionp fn)) (print fn) (print (funcall fn 6 3))))
+				(print (princ-to-string (coerce 'car 'function)))
+				(print (funcall (coerce 'car 'function) '(7 8)))
+				(print (funcall (coerce #'(lambda (x) (* x x)) 'function) 9))
+				(print (funcall (coerce '(lambda (x) (* x x)) 'function) 9))
+				""")).isEqualTo("#<function CAR>\n" + "T\n" + "#<function RRD-ADD>\n" + "5\n" + "T\n"
+				+ "#<function RRD-MUL>\n" + "6\n" + "T\n" + "#<function RRD-SUB>\n" + "2\n" + "T\n"
+				+ "#<function RRD-DIV>\n" + "2\n" + "\"#<function CAR>\"\n" + "7\n" + "81\n" + "81");
+	}
+
+	@Test
 	void compileAndRunSymbolValueThrowsOnUnbound() {
 		assertThatThrownBy(() -> compileAndRun("(print (symbol-value 'nope))"))
 			.hasRootCauseInstanceOf(RuntimeException.class)

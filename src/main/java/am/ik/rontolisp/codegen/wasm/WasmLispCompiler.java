@@ -4437,7 +4437,14 @@ public final class WasmLispCompiler implements LispCompiler {
 		// for a module in which no symbol naming a defun exists.
 		boolean designatorSymbolArrives = runtimeDesignatorDispatch[0]
 				&& (nameResolvable || anyDefunNameSpelled(defuns, userSpelledLiterals, symbolBuilders));
-		boolean registryLive = usesEval || usesRuntimeDesignator || usesApplyRuntime || designatorSymbolArrives;
+		// A computed (symbol-function x) / (fdefinition x) boxes the resolved funcId
+		// as a function VALUE, and a (coerce v 'function) over a literal function
+		// designator (or a computed result type, which can name FUNCTION at run
+		// time) lowers to the same box -- so the name registry has to be live even
+		// when no funcall/apply call site spell it (.todo/750).
+		boolean runtimeFunctionBox = LispMacroExpander.usesRuntimeFunctionBox(program);
+		boolean registryLive = usesEval || usesRuntimeDesignator || usesApplyRuntime || designatorSymbolArrives
+				|| runtimeFunctionBox;
 		Set<Integer> dispatchableFuncIds = dispatchableFuncIds(defuns, valueFuncIds, spelledLiterals, registryLive,
 				nameResolvable, symbolBuilders);
 		// A dispatcher whose br_table over every callable would be too big for one
@@ -4628,10 +4635,11 @@ public final class WasmLispCompiler implements LispCompiler {
 		// The funcId -> name table _fun_name binary-searches to print a closure value
 		// as #<function NAME> (interpreter parity). One 12-byte {funcId, nameOff,
 		// nameLen} row per defun whose funcId MATERIALIZES as a callable value
-		// (valueFuncIds) -- printing names VALUES, never call targets: a computed
-		// designator lowers to the SYMBOL itself (see
-		// WasmFunctionFormCompiler.compileSymbolFunction), so a funcId only the registry
-		// could resolve never reaches a printer and needs no row. Rows come out in
+		// (valueFuncIds) -- printing names VALUES, never call targets -- EXCEPT that
+		// a runtime-resolved designator boxes a funcId no compile-time gate can
+		// predict: when the program boxes (usesRuntimeFunctionBox, .todo/750) the
+		// table covers every DISPATCHABLE defun instead, so the boxed value prints
+		// its registered name. Rows come out in
 		// ascending funcId order (the defun index IS the funcId), which is what the
 		// search relies on. The blob is shakeable on its BASE -- its one reader is
 		// _fun_name's own i32.const -- and each interned name joins the droppable ranges
@@ -4646,8 +4654,9 @@ public final class WasmLispCompiler implements LispCompiler {
 		// (WasmLispCompilerTest#aLiteralLookupTableCostsItsOwnBytesAndNotThreeTimesThem).
 		ByteArrayOutputStream funNameRows = new ByteArrayOutputStream();
 		List<StringTable.StringEntry> funNameEntries = new ArrayList<>();
+		Set<Integer> funNameIds = runtimeFunctionBox ? dispatchableFuncIds : valueFuncIds;
 		for (int i = 0; i < defuns.size(); i++) {
-			if (!valueFuncIds.contains(i)) {
+			if (!funNameIds.contains(i)) {
 				continue;
 			}
 			StringTable.StringEntry funName = stringTable.addString(defuns.get(i).name);

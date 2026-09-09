@@ -312,7 +312,7 @@
 | `some` | `(some #'oddp '(2 4 5))`, `(some #'> '(1 5) '(3 4))` | 最初の非nilな述語結果、すべての要素(の組)が失敗すれば `nil`。シーケンスは何個でも渡せます |
 | `notany` | `(notany #'evenp '(1 3 5))` | すべての要素(の組)で述語がnilなら `t`、そうでなければ `nil`(`some` の補) |
 | `notevery` | `(notevery #'evenp '(2 4 5))` | いずれかの要素(の組)で述語がnilなら `t`、そうでなければ `nil`(`every` の補) |
-| `symbol-function` | `(symbol-function 'car)` | シンボルが指す関数を返します(コンパイラ: 引数は引用されたシンボルリテラルでなければなりません) |
+| `symbol-function` | `(symbol-function 'car)` | シンボルが指す関数を返します(実行時に計算されたシンボルは遅延解決で同じ関数値を返します) |
 | `identity` | `(identity 42)` | `42`(引数をそのまま返します) |
 | `constantly` | `(mapcar (constantly 7) '(a b c))` | `(7 7 7)`(引数を何個受け取っても 1 つの固定値を返す関数) |
 | `make-hash-table` | `(make-hash-table)`, `(make-hash-table :test 'equal)` | 空のハッシュテーブルを作成します。`:test` は受け付けられますが情報的なものです(下記の注記を参照)。`:size` などの他のキーワードは無視されます |

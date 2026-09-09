@@ -272,11 +272,29 @@ symbol-to-function route (the interpreter resolves designators against the live 
   throws `The function X is undefined` (JVM `emitUndefinedFunctionThrow`) / traps (WASM). It
   used to return nil silently; the tree-shaker carve-out (`.kb/library-defun-pruning.md`)
   promises a loud failure there.
-- **Computed `(symbol-function x)` / `(fdefinition x)` lowers to the IDENTITY**
-  (`LispMacroExpander.expandRuntimeSymbolFunction`): on the compiled backends a symbol is a
-  function designator wherever a function value is consumed. Deviations vs the interpreter:
-  `functionp` of the result is nil, and an undefined name signals at the CALL. The literal-name
-  fold is untouched.
+- **Computed `(symbol-function x)` / `(fdefinition x)` BOXES the resolved funcId as
+  a function value** (`.todo/750`, fixed 2026-09-09): the JVM emits
+  `Object[]{Integer funcId}`, WASM a `{funcId, null env}` closure struct -- exactly
+  what `#'name` would have produced. `functionp` answers t, the value prints its
+  registered name, `funcall` dispatches, and an undefined name signals at the
+  `symbol-function` itself (a trap on WASM, the `The function X is undefined`
+  condition elsewhere), matching the interpreter and SBCL. The eval runtime's
+  function namespace (`_fenv` / `GLOBAL_FENV`, where `(setf (symbol-function ...))`
+  installs and `fmakunbound` leaves its tombstone) is probed first and decides on
+  its own; otherwise the compiled-function registry (`_lookup`) answers. Only the
+  function namespace is read -- a global VARIABLE holding a lambda is not a
+  function binding (the interpreter and SBCL signal for it). The gate is
+  `LispMacroExpander.usesRuntimeFunctionBox` (computed symbol-function/fdefinition,
+  literal-`'function` coerce, computed coerce): it keeps the registry live on both
+  backends. The JVM probes `_fenv` only when the eval runtime exists
+  (`Ctx.evalStoreRef != null`) -- every writer forces it, so without it the probe
+  could only ever miss -- which keeps a boxing program without `setf`/`fmakunbound`
+  at the registry's own size (measured 2026-09-09 on
+  `(defun foo () 1) (print (symbol-function <computed>))` vs its literal twin:
+  +370 B class, +414 B wasm; the forced-`usesEval` shape tried first cost +3.7 KB
+  class). **Any future lowering that synthesizes a computed `symbol-function` at
+  compile-expression time has the same obligation** as the `intern`/`funcall` one
+  above: the pre-lowering spelling must count in that scan.
 - **`uiop:symbol-call` is REAL on the compile paths**: `expandUiopStubCall` lowers it to
   `(funcall (intern (string name) (find-package pkg)) args...)` over two fixed `%UIOP-SC-*`
   temps keeping the package-before-name order. That lowering happens INSIDE the per-expression
