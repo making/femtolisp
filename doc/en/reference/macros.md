@@ -88,8 +88,9 @@ description and a runnable example you can evaluate in your browser.
 | `print-unreadable-object` | `(print-unreadable-object (obj stream :type t) body...)` | Writes `#<[type ]...>` around the body's output; returns nil (`:identity` accepted, prints no address) |
 | `with-package-iterator` | `(with-package-iterator (next pkgs :external) body...)` | Lite: binds the iterator name to a local FUNCTION always reporting no more symbols (no intern table) |
 | `with-hash-table-iterator` | `(with-hash-table-iterator (next table) body...)` | Binds the iterator name to a local FUNCTION answering `(values t key value)` per call, `(values nil nil nil)` when exhausted; the table is snapshot on entry |
-| `do-external-symbols` | `(do-external-symbols (s :rontolisp) (print s))` | Iterate a package's exported symbols (interpreter only: the compiled backends carry no package registry) |
-| `do-symbols` | `(do-symbols (s :cl-user) (print s))` | Iterate every symbol ACCESSIBLE in a package -- its own plus what it inherits (interpreter only, same reason) |
+| `do-external-symbols` | `(do-external-symbols (s :rontolisp) (print s))` | Iterate a package's exported symbols, in sorted order (compiled backends answer from the table baked in at compile time) |
+| `do-symbols` | `(do-symbols (s :cl-user) (print s))` | Iterate every symbol ACCESSIBLE in a package -- its own plus what it inherits (same baked table on the compiled backends) |
+| `do-all-symbols` | `(do-all-symbols (s) (print s))` | Iterate every distinct symbol accessible in any package, spelled the way code spells it |
 | `with-compilation-unit` | `(with-compilation-unit (:override t) body...)` | A `progn` around the body: the options only merge a deferred-warning report, and there is no `compile-file` to defer one from |
 
 Macros have no function value: `#'cond` or `(funcall 'setf ...)` is an error. Convenience

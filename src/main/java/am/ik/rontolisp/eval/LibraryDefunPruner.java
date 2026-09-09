@@ -278,7 +278,9 @@ public final class LibraryDefunPruner {
 		for (String synthesized : List.of(LispNames.MAKE_BROADCAST_STREAM_INTERNAL, LispNames.TEMP_FILE_NAME,
 				LispNames.DELETE_FILE_IF_EXISTS, LispNames.STREAM_TARGET, LispNames.PRINT_CASED_INTERNAL,
 				LispNames.PRINT_CASE_FOLD_INTERNAL, LispNames.PRINT_RADIXED_INTERNAL, LispNames.PROBE_FILE,
-				LispNames.MAKE_ARRAY_ET_INTERNAL, LispNames.MAKE_ARRAY_ET_FP_INTERNAL)) {
+				LispNames.MAKE_ARRAY_ET_INTERNAL, LispNames.MAKE_ARRAY_ET_FP_INTERNAL,
+				LispNames.RUNTIME_PACKAGES_INTERNAL, LispNames.DO_SYMBOLS_LIST_INTERNAL,
+				LispNames.PACKAGE_SYMBOLS_WHERE_INTERNAL)) {
 			if (LispPreludeLibrary.referencedBySurfaceForm(synthesized, resolved, true)) {
 				roots.add(LispPreludeLibrary.definedName(synthesized));
 			}

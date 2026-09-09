@@ -710,6 +710,159 @@ public final class LispNames {
 	public static final String PACKAGE_SHADOWING_SYMBOLS = "PACKAGE-SHADOWING-SYMBOLS";
 
 	/**
+	 * The {@code make-package} standard function: creates a package at run time and
+	 * answers it (the upcased canonical name as a keyword, like {@link #FIND_PACKAGE}).
+	 * The runtime tier of the two-tier package model (see {@code .kb/packages.md}): the
+	 * name and nicknames are upcased like the reader would, {@code :use} entries must
+	 * name packages the read/compile-time registry already knows, and a collision with
+	 * any of those signals a {@code package-error}. The interpreter registers in its live
+	 * registry; the compiled backends record in the {@code %runtime-packages%} table
+	 * every package query consults first.
+	 */
+	public static final String MAKE_PACKAGE = "MAKE-PACKAGE";
+
+	/**
+	 * The {@code delete-package} standard function: removes a runtime-tier package (see
+	 * {@link #MAKE_PACKAGE}) and answers {@code t}. Deleting a read/compile-time package
+	 * (a built-in or a {@code defpackage} product) or a designator that names no package
+	 * signals a {@code package-error}, like Common Lisp's.
+	 */
+	public static final String DELETE_PACKAGE = "DELETE-PACKAGE";
+
+	/**
+	 * The {@code rename-package} standard function: renames a runtime-tier package (see
+	 * {@link #MAKE_PACKAGE}), replacing its nicknames with {@code new-nicknames}, and
+	 * answers the package under its new name. Renaming a read/compile-time package, an
+	 * unknown designator, or a new name (or nickname) that collides signals a
+	 * {@code package-error}.
+	 */
+	public static final String RENAME_PACKAGE = "RENAME-PACKAGE";
+
+	/**
+	 * The {@code packagep} standard function: {@code t} when the argument is a package
+	 * designator naming a registered package (read/compile-time or runtime-tier),
+	 * {@code nil} otherwise -- never a signal. A prelude defun over {@link #FIND_PACKAGE}
+	 * on every backend.
+	 */
+	public static final String PACKAGEP = "PACKAGEP";
+
+	/**
+	 * The {@code package-nicknames} standard function: the nickname STRINGS of a package
+	 * designator (empty when it has none). An unknown designator signals a
+	 * {@code package-error}. The interpreter reads its live registry; the compiled
+	 * backends read the baked table plus the {@code %runtime-packages%} table.
+	 */
+	public static final String PACKAGE_NICKNAMES = "PACKAGE-NICKNAMES";
+
+	/**
+	 * The {@code find-all-symbols} standard function: every distinct symbol whose name is
+	 * {@code string=} to the argument symbol's, accessible in the designated package (or,
+	 * by default, in any registered package). A prelude defun over {@link #DO_SYMBOLS}
+	 * and {@link #LIST_ALL_PACKAGES} on every backend; without an intern table the
+	 * universe is the registry's accessible symbols plus the image's definitions (the
+	 * same probe {@link #FIND_SYMBOL} uses).
+	 */
+	public static final String FIND_ALL_SYMBOLS = "FIND-ALL-SYMBOLS";
+
+	/**
+	 * The {@code apropos-list} standard function: the accessible symbols whose name
+	 * contains {@code string} as a substring (compared case-insensitively, as SBCL does),
+	 * in the designated package or, by default, in any registered package. A prelude
+	 * defun sharing {@link #FIND_ALL_SYMBOLS}' universe walk.
+	 */
+	public static final String APROPOS_LIST = "APROPOS-LIST";
+
+	/**
+	 * The {@code apropos} standard function: prints each {@link #APROPOS_LIST} match on
+	 * its own line and answers {@code nil}. A prelude defun on every backend.
+	 */
+	public static final String APROPOS = "APROPOS";
+
+	/**
+	 * The {@code package-error-package} standard function: the offending package
+	 * designator out of a {@code package-error} condition. A prelude defun reading the
+	 * {@code package} slot on every backend.
+	 */
+	public static final String PACKAGE_ERROR_PACKAGE = "PACKAGE-ERROR-PACKAGE";
+
+	/**
+	 * The mutable runtime-tier package table the compiled backends consult before their
+	 * baked tables: an alist of {@code (upcased-name use-list nicknames)} one entry per
+	 * {@link #MAKE_PACKAGE} product, maintained by the prelude {@code make-package} /
+	 * {@code delete-package} / {@code rename-package} defuns. The interpreter never binds
+	 * it (its natives mutate the live registry instead).
+	 */
+	public static final String RUNTIME_PACKAGES_INTERNAL = "%RUNTIME-PACKAGES%";
+
+	/**
+	 * The read/compile-time package table a compiled program carries when it can create,
+	 * rename, delete, enumerate or nickname packages at run time: one entry per
+	 * registered package -- the upcased name, the upcased use list, the nickname strings,
+	 * the canonically spelled accessible symbols and the external subset -- injected by
+	 * the backends after package resolution (they are the one place holding the final
+	 * registry). The interpreter never binds it (its natives read the live registry
+	 * instead).
+	 */
+	public static final String BAKED_PACKAGES_INTERNAL = "%BAKED-PACKAGES%";
+
+	/**
+	 * The {@code %do-symbols-list} universe helper behind the compiled {@code do-symbols}
+	 * / {@code do-external-symbols} lowerings (and the {@code find-all-symbols} /
+	 * {@code apropos-list} prelude defuns, which call it directly):
+	 * {@code (%do-symbols-list designator external-only-p)} answers the canonically
+	 * spelled symbols over the baked table plus the runtime table, signalling like the
+	 * interpreter when the designator names no package.
+	 */
+	public static final String DO_SYMBOLS_LIST_INTERNAL = "%DO-SYMBOLS-LIST";
+
+	/**
+	 * The {@code %baked-package-find} table probe behind the compiled
+	 * {@code make-package} / {@code delete-package} / {@code rename-package} /
+	 * {@code package-nicknames} prelude defuns: the {@code %baked-packages%} entry whose
+	 * name or nickname is the designator string, or nil.
+	 */
+	public static final String BAKED_PACKAGE_FIND_INTERNAL = "%BAKED-PACKAGE-FIND";
+
+	/**
+	 * The {@code %runtime-package-find} table probe: the {@code %do-symbols-list} and
+	 * mutation-defun half over the mutable {@code %runtime-packages%} table.
+	 */
+	public static final String RUNTIME_PACKAGE_FIND_INTERNAL = "%RUNTIME-PACKAGE-FIND";
+
+	/**
+	 * The {@code %package-symbols-where} universe walk behind {@code find-all-symbols}
+	 * and {@code apropos-list}: every distinct symbol over {@code %do-symbols-list} whose
+	 * name matches (exactly, or as a case-insensitive substring) in the designated
+	 * package, or in every package by default.
+	 */
+	public static final String PACKAGE_SYMBOLS_WHERE_INTERNAL = "%PACKAGE-SYMBOLS-WHERE";
+
+	/**
+	 * The {@code %package-spelling-normalize} probe behind
+	 * {@code %package-symbols-where}: the spelling code uses for an enumerated symbol --
+	 * a re-export redirect resolved to its home (a {@code cl} home reads bare), anything
+	 * else unchanged. The interpreter answers natively from the live registry; the
+	 * compiled backends read the baked import redirects.
+	 */
+	public static final String PACKAGE_SPELLING_NORMALIZE_INTERNAL = "%PACKAGE-SPELLING-NORMALIZE";
+
+	/**
+	 * The {@code %baked-import-redirect} probe: a member's recorded import home in the
+	 * {@code %baked-packages%} table, spelled at that home, or nil.
+	 */
+	public static final String BAKED_IMPORT_REDIRECT_INTERNAL = "%BAKED-IMPORT-REDIRECT";
+
+	/**
+	 * The {@code %split-packed} decoder behind {@code %do-symbols-list}: the baked
+	 * universe rows travel as one length-prefixed string per package
+	 * ({@code "3:CAR6:MAPCAR"}), not as thousands of quoted constants -- a quoted
+	 * constant per symbol would grow the top-level function body past the wasmtime bound
+	 * the corpus already approaches (`.kb/wasm-function-body-size.md`), while data
+	 * segments cost nothing. Answers the spelling list, nil for an empty row.
+	 */
+	public static final String SPLIT_PACKED_INTERNAL = "%SPLIT-PACKED";
+
+	/**
 	 * The {@code copy-readtable} standard function, lowered to a nil-returning no-op:
 	 * rontolisp's reader is not readtable-driven, so there is no readtable object to copy
 	 * (the ironclad {@code *ironclad-readtable*} header idiom). The arguments are still
@@ -3654,6 +3807,15 @@ public final class LispNames {
 	 * the package that owns it. Interpreter-only for the same reason.
 	 */
 	public static final String DO_SYMBOLS = "DO-SYMBOLS";
+
+	/**
+	 * The {@code do-all-symbols} macro: iterates every distinct symbol accessible in any
+	 * registered package (each visited once, in sorted order), binding
+	 * {@code (var [result-form])} like {@link #DO_SYMBOLS}. Expands through
+	 * {@code list-all-packages} plus {@code do-symbols} with duplicate suppression, so
+	 * the interpreter and both compilers share the one universe walk.
+	 */
+	public static final String DO_ALL_SYMBOLS = "DO-ALL-SYMBOLS";
 
 	/**
 	 * The {@code lower-case-p} built-in function (true if the character is a lowercase

@@ -2,7 +2,15 @@
 
 Three built-in packages: `cl`, `cl-user` (default, uses `cl`), `rontolisp` (does NOT use `cl`).
 One read/compile-time pass, `PackageResolver` (root `am.ik.rontolisp`), runs before the evaluator
-and both compilers and rewrites every form into a canonical shape.
+and both compilers and rewrites every form into a canonical shape. Packages come in
+two tiers: the read/compile-time tier (built-ins plus every `defpackage` -- resolved
+statically, immutable at run time) and the runtime tier (`make-package` products --
+a live table on every backend). The runtime tier is `.todo/741`'s design decision;
+its mechanics are the "Runtime tier" section below.
+
+**Canonical shape**: bare names for `cl`/`cl-user` symbols; `pkg:name` external, `pkg::name`
+internal -- so canonical forms re-resolve to themselves. `*package*` stays the bare cl variable,
+read at RUN time. `(in-package P)` is consumed and replaced by `(setq *package* :P)`.
 
 **Canonical shape**: bare names for `cl`/`cl-user` symbols; `pkg:name` external, `pkg::name`
 internal -- so canonical forms re-resolve to themselves. `*package*` stays the bare cl variable,
@@ -149,7 +157,11 @@ paths bake it into `Ctx.packageUseTable` beside `packageTable` and lower the cal
 designator, otherwise an `assoc` keyed by the name `find-package` answers. A "package" is its
 keyword, so all three answer lists of keywords. `package-shadowing-symbols` is a
 `LispPreludeLibrary` defun answering nil (runtime `shadow`/`shadowing-import`/`unintern` are
-documented non-goals). All five are CL FUNCTIONS.
+documented non-goals). All five are CL FUNCTIONS. When the program can create packages
+at run time the three lowerings union the `%runtime-packages%` table in (sorted, like
+the interpreter's registry order); a literal `package-use-list` of a static package
+still folds, but a literal `package-used-by-list` stays a call -- runtime users would
+be missed otherwise.
 
 **Divergence**: the baked table is frozen at compile time, so a package a compiled program creates
 later is invisible there -- the same freeze `find-package` has. A COMPUTED `(find-package x)`
@@ -255,18 +267,76 @@ by `RontoLispCliTest#{replEchoesEveryValueOnItsOwnLine,replPromptNamesTheCurrent
   CL MACROS `do-symbols`, `with-compilation-unit`; CL VARIABLES `*load-verbose*`/`*load-print*`
   (nil); constants `most-positive-fixnum`/`most-negative-fixnum`; CL TYPES `file-stream`,
   `synonym-stream`, `readtable`.
-- `do-symbols` is interpreter-only like `do-external-symbols` and reads
-  `PackageResolver.accessibleSymbols` (own names plus the externals of every used package, each
-  canonicalized against the OWNING package, so a name accessible two ways is listed once).
+- `do-symbols` / `do-external-symbols` read `PackageResolver.accessibleSymbols` /
+  `externalSymbols` on the interpreter (own names plus the externals of every used
+  package, each canonicalized against the OWNING package, so a name accessible two
+  ways is listed once); on the compiled backends they lower through the
+  `%do-symbols-list` prelude helper over the baked table plus the runtime table
+  (`LispMacroExpander.expandDoSymbols`, a cursor loop in the `dolist` shape with the
+  implicit nil block). Both establish the implicit nil block now (the interpreter's
+  `evalDoSymbols` installs it around its loop); `return` used to die there.
 - **A `cl:`-qualified read-time constant**: `LispReader.readSymbol` substitutes
   `nil`/`t`/`pi`/`most-*-fixnum`/`array-*-limit`/`char-code-limit`/
   `internal-time-units-per-second`/`lambda-list-keywords` before ANY package resolution, so `cl:pi`
   reached the resolver as an ordinary reference; `unqualifyClConstant` strips a `cl:`/`cl::`
   qualifier for exactly that set (`CL_READ_TIME_CONSTANTS`). ci-spec `missing-cl-names-443`.
 
+## Runtime tier (`.todo/741`)
+`make-package` / `delete-package` / `rename-package` / `packagep` /
+`package-nicknames` / `find-all-symbols` / `do-all-symbols` / `apropos` /
+`apropos-list` / `package-error-package` (9 CL FUNCTIONS + the macro). The model:
+
+- A runtime package is EMPTY with a use list and nicknames (upcased at creation,
+  the reader-canonical rule). Only runtime-tier packages rename/delete;
+  read/compile-time ones signal `package-error` (the baked spellings would orphan
+  otherwise). Names/nicknames colliding, unknown `:use` entries, unknown
+  designators likewise. Every failure is handler-case-catchable, carrying the
+  offending designator (upcased keyword, nil for an empty name) in the `package`
+  slot -- the `PACKAGE-ERROR` seed carries `PACKAGE` + `FORMAT-CONTROL` /
+  `FORMAT-ARGUMENTS` for exactly this, and `package-error-package` is the slot
+  reader beside `cell-error-name`.
+- Interpreter: natives over the LIVE registry (a creation is visible to later
+  top-level forms; a literal designator in the SAME form stays dynamic because a
+  lone `resolve()` never folds an unknown name -- only `resolveProgram` folds,
+  and only when the program cannot mutate). Compiled: prelude defuns over the
+  injected `%baked-packages%` table (one entry per registered package -- names and
+  small cells as strings, each symbol universe as ONE length-prefixed string
+  decoded by `%split-packed`, so the quoted universe costs data-segment bytes
+  instead of top-level body bytes against `.kb/wasm-function-body-size.md`) plus
+  the mutable `%runtime-packages%` global. The two spell the same signals with
+  the same reason strings.
+- The gate is one predicate everywhere: `resolveProgram` records
+  `runtimePackagesMutable()` (a `make-`/`delete-`/`rename-package` reference
+  outside quoted data), the `Ctx` flag follows it, and the find-package /
+  query / find-symbol / intern / status lowerings consult the runtime table only
+  then -- any other program keeps the baked-only lowerings and stays
+  byte-identical. The prelude support entries (`%runtime-packages%`,
+  `%do-symbols-list`, `%split-packed`, `%package-symbols-where`,
+  `%package-spelling-normalize`, `%baked-import-redirect`, `%baked-package-find`,
+  `%runtime-package-find`) are selected by surface reference
+  (`referencedBySurfaceForm`) and rooted in `LibraryDefunPruner` the same way,
+  so a lowering's helper can never be missing.
+- The enumeration universe (`do-symbols` lowering, `find-all-symbols`,
+  `apropos-list`, `do-all-symbols` expansion) is one walk:
+  `%package-symbols-where` over `%do-symbols-list` rows, normalized to code
+  spellings (`%package-spelling-normalize`: re-export redirects to their home,
+  a `cl` home reading bare; internal spellings untouched, since a computed
+  `find-symbol` can only build the external shape), deduplicated by content.
+  Keywords are never listed (no intern table); runtime-interned members are not
+  recorded anywhere, so a runtime package enumerates its static uses' rows.
+- Residual divergences, all documented on the reference pages: `find-symbol` /
+  `intern` over a runtime package build the permissive `PKG:NAME` spelling on
+  the compiled backends (the unknown-name deviation's sibling); a computed
+  package designator naming nothing answers nil / signals only when gated;
+  `do-symbols` yields the raw enumeration spellings (`cl:CAR`) while the
+  search family answers normalized ones (`CAR`); `--no-gc` refuses the whole
+  tier (no conses); `unintern` stays unimplemented (no intern table to remove
+  from -- the `unintern` ANSI hits are closed as cannot-exist, not fixed).
+
 ## Tests
 `PackageResolverTest` (the `::` cases, the defpackage clause/error cases, the json.lisp fixed-point
-pin, the `*package*` runtime-variable cases), `LispEvaluatorTest#{packageDefaultsToClUser,packageVarIsReadWhenTheFormRunsNotWhenItIsResolved,setqOfPackageVarSwitchesTheCurrentPackage,withStandardIoSyntaxBindsPackageToClUser}`,
-`JvmLispCompilerTest#compileAndRunPackageVarIsReadWhenTheFormRuns`,
-`WasmLispCompilerIntegrationTest#packageVarIsReadWhenTheFormRuns`, ci-spec
-`defpackage-use-export`, `packages-cl-user-default-uses-cl-and-the`. Limitations: README.
+pin, the `*package*` runtime-variable cases, the runtime-tier create/delete/rename/gate/baked-table
+cases), `LispEvaluatorTest#{packageDefaultsToClUser,packageVarIsReadWhenTheFormRunsNotWhenItIsResolved,setqOfPackageVarSwitchesTheCurrentPackage,withStandardIoSyntaxBindsPackageToClUser,runtimeMakeDeleteRenamePackage,runtimePackageFailuresSignalCatchablePackageErrors,runtimePackageEnumeration}`,
+`JvmLispCompilerTest#{compileAndRunPackageVarIsReadWhenTheFormRuns,compileAndRunRuntimePackageApi}`,
+`WasmLispCompilerIntegrationTest#{packageVarIsReadWhenTheFormRuns,runtimePackageApi}`, ci-spec
+`defpackage-use-export`, `packages-cl-user-default-uses-cl-and-the`, `runtime-package-api`. Limitations: README.

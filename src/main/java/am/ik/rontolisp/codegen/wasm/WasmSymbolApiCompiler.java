@@ -55,8 +55,10 @@ final class WasmSymbolApiCompiler {
 		List<LispVal> full = cons.toList();
 		if (full.size() == 3) {
 			// (intern name pkg): the canonical-spelling lowering shared with the 2-arg
-			// find-symbol (an unknown package is a call-time signal).
-			WasmExprCompiler.compileExpr(LispMacroExpander.expandInternInPackage(cons, ctx.packageTable), ctx);
+			// find-symbol (an unknown package is a call-time signal, or -- when the
+			// program can create packages -- a runtime-table lookup first).
+			WasmExprCompiler.compileExpr(
+					LispMacroExpander.expandInternInPackage(cons, ctx.packageTable, ctx.usesRuntimePackages), ctx);
 			return;
 		}
 		compileUnaryCall(cons, LispNames.INTERN, WasmLispCompiler.FUNC_INTERN_SYM, ctx, true);
@@ -103,7 +105,8 @@ final class WasmSymbolApiCompiler {
 	 */
 	static void compileFindSymbol(LispCons cons, WasmLispCompiler.Ctx ctx) {
 		if (cons.toList().size() == 3) {
-			LispVal inPackage = LispMacroExpander.expandFindSymbolInPackage(cons, ctx.packageTable);
+			LispVal inPackage = LispMacroExpander.expandFindSymbolInPackage(cons, ctx.packageTable,
+					ctx.usesRuntimePackages);
 			if (inPackage == null) {
 				throw new UnsupportedOperationException(LispNames.FIND_SYMBOL
 						+ " needs a literal package designator in compiled mode: " + cons.print());
@@ -134,8 +137,8 @@ final class WasmSymbolApiCompiler {
 	 */
 	static void compileFindSymbolStatus(LispCons cons, WasmLispCompiler.Ctx ctx) {
 		// The answer is a keyword or nil, both self-evaluating: no quote needed.
-		WasmExprCompiler
-			.compileExpr(LispMacroExpander.expandFindSymbolStatus(cons, ctx.packageTable, ctx.userDefunNames), ctx);
+		WasmExprCompiler.compileExpr(LispMacroExpander.expandFindSymbolStatus(cons, ctx.packageTable,
+				ctx.userDefunNames, ctx.usesRuntimePackages), ctx);
 	}
 
 	/**

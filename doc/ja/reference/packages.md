@@ -159,8 +159,17 @@ Lisp との相違が1点あります: 最初に名前が現れた後で export �
 パッケージの use リストを広げます(すべてのバックエンドで動作します)。
 
 [`export`](functions/export.md)、[`unexport`](functions/unexport.md)、
-[`import`](functions/import.md) も同じルールに従います。`make-package` と
-`rename-package` は利用できず、(トップレベルでない)他のフォームの中の
+[`import`](functions/import.md) も同じルールに従います。
+[`make-package`](functions/make-package.md)
+はこの読込/compile
+時層の隣にある実行時層です: 空パッケージを作成し(名前は大文字化、`:use`
+項目は既知のパッケージでなければなりません)、
+[`rename-package`](functions/rename-package.md) が改名し、
+[`delete-package`](functions/delete-package.md)
+が削除します。失敗は捕捉可能な `package-error`
+を signal します。読込/compile
+時パッケージは実行時に不変です -- 改名も削除も signal
+します -- また(トップレベルでない)他のフォームの中の
 `defpackage` はエラーです。
 
 パッケージは読み込み/コンパイル時に(ソース順で)解決されるため、`in-package`

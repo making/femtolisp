@@ -368,6 +368,15 @@ categories:
       - { slug: package-use-list, name: "package-use-list" }
       - { slug: package-used-by-list, name: "package-used-by-list" }
       - { slug: package-shadowing-symbols, name: "package-shadowing-symbols" }
+      - { slug: make-package, name: "make-package" }
+      - { slug: delete-package, name: "delete-package" }
+      - { slug: rename-package, name: "rename-package" }
+      - { slug: packagep, name: "packagep" }
+      - { slug: package-nicknames, name: "package-nicknames" }
+      - { slug: find-all-symbols, name: "find-all-symbols" }
+      - { slug: apropos-list, name: "apropos-list" }
+      - { slug: apropos, name: "apropos" }
+      - { slug: package-error-package, name: "package-error-package" }
       - { slug: symbol-value, name: "symbol-value" }
       - { slug: boundp, name: "boundp" }
       - { slug: fboundp, name: "fboundp" }

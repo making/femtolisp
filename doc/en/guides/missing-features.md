@@ -17,7 +17,7 @@ the [Language Reference](../reference/special-forms.md).
 | `defstruct` `:include` | single inheritance only; slot-overrides `(:include parent (slot default) ...)` work |
 | `declare` / `declaim` / `proclaim` / `the` | never change a result; on WASM an array `type` declaration directs the element-accessor emission (smaller, faster modules), everywhere else parsed no-ops |
 | `typep` / `subtypep` / `coerce` / `concatenate` | literal (quoted) type specifiers only; `coerce` targets `'list` / `'vector` / `'string` (or a float type), `concatenate` builds those same three sequence families |
-| `make-package` / `rename-package` / `delete-package` / `unintern` / `shadow` (runtime) | not available; `export` / `unexport` / `import` / `use-package` ARE, as read/compile-time directives like `in-package`; `defpackage` `:shadow` / `:shadowing-import-from` are errors |
+| `make-package` / `rename-package` / `delete-package` / `unintern` / `shadow` (runtime) | `make-package`, `rename-package`, `delete-package`, `packagep`, `package-nicknames`, `find-all-symbols`, `do-all-symbols` and `apropos`/`apropos-list` are available (two tiers below); `unintern` and the runtime `shadow` / `shadowing-import` cannot exist -- a symbol IS its name, so there is no intern table to remove it from |
 | `eval-when` | treated as `progn` (no phase distinction) |
 | `#:name` | reads as a plain symbol, without gensym-style freshness |
 | `*modules*` | not available (`require`/`provide` are) |
@@ -160,9 +160,25 @@ shadowing). `use-package`, [`export`](../reference/functions/export.md),
 `unexport` and [`import`](../reference/functions/import.md) exist as the same
 kind of read/compile-time directive `in-package` is: a literal top-level call
 takes effect for the forms that follow it, on every backend, and a
-runtime-computed call works on the interpreter only. Creating or renaming a
-package at run time does not: `make-package`, `rename-package` and
-`delete-package` are not available.
+runtime-computed call works on the interpreter only. Packages created at run
+time form the second tier: [`make-package`](../reference/functions/make-package.md)
+creates an empty package (upcased name, `:use` entries that must already exist),
+[`rename-package`](../reference/functions/rename-package.md) renames one
+(replacing its nicknames),
+[`delete-package`](../reference/functions/delete-package.md) drops one, and the
+failures signal a catchable `package-error` carrying the offending designator
+for [`package-error-package`](../reference/functions/package-error-package.md).
+Read/compile-time packages (built-ins and `defpackage` products) are immutable
+at run time -- renaming or deleting one signals -- because every backend
+resolved against them. The queries cover both tiers:
+[`packagep`](../reference/functions/packagep.md),
+[`package-nicknames`](../reference/functions/package-nicknames.md),
+[`find-all-symbols`](../reference/functions/find-all-symbols.md),
+[`do-all-symbols`](../reference/macros/do-all-symbols.md) and
+[`apropos`](../reference/functions/apropos.md) /
+[`apropos-list`](../reference/functions/apropos-list.md), with the compiled
+backends answering from a table baked in at compile time plus the packages the
+program itself creates.
 `unintern` (and the runtime `shadow` / `shadowing-import`) cannot exist here at
 all — a symbol IS its name, so there is no intern table to remove it from.
 The queries are real: [`find-package`](../reference/functions/find-package.md),

@@ -12,11 +12,11 @@ symbols come in sorted order -- sorted by the spelling that names each one's OWN
 so an inherited name sorts under the package it comes from rather than among the
 local ones by bare name.
 
-This is an **interpreter-only** operator, like
-[`do-external-symbols`](do-external-symbols.md): the compiled backends carry no
-package registry at run time, so a call reaching them is a compile error. Inside a
-`#.` read-time form it works everywhere, because the macro-time evaluator resolves
-it before compilation.
+This works on every backend: the interpreter reads its live registry, and the
+compiled backends answer from the package table baked in at compile time (plus
+any package a [`make-package`](../functions/make-package.md) call creates at run
+time). A `return` in the body exits the whole form -- the loop establishes the
+implicit nil block every iteration macro has -- skipping the result form.
 
 The example builds packages of its own rather than walking a built-in one, so the
 whole set it visits is visible on the page. `ASHARED` and `ZSHARED` are reached only

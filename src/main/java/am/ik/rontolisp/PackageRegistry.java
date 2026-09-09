@@ -56,7 +56,7 @@ public final class PackageRegistry {
 			LispNames.SHIFTF, LispNames.LOAD_TIME_VALUE, LispNames.TYPEP, LispNames.SLOT_BOUNDP,
 			LispNames.SLOT_MAKUNBOUND, LispNames.SLOT_EXISTS_P, LispNames.PRINT_UNREADABLE_OBJECT,
 			LispNames.WITH_PACKAGE_ITERATOR, LispNames.WITH_HASH_TABLE_ITERATOR, LispNames.DO_EXTERNAL_SYMBOLS,
-			LispNames.DO_SYMBOLS, LispNames.WITH_COMPILATION_UNIT, LispNames.RESTART_BIND,
+			LispNames.DO_SYMBOLS, LispNames.DO_ALL_SYMBOLS, LispNames.WITH_COMPILATION_UNIT, LispNames.RESTART_BIND,
 			LispNames.WITH_SIMPLE_RESTART, LispNames.PPRINT_LOGICAL_BLOCK);
 
 	/**
@@ -175,8 +175,10 @@ public final class PackageRegistry {
 			LispNames.LISP_IMPLEMENTATION_TYPE, LispNames.LISP_IMPLEMENTATION_VERSION, LispNames.SOFTWARE_TYPE,
 			LispNames.SOFTWARE_VERSION, LispNames.MACHINE_TYPE, LispNames.MACHINE_VERSION, LispNames.MACHINE_INSTANCE,
 			LispNames.SHORT_SITE_NAME, LispNames.LONG_SITE_NAME, LispNames.USER_HOMEDIR_PATHNAME, LispNames.COPY_SYMBOL,
-			LispNames.INVOKE_DEBUGGER, LispNames.REMOVE_METHOD, LispNames.COMPILE_FILE,
-			LispNames.COMPILE_FILE_PATHNAME);
+			LispNames.INVOKE_DEBUGGER, LispNames.REMOVE_METHOD, LispNames.COMPILE_FILE, LispNames.COMPILE_FILE_PATHNAME,
+			LispNames.MAKE_PACKAGE, LispNames.DELETE_PACKAGE, LispNames.RENAME_PACKAGE, LispNames.PACKAGEP,
+			LispNames.PACKAGE_NICKNAMES, LispNames.FIND_ALL_SYMBOLS, LispNames.APROPOS, LispNames.APROPOS_LIST,
+			LispNames.PACKAGE_ERROR_PACKAGE);
 
 	/** The {@code cl} variables. */
 	private static final Set<String> CL_VARIABLES = union(Set.of(LispNames.PACKAGE_VAR,
@@ -300,7 +302,11 @@ public final class PackageRegistry {
 			LispNames.PRINT_PACKAGE_RAW_P_INTERNAL, LispNames.PRINT_CASED_FOLD_LEAF_INTERNAL,
 			LispNames.PRINT_CASED_RADIXED_LEAF_INTERNAL, LispNames.HOST_GETENV, LispNames.HOST_GETCWD,
 			LispNames.HOST_EXIT, LispNames.HOST_ARGV, LispNames.GETENV_OVERRIDE, LispNames.GETENV_OVERRIDE_SET,
-			LispNames.NSTRING_REPLACE, LispNames.TARGET_MACHINE_TYPE);
+			LispNames.NSTRING_REPLACE, LispNames.TARGET_MACHINE_TYPE, LispNames.RUNTIME_PACKAGES_INTERNAL,
+			LispNames.BAKED_PACKAGES_INTERNAL, LispNames.DO_SYMBOLS_LIST_INTERNAL,
+			LispNames.BAKED_PACKAGE_FIND_INTERNAL, LispNames.RUNTIME_PACKAGE_FIND_INTERNAL,
+			LispNames.PACKAGE_SYMBOLS_WHERE_INTERNAL, LispNames.PACKAGE_SPELLING_NORMALIZE_INTERNAL,
+			LispNames.BAKED_IMPORT_REDIRECT_INTERNAL, LispNames.SPLIT_PACKED_INTERNAL);
 
 	/**
 	 * The names of the symbols owned by the {@code cl} package, derived as the union of
@@ -638,6 +644,14 @@ public final class PackageRegistry {
 	 * {@link #BUILTIN_NICKNAMES}; {@code defpackage :nicknames} adds more.
 	 */
 	private final Map<String, String> nicknames = new HashMap<>(BUILTIN_NICKNAMES);
+
+	/**
+	 * The canonical names of the runtime-tier packages (see
+	 * {@link #markRuntimePackage(String)}): created by {@code make-package} after
+	 * read/compile time, and the only ones {@code rename-package} /
+	 * {@code delete-package} may touch.
+	 */
+	private final Set<String> runtimePackages = new HashSet<>();
 
 	/**
 	 * The canonical names of the packages the constructor seeds (plus {@code keyword},
@@ -1330,6 +1344,89 @@ public final class PackageRegistry {
 	 */
 	public boolean contains(String name) {
 		return this.packages.containsKey(canonicalName(name));
+	}
+
+	/**
+	 * Removes a package registration (the runtime {@code delete-package}): the package
+	 * itself and every nickname pointing at it. Seeded built-in nicknames are never
+	 * stored per-package (they live in the static table), so deleting a package cannot
+	 * orphan one.
+	 * @param canonicalName the canonical package name
+	 * @return {@code true} when a registration was removed
+	 */
+	public boolean remove(String canonicalName) {
+		if (this.packages.remove(canonicalName) == null) {
+			return false;
+		}
+		this.nicknames.entrySet().removeIf(entry -> entry.getValue().equals(canonicalName));
+		this.runtimePackages.remove(canonicalName);
+		return true;
+	}
+
+	/**
+	 * Re-registers a package under a new canonical name (the runtime
+	 * {@code rename-package}): the same use list, symbols, externals, imports and shadows
+	 * travel, every old nickname is dropped, and {@code newNicknames} are registered for
+	 * the new name.
+	 * @param oldName the current canonical package name
+	 * @param newName the new canonical package name
+	 * @param newNicknames the nicknames replacing the old ones
+	 */
+	public void rename(String oldName, String newName, java.util.Collection<String> newNicknames) {
+		LispPackage pkg = this.packages.remove(oldName);
+		if (pkg == null) {
+			throw new LispPackageException("No such package: " + oldName);
+		}
+		this.nicknames.entrySet().removeIf(entry -> entry.getValue().equals(oldName));
+		boolean runtime = this.runtimePackages.remove(oldName);
+		this.packages.put(newName,
+				new LispPackage(newName, pkg.useList(), pkg.symbols(), pkg.externals(), pkg.imports(), pkg.shadows()));
+		for (String nickname : newNicknames) {
+			this.nicknames.put(nickname, newName);
+		}
+		if (runtime) {
+			this.runtimePackages.add(newName);
+		}
+	}
+
+	/**
+	 * Marks a package name as runtime-tier (created by {@code make-package} rather than
+	 * established at read/compile time). Only marked packages may be renamed or deleted:
+	 * the read/compile-time registry is what every backend resolved against, so mutating
+	 * it at run time would orphan the compiled spellings.
+	 * @param canonicalName the canonical package name
+	 */
+	public void markRuntimePackage(String canonicalName) {
+		this.runtimePackages.add(canonicalName);
+	}
+
+	/**
+	 * Returns whether the named package is runtime-tier (see
+	 * {@link #markRuntimePackage(String)}).
+	 * @param canonicalName the canonical package name
+	 * @return {@code true} when a runtime {@code make-package} created it
+	 */
+	public boolean isRuntimePackage(String canonicalName) {
+		return this.runtimePackages.contains(canonicalName);
+	}
+
+	/**
+	 * The nicknames currently registered for a canonical package name, in a deterministic
+	 * order. Backs the runtime {@code package-nicknames}: seeded built-in nicknames are
+	 * instance state (copied from the static table at construction), so they are listed
+	 * like user {@code defpackage :nicknames}.
+	 * @param canonicalName the canonical package name
+	 * @return the nickname spellings
+	 */
+	public java.util.List<String> nicknamesFor(String canonicalName) {
+		java.util.List<String> out = new java.util.ArrayList<>();
+		this.nicknames.forEach((nickname, target) -> {
+			if (target.equals(canonicalName)) {
+				out.add(nickname);
+			}
+		});
+		out.sort(String::compareTo);
+		return out;
 	}
 
 	/**

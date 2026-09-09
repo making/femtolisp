@@ -2152,6 +2152,152 @@ public final class LispEvaluator {
 					});
 					return packageKeywordList(users);
 				}));
+		// make-package / delete-package / rename-package / package-nicknames: the
+		// runtime-tier package API over the LIVE registry (so a package created here is
+		// visible to the forms evaluated after it). The compiled backends serve the
+		// same operators from prelude defuns over the baked table plus the
+		// %runtime-packages% table; failures signal a catchable package-error on all
+		// four backends, carrying the offending designator in its package slot.
+		this.globalEnv.defineFunction(LispNames.MAKE_PACKAGE, new LispFunction(LispNames.MAKE_PACKAGE, args -> {
+			if (args.isEmpty()) {
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.MAKE_PACKAGE + " expects a package name");
+			}
+			String name = packageDesignator(LispNames.MAKE_PACKAGE, args.get(0));
+			List<String> use = new ArrayList<>();
+			List<String> nicknames = new ArrayList<>();
+			for (int i = 1; i < args.size(); i += 2) {
+				if (i + 1 >= args.size() || !(args.get(i) instanceof LispSymbol key) || !key.isKeyword()) {
+					throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+							LispNames.MAKE_PACKAGE + " expects :use / :nicknames keyword arguments");
+				}
+				List<String> values = designatorList(LispNames.MAKE_PACKAGE, args.get(i + 1));
+				if (LispNames.USE_KEYWORD.equals(key.name())) {
+					use.addAll(values);
+				}
+				else if (LispNames.NICKNAMES_KEYWORD.equals(key.name())) {
+					nicknames.addAll(values);
+				}
+				else {
+					throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+							LispNames.MAKE_PACKAGE + " does not accept " + key.name());
+				}
+			}
+			try {
+				return packageKeyword(this.packageResolver.createRuntimePackage(name, use, nicknames));
+			}
+			catch (am.ik.rontolisp.RuntimePackageException ex) {
+				return signalPackageError(java.util.Objects.requireNonNullElse(ex.getMessage(), LispNames.MAKE_PACKAGE),
+						ex.designator());
+			}
+		}));
+		this.globalEnv.defineFunction(LispNames.DELETE_PACKAGE, new LispFunction(LispNames.DELETE_PACKAGE, args -> {
+			requireSingleArg(LispNames.DELETE_PACKAGE, args);
+			String designator = packageDesignator(LispNames.DELETE_PACKAGE, args.get(0));
+			try {
+				this.packageResolver.deleteRuntimePackage(designator);
+				return LispTrue.INSTANCE;
+			}
+			catch (am.ik.rontolisp.RuntimePackageException ex) {
+				return signalPackageError(
+						java.util.Objects.requireNonNullElse(ex.getMessage(), LispNames.DELETE_PACKAGE),
+						ex.designator());
+			}
+		}));
+		this.globalEnv.defineFunction(LispNames.RENAME_PACKAGE, new LispFunction(LispNames.RENAME_PACKAGE, args -> {
+			if (args.size() < 2 || args.size() > 3) {
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.RENAME_PACKAGE + " expects a package, a new name and optional new nicknames");
+			}
+			String designator = packageDesignator(LispNames.RENAME_PACKAGE, args.get(0));
+			String newName = packageDesignator(LispNames.RENAME_PACKAGE, args.get(1));
+			List<String> newNicknames = args.size() == 3 ? designatorList(LispNames.RENAME_PACKAGE, args.get(2))
+					: List.of();
+			try {
+				return packageKeyword(this.packageResolver.renameRuntimePackage(designator, newName, newNicknames));
+			}
+			catch (am.ik.rontolisp.RuntimePackageException ex) {
+				return signalPackageError(
+						java.util.Objects.requireNonNullElse(ex.getMessage(), LispNames.RENAME_PACKAGE),
+						ex.designator());
+			}
+		}));
+		this.globalEnv.defineFunction(LispNames.PACKAGE_NICKNAMES,
+				new LispFunction(LispNames.PACKAGE_NICKNAMES, args -> {
+					requireSingleArg(LispNames.PACKAGE_NICKNAMES, args);
+					String designator = packageDesignator(LispNames.PACKAGE_NICKNAMES, args.get(0));
+					try {
+						List<String> nicknames = this.packageResolver.runtimePackageNicknames(designator);
+						LispVal out = LispNil.INSTANCE;
+						for (int i = nicknames.size() - 1; i >= 0; i--) {
+							out = new LispCons(new LispString(nicknames.get(i)), out);
+						}
+						return out;
+					}
+					catch (am.ik.rontolisp.RuntimePackageException ex) {
+						return signalPackageError(
+								java.util.Objects.requireNonNullElse(ex.getMessage(), LispNames.PACKAGE_NICKNAMES),
+								ex.designator());
+					}
+				}));
+		// %do-symbols-list: the universe list behind the find-all-symbols /
+		// apropos-list prelude defuns (which call it directly) on the interpreter --
+		// over the LIVE registry, like evalDoSymbols. Overrides the backend-neutral
+		// prelude defun, which reads the compiled backends' injected %baked-packages%
+		// table instead (the symbol-package precedent).
+		this.globalEnv.defineFunction(LispNames.DO_SYMBOLS_LIST_INTERNAL,
+				new LispFunction(LispNames.DO_SYMBOLS_LIST_INTERNAL, args -> {
+					if (args.size() != 3) {
+						throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+								LispNames.DO_SYMBOLS_LIST_INTERNAL + " expects 3 arguments, got " + args.size());
+					}
+					String operator = args.get(2) instanceof LispString op ? op.value() : LispNames.DO_SYMBOLS;
+					String designator = packageDesignator(operator, args.get(0));
+					boolean externalOnly = !(args.get(1) instanceof LispNil);
+					if (this.packageResolver.findPackageName(designator) == null) {
+						// The same computed-control signal the prelude helper emits,
+						// so the message matches on every backend.
+						LispVal control = new LispCons(new LispSymbol(LispNames.CONCATENATE), new LispCons(
+								quoteValue(new LispString(operator + ": no package named ~A")), LispNil.INSTANCE));
+						LispVal form = new LispCons(new LispSymbol(LispNames.ERROR),
+								new LispCons(control, new LispCons(quoteValue(args.get(0)), LispNil.INSTANCE)));
+						return eval(form, this.globalEnv);
+					}
+					List<LispSymbol> symbols = externalOnly ? this.packageResolver.externalSymbols(designator)
+							: this.packageResolver.accessibleSymbols(designator);
+					LispVal out = LispNil.INSTANCE;
+					for (int i = symbols.size() - 1; i >= 0; i--) {
+						out = new LispCons(symbols.get(i), out);
+					}
+					return out;
+				}));
+		// %package-spelling-normalize: the spelling code uses for an enumerated
+		// symbol, over the LIVE registry (a re-export redirect resolved to its home
+		// through memberSpelling, anything else unchanged). Overrides the
+		// backend-neutral prelude defun, which reads the baked import redirects
+		// instead (the symbol-package precedent).
+		this.globalEnv.defineFunction(LispNames.PACKAGE_SPELLING_NORMALIZE_INTERNAL,
+				new LispFunction(LispNames.PACKAGE_SPELLING_NORMALIZE_INTERNAL, args -> {
+					requireSingleArg(LispNames.PACKAGE_SPELLING_NORMALIZE_INTERNAL, args);
+					if (!(args.get(0) instanceof LispSymbol sym)) {
+						throw new LispEvalException(LispNames.PACKAGE_SPELLING_NORMALIZE_INTERNAL
+								+ " expects a symbol, got " + args.get(0).print());
+					}
+					String spelling = sym.name();
+					if (spelling.startsWith("#:") || spelling.startsWith(":")) {
+						return sym;
+					}
+					PackageRegistry.QualifiedName qualified = PackageRegistry.splitQualified(spelling);
+					if (qualified == null || qualified.internal()) {
+						return sym;
+					}
+					String home = this.packageResolver.findPackageName(qualified.pkg());
+					if (home == null) {
+						return sym;
+					}
+					String normalized = this.packageResolver.memberSpelling(home, qualified.member());
+					return normalized == null ? sym : new LispSymbol(normalized);
+				}));
 		// import: the same split as use-package/export -- a literal top-level call is
 		// consumed by the PackageResolver (so it works on every backend), and this
 		// runtime binding serves the computed calls only the interpreter can run,
@@ -5660,6 +5806,8 @@ public final class LispEvaluator {
 			case LispNames.DO_EXTERNAL_SYMBOLS:
 			case LispNames.DO_SYMBOLS:
 				return evalDoSymbols(cons, env, name);
+			case LispNames.DO_ALL_SYMBOLS:
+				return evalBuiltinMacro(cons, env, LispMacroExpander::expandDoAllSymbols);
 			case LispNames.PROG:
 				return evalBuiltinMacro(cons, env, c -> LispMacroExpander.expandProg(c, false));
 			case LispNames.PROG_STAR:
@@ -6334,15 +6482,27 @@ public final class LispEvaluator {
 				: this.packageResolver.currentPackageName();
 		List<LispSymbol> symbols = LispNames.DO_SYMBOLS.equals(operator)
 				? this.packageResolver.accessibleSymbols(designator) : this.packageResolver.externalSymbols(designator);
-		for (LispSymbol sym : symbols) {
-			Environment iterEnv = new Environment(env);
-			iterEnv.define(var.name(), sym);
-			for (LispVal bodyForm : parts.subList(2, parts.size())) {
-				eval(bodyForm, iterEnv);
+		// The implicit nil block every iteration macro establishes: a (return ...)
+		// in the body exits the whole form, skipping the result form.
+		Environment blockEnv = new Environment(env);
+		blockEnv.installBlock(NIL_BLOCK);
+		try {
+			for (LispSymbol sym : symbols) {
+				Environment iterEnv = new Environment(blockEnv);
+				iterEnv.define(var.name(), sym);
+				for (LispVal bodyForm : parts.subList(2, parts.size())) {
+					eval(bodyForm, iterEnv);
+				}
 			}
 		}
+		catch (BlockReturnSignal signal) {
+			if (signal.target() == blockEnv) {
+				return signal.value();
+			}
+			throw signal;
+		}
 		if (spec.size() >= 3) {
-			Environment resultEnv = new Environment(env);
+			Environment resultEnv = new Environment(blockEnv);
 			resultEnv.define(var.name(), LispNil.INSTANCE);
 			return eval(spec.get(2), resultEnv);
 		}
@@ -7568,6 +7728,51 @@ public final class LispEvaluator {
 			case LispNil ignored -> "NIL";
 			default -> throw new LispEvalException(operator + " expects a package designator, got " + val.print());
 		};
+	}
+
+	/**
+	 * A package designator or a list of them (the {@code :use} / {@code :nicknames}
+	 * values), coerced to bare package names.
+	 */
+	private static List<String> designatorList(String operator, LispVal val) {
+		if (val instanceof LispNil) {
+			return List.of();
+		}
+		if (val instanceof LispCons cons) {
+			List<String> out = new ArrayList<>();
+			for (LispVal element : cons.toList()) {
+				out.add(packageDesignator(operator, element));
+			}
+			return out;
+		}
+		return List.of(packageDesignator(operator, val));
+	}
+
+	/**
+	 * Signals a catchable {@code package-error} carrying the reason in its message and
+	 * the offending designator (upcased, keyword-shaped like {@code find-package}
+	 * answers; nil for an empty designator, which designates no package anywhere) in its
+	 * {@code package} slot. Evaluates the same typed {@code (error 'package-error ...)}
+	 * form user code signals, so the message and the condition the handlers see are
+	 * identical to the compiled backends' prelude path; never returns normally.
+	 * @param message the reason text
+	 * @param designator the offending package designator as given
+	 * @return nothing (always throws)
+	 */
+	private LispVal signalPackageError(String message, String designator) {
+		List<LispVal> parts = new ArrayList<>();
+		parts.add(new LispSymbol(LispNames.ERROR));
+		parts.add(quoteValue(new LispSymbol(ClosRegistry.PACKAGE_ERROR_CLASS_NAME)));
+		parts.add(new LispSymbol(":PACKAGE"));
+		parts.add(designator.isEmpty() ? LispNil.INSTANCE
+				: quoteValue(packageKeyword(designator.toUpperCase(java.util.Locale.ROOT))));
+		parts.add(new LispSymbol(":FORMAT-CONTROL"));
+		parts.add(quoteValue(new LispString(message)));
+		LispVal form = LispNil.INSTANCE;
+		for (int i = parts.size() - 1; i >= 0; i--) {
+			form = new LispCons(parts.get(i), form);
+		}
+		return eval(form, this.globalEnv);
 	}
 
 	private static void requireSingleArg(String name, List<LispVal> args) {

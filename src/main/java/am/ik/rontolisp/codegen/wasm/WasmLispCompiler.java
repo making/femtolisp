@@ -2645,6 +2645,10 @@ public final class WasmLispCompiler implements LispCompiler {
 				packageResolver::spellsAsExternal, this.dynamic, !reportsUncaught,
 				this.optimize.eliminatesDeadCode() && !this.dynamic
 						? new am.ik.rontolisp.compiler.GenericDispatchNarrowing() : null);
+		// The read/compile-time package table for the runtime package API (see
+		// .kb/packages.md): injected after package resolution, from the resolver's
+		// final registry, only when the program can need it at run time.
+		program = LispMacroExpander.injectBakedPackageTable(program, packageResolver);
 		// Whether any signal's message string is observable: the narrowed routing answer
 		// (a message is read only through a HELD condition), forced on with it under
 		// restart mode / --dynamic, and in EH mode by the landing pad -- a plain %error
@@ -3547,6 +3551,7 @@ public final class WasmLispCompiler implements LispCompiler {
 			.userDefunNames(Set.copyOf(userDefinedNames))
 			.warnedClRedefinitions(warnedClRedefinitions)
 			.usesFmakunbound(programUsesSymbol(program, LispNames.FMAKUNBOUND))
+			.usesRuntimePackages(packageResolver.runtimePackagesMutable())
 			.usesProgv(programUsesSymbol(program, LispNames.PROGV))
 			// Every context carries the flag (not just _start): the progv lowering
 			// maintains the eval env mirror from any position, while the top-level-only
@@ -8279,6 +8284,15 @@ public final class WasmLispCompiler implements LispCompiler {
 		boolean usesFmakunbound = false;
 
 		/**
+		 * Whether the program can create, delete or rename packages at run time. When it
+		 * does, the package lowerings consult the {@code %runtime-packages%} table before
+		 * their baked answers (see {@code .kb/packages.md}); read off the resolver after
+		 * {@code resolveProgram}. Every other program keeps the baked-only lowerings and
+		 * stays byte-identical.
+		 */
+		boolean usesRuntimePackages = false;
+
+		/**
 		 * Whether the program uses {@code progv}. Switches {@code symbol-value} to the
 		 * dynamic-first dispatch over the special set
 		 * ({@code WasmSymbolApiCompiler.compileSymbolValue}).
@@ -8613,6 +8627,7 @@ public final class WasmLispCompiler implements LispCompiler {
 			this.numDefuns = builder.numDefuns;
 			this.userDefunNames = builder.userDefunNames;
 			this.usesFmakunbound = builder.usesFmakunbound;
+			this.usesRuntimePackages = builder.usesRuntimePackages;
 			this.usesProgv = builder.usesProgv;
 			this.usesEval = builder.usesEval;
 			this.packageTable = builder.packageTable;
@@ -8748,6 +8763,8 @@ public final class WasmLispCompiler implements LispCompiler {
 			private Set<String> userDefunNames = Set.of();
 
 			private boolean usesFmakunbound = false;
+
+			private boolean usesRuntimePackages = false;
 
 			private boolean usesProgv = false;
 
@@ -9055,6 +9072,11 @@ public final class WasmLispCompiler implements LispCompiler {
 
 			Builder usesFmakunbound(boolean usesFmakunbound) {
 				this.usesFmakunbound = usesFmakunbound;
+				return this;
+			}
+
+			Builder usesRuntimePackages(boolean usesRuntimePackages) {
+				this.usesRuntimePackages = usesRuntimePackages;
 				return this;
 			}
 

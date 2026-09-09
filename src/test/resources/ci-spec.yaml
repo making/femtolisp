@@ -2687,6 +2687,85 @@ cases:
       :CI-PQL
       (:CL)
       ("CL" "CI-IMP-SRC")
+  # The runtime-tier package API (.todo/741): make-package / delete-package /
+  # rename-package / packagep / package-nicknames over one runtime package, the
+  # catchable package-error failures with their :package slot, and the enumeration
+  # family (find-all-symbols / apropos / do-all-symbols / do-symbols) over the
+  # shared universe. Everything created here is deleted again, so later cases see
+  # the registry as they left it.
+  - name: runtime-package-api
+    source: |
+      (print (make-package :ci-rpkg :use '(:cl) :nicknames '(:ci-rp)))
+      (print (find-package :ci-rp))
+      (print (find-package :ci-rpkg))
+      (print (find-package :no-such-ci-pkg-zzz))
+      (print (packagep :ci-rpkg))
+      (print (packagep :no-such-ci-pkg-zzz))
+      (print (packagep 42))
+      (print (package-nicknames :ci-rpkg))
+      (print (package-use-list :ci-rpkg))
+      (print (if (member :ci-rpkg (package-used-by-list :cl)) t nil))
+      (print (if (member :ci-rpkg (list-all-packages)) t nil))
+      (print (handler-case (make-package :ci-rpkg) (package-error (c) (package-error-package c))))
+      (print (make-package "CI-RSTR" :use :cl :nicknames "CI-RS"))
+      (print (package-nicknames "CI-RS"))
+      (print (rename-package :ci-rp :ci-rpkg2 :ci-rp2))
+      (print (package-nicknames :ci-rpkg2))
+      (print (find-package :ci-rpkg))
+      (print (delete-package :ci-rpkg2))
+      (print (delete-package "CI-RSTR"))
+      (print (find-package :ci-rpkg2))
+      (print (handler-case (make-package :cl) (package-error (c) (list (type-of c) (package-error-package c)))))
+      (print (handler-case (make-package :ci-baduse :use '(:nope-zzz)) (package-error (c) (package-error-package c))))
+      (print (handler-case (delete-package :no-such-ci-pkg-zzz) (package-error (c) (list (type-of c) (package-error-package c)))))
+      (print (handler-case (delete-package :cl) (package-error (c) (package-error-package c))))
+      (print (handler-case (rename-package :cl :cl2) (package-error (c) (package-error-package c))))
+      (print (handler-case (package-nicknames :no-such-ci-pkg-zzz) (package-error (c) (package-error-package c))))
+      (print (length (find-all-symbols 'car)))
+      (print (member 'car (find-all-symbols 'car)))
+      (print (apropos-list "CAR" :cl))
+      (print (do-all-symbols (s nil) (when (eq s 'car) (return s))))
+      (print (do-symbols (s :cl-user "ci-ds") (when (string= (symbol-name s) "CAR") (return :ci-found))))
+      (print (do-external-symbols (s :cl "ci-de") (when (string= (symbol-name s) "CAR") (return :ci-found))))
+      (print (do-all-symbols (s "ci-da")))
+      (print (apropos "CAR" :cl))
+    expected: |
+      :CI-RPKG
+      :CI-RPKG
+      :CI-RPKG
+      NIL
+      T
+      NIL
+      NIL
+      ("CI-RP")
+      (:CL)
+      T
+      T
+      :CI-RPKG
+      :CI-RSTR
+      ("CI-RS")
+      :CI-RPKG2
+      ("CI-RP2")
+      NIL
+      T
+      T
+      NIL
+      (PACKAGE-ERROR :CL)
+      :NOPE-ZZZ
+      (PACKAGE-ERROR :NO-SUCH-CI-PKG-ZZZ)
+      :CL
+      :CL
+      :NO-SUCH-CI-PKG-ZZZ
+      1
+      (CAR)
+      (CAR MAPCAR)
+      CAR
+      :CI-FOUND
+      :CI-FOUND
+      "ci-da"
+      CAR
+      MAPCAR
+      NIL
   # remprop, the plist REMOVER: one prelude defun over the same %symbol-plists store
   # get / (setf get) / symbol-plist share.
   - name: symbol-plist-remprop

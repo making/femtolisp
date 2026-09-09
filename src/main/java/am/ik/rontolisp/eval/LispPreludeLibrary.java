@@ -1108,6 +1108,213 @@ public final class LispPreludeLibrary {
 				(defun package-shadowing-symbols (%pss-pkg)
 				  (progn (package-name %pss-pkg) nil))
 				""");
+		// The runtime-tier package API (see .kb/packages.md): make-package /
+		// delete-package / rename-package / package-nicknames as prelude defuns for
+		// the COMPILED backends, over the injected %baked-packages% table (the
+		// read/compile-time packages) plus the mutable %runtime-packages% table. The
+		// interpreter never loads these -- its natives mutate the live registry
+		// instead, so a package created there is visible to later forms -- but the
+		// signal shapes and messages match the natives exactly.
+		//
+		// Entry layout, baked and runtime alike: (name use nicknames) with the name
+		// and use entries as keywords and the nicknames as upcased strings. Baked
+		// entries carry the symbol universes after that (accessible externals, as
+		// spelling strings) plus the import redirects (dotted (member . home)
+		// pairs); a runtime package records no members (there is no intern table),
+		// so its enumeration answers come from its static uses' baked rows.
+		SOURCES.put(LispNames.RUNTIME_PACKAGES_INTERNAL, """
+				(defvar %runtime-packages% nil)
+				""");
+		SOURCES.put(LispNames.BAKED_IMPORT_REDIRECT_INTERNAL, """
+				(defun %baked-import-redirect (%bir-name %bir-home)
+				  (let ((%bir-imports nil))
+				    (dolist (%bir-e %baked-packages%)
+				      (when (string= (string %bir-home) (car %bir-e))
+				        (setq %bir-imports (sixth %bir-e))))
+				    (let ((%bir-hit (assoc %bir-name %bir-imports :test #'string=)))
+				      (when %bir-hit
+				        (let ((%bir-dest (cdr %bir-hit)))
+				          (if (string= %bir-dest "CL")
+				              (intern %bir-name)
+				              (intern (concatenate 'string %bir-dest ":" %bir-name))))))))
+				""");
+		SOURCES.put(LispNames.PACKAGE_SPELLING_NORMALIZE_INTERNAL, """
+				(defun %package-spelling-normalize (%psn-s)
+				  (if (or (not (symbolp %psn-s))
+				          (null (symbol-package %psn-s))
+				          (search "::" (prin1-to-string %psn-s)))
+				      %psn-s
+				      (let ((%psn-name (symbol-name %psn-s))
+				            (%psn-home (symbol-package %psn-s)))
+				        (or (%baked-import-redirect %psn-name %psn-home)
+				            (find-symbol %psn-name %psn-home)
+				            %psn-s))))
+				""");
+		SOURCES.put(LispNames.BAKED_PACKAGE_FIND_INTERNAL, """
+				(defun %baked-package-find (%bpf-s)
+				  (find-if (lambda (%bpf-e)
+				             (or (string= %bpf-s (string (car %bpf-e)))
+				                 (member %bpf-s (caddr %bpf-e) :test #'string=)))
+				           %baked-packages%))
+				""");
+		SOURCES.put(LispNames.RUNTIME_PACKAGE_FIND_INTERNAL, """
+				(defun %runtime-package-find (%rpf-s)
+				  (find-if (lambda (%rpf-e)
+				             (or (string= %rpf-s (string (car %rpf-e)))
+				                 (member %rpf-s (caddr %rpf-e) :test #'string=)))
+				           %runtime-packages%))
+				""");
+		SOURCES.put(LispNames.PACKAGE_SYMBOLS_WHERE_INTERNAL, """
+				(defun %package-symbols-where (%psw-pat %psw-exact %psw-pkg)
+				  (let ((%psw-pkgs (if (null %psw-pkg) (list-all-packages) (list %psw-pkg)))
+				        (%psw-op (if %psw-exact "FIND-ALL-SYMBOLS" "APROPOS-LIST"))
+				        (%psw-acc nil))
+				    (dolist (%psw-p %psw-pkgs (nreverse %psw-acc))
+				      (dolist (%psw-s (%do-symbols-list %psw-p nil %psw-op))
+				        ;; Normalize to the spelling code uses (a re-export redirect
+				        ;; resolved to its home); a symbol nothing can see keeps its
+				        ;; enumerated spelling.
+				        (let ((%psw-n (%package-spelling-normalize %psw-s)))
+				          (when (if %psw-exact
+				                    (string= %psw-pat (symbol-name %psw-n))
+				                    (search %psw-pat (string-upcase (symbol-name %psw-n))))
+				            (unless (member %psw-n %psw-acc :test #'equal)
+				              (push %psw-n %psw-acc))))))))
+				""");
+		SOURCES.put(LispNames.SPLIT_PACKED_INTERNAL, """
+				(defun %split-packed (%sp-s)
+				  (if (or (null %sp-s) (string= %sp-s "")) nil
+				      (let ((%sp-acc nil) (%sp-i 0) (%sp-n (length %sp-s)))
+				        (while (< %sp-i %sp-n)
+				          (let ((%sp-j (position #\\: %sp-s :start %sp-i)))
+				            (let ((%sp-len (parse-integer (subseq %sp-s %sp-i %sp-j)))
+				                  (%sp-k (+ %sp-j 1)))
+				              (push (subseq %sp-s %sp-k (+ %sp-k %sp-len)) %sp-acc)
+				              (setq %sp-i (+ %sp-k %sp-len)))))
+				        (nreverse %sp-acc))))
+				""");
+		SOURCES.put(LispNames.DO_SYMBOLS_LIST_INTERNAL,
+				"""
+						(defun %do-symbols-list (%dsl-pkg %dsl-ext-only %dsl-op)
+						  (let ((%dsl-p (find-package %dsl-pkg))
+						        (%dsl-acc nil))
+						    (if (null %dsl-p)
+						        (error (concatenate 'string %dsl-op ": no package named ~A") %dsl-pkg))
+						    ;; The baked rows carry each universe as one packed string
+						    ;; (quoted symbols would trip the backends' reference scans
+						    ;; and grow the top-level body past the wasmtime bound);
+						    ;; unpack, then materialize through intern.
+						    (dolist (%dsl-e %baked-packages%)
+						      (when (string= (string %dsl-p) (car %dsl-e))
+						        (setq %dsl-acc (append %dsl-acc (mapcar (lambda (%dsl-s) (intern %dsl-s))
+						                                               (%split-packed (if %dsl-ext-only (fifth %dsl-e) (cadddr %dsl-e))))))))
+						    (dolist (%dsl-r %runtime-packages%)
+						      (when (string= (string %dsl-p) (string (car %dsl-r)))
+						        (dolist (%dsl-u (cadr %dsl-r))
+						          (dolist (%dsl-e %baked-packages%)
+						            (when (string= (string %dsl-u) (car %dsl-e))
+						              (setq %dsl-acc (append %dsl-acc (mapcar (lambda (%dsl-s) (intern %dsl-s))
+						                                                     (%split-packed (if %dsl-ext-only (fifth %dsl-e) (cadddr %dsl-e)))))))))))
+						    (remove-duplicates %dsl-acc :test #'equal)))
+						""");
+		SOURCES.put(LispNames.PACKAGE_ERROR_PACKAGE, """
+				(defun package-error-package (%pep-c) (slot-value %pep-c 'package))
+				""");
+		SOURCES.put(LispNames.PACKAGEP, """
+				(defun packagep (%pp-x)
+				  (if (and (or (stringp %pp-x) (symbolp %pp-x)) (find-package %pp-x)) t nil))
+				""");
+		SOURCES.put(LispNames.MAKE_PACKAGE,
+				"""
+						(defun make-package (%mp-name &key use nicknames)
+						  (let ((%mp-n (string-upcase (string %mp-name)))
+						        (%mp-u (if (null use) nil (if (listp use) use (list use))))
+						        (%mp-nn (if (null nicknames) nil (if (listp nicknames) nicknames (list nicknames)))))
+						    (if (string= %mp-n "")
+						        (error 'package-error :package nil :format-control "MAKE-PACKAGE expects a package name"))
+						    (if (or (%baked-package-find %mp-n) (%runtime-package-find %mp-n))
+						        (error 'package-error :package (intern %mp-n :keyword) :format-control (concatenate 'string "MAKE-PACKAGE: package already exists: " %mp-n)))
+						    (setq %mp-u (mapcar (lambda (%mp-e)
+						                          (or (find-package %mp-e)
+						                              (error 'package-error :package (intern (string-upcase (string %mp-e)) :keyword) :format-control (concatenate 'string "MAKE-PACKAGE: no such package: " (string %mp-e)))))
+						                        %mp-u))
+						    (setq %mp-nn (sort (mapcar (lambda (%mp-e)
+						                           (let ((%mp-k (string-upcase (string %mp-e))))
+						                             (if (or (%baked-package-find %mp-k) (%runtime-package-find %mp-k))
+						                                 (error 'package-error :package (intern %mp-k :keyword) :format-control (concatenate 'string "MAKE-PACKAGE: package already exists: " %mp-k))
+						                                 %mp-k)))
+						                         %mp-nn) #'string<))
+						    (push (list (intern %mp-n :keyword) %mp-u %mp-nn) %runtime-packages%)
+						    (intern %mp-n :keyword)))
+						""");
+		SOURCES.put(LispNames.DELETE_PACKAGE,
+				"""
+						(defun delete-package (%dp-pkg)
+						  (let ((%dp-s (string %dp-pkg)))
+						    (if (%runtime-package-find %dp-s)
+						        (progn (setq %runtime-packages%
+						                    (remove-if (lambda (%dp-e)
+						                                 (or (string= %dp-s (string (car %dp-e)))
+						                                     (member %dp-s (caddr %dp-e) :test #'string=)))
+						                               %runtime-packages%))
+						               t)
+						        (if (%baked-package-find %dp-s)
+						            (error 'package-error :package (intern (string-upcase %dp-s) :keyword) :format-control (concatenate 'string "DELETE-PACKAGE: cannot delete read/compile-time package: " (string-upcase %dp-s)))
+						            (error 'package-error :package (intern (string-upcase %dp-s) :keyword) :format-control (concatenate 'string "DELETE-PACKAGE: no such package: " %dp-s))))))
+						""");
+		SOURCES.put(LispNames.RENAME_PACKAGE,
+				"""
+						(defun rename-package (%rp-pkg %rp-new &optional %rp-new-nicknames)
+						  (let ((%rp-s (string %rp-pkg))
+						        (%rp-n (string-upcase (string %rp-new)))
+						        (%rp-nn (if (null %rp-new-nicknames) nil (if (listp %rp-new-nicknames) %rp-new-nicknames (list %rp-new-nicknames)))))
+						    (let ((%rp-old (%runtime-package-find %rp-s)))
+						      (if (null %rp-old)
+						          (if (%baked-package-find %rp-s)
+						              (error 'package-error :package (intern (string-upcase %rp-s) :keyword) :format-control (concatenate 'string "RENAME-PACKAGE: cannot rename read/compile-time package: " (string-upcase %rp-s)))
+						              (error 'package-error :package (intern (string-upcase %rp-s) :keyword) :format-control (concatenate 'string "RENAME-PACKAGE: no such package: " %rp-s))))
+						      (if (string= %rp-n "")
+						          (error 'package-error :package nil :format-control "RENAME-PACKAGE expects a new package name"))
+						      (if (and (not (string= %rp-n (string (car %rp-old))))
+						               (or (%baked-package-find %rp-n) (%runtime-package-find %rp-n)))
+						          (error 'package-error :package (intern %rp-n :keyword) :format-control (concatenate 'string "RENAME-PACKAGE: package already exists: " %rp-n)))
+						      (setq %rp-nn (sort (mapcar (lambda (%rp-e)
+						                             (let ((%rp-k (string-upcase (string %rp-e))))
+						                               (if (and (not (member %rp-k (caddr %rp-old) :test #'string=))
+						                                        (or (%baked-package-find %rp-k) (%runtime-package-find %rp-k)))
+						                                   (error 'package-error :package (intern %rp-k :keyword) :format-control (concatenate 'string "RENAME-PACKAGE: package already exists: " %rp-k))
+						                                   %rp-k)))
+						                           %rp-nn) #'string<))
+						      (setq %runtime-packages%
+						            (remove-if (lambda (%rp-e)
+						                         (or (string= %rp-s (string (car %rp-e)))
+						                             (member %rp-s (caddr %rp-e) :test #'string=)))
+						                       %runtime-packages%))
+						      (push (list (intern %rp-n :keyword) (cadr %rp-old) %rp-nn) %runtime-packages%)
+						      (intern %rp-n :keyword))))
+						""");
+		SOURCES.put(LispNames.PACKAGE_NICKNAMES,
+				"""
+						(defun package-nicknames (%pn2-pkg)
+						  (let ((%pn2-s (string %pn2-pkg))
+						        (%pn2-e nil))
+						    (setq %pn2-e (or (%runtime-package-find %pn2-s) (%baked-package-find %pn2-s)))
+						    (if (null %pn2-e)
+						        (error 'package-error :package (intern (string-upcase %pn2-s) :keyword) :format-control (concatenate 'string "PACKAGE-NICKNAMES: no such package: " %pn2-s))
+						        (copy-list (caddr %pn2-e)))))
+						""");
+		SOURCES.put(LispNames.FIND_ALL_SYMBOLS, """
+				(defun find-all-symbols (%fas-sym &optional %fas-pkg)
+				  (%package-symbols-where (if (symbolp %fas-sym) (symbol-name %fas-sym) (string %fas-sym)) t %fas-pkg))
+				""");
+		SOURCES.put(LispNames.APROPOS_LIST, """
+				(defun apropos-list (%apl-str &optional %apl-pkg)
+				  (%package-symbols-where (string-upcase (string %apl-str)) nil %apl-pkg))
+				""");
+		SOURCES.put(LispNames.APROPOS, """
+				(defun apropos (%ap-str &optional %ap-pkg)
+				  (dolist (%ap-s (apropos-list %ap-str %ap-pkg)) (print %ap-s)))
+				""");
 		SOURCES.put(LispNames.NAMESTRING_CL, """
 				(defun namestring (%ns-path)
 				  (cond ((stringp %ns-path) %ns-path)
@@ -3019,6 +3226,31 @@ public final class LispPreludeLibrary {
 		if (LispNames.NAMESTRING_CL.equals(entry)) {
 			return referencesName(program, PackageRegistry.qualify(LispNames.UIOP_PKG, LispNames.NAMESTRING), canonical)
 					|| referencesUiopMember(program, LispNames.NATIVE_NAMESTRING, canonical);
+		}
+		// The mutable runtime-package table: the backends' find-package / query /
+		// find-symbol / intern / do-symbols lowerings read it whenever the program
+		// can create packages at run time, but those lowerings run inside the
+		// expression compilers -- long after this pass -- so the reference this
+		// selection would look for does not exist yet. The surface fact is the
+		// program naming a package-mutating operator.
+		if (LispNames.RUNTIME_PACKAGES_INTERNAL.equals(entry)) {
+			return referencesName(program, LispNames.MAKE_PACKAGE, canonical)
+					|| referencesName(program, LispNames.DELETE_PACKAGE, canonical)
+					|| referencesName(program, LispNames.RENAME_PACKAGE, canonical);
+		}
+		// The %do-symbols-list universe helper: the do-symbols lowerings call it, from
+		// the expression compilers, after this pass -- and so do the find-all-symbols
+		// / apropos-list entries below, whose selection runs here but whose bodies
+		// the compilers have not expanded yet. Keyed on every surface name that can
+		// reach it.
+		if (LispNames.DO_SYMBOLS_LIST_INTERNAL.equals(entry)
+				|| LispNames.PACKAGE_SYMBOLS_WHERE_INTERNAL.equals(entry)) {
+			return referencesName(program, LispNames.DO_SYMBOLS, canonical)
+					|| referencesName(program, LispNames.DO_EXTERNAL_SYMBOLS, canonical)
+					|| referencesName(program, LispNames.DO_ALL_SYMBOLS, canonical)
+					|| referencesName(program, LispNames.FIND_ALL_SYMBOLS, canonical)
+					|| referencesName(program, LispNames.APROPOS, canonical)
+					|| referencesName(program, LispNames.APROPOS_LIST, canonical);
 		}
 		return false;
 	}

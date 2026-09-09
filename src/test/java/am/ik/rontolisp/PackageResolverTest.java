@@ -1087,4 +1087,82 @@ class PackageResolverTest {
 		assertThat(table.clUserPristine()).isTrue();
 	}
 
+	@Test
+	void runtimePackageCreateDeleteRename() {
+		// The runtime tier (.todo/741): an empty package with a use list and
+		// nicknames, all upcased like the reader would, rename replacing the
+		// nicknames, delete dropping the registration and its nicknames.
+		PackageResolver resolver = new PackageResolver();
+		assertThat(resolver.createRuntimePackage("rp", List.of("CL"), List.of("rpn"))).isEqualTo("RP");
+		assertThat(resolver.findPackageName("RPN")).isEqualTo("RP");
+		assertThat(resolver.runtimePackageNicknames("RP")).containsExactly("RPN");
+		assertThatThrownBy(() -> resolver.createRuntimePackage("rp", List.of(), List.of()))
+			.isInstanceOf(RuntimePackageException.class)
+			.hasMessageContaining("MAKE-PACKAGE: package already exists: RP");
+		assertThatThrownBy(() -> resolver.createRuntimePackage("rp2", List.of("nope"), List.of()))
+			.isInstanceOf(RuntimePackageException.class)
+			.hasMessageContaining("MAKE-PACKAGE: no such package: nope");
+		assertThat(resolver.renameRuntimePackage("RPN", "rp2", List.of("rpn2"))).isEqualTo("RP2");
+		assertThat(resolver.findPackageName("RPN")).isNull();
+		assertThat(resolver.findPackageName("RPN2")).isEqualTo("RP2");
+		assertThat(resolver.deleteRuntimePackage("RPN2")).isEqualTo("RP2");
+		assertThat(resolver.findPackageName("RP2")).isNull();
+		assertThat(resolver.findPackageName("rpn2")).isNull();
+	}
+
+	@Test
+	void runtimePackageRefusesStaticPackages() {
+		// Read/compile-time packages (built-ins and defpackage products) are
+		// immutable at run time on every backend, so the resolver refuses them the
+		// same way everywhere -- only make-package products may move.
+		PackageResolver resolver = new PackageResolver();
+		assertThatThrownBy(() -> resolver.deleteRuntimePackage("CL")).isInstanceOf(RuntimePackageException.class)
+			.hasMessageContaining("DELETE-PACKAGE: cannot delete read/compile-time package: CL");
+		assertThatThrownBy(() -> resolver.renameRuntimePackage("CL-USER", "x", List.of()))
+			.isInstanceOf(RuntimePackageException.class)
+			.hasMessageContaining("RENAME-PACKAGE: cannot rename read/compile-time package: CL-USER");
+		assertThatThrownBy(() -> resolver.deleteRuntimePackage("nope")).isInstanceOf(RuntimePackageException.class)
+			.hasMessageContaining("DELETE-PACKAGE: no such package: nope");
+		assertThatThrownBy(() -> resolver.runtimePackageNicknames("nope")).isInstanceOf(RuntimePackageException.class)
+			.hasMessageContaining("PACKAGE-NICKNAMES: no such package: nope");
+	}
+
+	@Test
+	void resolveProgramTracksRuntimePackageMutation() {
+		// The gate the backends read for their lowerings: a program that can create
+		// packages keeps an unknown literal (find-package X) dynamic, while any
+		// other program folds it to nil as before.
+		PackageResolver quiet = new PackageResolver();
+		List<LispVal> folded = quiet
+			.resolveProgram(LispReader.readAllFromString("(print (find-package :late))", Features.INTERPRETER));
+		assertThat(quiet.runtimePackagesMutable()).isFalse();
+		assertThat(folded.get(0).print()).isEqualTo("(PRINT NIL)");
+		PackageResolver loud = new PackageResolver();
+		List<LispVal> kept = loud.resolveProgram(LispReader
+			.readAllFromString("(make-package :late) (print (find-package :late))", Features.INTERPRETER));
+		assertThat(loud.runtimePackagesMutable()).isTrue();
+		assertThat(kept.get(1).print()).isEqualTo("(PRINT (FIND-PACKAGE :LATE))");
+	}
+
+	@Test
+	void runtimeBakedPackagesCarriesUniverseAndImports() {
+		// The injected %baked-packages% rows: upcased names, nickname strings, the
+		// canonically spelled universes and the import redirects (member verbatim,
+		// home upcased) the compiled enumeration normalizes through.
+		PackageResolver resolver = new PackageResolver();
+		List<PackageResolver.BakedPackage> baked = resolver.runtimeBakedPackages();
+		PackageResolver.BakedPackage cl = baked.stream()
+			.filter(entry -> "CL".equals(entry.name()))
+			.findFirst()
+			.orElseThrow();
+		assertThat(cl.use()).isEmpty();
+		assertThat(cl.nicknames()).contains("COMMON-LISP");
+		assertThat(cl.accessible()).contains(new LispSymbol("CL:CAR"));
+		PackageResolver.BakedPackage c2cl = baked.stream()
+			.filter(entry -> "CLOSER-COMMON-LISP".equals(entry.name()))
+			.findFirst()
+			.orElseThrow();
+		assertThat(c2cl.imports()).contains(List.of("CAR", "CL"));
+	}
+
 }

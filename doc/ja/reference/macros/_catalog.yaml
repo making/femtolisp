@@ -107,4 +107,5 @@ categories:
       - { slug: with-hash-table-iterator, name: "with-hash-table-iterator" }
       - { slug: do-external-symbols, name: "do-external-symbols" }
       - { slug: do-symbols, name: "do-symbols" }
+      - { slug: do-all-symbols, name: "do-all-symbols" }
       - { slug: with-compilation-unit, name: "with-compilation-unit" }

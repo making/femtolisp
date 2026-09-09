@@ -632,6 +632,10 @@ public final class JvmLispCompiler implements LispCompiler {
 				packageResolver::spellsAsExternal, this.dynamic, false,
 				this.optimize.eliminatesDeadCode() && !this.dynamic
 						? new am.ik.rontolisp.compiler.GenericDispatchNarrowing() : null);
+		// The read/compile-time package table for the runtime package API (see
+		// .kb/packages.md): injected after package resolution, from the resolver's
+		// final registry, only when the program can need it at run time.
+		program = LispMacroExpander.injectBakedPackageTable(program, packageResolver);
 		if (System.getProperty("rontolisp.debug.dump-program") != null) {
 			for (LispVal form : program) {
 				System.err.println(form.print());
@@ -1881,6 +1885,7 @@ public final class JvmLispCompiler implements LispCompiler {
 			.userDefunNames(Set.copyOf(userDefinedNames))
 			.warnedClRedefinitions(new HashSet<>())
 			.usesFmakunbound(programUsesSymbol(program, LispNames.FMAKUNBOUND))
+			.usesRuntimePackages(packageResolver.runtimePackagesMutable())
 			.usesProgv(programUsesSymbol(program, LispNames.PROGV))
 			.packageTable(packageResolver.runtimePackageTable())
 			.packageUseTable(packageResolver.runtimePackageUseTable())
@@ -6118,6 +6123,17 @@ public final class JvmLispCompiler implements LispCompiler {
 		boolean usesFmakunbound = false;
 
 		/**
+		 * Whether the program can create, delete or rename packages at run time (a
+		 * {@code make-package} / {@code delete-package} / {@code rename-package}
+		 * reference outside quoted data). When it does, the package lowerings consult the
+		 * {@code %runtime-packages%} table before their baked answers (see
+		 * {@code .kb/packages.md}); read off the resolver after {@code resolveProgram},
+		 * so the flag and the resolver's literal folds agree by construction. Every other
+		 * program keeps the baked-only lowerings and stays byte-identical.
+		 */
+		boolean usesRuntimePackages = false;
+
+		/**
 		 * Whether the program uses {@code progv}. Switches {@code symbol-value} to the
 		 * dynamic-first dispatch over the special set
 		 * ({@link JvmSymbolApiCompiler#compileSymbolValue}).
@@ -6344,6 +6360,7 @@ public final class JvmLispCompiler implements LispCompiler {
 			this.userDefunNames = builder.userDefunNames;
 			this.warnedClRedefinitions = builder.warnedClRedefinitions;
 			this.usesFmakunbound = builder.usesFmakunbound;
+			this.usesRuntimePackages = builder.usesRuntimePackages;
 			this.usesProgv = builder.usesProgv;
 			this.packageTable = builder.packageTable;
 			this.packageUseTable = builder.packageUseTable;
@@ -6662,6 +6679,8 @@ public final class JvmLispCompiler implements LispCompiler {
 			private Set<String> warnedClRedefinitions = new HashSet<>();
 
 			private boolean usesFmakunbound = false;
+
+			private boolean usesRuntimePackages = false;
 
 			private boolean usesProgv = false;
 
@@ -7180,6 +7199,11 @@ public final class JvmLispCompiler implements LispCompiler {
 
 			Builder usesFmakunbound(boolean usesFmakunbound) {
 				this.usesFmakunbound = usesFmakunbound;
+				return this;
+			}
+
+			Builder usesRuntimePackages(boolean usesRuntimePackages) {
+				this.usesRuntimePackages = usesRuntimePackages;
 				return this;
 			}
 

@@ -913,10 +913,11 @@ final class WasmExprCompiler {
 				case LispNames.EXPORT, LispNames.UNEXPORT, LispNames.IMPORT ->
 					WasmExprCompiler.compileExpr(LispMacroExpander.expandRuntimeExport(cons), ctx);
 				// The package-registry queries: answered from the use table baked in at
-				// compile time (the compiled runtimes have no registry).
+				// compile time (the compiled runtimes have no registry), plus the
+				// runtime table when the program can create packages.
 				case LispNames.LIST_ALL_PACKAGES, LispNames.PACKAGE_USE_LIST, LispNames.PACKAGE_USED_BY_LIST ->
-					WasmExprCompiler.compileExpr(
-							LispMacroExpander.expandPackageQuery(cons, ctx.packageTable, ctx.packageUseTable), ctx);
+					WasmExprCompiler.compileExpr(LispMacroExpander.expandPackageQuery(cons, ctx.packageTable,
+							ctx.packageUseTable, ctx.usesRuntimePackages), ctx);
 				// The printer's accessibility question (CLHS 22.1.3.3.1), answered from
 				// the
 				// table baked in at compile time (.kb/pretty-printer.md).
@@ -937,9 +938,10 @@ final class WasmExprCompiler {
 				case LispNames.FENV_FUNCTION_INTERNAL -> WasmSymbolApiCompiler.compileFenvFunction(cons, ctx);
 				// Only a COMPUTED designator reaches here: PackageResolver folds a
 				// literal
-				// one to the quoted package keyword before the compiler ever sees it.
-				case LispNames.FIND_PACKAGE -> WasmExprCompiler.compileExpr(
-						LispMacroExpander.expandRuntimeFindPackage(cons.toList().get(1), ctx.packageTable), ctx);
+				// one to the quoted package keyword before the compiler ever sees it
+				// (unless the program can create packages at run time).
+				case LispNames.FIND_PACKAGE -> WasmExprCompiler.compileExpr(LispMacroExpander
+					.expandRuntimeFindPackage(cons.toList().get(1), ctx.packageTable, ctx.usesRuntimePackages), ctx);
 				case LispNames.CONCATENATE -> {
 					WasmExprCompiler.compileExpr(ConcatenateForms.expand(cons, ctx.usesSeqString, ctx.closRegistry),
 							ctx);
@@ -1449,13 +1451,12 @@ final class WasmExprCompiler {
 				case LispNames.GO -> WasmTagbodyCompiler.compileGo(cons, ctx);
 				case LispNames.PRINT_UNREADABLE_OBJECT ->
 					WasmExprCompiler.compileExpr(LispMacroExpander.expandPrintUnreadableObject(cons), ctx);
-				case LispNames.DO_EXTERNAL_SYMBOLS, LispNames.DO_SYMBOLS ->
-					// Real on the interpreter (registry-backed); inside #. the macro-time
-					// evaluator resolves it before compilation. A runtime occurrence has
-					// no
-					// package registry behind it here.
-					throw new UnsupportedOperationException(
-							sym.name() + " requires the interpreter (no runtime package registry in compiled mode)");
+				case LispNames.DO_EXTERNAL_SYMBOLS ->
+					WasmExprCompiler.compileExpr(LispMacroExpander.expandDoSymbols(cons, true), ctx);
+				case LispNames.DO_SYMBOLS ->
+					WasmExprCompiler.compileExpr(LispMacroExpander.expandDoSymbols(cons, false), ctx);
+				case LispNames.DO_ALL_SYMBOLS ->
+					WasmExprCompiler.compileExpr(LispMacroExpander.expandDoAllSymbols(cons), ctx);
 				case LispNames.WITH_PACKAGE_ITERATOR ->
 					WasmExprCompiler.compileExpr(LispMacroExpander.expandWithPackageIterator(cons), ctx);
 				case LispNames.WITH_HASH_TABLE_ITERATOR ->

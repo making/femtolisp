@@ -18,7 +18,7 @@ rontolisp は意図的に小さくした Common Lisp のサブセットで、3 �
 | `defstruct` の `:include` | 単一継承のみ。スロットのデフォルトを上書きする `(:include parent (slot default) ...)` は利用可能 |
 | `declare` / `declaim` / `proclaim` / `the` | 結果は変えない。WASM では配列の `type` 宣言が要素アクセサのエミットを誘導（モジュールが小さく速くなる）、それ以外では解析されるだけの no-op |
 | `typep` / `subtypep` / `coerce` / `concatenate` | リテラル（クオートされた）型指定子のみ。`coerce` の結果型は `'list` / `'vector` / `'string`（または浮動小数点型）、`concatenate` はこの 3 つのシーケンス系統を構築 |
-| `make-package` / `rename-package` / `delete-package` / `unintern` / `shadow`（ランタイム） | 利用不可。`export` / `unexport` / `import` / `use-package` は `in-package` と同様の読み込み/コンパイル時ディレクティブとして利用可能。`defpackage` の `:shadow` / `:shadowing-import-from` はエラー |
+| `make-package` / `rename-package` / `delete-package` / `unintern` / `shadow`（ランタイム） | `make-package`、`rename-package`、`delete-package`、`packagep`、`package-nicknames`、`find-all-symbols`、`do-all-symbols`、`apropos`/`apropos-list` は利用可能（後述の二層）。`unintern` と実行時の `shadow` / `shadowing-import` は存在し得ない -- シンボルは名前そのものであり、削除すべき intern テーブルが存在しない |
 | `eval-when` | `progn` として扱う（フェーズの区別なし） |
 | `#:name` | 普通のシンボルとして読まれ、gensym 的な新規性はない |
 | `*modules*` | 利用不可（`require`/`provide` は利用可能） |
@@ -163,8 +163,26 @@ read/コンパイル時ディレクティブです（`:documentation`/`:size` �
 [`import`](../reference/functions/import.md) は `in-package` と同じ読み込み/
 コンパイル時ディレクティブとして存在します: リテラルなトップレベル呼び出しは
 それ以降のフォームに対して全バックエンドで効果を持ち、実行時に計算される
-呼び出しはインタープリタのみで動作します。実行時のパッケージ生成・改名は
-できません: `make-package`、`rename-package`、`delete-package` は利用不可です。
+呼び出しはインタープリタのみで動作します。実行時に作成するパッケージが第二層です:
+[`make-package`](../reference/functions/make-package.md)
+は空パッケージを作成します(名前は大文字化、`:use`
+項目は既知のパッケージでなければなりません)、
+[`rename-package`](../reference/functions/rename-package.md)
+は改名し(ニックネームを置換)、
+[`delete-package`](../reference/functions/delete-package.md)
+は削除します。失敗は捕捉可能な `package-error`
+を signal し、原因の指示子は
+[`package-error-package`](../reference/functions/package-error-package.md)
+で取り出せます。読込/compile
+時パッケージ(組込みと `defpackage`
+の成果物)は実行時に不変です -- 改名も削除も signal
+します(全 backend がそれに解決しているため)。問い合わせ系は両層に届きます:
+[`packagep`](../reference/functions/packagep.md)、
+[`package-nicknames`](../reference/functions/package-nicknames.md)、
+[`find-all-symbols`](../reference/functions/find-all-symbols.md)、
+[`do-all-symbols`](../reference/macros/do-all-symbols.md)、
+[`apropos`](../reference/functions/apropos.md) /
+[`apropos-list`](../reference/functions/apropos-list.md)。コンパイル済みバックエンドはコンパイル時に焼き込んだテーブルと、そのプログラム自身が作ったパッケージから答えます。
 `unintern`（および実行時の `shadow` / `shadowing-import`）はそもそも実現でき
 ません — シンボルは名前そのものであり、そこから取り除くべき intern テーブルが
 存在しないからです。

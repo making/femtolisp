@@ -71,8 +71,11 @@ literals.
   template. Quoted LISTS stay untouched, and the `wasm-export`/`wasm-import` option tail is
   exempt (`inHostFacingData`) because its quoted values are host-facing data.
 - **`(let ((*package* X)) ...)`** is a genuine dynamic binding on every backend
-  (`.kb/packages.md`). The runtime package-mutation API is complete except for `unintern`, a
-  NON-GOAL (below).
+  (`.kb/packages.md`). The runtime package API is complete except for `unintern`,
+  a NON-GOAL (below): `make-package` / `delete-package` / `rename-package` /
+  `packagep` / `package-nicknames` / `find-all-symbols` / `do-all-symbols` /
+  `apropos` / `apropos-list` / `package-error-package` (.todo/741, `.kb/packages.md`
+  "Runtime tier").
 
 ## The no-intern-table model
 rontolisp symbols compare by name (no intern table), which shapes every deviation:

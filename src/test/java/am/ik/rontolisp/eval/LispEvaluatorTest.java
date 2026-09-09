@@ -13205,6 +13205,67 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void runtimeMakeDeleteRenamePackage() {
+		// The runtime tier (.todo/741): make-package answers the package keyword,
+		// rename replaces the name and nicknames, delete drops the registration.
+		// The interpreter registers in its live registry, so later forms see the
+		// package through every query.
+		assertThat(evalMulti("""
+				(list (make-package :ut-pkg :use '(:cl) :nicknames '(:utp))
+				      (find-package :utp)
+				      (package-nicknames :ut-pkg)
+				      (package-use-list :ut-pkg)
+				      (if (member :ut-pkg (package-used-by-list :cl)) t nil)
+				      (packagep :ut-pkg)
+				      (packagep :nope-ut-zzz)
+				      (rename-package :utp :ut-pkg2 :utp2)
+				      (package-nicknames :ut-pkg2)
+				      (find-package :ut-pkg)
+				      (delete-package :ut-pkg2)
+				      (find-package :ut-pkg2))
+				""").print()).isEqualTo("(:UT-PKG :UT-PKG (\"UTP\") (:CL) T T NIL :UT-PKG2 (\"UTP2\") NIL T NIL)");
+	}
+
+	@Test
+	void runtimePackageFailuresSignalCatchablePackageErrors() {
+		// Every failure is a handler-case-catchable package-error carrying the
+		// offending designator in its package slot (SBCL-checked).
+		assertThat(evalMulti("""
+				(list (handler-case (make-package :cl) (package-error (c) (list (type-of c) (package-error-package c))))
+				      (handler-case (make-package :ut-dup) (package-error (c) :unexpected))
+				      (handler-case (make-package :ut-dup) (package-error (c) (package-error-package c)))
+				      (handler-case (delete-package :nope-ut-zzz)
+				        (package-error (c) (list (type-of c) (package-error-package c))))
+				      (handler-case (delete-package :cl) (package-error (c) (package-error-package c)))
+				      (handler-case (rename-package :cl :cl2) (package-error (c) (package-error-package c)))
+				      (handler-case (package-nicknames :nope-ut-zzz)
+				        (package-error (c) (package-error-package c)))
+				      (delete-package :ut-dup))
+				""").print())
+			.isEqualTo("((PACKAGE-ERROR :CL) :UT-DUP :UT-DUP (PACKAGE-ERROR :NOPE-UT-ZZZ) :CL :CL :NOPE-UT-ZZZ T)");
+	}
+
+	@Test
+	void runtimePackageEnumeration() {
+		// find-all-symbols / apropos-list / do-all-symbols share one universe walk:
+		// a cl symbol is visited once, spelled the way code spells it, and the
+		// do-forms establish the implicit nil block CL gives them.
+		assertThat(evalMulti("(length (find-all-symbols 'car))").print()).isEqualTo("1");
+		assertThat(evalMulti("(member 'car (find-all-symbols 'car))").print()).isEqualTo("(CAR)");
+		assertThat(evalMulti("(apropos-list \"CAR\" :cl)").print()).isEqualTo("(CAR MAPCAR)");
+		assertThat(evalMulti("(let ((n 0)) (do-all-symbols (s n) (when (eq s 'car) (return (incf n)))))").print())
+			.isEqualTo("1");
+		assertThat(evalMulti("(do-all-symbols (s nil) (when (eq s 'car) (return s)))").print()).isEqualTo("CAR");
+		assertThat(evalMulti("(do-all-symbols (s \"da-done\"))").print()).isEqualTo("\"da-done\"");
+		assertThat(evalMulti(
+				"(do-symbols (s :cl-user \"ds-done\") (when (string= (symbol-name s) \"CAR\") (return :found)))")
+			.print()).isEqualTo(":FOUND");
+		assertThat(evalMulti("(packagep (find-package :cl))")).isEqualTo(LispTrue.INSTANCE);
+		// unintern stays unimplemented: there is no intern table to remove from.
+		assertThat(eval("(fboundp 'unintern)")).isEqualTo(LispNil.INSTANCE);
+	}
+
+	@Test
 	void boundpChecksTheGlobalVariableNamespace() {
 		assertThat(evalMulti("(defvar *bp-var* 1) (boundp '*bp-var*)")).isEqualTo(LispTrue.INSTANCE);
 		assertThat(evalMulti("(boundp '*bp-nope*)")).isEqualTo(LispNil.INSTANCE);

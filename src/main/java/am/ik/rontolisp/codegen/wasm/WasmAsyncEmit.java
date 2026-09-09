@@ -825,6 +825,7 @@ final class WasmAsyncEmit {
 			.numDefuns(proto.numDefuns)
 			.userDefunNames(proto.userDefunNames)
 			.usesFmakunbound(proto.usesFmakunbound)
+			.usesRuntimePackages(proto.usesRuntimePackages)
 			.packageTable(proto.packageTable)
 			.packageUseTable(proto.packageUseTable)
 			.symbolPrintTable(proto.symbolPrintTable)

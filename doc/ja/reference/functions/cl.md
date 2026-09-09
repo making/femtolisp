@@ -139,6 +139,15 @@
 | `package-use-list` | `(package-use-list :cl-user)` | `(:CL)` -- そのパッケージが use しているパッケージを `find-package` のキーワードで返します。未知の指示子はシグナルします |
 | `package-used-by-list` | `(package-used-by-list :cl)` | 逆向き: use リストにこのパッケージを含むすべてのパッケージ |
 | `package-shadowing-symbols` | `(package-shadowing-symbols :cl-user)` | 常に `nil`(シンボルのシャドーイングはありません)。指示子の検査は行います |
+| `make-package` | `(make-package :mypkg :use '(:cl))` | 実行時にパッケージを作成し、そのキーワードを返します。衝突や未知の `:use` 項目は捕捉可能な `package-error` を signal します |
+| `delete-package` | `(delete-package :mypkg)` | `t` -- `make-package` の成果物を削除します。読込/compile 時パッケージや未知の指示子は `package-error` を signal します |
+| `rename-package` | `(rename-package :mypkg :new :nick)` | `make-package` の成果物の名前を変更し、ニックネームを置換します。同じ失敗は signal します |
+| `packagep` | `(packagep :cl)` | 登録済みパッケージを指す指示子なら `t`、そうでなければ `nil` -- signal しません |
+| `package-nicknames` | `(package-nicknames :cl)` | `("COMMON-LISP")` -- ニックネーム文字列をソート順で。未知の指示子は `package-error` を signal します |
+| `find-all-symbols` | `(find-all-symbols 'car)` | `(CAR)` -- その名前で到達可能な重複のない全シンボルを、コードが綴る形で |
+| `apropos-list` | `(apropos-list "CAR" :cl)` | `(CAR MAPCAR)` -- 同じ宇宙に対する部分文字列検索(大文字小文字を区別しない) |
+| `apropos` | `(apropos "CAR" :cl)` | 各一致を印字して `nil` を返します |
+| `package-error-package` | `(package-error-package c)` | `package-error` コンディションから原因の指示子を取り出します |
 | `symbol-value` | `(symbol-value '*level*)` | グローバル変数の値。未束縛の名前はエラー(レキシカルな束縛は見えない) |
 | `boundp` | `(boundp '*level*)` | シンボルが束縛されたグローバル変数を指すとき `t`(t/nil/キーワードは自己束縛) |
 | `fboundp` | `(fboundp 'car)` | 関数・マクロ・特殊形式に対して `t`(コンパイラ: 計算された引数は関数のみ判定) |

@@ -134,6 +134,16 @@ public final class ClosRegistry {
 	public static final String UNDEFINED_FUNCTION_CLASS_NAME = "UNDEFINED-FUNCTION";
 
 	/**
+	 * The class a runtime package failure is signaled as: {@code make-package} over an
+	 * existing name, {@code delete-package} / {@code rename-package} over an unknown or
+	 * read/compile-time package, {@code package-nicknames} over an unknown designator.
+	 * Carries the offending designator in its {@code package} slot (read by
+	 * {@code package-error-package}) and the reason in {@code format-control}, like the
+	 * other built-in-signaled classes.
+	 */
+	public static final String PACKAGE_ERROR_CLASS_NAME = "PACKAGE-ERROR";
+
+	/**
 	 * The message a call to an undefined function reports, as a prefix around the
 	 * function name (the suffix is {@link #UNDEFINED_FUNCTION_MESSAGE_SUFFIX}). Every
 	 * backend spells it identically -- the interpreter's late binding, the compile paths'
@@ -209,15 +219,15 @@ public final class ClosRegistry {
 	 * symbol by construction rather than by a second list somebody has to remember.
 	 *
 	 * <p>
-	 * Five classes carry {@code format-control}/{@code format-arguments} beyond CLHS's
-	 * slot lists ({@code type-error}, {@code arithmetic-error}, {@code program-error} and
-	 * the two {@code cell-error} leaves): those are the classes a BUILT-IN error is
-	 * synthesized as, and the two slots are how the synthesized instance carries the
-	 * message it reports -- the same {@code simple-condition} report path every other
-	 * message- bearing condition uses, rather than a second message channel.
-	 * {@code type-error} gaining them is what leaves {@code simple-type-error} with the
-	 * identical layout (it adds nothing now), so the {@code %obj-ref} indexes of both are
-	 * unchanged.
+	 * Six classes carry {@code format-control}/{@code format-arguments} beyond CLHS's
+	 * slot lists ({@code type-error}, {@code arithmetic-error}, {@code program-error},
+	 * {@code package-error} and the two {@code cell-error} leaves): those are the classes
+	 * a BUILT-IN error is synthesized as, and the two slots are how the synthesized
+	 * instance carries the message it reports -- the same {@code simple-condition} report
+	 * path every other message- bearing condition uses, rather than a second message
+	 * channel. {@code type-error} gaining them is what leaves {@code simple-type-error}
+	 * with the identical layout (it adds nothing now), so the {@code %obj-ref} indexes of
+	 * both are unchanged.
 	 */
 	private static final List<ConditionSeed> CONDITION_SEEDS = List.of(seed("CONDITION", null),
 			seed("SERIOUS-CONDITION", "CONDITION"), seed("ERROR", "SERIOUS-CONDITION"),
@@ -236,7 +246,8 @@ public final class ClosRegistry {
 			seed(ARITHMETIC_ERROR_CLASS_NAME, "ERROR", "FORMAT-CONTROL", "FORMAT-ARGUMENTS"),
 			seed(DIVISION_BY_ZERO_CLASS_NAME, ARITHMETIC_ERROR_CLASS_NAME), seed("CONTROL-ERROR", "ERROR"),
 			seed(PROGRAM_ERROR_CLASS_NAME, "ERROR", "FORMAT-CONTROL", "FORMAT-ARGUMENTS"),
-			seed("PACKAGE-ERROR", "ERROR"), seed("CELL-ERROR", "ERROR", "NAME"),
+			seed(PACKAGE_ERROR_CLASS_NAME, "ERROR", "PACKAGE", "FORMAT-CONTROL", "FORMAT-ARGUMENTS"),
+			seed("CELL-ERROR", "ERROR", "NAME"),
 			seed(UNBOUND_VARIABLE_CLASS_NAME, "CELL-ERROR", "FORMAT-CONTROL", "FORMAT-ARGUMENTS"),
 			seed(UNDEFINED_FUNCTION_CLASS_NAME, "CELL-ERROR", "FORMAT-CONTROL", "FORMAT-ARGUMENTS"),
 			// The condition a read of an unbound slot signals (CLHS 7.7.2): name = the

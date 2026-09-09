@@ -10463,6 +10463,22 @@ public final class LispMacroExpander {
 	 * @return the lowered expression, or {@code null}
 	 */
 	@Nullable public static LispVal expandFindSymbolInPackage(LispCons cons, java.util.Map<String, String> packageTable) {
+		return expandFindSymbolInPackage(cons, packageTable, false);
+	}
+
+	/**
+	 * As {@link #expandFindSymbolInPackage(LispCons, java.util.Map)}, keeping a literal
+	 * designator that names no read/compile-time package dynamic when the program can
+	 * create packages at run time: the runtime table decides between the permissive
+	 * spelling build and nil. A computed designator additionally answers nil (rather than
+	 * building a spelling) when it names no package at all.
+	 * @param cons the find-symbol call
+	 * @param packageTable the backend's baked package table
+	 * @param runtimeMutation whether the program can create packages at run time
+	 * @return the lowered expression, or {@code null}
+	 */
+	@Nullable public static LispVal expandFindSymbolInPackage(LispCons cons, java.util.Map<String, String> packageTable,
+			boolean runtimeMutation) {
 		List<LispVal> parts = cons.toList();
 		if (parts.size() != 3) {
 			return null;
@@ -10474,7 +10490,11 @@ public final class LispMacroExpander {
 			// No such package: it provides no symbol. (An empty table means the caller
 			// has none -- keep the pre-table behavior rather than folding everything
 			// away.)
-			return LispNil.INSTANCE;
+			if (!runtimeMutation) {
+				return LispNil.INSTANCE;
+			}
+			return makeIf(runtimePackageEntry(new LispString(pkg)), permissivePackageSpelling(cons, pkg),
+					LispNil.INSTANCE);
 		}
 		if (pkg == null) {
 			// A computed package value (ironclad's massage-symbol holds one in a local,
@@ -10485,7 +10505,11 @@ public final class LispMacroExpander {
 			// members are spelled WITHOUT a qualifier, which the literal path folds away
 			// and this one must test for at run time, or a computed :keyword designator
 			// would build KEYWORD:X instead of the keyword :X.
-			return computedPackageFindSymbol(name, parts.get(2));
+			LispVal built = computedPackageFindSymbol(name, parts.get(2));
+			if (!runtimeMutation) {
+				return built;
+			}
+			return findPackageGuarded(parts.get(2), built, LispNil.INSTANCE);
 		}
 		if ("KEYWORD".equalsIgnoreCase(pkg)) {
 			return listToCons(List.of(new LispSymbol(LispNames.INTERN), name, new LispSymbol(":KEYWORD")));
@@ -10497,6 +10521,74 @@ public final class LispMacroExpander {
 			// build-a-spelling deviation: nil for a name cl does not own, which is what
 			// keeps this value and %find-symbol-status nil together.
 			return PackageRegistry.isClSymbol(str.value()) ? quoteOf(str.value()) : LispNil.INSTANCE;
+		}
+		if (LispNames.CL_PKG.equalsIgnoreCase(pkg) || LispNames.CL_USER_PKG.equalsIgnoreCase(pkg)) {
+			return listToCons(List.of(new LispSymbol(LispNames.INTERN), name));
+		}
+		return permissivePackageSpelling(cons, pkg);
+	}
+
+	/**
+	 * The permissive spelling build at the tail of
+	 * {@link #expandFindSymbolInPackage(LispCons, java.util.Map, boolean)}: a runtime
+	 * package owns no recorded members on the compiled backends (nothing is interned into
+	 * a table), so any name is spelled {@code PKG:NAME} -- the same deviation the
+	 * computed-designator path has always carried.
+	 * @param cons the find-symbol call
+	 * @param pkg the literal package designator spelling
+	 * @return the spelling-build expression
+	 */
+	private static LispVal permissivePackageSpelling(LispCons cons, String pkg) {
+		List<LispVal> parts = cons.toList();
+		LispVal name = parts.get(1);
+		if ("KEYWORD".equalsIgnoreCase(pkg)) {
+			return listToCons(List.of(new LispSymbol(LispNames.INTERN), name, new LispSymbol(":KEYWORD")));
+		}
+		if (LispNames.CL_PKG.equalsIgnoreCase(pkg) && name instanceof LispString str) {
+			return PackageRegistry.isClSymbol(str.value()) ? quoteOf(str.value()) : LispNil.INSTANCE;
+		}
+		if (LispNames.CL_PKG.equalsIgnoreCase(pkg) || LispNames.CL_USER_PKG.equalsIgnoreCase(pkg)) {
+			return listToCons(List.of(new LispSymbol(LispNames.INTERN), name));
+		}
+		LispVal qualified = listToCons(
+				List.of(new LispSymbol(LispNames.CONCATENATE), quoteOf("STRING"), new LispString(pkg + ":"), name));
+		return listToCons(List.of(new LispSymbol(LispNames.INTERN), qualified));
+	}
+
+	/** The fixed temporary a {@link #findPackageGuarded} existence check binds. */
+	private static final String FIND_PACKAGE_GUARD_VAR = "__fp_g";
+
+	/**
+	 * Guards a computed-package build on the package actually existing:
+	 * {@code (let ((__fp_g FORM)) (if (find-package __fp_g) then else))}. The inner
+	 * {@code find-package} is itself lowered (override-aware when gated), and the
+	 * designator runs once.
+	 * @param packageForm the (unevaluated) package designator expression
+	 * @param then the expression when the package exists
+	 * @param els the expression when it does not
+	 * @return the guarded expression
+	 */
+	private static LispVal findPackageGuarded(LispVal packageForm, LispVal then, LispVal els) {
+		LispSymbol guard = new LispSymbol(FIND_PACKAGE_GUARD_VAR);
+		LispVal test = listToCons(List.of(new LispSymbol(LispNames.FIND_PACKAGE), guard));
+		return listToCons(List.of(new LispSymbol(LispNames.LET),
+				listToCons(List.of(listToCons(List.of(guard, packageForm)))), makeIf(test, then, els)));
+	}
+
+	/**
+	 * The permissive spelling build for {@code intern} into a literal package the baked
+	 * table does not know but the runtime table might: the {@code keyword} designator
+	 * keeps the keyword lowering, {@code cl}/{@code cl-user} drop the qualifier, anything
+	 * else builds {@code PKG:NAME} -- intern's contract has no "unknown name yields a
+	 * symbol" deviation to preserve, it always builds.
+	 * @param cons the intern call (the three-part shape)
+	 * @param pkg the literal package designator spelling
+	 * @return the spelling-build expression
+	 */
+	private static LispVal permissiveInternSpelling(LispCons cons, String pkg) {
+		LispVal name = cons.toList().get(1);
+		if ("KEYWORD".equalsIgnoreCase(pkg)) {
+			return listToCons(List.of(new LispSymbol(LispNames.INTERN), name, new LispSymbol(":KEYWORD")));
 		}
 		if (LispNames.CL_PKG.equalsIgnoreCase(pkg) || LispNames.CL_USER_PKG.equalsIgnoreCase(pkg)) {
 			return listToCons(List.of(new LispSymbol(LispNames.INTERN), name));
@@ -10529,6 +10621,24 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandFindSymbolStatus(LispCons cons, java.util.Map<String, String> packageTable,
 			java.util.Set<String> userDefunNames) {
+		return expandFindSymbolStatus(cons, packageTable, userDefunNames, false);
+	}
+
+	/**
+	 * As {@link #expandFindSymbolStatus(LispCons, java.util.Map, java.util.Set)}, keeping
+	 * a literal designator that names no read/compile-time package dynamic when the
+	 * program can create packages at run time: the status follows the value half's
+	 * runtime decision ({@code :external} for the spelling the lowering builds, nil
+	 * together with its nil). A computed designator keeps the static {@code :external} --
+	 * guarding it would evaluate the designator twice across the value/status pair.
+	 * @param cons the find-symbol / intern call
+	 * @param packageTable the backend's baked package table
+	 * @param userDefunNames the Pass-1 user definition names
+	 * @param runtimeMutation whether the program can create packages at run time
+	 * @return the status keyword, status test, or nil
+	 */
+	public static LispVal expandFindSymbolStatus(LispCons cons, java.util.Map<String, String> packageTable,
+			java.util.Set<String> userDefunNames, boolean runtimeMutation) {
 		List<LispVal> parts = cons.toList();
 		LispVal name = parts.size() > 1 ? parts.get(1) : LispNil.INSTANCE;
 		String literal = name instanceof LispString str ? str.value() : null;
@@ -10546,7 +10656,11 @@ public final class LispMacroExpander {
 		}
 		if (!packageTable.isEmpty() && !packageTable.containsKey(pkg)
 				&& !packageTable.containsKey(pkg.toUpperCase(java.util.Locale.ROOT))) {
-			return LispNil.INSTANCE;
+			if (!runtimeMutation) {
+				return LispNil.INSTANCE;
+			}
+			return makeIf(runtimePackageEntry(new LispString(pkg)), new LispSymbol(LispNames.STATUS_EXTERNAL),
+					LispNil.INSTANCE);
 		}
 		if ("KEYWORD".equalsIgnoreCase(pkg)) {
 			return new LispSymbol(LispNames.STATUS_EXTERNAL);
@@ -10606,6 +10720,21 @@ public final class LispMacroExpander {
 	 * @return the equivalent lookup expression
 	 */
 	public static LispVal expandRuntimeFindPackage(LispVal designatorForm, java.util.Map<String, String> table) {
+		return expandRuntimeFindPackage(designatorForm, table, false);
+	}
+
+	/**
+	 * As {@link #expandRuntimeFindPackage(LispVal, java.util.Map)}, consulting the
+	 * {@code %runtime-packages%} table first when the program can create packages at run
+	 * time (see {@code .kb/packages.md}): a runtime package is invisible in the baked
+	 * table, so the baked answer is only the fallback.
+	 * @param designatorForm the (unevaluated) package designator expression
+	 * @param table the designator-to-package-name table
+	 * @param runtimeMutation whether the program can create packages at run time
+	 * @return the equivalent lookup expression
+	 */
+	public static LispVal expandRuntimeFindPackage(LispVal designatorForm, java.util.Map<String, String> table,
+			boolean runtimeMutation) {
 		List<LispVal> entries = new java.util.ArrayList<>(table.size());
 		table.forEach((designator, canonical) -> entries
 			.add(new LispCons(new LispString(designator), new LispSymbol(":" + canonical))));
@@ -10615,6 +10744,24 @@ public final class LispMacroExpander {
 		LispVal quotedTable = listToCons(List.of(new LispSymbol(LispNames.QUOTE), listToCons(entries)));
 		LispVal lookup = listToCons(List.of(new LispSymbol(LispNames.ASSOC), key, quotedTable, new LispSymbol(":TEST"),
 				listToCons(List.of(new LispSymbol(LispNames.FUNCTION), new LispSymbol(LispNames.STRING_EQ)))));
+		LispVal baked = listToCons(List.of(new LispSymbol(LispNames.CDR), lookup));
+		if (!runtimeMutation) {
+			return baked;
+		}
+		// (let ((__rtp_k (string D))) (or (car <runtime entry>) <baked>)): the key is
+		// bound once -- both halves read it, and the designator runs once.
+		LispSymbol keyVar = new LispSymbol(RUNTIME_PACKAGE_KEY_VAR);
+		LispVal override = listToCons(List.of(new LispSymbol(LispNames.CAR), runtimePackageEntry(keyVar)));
+		return listToCons(List.of(new LispSymbol(LispNames.LET), listToCons(List.of(listToCons(List.of(keyVar, key)))),
+				listToCons(List.of(new LispSymbol(LispNames.OR), override, bakedWithKey(keyVar, entries)))));
+	}
+
+	// The baked assoc half of expandRuntimeFindPackage keyed by an already-bound key.
+	private static LispVal bakedWithKey(LispVal keyVar, List<LispVal> entries) {
+		LispVal quotedTable = listToCons(List.of(new LispSymbol(LispNames.QUOTE), listToCons(entries)));
+		LispVal lookup = listToCons(
+				List.of(new LispSymbol(LispNames.ASSOC), keyVar, quotedTable, new LispSymbol(":TEST"),
+						listToCons(List.of(new LispSymbol(LispNames.FUNCTION), new LispSymbol(LispNames.STRING_EQ)))));
 		return listToCons(List.of(new LispSymbol(LispNames.CDR), lookup));
 	}
 
@@ -10640,10 +10787,40 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandPackageQuery(LispCons cons, java.util.Map<String, String> packageTable,
 			java.util.Map<String, java.util.List<String>> useTable) {
+		return expandPackageQuery(cons, packageTable, useTable, false);
+	}
+
+	/**
+	 * As {@link #expandPackageQuery(LispCons, java.util.Map, java.util.Map)}, answering
+	 * from the {@code %runtime-packages%} table as well when the program can create
+	 * packages at run time: {@code list-all-packages} appends the runtime names, and the
+	 * computed use-list queries fall back to the runtime entry when the baked table has
+	 * no row (see {@code .kb/packages.md}). A read/compile-time row still wins -- those
+	 * packages are immutable, so the baked answer cannot have moved.
+	 * @param cons the query call
+	 * @param packageTable the designator-to-package-name table (for the literal fold)
+	 * @param useTable the package-to-use-list table
+	 * @param runtimeMutation whether the program can create packages at run time
+	 * @return the equivalent expression
+	 */
+	public static LispVal expandPackageQuery(LispCons cons, java.util.Map<String, String> packageTable,
+			java.util.Map<String, java.util.List<String>> useTable, boolean runtimeMutation) {
 		List<LispVal> parts = cons.toList();
 		String member = parts.get(0) instanceof LispSymbol op ? LispSymbol.memberName(op.name()) : "";
 		if (LispNames.LIST_ALL_PACKAGES.equals(member)) {
-			return quotedPackageList(useTable.keySet());
+			LispVal baked = quotedPackageList(useTable.keySet());
+			if (!runtimeMutation) {
+				return baked;
+			}
+			// (sort (append BAKED (mapcar (lambda (e) (car e)) %runtime-packages%))
+			// #'string<): the interpreter answers in registry (sorted) order, so the
+			// creation-ordered runtime tail must be merged by sort, not appended.
+			LispSymbol entry = new LispSymbol(RUNTIME_PACKAGE_ENTRY_VAR);
+			LispVal names = listToCons(List.of(new LispSymbol(LispNames.MAPCAR),
+					listToCons(List.of(new LispSymbol(LispNames.LAMBDA), listToCons(List.of(entry)),
+							listToCons(List.of(new LispSymbol(LispNames.CAR), entry)))),
+					new LispSymbol(LispNames.RUNTIME_PACKAGES_INTERNAL)));
+			return sortKeywords(listToCons(List.of(new LispSymbol(LispNames.APPEND), baked, names)));
 		}
 		java.util.Map<String, java.util.List<String>> answers = LispNames.PACKAGE_USE_LIST.equals(member) ? useTable
 				: invertUseTable(useTable);
@@ -10654,7 +10831,10 @@ public final class LispMacroExpander {
 			if (canonical == null) {
 				canonical = packageTable.get(literal.toUpperCase(java.util.Locale.ROOT));
 			}
-			if (canonical != null) {
+			if (canonical != null && (!runtimeMutation || LispNames.PACKAGE_USE_LIST.equals(member))) {
+				// A literal use-list of a read/compile-time package is complete --
+				// runtime packages cannot rewrite it. A used-by-list is not: runtime
+				// packages may use the package, so it stays a call and unions below.
 				return quotedPackageList(answers.getOrDefault(canonical, java.util.List.of()));
 			}
 		}
@@ -10679,12 +10859,266 @@ public final class LispMacroExpander {
 					listToCons(List.of(new LispSymbol(LispNames.FUNCTION), new LispSymbol(LispNames.STRING_EQ)))))));
 		LispVal signal = listToCons(List.of(new LispSymbol(LispNames.ERROR),
 				new LispString(member + ": no package named ~A"), designatorVar));
+		if (runtimeMutation) {
+			// A runtime package has no baked row, a read/compile-time one has no
+			// runtime entry -- except for package-used-by-list, whose static rows
+			// miss the runtime packages using them, so that half unions (sorted,
+			// like the interpreter's registry order). The runtime half reads the
+			// entry's use list (package-use-list) or scans every entry's use list
+			// for the name (package-used-by-list), all by string comparison.
+			boolean useList = LispNames.PACKAGE_USE_LIST.equals(member);
+			LispVal runtime = runtimeUseQuery(useList, packageVar);
+			lookup = useList ? listToCons(List.of(new LispSymbol(LispNames.OR), lookup, runtime))
+					: sortKeywords(listToCons(List.of(new LispSymbol(LispNames.APPEND), lookup, runtime)));
+		}
 		return listToCons(List.of(new LispSymbol(LispNames.LET_STAR),
 				listToCons(List.of(listToCons(List.of(designatorVar, designatorForm)),
 						listToCons(List.of(packageVar,
 								listToCons(List.of(new LispSymbol(LispNames.FIND_PACKAGE), designatorVar)))))),
 				listToCons(List.of(new LispSymbol(LispNames.IF), packageVar, lookup, signal))));
 	}
+
+	// The runtime-table half of a computed package-use-list / package-used-by-list:
+	// the name string the (find-package-answered) packageVar holds, looked up in the
+	// %runtime-packages% entries. Comparisons stay string-based (see
+	// runtimePackageEntry).
+	private static LispVal sortKeywords(LispVal keywords) {
+		// (sort KEYS #'string<): string< takes string designators, so keywords sort
+		// by their names -- the interpreter's registry (sorted) order.
+		return listToCons(List.of(new LispSymbol(LispNames.SORT), keywords,
+				listToCons(List.of(new LispSymbol(LispNames.FUNCTION), new LispSymbol(LispNames.STRING_LT)))));
+	}
+
+	private static LispVal runtimeUseQuery(boolean useList, LispVal packageVar) {
+		LispVal nameString = listToCons(List.of(new LispSymbol(LispNames.STRING), packageVar));
+		LispSymbol entry = new LispSymbol(RUNTIME_PACKAGE_ENTRY_VAR);
+		if (useList) {
+			// (car (cdr (find-if (lambda (e) (string= NAME (string (car e))))
+			// %runtime-packages%))) -- the entry's use list, nil when absent.
+			LispVal found = listToCons(List.of(new LispSymbol(LispNames.FIND_IF),
+					listToCons(List.of(new LispSymbol(LispNames.LAMBDA), listToCons(List.of(entry)),
+							listToCons(List.of(new LispSymbol(LispNames.STRING_EQ), nameString,
+									listToCons(List.of(new LispSymbol(LispNames.STRING),
+											listToCons(List.of(new LispSymbol(LispNames.CAR), entry)))))))),
+					new LispSymbol(LispNames.RUNTIME_PACKAGES_INTERNAL)));
+			return listToCons(
+					List.of(new LispSymbol(LispNames.CAR), listToCons(List.of(new LispSymbol(LispNames.CDR), found))));
+		}
+		// (mapcar (lambda (e) (car e)) (remove-if-not (lambda (e) (member NAME (car
+		// (cdr e)) :test #'string=)) %runtime-packages%)) -- every runtime package
+		// whose use list names it. The use entries are keywords, and string= takes
+		// string designators, so no per-element coercion is needed.
+		LispVal uses = listToCons(
+				List.of(new LispSymbol(LispNames.CAR), listToCons(List.of(new LispSymbol(LispNames.CDR), entry))));
+		LispVal matches = listToCons(List.of(new LispSymbol(LispNames.REMOVE_IF_NOT), listToCons(List.of(
+				new LispSymbol(LispNames.LAMBDA), listToCons(List.of(entry)),
+				listToCons(List.of(new LispSymbol(LispNames.MEMBER), nameString, uses, new LispSymbol(":TEST"),
+						listToCons(
+								List.of(new LispSymbol(LispNames.FUNCTION), new LispSymbol(LispNames.STRING_EQ))))))),
+				new LispSymbol(LispNames.RUNTIME_PACKAGES_INTERNAL)));
+		return listToCons(List.of(
+				new LispSymbol(LispNames.MAPCAR), listToCons(List.of(new LispSymbol(LispNames.LAMBDA),
+						listToCons(List.of(entry)), listToCons(List.of(new LispSymbol(LispNames.CAR), entry)))),
+				matches));
+	}
+
+	/**
+	 * The operator names that can create, delete or rename packages at run time. A
+	 * program referencing one (outside quoted data) may grow packages after read/compile
+	 * time, so the resolvers and the backends keep the package queries dynamic for it
+	 * (see {@code .kb/packages.md}).
+	 */
+	public static final java.util.Set<String> RUNTIME_PACKAGE_MUTATIONS = java.util.Set.of(LispNames.MAKE_PACKAGE,
+			LispNames.DELETE_PACKAGE, LispNames.RENAME_PACKAGE);
+
+	/**
+	 * The operator names whose presence makes the backends inject the
+	 * {@code %baked-packages%} table: the three mutations above (their prelude defuns
+	 * validate against the read/compile-time packages), {@code package-nicknames}, and
+	 * the enumeration family ({@code do-symbols} / {@code do-external-symbols} /
+	 * {@code do-all-symbols} / {@code find-all-symbols} / {@code apropos} /
+	 * {@code apropos-list}, whose universe the table carries).
+	 */
+	public static final java.util.Set<String> BAKED_PACKAGE_TABLE_USERS = java.util.Set.of(LispNames.MAKE_PACKAGE,
+			LispNames.DELETE_PACKAGE, LispNames.RENAME_PACKAGE, LispNames.PACKAGE_NICKNAMES, LispNames.DO_SYMBOLS,
+			LispNames.DO_EXTERNAL_SYMBOLS, LispNames.DO_ALL_SYMBOLS, LispNames.FIND_ALL_SYMBOLS, LispNames.APROPOS,
+			LispNames.APROPOS_LIST);
+
+	/**
+	 * Whether the program references one of {@link #BAKED_PACKAGE_TABLE_USERS} (quote
+	 * included -- a quoted mention still means the operator is in play for the
+	 * prelude-selection half of this gate). The backends call this after package
+	 * resolution, where the names are canonical.
+	 * @param program the top-level forms
+	 * @return {@code true} when the baked package table must be injected
+	 */
+	public static boolean needsBakedPackageTable(List<LispVal> program) {
+		for (LispVal form : program) {
+			for (String name : BAKED_PACKAGE_TABLE_USERS) {
+				if (usesSymbol(form, name)) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Prepends the {@code (defvar %baked-packages% '...)} table a program needing the
+	 * runtime package API reads at run time: one entry per registered package --
+	 * {@code (name use nicknames accessible externals imports)}, everything a string
+	 * (names upcased, symbol universes in their canonical spellings, imports as dotted
+	 * {@code (member . home)} pairs with the home upcased) -- built from the resolver's
+	 * final registry. A no-op for every other program, which stays byte-identical. Runs
+	 * after package resolution, so the data is already canonical and needs no further
+	 * pass.
+	 *
+	 * <p>
+	 * Strings rather than symbols and keywords on purpose: the table is quoted program
+	 * data, and the backends' reference scans match quoted symbols (a
+	 * {@code rontolisp:http-handler} symbol in the universe would arm the serve machinery
+	 * for a program that never serves). Packing each universe into one string is the same
+	 * reason pushed further: a quoted constant per symbol grows the top-level function
+	 * body past the wasmtime bound the corpus already approaches
+	 * (`.kb/wasm-function-body-size.md`), while data segments cost nothing. The readers
+	 * decode with {@code string} (a no-op over strings) and materialize symbols through
+	 * {@code intern} only where values are answered.
+	 * @param program the resolved top-level forms
+	 * @param packageResolver the resolver holding the final registry
+	 * @return the program with the table initializer prepended, or unchanged
+	 */
+	public static List<LispVal> injectBakedPackageTable(List<LispVal> program, PackageResolver packageResolver) {
+		if (!needsBakedPackageTable(program)) {
+			return program;
+		}
+		List<LispVal> entries = new java.util.ArrayList<>();
+		for (PackageResolver.BakedPackage pkg : packageResolver.runtimeBakedPackages()) {
+			List<LispVal> entry = new java.util.ArrayList<>();
+			entry.add(new LispString(pkg.name()));
+			entry.add(consList(pkg.use().stream().map(use -> (LispVal) new LispString(use)).toList()));
+			entry.add(consList(pkg.nicknames().stream().map(nick -> (LispVal) new LispString(nick)).toList()));
+			entry.add(new LispString(packSpellings(pkg.accessible())));
+			entry.add(new LispString(packSpellings(pkg.externals())));
+			List<LispVal> redirects = new java.util.ArrayList<>();
+			for (java.util.List<String> redirect : pkg.imports()) {
+				// A dotted (member . home) pair, so (cdr (assoc ...)) is the home.
+				redirects.add(new LispCons(new LispString(redirect.get(0)), new LispString(redirect.get(1))));
+			}
+			entry.add(consList(redirects));
+			entries.add(listToCons(entry));
+		}
+		LispVal table = listToCons(List.of(new LispSymbol(LispNames.QUOTE), listToCons(entries)));
+		LispVal defvar = listToCons(
+				List.of(new LispSymbol(LispNames.DEFVAR), new LispSymbol(LispNames.BAKED_PACKAGES_INTERNAL), table));
+		List<LispVal> out = new java.util.ArrayList<>(program.size() + 1);
+		out.add(defvar);
+		out.addAll(program);
+		return out;
+	}
+
+	/**
+	 * Packs canonically spelled symbols into one length-prefixed string
+	 * ({@code "3:CAR6:MAPCAR"}) for the baked table: length-delimited, so every spelling
+	 * round-trips whatever it contains. See {@link #injectBakedPackageTable} for why the
+	 * universes travel packed.
+	 * @param symbols the spellings, already sorted
+	 * @return the packed string, empty when there is nothing to pack
+	 */
+	private static String packSpellings(java.util.List<LispSymbol> symbols) {
+		StringBuilder packed = new StringBuilder();
+		for (LispSymbol sym : symbols) {
+			packed.append(sym.name().length()).append(':').append(sym.name());
+		}
+		return packed.toString();
+	}
+
+	/** The fixed temporary the runtime-table scans below bind their entry to. */
+	private static final String RUNTIME_PACKAGE_ENTRY_VAR = "__rtp_e";
+
+	/** The fixed temporary holding a runtime-table lookup key (a designator string). */
+	private static final String RUNTIME_PACKAGE_KEY_VAR = "__rtp_k";
+
+	/**
+	 * The runtime-table half of a package lookup: the {@code %runtime-packages%} entry
+	 * whose name or nickname is the designator string {@code keyVar} holds, or nil. Every
+	 * comparison is string-based: a compiled program's symbols have no cross-construction
+	 * identity, so keyword {@code eq} cannot see a runtime-built package value.
+	 * @param keyVar the bound designator-string variable
+	 * @return the entry-or-nil expression
+	 */
+	private static LispVal runtimePackageEntry(LispVal keyVar) {
+		LispSymbol entry = new LispSymbol(RUNTIME_PACKAGE_ENTRY_VAR);
+		LispVal nameTest = listToCons(List.of(new LispSymbol(LispNames.STRING_EQ), keyVar, listToCons(
+				List.of(new LispSymbol(LispNames.STRING), listToCons(List.of(new LispSymbol(LispNames.CAR), entry))))));
+		// (member key (car (cdr (cdr entry))) :test #'string=): the nickname list is
+		// the entry's third element (caddr spelled out -- compositions have no
+		// constant).
+		LispVal nicknames = listToCons(List.of(new LispSymbol(LispNames.CAR), listToCons(
+				List.of(new LispSymbol(LispNames.CDR), listToCons(List.of(new LispSymbol(LispNames.CDR), entry))))));
+		LispVal nickTest = listToCons(
+				List.of(new LispSymbol(LispNames.MEMBER), keyVar, nicknames, new LispSymbol(":TEST"),
+						listToCons(List.of(new LispSymbol(LispNames.FUNCTION), new LispSymbol(LispNames.STRING_EQ)))));
+		LispVal predicate = listToCons(List.of(new LispSymbol(LispNames.LAMBDA), listToCons(List.of(entry)),
+				listToCons(List.of(new LispSymbol(LispNames.OR), nameTest, nickTest))));
+		return listToCons(List.of(new LispSymbol(LispNames.FIND_IF), predicate,
+				new LispSymbol(LispNames.RUNTIME_PACKAGES_INTERNAL)));
+	}
+
+	/**
+	 * The compiled backends' lowering of {@code (do-symbols (var pkg [result]) body...)}
+	 * and {@code do-external-symbols}: the {@code dolist} shape (an explicit cursor loop
+	 * over the {@code %do-symbols-list} universe -- the baked table plus the runtime
+	 * table -- with the result form evaluated under a nil binding like the interpreter's
+	 * {@code evalDoSymbols}), wrapped in the implicit nil block every iteration macro
+	 * establishes. A package omitted designates the current one, read as the
+	 * {@code *package*} value all four backends bind dynamically. The loop is spelled
+	 * with {@code while} rather than {@code dolist} so a {@code return} in the body exits
+	 * this form (a nested {@code dolist} would intercept it with its own block);
+	 * {@code go} stays lexically inline either way.
+	 * @param cons the do-symbols expression
+	 * @param externalOnly whether to list externals only
+	 * @return the equivalent expression
+	 */
+	public static LispVal expandDoSymbols(LispCons cons, boolean externalOnly) {
+		List<LispVal> parts = cons.toList();
+		String operator = parts.get(0) instanceof LispSymbol op ? op.name() : LispNames.DO_SYMBOLS;
+		if (parts.size() < 2 || !(parts.get(1) instanceof LispCons specCons) || specCons.toList().isEmpty()
+				|| !(specCons.toList().get(0) instanceof LispSymbol var)) {
+			throw new IllegalArgumentException(operator + " expects ((var package [result]) body...): " + cons.print());
+		}
+		List<LispVal> spec = specCons.toList();
+		LispVal designator = spec.size() >= 2 ? spec.get(1) : new LispSymbol(LispNames.PACKAGE_VAR);
+		LispVal result = spec.size() >= 3 ? spec.get(2) : LispNil.INSTANCE;
+		LispVal universe = listToCons(List.of(new LispSymbol(LispNames.DO_SYMBOLS_LIST_INTERNAL), designator,
+				externalOnly ? LispTrue.INSTANCE : LispNil.INSTANCE,
+				new LispString(externalOnly ? LispNames.DO_EXTERNAL_SYMBOLS : LispNames.DO_SYMBOLS)));
+		LispSymbol cursor = new LispSymbol(DO_SYMBOLS_CURSOR_VAR);
+		// (while (consp __dosymbols) iteration (setq __dosymbols (cdr __dosymbols));
+		// the iteration let is omitted for an empty body (a body-less let does not
+		// compile, the dolist precedent).
+		List<LispVal> whileParts = new java.util.ArrayList<>();
+		whileParts.add(new LispSymbol(LispNames.WHILE));
+		whileParts.add(callOf(LispNames.CONSP, cursor));
+		if (!parts.subList(2, parts.size()).isEmpty()) {
+			// (let ((var (car __dosymbols))) body...)
+			List<LispVal> iterParts = new java.util.ArrayList<>();
+			iterParts.add(new LispSymbol(LispNames.LET));
+			iterParts.add(new LispCons(listToCons(List.of(var, callOf(LispNames.CAR, cursor))), LispNil.INSTANCE));
+			iterParts.addAll(parts.subList(2, parts.size()));
+			whileParts.add(listToCons(iterParts));
+		}
+		whileParts.add(listToCons(List.of(new LispSymbol(LispNames.SETQ), cursor, callOf(LispNames.CDR, cursor))));
+		LispVal walk = listToCons(whileParts);
+		// (let ((var nil)) result) -- CL evaluates the result form with var bound to nil
+		LispVal resultExpr = listToCons(List.of(new LispSymbol(LispNames.LET),
+				new LispCons(listToCons(List.of(var, LispNil.INSTANCE)), LispNil.INSTANCE), result));
+		// (let ((__dosymbols universe)) walk result-expr), wrapped in a return boundary
+		LispVal bindings = new LispCons(listToCons(List.of(cursor, universe)), LispNil.INSTANCE);
+		return makeBlock(listToCons(List.of(new LispSymbol(LispNames.LET), bindings, walk, resultExpr)));
+	}
+
+	/** The fixed cursor of the {@link #expandDoSymbols} loop (the dolist precedent). */
+	private static final String DO_SYMBOLS_CURSOR_VAR = "__dosymbols";
 
 	/**
 	 * The compiled backends' lowering of {@code (%symbol-print-bare-p symbol pkg ext)} --
@@ -10961,6 +11395,22 @@ public final class LispMacroExpander {
 	 * @return the lowered expression
 	 */
 	public static LispVal expandInternInPackage(LispCons cons, java.util.Map<String, String> packageTable) {
+		return expandInternInPackage(cons, packageTable, false);
+	}
+
+	/**
+	 * As {@link #expandInternInPackage(LispCons, java.util.Map)}, keeping a designator
+	 * that names no read/compile-time package dynamic when the program can create
+	 * packages at run time: a literal one builds the permissive spelling when the runtime
+	 * table knows it and signals otherwise; a computed one is guarded on the package
+	 * existing at all.
+	 * @param cons the intern call (must be the three-part shape)
+	 * @param packageTable the backend's baked package table
+	 * @param runtimeMutation whether the program can create packages at run time
+	 * @return the lowered expression
+	 */
+	public static LispVal expandInternInPackage(LispCons cons, java.util.Map<String, String> packageTable,
+			boolean runtimeMutation) {
 		List<LispVal> parts = cons.toList();
 		if (parts.size() != 3) {
 			throw new IllegalArgumentException("intern with a package expects (intern name package): " + cons.print());
@@ -10971,13 +11421,23 @@ public final class LispMacroExpander {
 		}
 		String pkg = literalPackageDesignator(parts.get(2));
 		if (pkg == null) {
-			return computedPackageIntern(name, parts.get(2));
+			LispVal built = computedPackageIntern(name, parts.get(2));
+			if (!runtimeMutation) {
+				return built;
+			}
+			return findPackageGuarded(parts.get(2), built,
+					listToCons(List.of(new LispSymbol(LispNames.ERROR), new LispString("No such package: computed"))));
 		}
 		if (!packageTable.isEmpty() && !packageTable.containsKey(pkg)
 				&& !packageTable.containsKey(pkg.toUpperCase(java.util.Locale.ROOT))) {
 			// No such package: intern SIGNALS where find-symbol answers nil. (An empty
 			// table means the caller has none -- treat the package as known.)
-			return listToCons(List.of(new LispSymbol(LispNames.ERROR), new LispString("No such package: " + pkg)));
+			LispVal signal = listToCons(
+					List.of(new LispSymbol(LispNames.ERROR), new LispString("No such package: " + pkg)));
+			if (!runtimeMutation) {
+				return signal;
+			}
+			return makeIf(runtimePackageEntry(new LispString(pkg)), permissiveInternSpelling(cons, pkg), signal);
 		}
 		if (LispNames.CL_PKG.equalsIgnoreCase(pkg) || LispNames.CL_USER_PKG.equalsIgnoreCase(pkg)) {
 			return listToCons(List.of(new LispSymbol(LispNames.INTERN), name));
@@ -26679,6 +27139,52 @@ public final class LispMacroExpander {
 	}
 
 	/**
+	 * Expands {@code (do-all-symbols (var [result]) body...)} into a cursor loop over the
+	 * shared {@code %package-symbols-where} universe (the empty pattern matches every
+	 * name): each distinct symbol is visited once, spelled the way code spells it, with
+	 * the result form evaluated under a nil binding and the whole form wrapped in the
+	 * implicit nil block like {@code do-symbols}. Sharing the walk (rather than nesting
+	 * {@code list-all-packages} / {@code do-symbols}) is what keeps the visited spellings
+	 * and the duplicate suppression identical to {@code find-all-symbols} on every
+	 * backend.
+	 * @param cons the do-all-symbols expression
+	 * @return the expanded expression
+	 */
+	public static LispVal expandDoAllSymbols(LispCons cons) {
+		List<LispVal> parts = cons.toList();
+		if (parts.size() < 2 || !(parts.get(1) instanceof LispCons specCons) || specCons.toList().isEmpty()
+				|| !(specCons.toList().get(0) instanceof LispSymbol var)) {
+			throw new IllegalArgumentException(
+					LispNames.DO_ALL_SYMBOLS + " expects ((var [result]) body...): " + cons.print());
+		}
+		List<LispVal> spec = specCons.toList();
+		// The do-all-symbols spec is (var [result]) -- two elements, unlike the
+		// do-symbols (var package [result]) triple.
+		LispVal result = spec.size() >= 2 ? spec.get(1) : LispNil.INSTANCE;
+		// (%package-symbols-where "" nil nil): the whole universe, normalized and
+		// deduplicated by the one walk every enumeration shares.
+		LispVal universe = listToCons(List.of(new LispSymbol(LispNames.PACKAGE_SYMBOLS_WHERE_INTERNAL),
+				new LispString(""), LispNil.INSTANCE, LispNil.INSTANCE));
+		LispSymbol cursor = new LispSymbol(DO_SYMBOLS_CURSOR_VAR);
+		List<LispVal> whileParts = new java.util.ArrayList<>();
+		whileParts.add(new LispSymbol(LispNames.WHILE));
+		whileParts.add(callOf(LispNames.CONSP, cursor));
+		if (!parts.subList(2, parts.size()).isEmpty()) {
+			List<LispVal> iterParts = new java.util.ArrayList<>();
+			iterParts.add(new LispSymbol(LispNames.LET));
+			iterParts.add(new LispCons(listToCons(List.of(var, callOf(LispNames.CAR, cursor))), LispNil.INSTANCE));
+			iterParts.addAll(parts.subList(2, parts.size()));
+			whileParts.add(listToCons(iterParts));
+		}
+		whileParts.add(listToCons(List.of(new LispSymbol(LispNames.SETQ), cursor, callOf(LispNames.CDR, cursor))));
+		LispVal walk = listToCons(whileParts);
+		LispVal resultExpr = listToCons(List.of(new LispSymbol(LispNames.LET),
+				new LispCons(listToCons(List.of(var, LispNil.INSTANCE)), LispNil.INSTANCE), result));
+		LispVal bindings = new LispCons(listToCons(List.of(cursor, universe)), LispNil.INSTANCE);
+		return makeBlock(listToCons(List.of(new LispSymbol(LispNames.LET), bindings, walk, resultExpr)));
+	}
+
+	/**
 	 * Expands {@code (with-hash-table-iterator (name table) body...)} into a SNAPSHOT
 	 * alist plus an {@code flet} binding {@code name} to a local function -- not CL's
 	 * {@code macrolet} -- that pops one entry per call and answers
@@ -36195,6 +36701,21 @@ public final class LispMacroExpander {
 			result = new LispCons(elements.get(i), result);
 		}
 		return (LispCons) result;
+	}
+
+	/**
+	 * Like {@link #listToCons(List)}, but total over empty lists: an empty element list
+	 * answers nil rather than throwing a cast. For building quoted data tables (the
+	 * injected {@code %baked-packages%} rows), whose cells are routinely empty.
+	 * @param elements the list elements
+	 * @return the nil-terminated list, or nil
+	 */
+	private static LispVal consList(List<LispVal> elements) {
+		LispVal result = LispNil.INSTANCE;
+		for (int i = elements.size() - 1; i >= 0; i--) {
+			result = new LispCons(elements.get(i), result);
+		}
+		return result;
 	}
 
 }

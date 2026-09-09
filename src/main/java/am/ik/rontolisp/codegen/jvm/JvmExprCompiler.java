@@ -673,12 +673,12 @@ final class JvmExprCompiler {
 				case LispNames.EXPORT, LispNames.UNEXPORT, LispNames.IMPORT ->
 					JvmExprCompiler.compileExpr(LispMacroExpander.expandRuntimeExport(cons), ctx, className);
 				// The package-registry queries: answered from the use table baked in at
-				// compile time (the compiled runtimes have no registry).
-				case LispNames.LIST_ALL_PACKAGES, LispNames.PACKAGE_USE_LIST,
-						LispNames.PACKAGE_USED_BY_LIST ->
-					JvmExprCompiler.compileExpr(
-							LispMacroExpander.expandPackageQuery(cons, ctx.packageTable, ctx.packageUseTable), ctx,
-							className);
+				// compile time (the compiled runtimes have no registry), plus the
+				// runtime table when the program can create packages (see
+				// .kb/packages.md).
+				case LispNames.LIST_ALL_PACKAGES, LispNames.PACKAGE_USE_LIST, LispNames.PACKAGE_USED_BY_LIST ->
+					JvmExprCompiler.compileExpr(LispMacroExpander.expandPackageQuery(cons, ctx.packageTable,
+							ctx.packageUseTable, ctx.usesRuntimePackages), ctx, className);
 				// The printer's accessibility question (CLHS 22.1.3.3.1), answered from
 				// the
 				// table baked in at compile time (.kb/pretty-printer.md).
@@ -699,10 +699,13 @@ final class JvmExprCompiler {
 				case LispNames.SYMBOL_VALUE -> JvmSymbolApiCompiler.compileSymbolValue(cons, ctx, className);
 				// Only a COMPUTED designator reaches here: PackageResolver folds a
 				// literal
-				// one to the quoted package keyword before the compiler ever sees it.
-				case LispNames.FIND_PACKAGE -> JvmExprCompiler.compileExpr(
-						LispMacroExpander.expandRuntimeFindPackage(cons.toList().get(1), ctx.packageTable), ctx,
-						className);
+				// one to the quoted package keyword before the compiler ever sees it
+				// (unless the program can create packages at run time, in which case
+				// an unknown literal stays a call and is answered from the baked
+				// table plus the runtime table).
+				case LispNames.FIND_PACKAGE ->
+					JvmExprCompiler.compileExpr(LispMacroExpander.expandRuntimeFindPackage(cons.toList().get(1),
+							ctx.packageTable, ctx.usesRuntimePackages), ctx, className);
 				case LispNames.CONCATENATE -> {
 					JvmExprCompiler.compileExpr(ConcatenateForms.expand(cons, ctx.usesSeqString, ctx.closRegistry), ctx,
 							className);
@@ -1091,13 +1094,12 @@ final class JvmExprCompiler {
 					JvmExprCompiler.compileExpr(LispMacroExpander.expandWithPackageIterator(cons), ctx, className);
 				case LispNames.WITH_HASH_TABLE_ITERATOR ->
 					JvmExprCompiler.compileExpr(LispMacroExpander.expandWithHashTableIterator(cons), ctx, className);
-				case LispNames.DO_EXTERNAL_SYMBOLS, LispNames.DO_SYMBOLS ->
-					// Real on the interpreter (registry-backed); inside #. the macro-time
-					// evaluator resolves it before compilation. A runtime occurrence has
-					// no
-					// package registry behind it here.
-					throw new UnsupportedOperationException(
-							sym.name() + " requires the interpreter (no runtime package registry in compiled mode)");
+				case LispNames.DO_EXTERNAL_SYMBOLS ->
+					JvmExprCompiler.compileExpr(LispMacroExpander.expandDoSymbols(cons, true), ctx, className);
+				case LispNames.DO_SYMBOLS ->
+					JvmExprCompiler.compileExpr(LispMacroExpander.expandDoSymbols(cons, false), ctx, className);
+				case LispNames.DO_ALL_SYMBOLS ->
+					JvmExprCompiler.compileExpr(LispMacroExpander.expandDoAllSymbols(cons), ctx, className);
 				case LispNames.PROG ->
 					JvmExprCompiler.compileExpr(LispMacroExpander.expandProg(cons, false), ctx, className);
 				case LispNames.PROG_STAR ->

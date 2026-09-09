@@ -13166,6 +13166,51 @@ class WasmLispCompilerIntegrationTest {
 	}
 
 	@Test
+	void runtimePackageApi() throws Exception {
+		// The JvmLispCompilerTest.compileAndRunRuntimePackageApi twin: the same
+		// prelude defuns over the injected baked table plus the mutable runtime
+		// table, answering exactly like the interpreter's live-registry natives.
+		assertThat(compileAndRunPrelude("""
+				(print (make-package :wt-pkg :use '(:cl) :nicknames '(:wtp)))
+				(print (find-package :wtp))
+				(print (package-nicknames :wt-pkg))
+				(print (package-use-list :wt-pkg))
+				(print (if (member :wt-pkg (package-used-by-list :cl)) t nil))
+				(print (rename-package :wtp :wt-pkg2 :wtp2))
+				(print (delete-package :wt-pkg2))
+				(print (find-package :wt-pkg2))
+				(print (handler-case (make-package :cl)
+				        (package-error (c) (list (type-of c) (package-error-package c)))))
+				(print (handler-case (delete-package :cl) (package-error (c) (package-error-package c))))
+				(print (length (find-all-symbols 'car)))
+				(print (member 'car (find-all-symbols 'car)))
+				(print (apropos-list "CAR" :cl))
+				(print (do-all-symbols (s nil) (when (eq s 'car) (return s))))
+				(print (do-symbols (s :cl-user "wt-done")
+				        (when (string= (symbol-name s) "CAR") (return :found))))
+				(print (packagep :cl))
+				(print (packagep :nope-wt-zzz))
+				""")).isEqualTo("""
+				:WT-PKG
+				:WT-PKG
+				("WTP")
+				(:CL)
+				T
+				:WT-PKG2
+				T
+				NIL
+				(PACKAGE-ERROR :CL)
+				:CL
+				1
+				(CAR)
+				(CAR MAPCAR)
+				CAR
+				:FOUND
+				T
+				NIL""");
+	}
+
+	@Test
 	void inPackageThenUnqualifiedVersion() throws Exception {
 		String code = """
 				(in-package rontolisp)

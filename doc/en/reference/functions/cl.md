@@ -139,6 +139,15 @@ page.
 | `package-use-list` | `(package-use-list :cl-user)` | `(:CL)` -- the packages a package uses, as `find-package` keywords; an unknown designator signals |
 | `package-used-by-list` | `(package-used-by-list :cl)` | The inverse: every package whose use list names this one |
 | `package-shadowing-symbols` | `(package-shadowing-symbols :cl-user)` | Always `nil` (there is no symbol shadowing); the designator is still validated |
+| `make-package` | `(make-package :mypkg :use '(:cl))` | Create a package at run time, answering its keyword; collisions and unknown `:use` entries signal a catchable `package-error` |
+| `delete-package` | `(delete-package :mypkg)` | `t` -- drop a `make-package` product; a read/compile-time package or unknown designator signals a `package-error` |
+| `rename-package` | `(rename-package :mypkg :new :nick)` | Rename a `make-package` product, replacing its nicknames; the same failures signal |
+| `packagep` | `(packagep :cl)` | `t` for a designator naming a registered package, `nil` otherwise -- never signals |
+| `package-nicknames` | `(package-nicknames :cl)` | `("COMMON-LISP")` -- the nickname strings, sorted; an unknown designator signals a `package-error` |
+| `find-all-symbols` | `(find-all-symbols 'car)` | `(CAR)` -- every distinct symbol of that name accessible anywhere, spelled the way code spells it |
+| `apropos-list` | `(apropos-list "CAR" :cl)` | `(CAR MAPCAR)` -- substring search (case-insensitive) over the same universe |
+| `apropos` | `(apropos "CAR" :cl)` | Print each match and return `nil` |
+| `package-error-package` | `(package-error-package c)` | The offending designator out of a `package-error` condition |
 | `symbol-value` | `(symbol-value '*level*)` | The global variable's value; unbound names signal an error (lexical bindings are invisible) |
 | `boundp` | `(boundp '*level*)` | `t` when the symbol names a bound global variable (t/nil/keywords are self-bound) |
 | `fboundp` | `(fboundp 'car)` | `t` for functions, macros and special forms (compilers: a computed argument sees functions only) |

@@ -135,11 +135,63 @@ public final class PackageResolver {
 	 * @return the resolved forms
 	 */
 	public List<LispVal> resolveProgram(List<LispVal> program) {
-		List<LispVal> out = new ArrayList<>(program.size());
-		for (LispVal form : program) {
-			out.add(resolve(form));
+		this.runtimePackagesMutable = programUsesRuntimePackageMutation(program);
+		this.inProgramResolution = true;
+		try {
+			List<LispVal> out = new ArrayList<>(program.size());
+			for (LispVal form : program) {
+				out.add(resolve(form));
+			}
+			return out;
 		}
-		return out;
+		finally {
+			this.inProgramResolution = false;
+		}
+	}
+
+	/**
+	 * Whether the program can create, delete or rename packages at run time -- a call or
+	 * {@code #'name} reference to {@code make-package}, {@code delete-package} or
+	 * {@code rename-package} outside quoted data. While set, a literal
+	 * {@code (find-package X)} over an unknown package stays a call: the package may come
+	 * into being later. The backends read this after {@link #resolveProgram} for the same
+	 * gate over their lowerings.
+	 * @return {@code true} when the last resolved program can mutate packages
+	 */
+	public boolean runtimePackagesMutable() {
+		return this.runtimePackagesMutable;
+	}
+
+	private boolean runtimePackagesMutable;
+
+	private boolean inProgramResolution;
+
+	// A reference to a runtime package-mutating operator -- a call head or a #'name
+	// value, anywhere outside quoted data (a defun of the same name counts: it is
+	// still a program that spells the operator, and staying dynamic there is only
+	// less folding, never a wrong answer).
+	private static boolean programUsesRuntimePackageMutation(List<LispVal> program) {
+		for (LispVal form : program) {
+			if (referencesRuntimePackageMutation(form, false)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static boolean referencesRuntimePackageMutation(LispVal form, boolean quoted) {
+		return switch (form) {
+			case LispSymbol sym -> !quoted && (LispNames.MAKE_PACKAGE.equals(operatorMember(sym))
+					|| LispNames.DELETE_PACKAGE.equals(operatorMember(sym))
+					|| LispNames.RENAME_PACKAGE.equals(operatorMember(sym)));
+			case LispCons cons -> {
+				boolean quoteHead = cons.car() instanceof LispSymbol head
+						&& LispNames.QUOTE.equals(operatorMember(head));
+				yield referencesRuntimePackageMutation(cons.car(), quoted)
+						|| referencesRuntimePackageMutation(cons.cdr(), quoted || quoteHead);
+			}
+			default -> false;
+		};
 	}
 
 	/**
@@ -930,6 +982,136 @@ public final class PackageResolver {
 		this.registry.defineNickname(nickname, target);
 	}
 
+	/**
+	 * Creates a runtime-tier package (the {@code make-package} operator): an empty
+	 * package with the given use list and nicknames, registered under the upcased name
+	 * (the reader-canonical rule -- a runtime name behaves like a read one). The
+	 * {@code :use} entries must name packages the registry already knows; a name or
+	 * nickname colliding with any registered designator is refused, like
+	 * {@code defpackage}'s.
+	 * @param name the package name as given (any case)
+	 * @param use the use-list entries as given (any case, nicknames allowed)
+	 * @param nicknames the nicknames as given (any case)
+	 * @return the canonical (upcased) package name
+	 * @throws RuntimePackageException when the name exists, a use entry is unknown, or a
+	 * nickname collides
+	 */
+	public String createRuntimePackage(String name, java.util.List<String> use, java.util.List<String> nicknames) {
+		String canonical = name.toUpperCase(java.util.Locale.ROOT);
+		if (canonical.isEmpty()) {
+			throw new RuntimePackageException("MAKE-PACKAGE expects a package name", name);
+		}
+		if (this.registry.contains(canonical)) {
+			throw new RuntimePackageException("MAKE-PACKAGE: package already exists: " + canonical, name);
+		}
+		java.util.List<String> useList = new java.util.ArrayList<>();
+		for (String entry : use) {
+			String used = registeredPackageName(this.registry.canonicalName(entry));
+			if (!this.registry.contains(used)) {
+				throw new RuntimePackageException("MAKE-PACKAGE: no such package: " + entry, entry);
+			}
+			for (String implied : withImpliedUses(used)) {
+				if (!useList.contains(implied)) {
+					useList.add(implied);
+				}
+			}
+		}
+		java.util.List<String> canonicalNicknames = new java.util.ArrayList<>();
+		for (String nickname : nicknames) {
+			String nick = nickname.toUpperCase(java.util.Locale.ROOT);
+			if (this.registry.contains(nick)) {
+				throw new RuntimePackageException("MAKE-PACKAGE: package already exists: " + nick, nickname);
+			}
+			canonicalNicknames.add(nick);
+		}
+		this.registry
+			.define(new LispPackage(canonical, java.util.List.copyOf(useList), java.util.Set.of(), java.util.Set.of()));
+		for (String nick : canonicalNicknames) {
+			this.registry.defineNickname(nick, canonical);
+		}
+		this.registry.markRuntimePackage(canonical);
+		return canonical;
+	}
+
+	/**
+	 * Deletes a runtime-tier package (the {@code delete-package} operator): the
+	 * registration and its nicknames are dropped. Read/compile-time packages (built-ins
+	 * and {@code defpackage} products) are immutable -- every backend resolved against
+	 * them -- and an unknown designator names nothing to delete.
+	 * @param designator the package designator as given (any case, nickname allowed)
+	 * @return the deleted canonical package name
+	 * @throws RuntimePackageException when no package answers or it is not runtime-tier
+	 */
+	public String deleteRuntimePackage(String designator) {
+		String pkg = findPackageName(designator);
+		if (pkg == null) {
+			throw new RuntimePackageException("DELETE-PACKAGE: no such package: " + designator, designator);
+		}
+		String canonical = registeredPackageName(pkg);
+		if (!this.registry.isRuntimePackage(canonical)) {
+			throw new RuntimePackageException("DELETE-PACKAGE: cannot delete read/compile-time package: "
+					+ canonical.toUpperCase(java.util.Locale.ROOT), designator);
+		}
+		this.registry.remove(canonical);
+		return canonical;
+	}
+
+	/**
+	 * Renames a runtime-tier package (the {@code rename-package} operator), replacing its
+	 * nicknames with {@code newNicknames} (Common Lisp's replace rule -- the old
+	 * nicknames are dropped even when the new list is empty).
+	 * @param designator the package designator as given (any case, nickname allowed)
+	 * @param newName the new package name as given (any case)
+	 * @param newNicknames the replacement nicknames as given (any case)
+	 * @return the new canonical package name
+	 * @throws RuntimePackageException when no package answers, it is not runtime-tier, or
+	 * the new name (or a nickname) collides with a different package
+	 */
+	public String renameRuntimePackage(String designator, String newName, java.util.List<String> newNicknames) {
+		String pkg = findPackageName(designator);
+		if (pkg == null) {
+			throw new RuntimePackageException("RENAME-PACKAGE: no such package: " + designator, designator);
+		}
+		String canonical = registeredPackageName(pkg);
+		if (!this.registry.isRuntimePackage(canonical)) {
+			throw new RuntimePackageException("RENAME-PACKAGE: cannot rename read/compile-time package: "
+					+ canonical.toUpperCase(java.util.Locale.ROOT), designator);
+		}
+		String renamed = newName.toUpperCase(java.util.Locale.ROOT);
+		if (renamed.isEmpty()) {
+			throw new RuntimePackageException("RENAME-PACKAGE expects a new package name", newName);
+		}
+		if (!renamed.equals(canonical) && this.registry.contains(renamed)) {
+			throw new RuntimePackageException("RENAME-PACKAGE: package already exists: " + renamed, newName);
+		}
+		java.util.List<String> canonicalNicknames = new java.util.ArrayList<>();
+		for (String nickname : newNicknames) {
+			String nick = nickname.toUpperCase(java.util.Locale.ROOT);
+			String target = this.registry.canonicalName(nick);
+			if (this.registry.contains(nick) && !target.equals(canonical)) {
+				throw new RuntimePackageException("RENAME-PACKAGE: package already exists: " + nick, nickname);
+			}
+			canonicalNicknames.add(nick);
+		}
+		this.registry.rename(canonical, renamed, canonicalNicknames);
+		return renamed;
+	}
+
+	/**
+	 * The nickname strings of a designated package (the {@code package-nicknames}
+	 * operator), in a deterministic order.
+	 * @param designator the package designator as given (any case, nickname allowed)
+	 * @return the nicknames as spelled at registration
+	 * @throws RuntimePackageException when no package answers
+	 */
+	public java.util.List<String> runtimePackageNicknames(String designator) {
+		String pkg = findPackageName(designator);
+		if (pkg == null) {
+			throw new RuntimePackageException("PACKAGE-NICKNAMES: no such package: " + designator, designator);
+		}
+		return this.registry.nicknamesFor(registeredPackageName(pkg));
+	}
+
 	private static String designator(String context, String kind, LispVal designator) {
 		return switch (designator) {
 			// A keyword (:cl-user), an uninterned symbol (#:cl-user, the common
@@ -1108,8 +1290,21 @@ public final class PackageResolver {
 			String designator = literalDesignator(argCell.car());
 			if (designator != null) {
 				String found = findPackageName(designator);
-				return SourceProvenance.inherit(cons, found == null ? LispNil.INSTANCE
-						: quotedSymbol(":" + found.toUpperCase(java.util.Locale.ROOT)));
+				// ... unless the program can create packages at run time: an unknown
+				// name may come into being later, so the call stays a call and the
+				// backends answer it from their baked table plus the runtime table.
+				// A KNOWN name still folds -- read/compile-time packages are
+				// immutable at run time, so the answer cannot change. A lone form
+				// resolved outside resolveProgram (the interpreter resolves each
+				// top-level form just before evaluating it) never folds an unknown
+				// name: a creation may run between this resolution and a later call
+				// through the form (a defun body), and only a call sees it.
+				boolean mutable = this.runtimePackagesMutable || !this.inProgramResolution
+						|| referencesRuntimePackageMutation(cons, false);
+				if (found != null || !mutable) {
+					return SourceProvenance.inherit(cons, found == null ? LispNil.INSTANCE
+							: quotedSymbol(":" + found.toUpperCase(java.util.Locale.ROOT)));
+				}
 			}
 		}
 		LispVal car = resolveForm(cons.car());
@@ -1628,8 +1823,12 @@ public final class PackageResolver {
 		if (pkg == null) {
 			throw new LispPackageException("No such package: " + packageDesignator);
 		}
-		LispPackage p = this.registry.get(pkg);
-		if (p == null) {
+		LispPackage p;
+		try {
+			p = this.registry.get(pkg);
+		}
+		catch (LispPackageException ignored) {
+			// Findable but unregistered (the keyword pseudo-package): no symbols.
 			return java.util.List.of();
 		}
 		java.util.List<String> names = new java.util.ArrayList<>(p.externals());
@@ -1662,8 +1861,14 @@ public final class PackageResolver {
 		if (pkg == null) {
 			throw new LispPackageException("No such package: " + packageDesignator);
 		}
-		LispPackage p = this.registry.get(pkg);
-		if (p == null) {
+		LispPackage p;
+		try {
+			p = this.registry.get(pkg);
+		}
+		catch (LispPackageException ignored) {
+			// Findable but unregistered: the keyword pseudo-package (its "symbols"
+			// are the keywords, enumerated nowhere), or a use entry left stale by
+			// a delete-package. Neither contributes symbols.
 			return java.util.List.of();
 		}
 		// Home package -> the names homed there, so an inherited name keeps its owner's
@@ -1672,10 +1877,15 @@ public final class PackageResolver {
 		java.util.Map<String, java.util.Set<String>> byHome = new java.util.LinkedHashMap<>();
 		byHome.computeIfAbsent(pkg, k -> new java.util.LinkedHashSet<>()).addAll(p.symbols());
 		for (String used : p.useList()) {
-			LispPackage source = this.registry.get(used);
-			if (source != null) {
-				byHome.computeIfAbsent(used, k -> new java.util.LinkedHashSet<>()).addAll(source.externals());
+			LispPackage source;
+			try {
+				source = this.registry.get(used);
 			}
+			catch (LispPackageException ignored) {
+				// A use entry left stale by a delete-package: contributes nothing.
+				continue;
+			}
+			byHome.computeIfAbsent(used, k -> new java.util.LinkedHashSet<>()).addAll(source.externals());
 		}
 		java.util.List<LispSymbol> out = new java.util.ArrayList<>();
 		for (java.util.Map.Entry<String, java.util.Set<String>> entry : byHome.entrySet()) {
@@ -1798,6 +2008,79 @@ public final class PackageResolver {
 		}
 		table.putIfAbsent("KEYWORD", List.of());
 		return table;
+	}
+
+	/**
+	 * One entry of {@link #runtimeBakedPackages}: everything a compiled program needs to
+	 * answer the runtime package API without a registry.
+	 *
+	 * @param name the upcased canonical package name
+	 * @param use the upcased canonical names of the used packages
+	 * @param nicknames the nickname strings
+	 * @param accessible the canonically spelled accessible symbols (the
+	 * {@code do-symbols} universe of this package)
+	 * @param externals the canonically spelled external symbols (the
+	 * {@code do-external-symbols} universe)
+	 * @param imports the recorded import redirects as {@code (member, home)} pairs
+	 * (member verbatim, home upcased) -- what spells an enumerated re-export at its true
+	 * home
+	 */
+	public record BakedPackage(String name, java.util.List<String> use, java.util.List<String> nicknames,
+			java.util.List<LispSymbol> accessible, java.util.List<LispSymbol> externals,
+			java.util.List<java.util.List<String>> imports) {
+	}
+
+	/**
+	 * The table a compiled backend injects as {@code %baked-packages%} when the program
+	 * can create, enumerate or nickname packages at run time: one entry per registered
+	 * package (plus the {@code keyword} pseudo-package), in a deterministic order. Read
+	 * AFTER {@link #resolveProgram}, like {@link #runtimePackageUseTable}. The
+	 * interpreter does not use it -- it keeps the live registry.
+	 * @return the baked package entries
+	 */
+	public java.util.List<BakedPackage> runtimeBakedPackages() {
+		java.util.List<BakedPackage> out = new java.util.ArrayList<>();
+		for (String canonical : new java.util.TreeSet<>(this.registry.designatorTable().values())) {
+			String upcased = canonical.toUpperCase(java.util.Locale.ROOT);
+			java.util.List<String> used = new java.util.ArrayList<>();
+			LispPackage pkg = null;
+			try {
+				pkg = this.registry.get(canonical);
+			}
+			catch (LispPackageException ignored) {
+				// A nickname-only designator value cannot happen (values are
+				// canonical names), but stay total: the entry keeps empty lists.
+			}
+			if (pkg != null) {
+				for (String use : pkg.useList()) {
+					used.add(use.toUpperCase(java.util.Locale.ROOT));
+				}
+			}
+			java.util.List<LispSymbol> accessible;
+			java.util.List<LispSymbol> externals;
+			try {
+				accessible = accessibleSymbols(canonical);
+				externals = externalSymbols(canonical);
+			}
+			catch (LispPackageException ignored) {
+				accessible = java.util.List.of();
+				externals = java.util.List.of();
+			}
+			java.util.List<String> nicknames = pkg == null ? java.util.List.of()
+					: this.registry.nicknamesFor(canonical);
+			java.util.List<java.util.List<String>> imports = new java.util.ArrayList<>();
+			if (pkg != null) {
+				new java.util.TreeMap<>(pkg.imports()).forEach((member, home) -> imports
+					.add(java.util.List.of(member, home.toUpperCase(java.util.Locale.ROOT))));
+			}
+			out.add(new BakedPackage(upcased, java.util.List.copyOf(used), nicknames, accessible, externals,
+					java.util.List.copyOf(imports)));
+		}
+		if (out.stream().noneMatch(entry -> "KEYWORD".equals(entry.name()))) {
+			out.add(new BakedPackage("KEYWORD", java.util.List.of(), java.util.List.of(), java.util.List.of(),
+					java.util.List.of(), java.util.List.of()));
+		}
+		return out;
 	}
 
 	/**

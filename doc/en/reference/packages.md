@@ -148,9 +148,14 @@ top-level `(use-package :mypkg)` widens the current package's use list for the
 forms that follow it, on every backend.
 
 [`export`](functions/export.md), [`unexport`](functions/unexport.md) and
-[`import`](functions/import.md) follow the same rule. `make-package` and
-`rename-package` are not available, and a `defpackage` inside another form (not
-top-level) is an error.
+[`import`](functions/import.md) follow the same rule.
+[`make-package`](functions/make-package.md) is the runtime tier beside this
+read/compile-time one: it creates an empty package (upcased name, `:use`
+entries that must already exist), [`rename-package`](functions/rename-package.md)
+renames one and [`delete-package`](functions/delete-package.md) drops one, with
+failures signalling a catchable `package-error`. Read/compile-time packages are
+immutable at run time -- renaming or deleting one signals -- and a `defpackage`
+inside another form (not top-level) is an error.
 
 Packages are resolved at read/compile time (in source order), so `in-package` is a top-level directive: which package a symbol in the source belongs to is decided by the `in-package` above it, not by a runtime `setq` of `*package*` (in compiled output the whole file is resolved before it runs; the interpreter resolves each top-level form as it reaches it, so a runtime assignment does affect the forms after it there). In compiled output a runtime-loaded file's package directives are not processed; the `rontolisp` package's functions (`version`, ...) are not available as first-class values (they cannot be passed to `mapcar`/`funcall`); and a `cl` symbol name must not be shadowed as a local variable inside a package that does not use `cl`.
 
