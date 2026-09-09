@@ -13,7 +13,7 @@
 | T | `t` | True |
 | Pi | `pi` | The constant π, bound as a global holding the double `3.141592653589793`; a quoted `pi` stays the symbol |
 | Fixnum range | `most-positive-fixnum`, `most-negative-fixnum` | Bound as globals like `pi`; the value is backend-dependent (a WASM fixnum is an unboxed 31-bit reference, the interpreter and the JVM backend use 64-bit longs) |
-| Other limits | `char-code-limit`, `array-total-size-limit`, `array-dimension-limit` | Bound as globals like the fixnum range; `char-code-limit` is `1114112` (full Unicode code points) on every backend, the array limits are backend-dependent |
+| Other limits | `char-code-limit`, `array-total-size-limit`, `array-dimension-limit`, `array-rank-limit`, `call-arguments-limit`, `lambda-parameters-limit`, `multiple-values-limit` | Bound as globals like the fixnum range; `char-code-limit` is `1114112` (full Unicode code points) on every backend, the array limits are backend-dependent |
 | Float range | `most-positive-double-float`, `least-positive-normalized-single-float`, `double-float-epsilon` | The standard float-range constants, bound as globals holding doubles like `pi`. `short-float` is `single-float` and `long-float` is `double-float`; since every float is a double here, a single-float bound answers the exact double of the binary32 number it names |
 | Cons | `(1 2 3)`, `(a . 1)` | Linked list built from cons cells; `(a . b)` is dotted-pair notation for a single cell |
 | Function | `#'car`, `(lambda (x) x)` | Function object obtained via `#'`/`function`/`lambda` |
