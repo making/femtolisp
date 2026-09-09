@@ -36612,6 +36612,19 @@ public final class LispMacroExpander {
 				break;
 			}
 		}
+		// *gensym-counter* and *random-state*: bound on the interpreter so a reference is
+		// not unbound (Environment.createGlobal). The interpreter never reads them --
+		// gensym counts on a private counter and random draws from the in-program
+		// generator (.kb/random.md) -- so their values are the initial ones. The compile
+		// paths seed the same initial values with defvar: a reference answers what the
+		// interpreter answers, and a setq works on both.
+		boolean usesGensymCounter = false;
+		boolean usesRandomState = false;
+		for (LispVal form : program) {
+			usesGensymCounter = usesGensymCounter || usesSymbol(form, LispNames.GENSYM_COUNTER_VAR);
+			usesRandomState = usesRandomState || usesSymbol(form, LispNames.RANDOM_STATE_VAR);
+		}
+
 		// The standard constant variables (pi, the float-range names, the fixnum and
 		// array limits, char-code-limit, internal-time-units-per-second,
 		// lambda-list-keywords): bound as globals holding the BACKEND's own value,
@@ -36666,7 +36679,7 @@ public final class LispMacroExpander {
 			program = kept;
 		}
 		if (!usesMv && !usesFloatFormat && printerVars.isEmpty() && loadContextVars.isEmpty() && !readsPackage
-				&& !usesFeatures && constantNames.isEmpty()) {
+				&& !usesFeatures && constantNames.isEmpty() && !usesGensymCounter && !usesRandomState) {
 			return program;
 		}
 		List<LispVal> out = new java.util.ArrayList<>(
@@ -36683,6 +36696,14 @@ public final class LispMacroExpander {
 			LispVal init = ClConstants.initForm(name, wasm);
 			out.add(listToCons(List.of(new LispSymbol(LispNames.DEFCONSTANT), new LispSymbol(name),
 					java.util.Objects.requireNonNull(init))));
+		}
+		if (usesGensymCounter) {
+			out.add(listToCons(List.of(new LispSymbol(LispNames.DEFVAR), new LispSymbol(LispNames.GENSYM_COUNTER_VAR),
+					new LispInteger(0))));
+		}
+		if (usesRandomState) {
+			out.add(listToCons(List.of(new LispSymbol(LispNames.DEFVAR), new LispSymbol(LispNames.RANDOM_STATE_VAR),
+					LispNil.INSTANCE)));
 		}
 		for (String name : loadContextVars) {
 			out.add(listToCons(List.of(new LispSymbol(LispNames.DEFVAR), new LispSymbol(name), LispNil.INSTANCE)));
