@@ -193,6 +193,24 @@ duplicate text is what a compressor collapses for free, so removing it moves the
 raw number and barely the gzipped one (the Worker table, which counts gzip,
 shows raw down on every row and gzip within a percent either way).
 
+**A provably byte-only sequence skips the character arm.** `read-sequence` /
+`write-sequence` used to pick bytes vs. characters off a runtime `(stringp seq)`
+test even when the buffer was visibly a byte vector, so every byte-only reader
+carried the `read-char` runtime (649 B) dead. A sequence with `ArgumentShapes`
+`VECTOR` shape -- a numeric-typed or untyped `make-array`, directly or through a
+stable `let`/`let*` binding -- now expands to the byte loop outright
+(`compiler/SequenceIoNarrowing`, `.todo/338`; parameters, `setq`'d or captured
+variables, character buffers and `stream-element-type` shapes keep the runtime
+test). Worth **-657 B** on the `--optimize=size` row (125,738 -> 125,081), and
+-1,009 B on a print-free byte-loop micro program. The same todo's
+`%string-concat` half -- a byte-copy concat plus a one-element character vector
+for the `(string c)` in `%schar-set-runtime`, so neither renders through the
+value printer -- pays on modules whose only printer edge was the concat
+(-46% on a print-free concat micro program) but moves this row by nothing: the
+printer stays reachable through chipz's own `princ-to-string` uses and the
+`apply`-pulled `eval` runtime. Every module still gunzips the fixture
+byte-for-byte on all four backends.
+
 **The unoptimized micro rows are the prelude, so they move when the prelude
 does.** They grew by ~2.3 KB when `fill` joined it; `--optimize` takes both back
 to the same bytes as before, which is the point of only comparing tree-shaken

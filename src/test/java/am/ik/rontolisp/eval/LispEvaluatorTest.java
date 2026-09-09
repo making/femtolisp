@@ -1407,6 +1407,19 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void evalInternalStringConcatCopiesBytes() {
+		// %string-concat is strings-only by contract: the WASM backend byte-copies
+		// both operands (.todo/338) instead of rendering them through the value
+		// printer, so a non-string must fail here exactly as it does there.
+		assertThat(eval("(%string-concat \"foo\" \"bar\")")).isEqualTo(new LispString("foobar"));
+		assertThat(eval("(%string-concat \"\" \"\")")).isEqualTo(new LispString(""));
+		assertThat(eval("(%string-concat \"\" \"x\")")).isEqualTo(new LispString("x"));
+		assertThat(eval("(%string-concat \"y\" \"\")")).isEqualTo(new LispString("y"));
+		assertThat(eval("(%string-concat \"héllo→\" \"世界\")")).isEqualTo(new LispString("héllo→世界"));
+		assertThatThrownBy(() -> eval("(%string-concat \"a\" 1)")).isInstanceOf(LispEvalException.class);
+	}
+
+	@Test
 	void evalConcatenateListAndVectorResultTypes() {
 		// The list / vector families walk elements, so the arguments may be any mix of
 		// sequences; the compound spellings normalize to the same families.

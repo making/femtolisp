@@ -53,6 +53,7 @@ import am.ik.rontolisp.compiler.OptimizeLevel;
 import am.ik.rontolisp.compiler.ReactorEnvelope;
 import am.ik.rontolisp.compiler.RuntimeNameProducers;
 import am.ik.rontolisp.compiler.ShadowedBuiltins;
+import am.ik.rontolisp.compiler.SequenceIoNarrowing;
 import am.ik.rontolisp.compiler.StreamDesignators;
 import am.ik.rontolisp.compiler.SuspendingImports;
 import am.ik.rontolisp.compiler.WasmImportDirective;
@@ -817,8 +818,8 @@ public final class WasmLispCompiler implements LispCompiler {
 	static final int FUNC_RAT_ROUND = FUNC_RAT_CEIL + 1;
 
 	// String runtime: render a value into the heap via the capture mode of _write_str
-	// and return a new string struct (princ-to-string / prin1-to-string /
-	// %string-concat).
+	// and return a new string struct (princ-to-string / prin1-to-string), plus the
+	// byte-copy concatenation of two strings (%string-concat).
 	static final int FUNC_PRINC_TO_STR = FUNC_RAT_ROUND + 1;
 
 	static final int FUNC_PRIN1_TO_STR = FUNC_PRINC_TO_STR + 1;
@@ -3763,6 +3764,11 @@ public final class WasmLispCompiler implements LispCompiler {
 			WasmUncaughtReportCompiler.emitPrologue(ctx);
 		}
 		int topLevelAwaits = 0;
+		// A sequence proven not to be a string takes the byte arm directly, so the dead
+		// character arm leaves the artifact (compiler/SequenceIoNarrowing). After every
+		// gate scan: the narrowed expansion still attempts %read-sequence-packed first,
+		// and the gates that emit that runtime key on the unexpanded spelling.
+		topLevelExprs = SequenceIoNarrowing.narrow(topLevelExprs);
 		if (this.asyncMode) {
 			for (LispVal expr : topLevelExprs) {
 				topLevelAwaits += WasmAwaitAnalysis.countAwaits(expr);
@@ -6499,7 +6505,7 @@ public final class WasmLispCompiler implements LispCompiler {
 					.addFunction(WasmRatioRuntimeBuilder.buildRatRoundBody())
 					.addFunction(WasmRuntimeBuilder.buildToStringBody(FUNC_PRINC_VAL, 1))
 					.addFunction(WasmRuntimeBuilder.buildToStringBody(FUNC_PRINT_VAL, 1))
-					.addFunction(WasmRuntimeBuilder.buildToStringBody(FUNC_PRINC_VAL, 2))
+					.addFunction(WasmStringRuntimeBuilder.buildStringConcatBody())
 					.addFunction(WasmStringRuntimeBuilder.buildCaseConvertBody(true))
 					.addFunction(WasmStringRuntimeBuilder.buildCaseConvertBody(false))
 					.addFunction(WasmStringRuntimeBuilder.buildCapitalizeBody())

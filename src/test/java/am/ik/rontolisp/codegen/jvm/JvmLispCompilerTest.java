@@ -4989,6 +4989,37 @@ class JvmLispCompilerTest {
 	}
 
 	@Test
+	void readWriteSequenceOverLetBoundByteBuffersTakesTheByteArm() throws Exception {
+		// compiler/SequenceIoNarrowing (.todo/338): a let-bound non-string buffer
+		// skips the runtime stringp test and the character arm. The element stores
+		// below do not stand the narrowing down (they rebind nothing), while the
+		// string buffer over a character stream keeps the shared expansion -- both
+		// spellings in one program.
+		String file = tempDir.resolve("nb.dat").toString().replace("\\", "\\\\");
+		String chars = tempDir.resolve("nc.txt").toString().replace("\\", "\\\\");
+		assertThat(compileAndRun("""
+				(with-open-file (out "%s" :direction :output :element-type '(unsigned-byte 8))
+				  (let ((buf (make-array 4 :element-type '(unsigned-byte 8))))
+				    (setf (aref buf 0) 65)
+				    (setf (aref buf 1) 66)
+				    (setf (aref buf 2) 67)
+				    (setf (aref buf 3) 68)
+				    (write-sequence buf out)))
+				(let ((buf2 (make-array 4 :element-type '(unsigned-byte 8) :initial-element 0)))
+				  (with-open-file (in "%s" :element-type '(unsigned-byte 8))
+				    (print (read-sequence buf2 in)))
+				  (print (aref buf2 0))
+				  (print (aref buf2 3)))
+				(with-open-file (out "%s" :direction :output)
+				  (write-string "AB" out))
+				(let ((s (make-string 2 :initial-element #\\A)))
+				  (with-open-file (in "%s")
+				    (print (read-sequence s in)))
+				  (print s))
+				""".formatted(file, file, chars, chars))).isEqualTo("4\n65\n68\n2\n\"AB\"");
+	}
+
+	@Test
 	void readWriteSequencePackedBuffersMoveRawLittleEndianElements() throws Exception {
 		// The _readSeqPacked / _writeSeqPacked helpers (.kb/binary-sequence-io.md): a
 		// packed float array of any rank and a packed (unsigned-byte 8|16|32) vector move
@@ -5879,6 +5910,24 @@ class JvmLispCompilerTest {
 	@Test
 	void compileAndRunConcatenate() throws Exception {
 		assertThat(compileAndRun("(princ (concatenate 'string \"foo\" \"bar\" \"baz\"))")).isEqualTo("foobarbaz");
+	}
+
+	@Test
+	void compileAndRunInternalStringConcatCopiesBytes() throws Exception {
+		// %string-concat is strings-only by contract (.todo/338): empty operands,
+		// multi-byte UTF-8, a mutable character vector operand, and the rebuild path
+		// every (setf (aref s i) c) spelling lowers through.
+		assertThat(compileAndRun("""
+				(print (%string-concat "foo" "bar"))
+				(print (%string-concat "" ""))
+				(print (%string-concat "" "x"))
+				(print (%string-concat "y" ""))
+				(print (%string-concat "héllo→" "世界"))
+				(print (%string-concat "prefix-" (make-array 3 :element-type 'character :initial-element #\\z)))
+				(let ((s (copy-seq "abc")))
+				  (setf (aref s 1) #\\X)
+				  (print s))
+				""")).isEqualTo("\"foobar\"\n\"\"\n\"x\"\n\"y\"\n\"héllo→世界\"\n\"prefix-zzz\"\n\"aXc\"");
 	}
 
 	@Test

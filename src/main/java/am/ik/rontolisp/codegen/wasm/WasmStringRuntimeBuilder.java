@@ -1060,6 +1060,129 @@ final class WasmStringRuntimeBuilder {
 		return body.toByteArray();
 	}
 
+	/**
+	 * Builds {@code _string_concat} (FUNC_STRING_CONCAT): the byte-copy concatenation of
+	 * two quote-framed runtime strings into a fresh one ({@code "ab"} from {@code "a"}
+	 * and {@code "b"}).
+	 *
+	 * <p>
+	 * This used to share the capture-mode renderer with {@code _princ_to_str} /
+	 * {@code _prin1_to_str} ({@code WasmRuntimeBuilder.buildToStringBody}), rendering
+	 * each operand through the generic value printer -- so any module with one
+	 * immutable-string rebuild site (every {@code (setf (aref var i) v)} spelling via
+	 * {@code %schar-set-runtime}) carried the whole printer family. The operands are
+	 * strings by contract (the interpreter throws and the JVM backend CHECKCASTs
+	 * otherwise; every lowering passes literals, format pieces, rendered messages or
+	 * subseq results), so their CONTENTS copy verbatim: the closing quote of the first
+	 * and the opening quote of the second are the only bytes dropped, and no capture-mode
+	 * rendering runs at all.
+	 * @return the function body (signature {@code ((ref null eq),(ref null eq))->(ref
+	 * null eq)}, the two-string concatenation type)
+	 */
+	static byte[] buildStringConcatBody() {
+		ByteArrayOutputStream body = new ByteArrayOutputStream();
+		WasmWriter w = new WasmWriter(body);
+		// params: a = 0, b = 1. locals: lenA = 2, lenB = 3, total = 4, start = 5,
+		// cur = 6, i = 7 (i32); arrA = 8, arrB = 9 (ref $str_bytes).
+		declareI32AndStrArrayLocals(w, 6, 2);
+		int lenA = 2, lenB = 3, total = 4, start = 5, cur = 6, i = 7, arrA = 8, arrB = 9;
+		// Normalize both operands (the call site already does; _str_to_mem keeps the
+		// same belt-and-braces). Anything still not a TYPE_STRING traps on the cast
+		// below -- the contract the interpreter and the JVM backend enforce by
+		// throwing.
+		get(w, 0);
+		WasmEmitHelper.emitCharvecToStrCall(w);
+		set(w, 0);
+		get(w, 1);
+		WasmEmitHelper.emitCharvecToStrCall(w);
+		set(w, 1);
+		// arrA/lenA, arrB/lenB: the framed byte arrays and their lengths.
+		setStrArray(w, 0, arrA);
+		get(w, arrA);
+		w.write(Instruction.GC_PREFIX, Instruction.ARRAY_LEN);
+		set(w, lenA);
+		setStrArray(w, 1, arrB);
+		get(w, arrB);
+		w.write(Instruction.GC_PREFIX, Instruction.ARRAY_LEN);
+		set(w, lenB);
+		// total = lenA + lenB - 2 (both frames minus the two dropped quotes).
+		get(w, lenA);
+		get(w, lenB);
+		w.write(Instruction.I32_ADD);
+		i32(w, 2);
+		w.write(Instruction.I32_SUB);
+		set(w, total);
+		// start = HEAP_PTR (transient scratch, reclaimed by _str_fresh below).
+		i32(w, WasmLispCompiler.HEAP_PTR_ADDR);
+		w.write(Instruction.I32_LOAD, 0x02, 0x00);
+		set(w, start);
+		WasmEmitHelper.emitGrowHeapTo(w, () -> {
+			get(w, start);
+			get(w, total);
+			w.write(Instruction.I32_ADD);
+		});
+		// mem[start] = '"' (the opening frame).
+		get(w, start);
+		i32(w, QUOTE);
+		w.write(Instruction.I32_STORE8, 0x00, 0x00);
+		// Copy A's content [1, lenA - 1) to [start + 1, ...).
+		i32(w, 1);
+		set(w, i);
+		w.write(Instruction.BLOCK, 0x40);
+		w.write(Instruction.LOOP, 0x40);
+		get(w, i);
+		get(w, lenA);
+		i32(w, 1);
+		w.write(Instruction.I32_SUB);
+		w.write(Instruction.I32_GE_U);
+		w.write(Instruction.BR_IF, 1);
+		get(w, start);
+		get(w, i);
+		w.write(Instruction.I32_ADD);
+		arrGetLocal(w, arrA, i);
+		w.write(Instruction.I32_STORE8, 0x00, 0x00);
+		emitBump(w, i);
+		w.write(Instruction.BR, 0);
+		w.write(Instruction.END); // loop
+		w.write(Instruction.END); // block
+		// cur = start + lenA - 1 (over A's dropped closing quote); copy B's content
+		// [1, lenB - 1) there, advancing cur past it.
+		get(w, start);
+		get(w, lenA);
+		w.write(Instruction.I32_ADD);
+		i32(w, 1);
+		w.write(Instruction.I32_SUB);
+		set(w, cur);
+		i32(w, 1);
+		set(w, i);
+		w.write(Instruction.BLOCK, 0x40);
+		w.write(Instruction.LOOP, 0x40);
+		get(w, i);
+		get(w, lenB);
+		i32(w, 1);
+		w.write(Instruction.I32_SUB);
+		w.write(Instruction.I32_GE_U);
+		w.write(Instruction.BR_IF, 1);
+		get(w, cur);
+		arrGetLocal(w, arrB, i);
+		w.write(Instruction.I32_STORE8, 0x00, 0x00);
+		emitBump(w, cur);
+		emitBump(w, i);
+		w.write(Instruction.BR, 0);
+		w.write(Instruction.END); // loop
+		w.write(Instruction.END); // block
+		// mem[cur] = '"' (the closing frame).
+		get(w, cur);
+		i32(w, QUOTE);
+		w.write(Instruction.I32_STORE8, 0x00, 0x00);
+		// return _str_fresh(start, total) -- a runtime string, fresh counter id.
+		get(w, start);
+		get(w, total);
+		WasmEmitHelper.emitStrFreshCall(w);
+		w.write(Instruction.END); // function
+		return body.toByteArray();
+	}
+
 	// Encodes the Unicode code point in codeLocal as 1-4 UTF-8 bytes at linear memory
 	// starting at curLocal, and advances curLocal by the number of bytes emitted. The
 	// caller has already grown the linear heap to the worst-case capacity.

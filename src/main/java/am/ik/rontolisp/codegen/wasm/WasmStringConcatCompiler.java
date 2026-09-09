@@ -8,7 +8,8 @@ import am.ik.wasm.Instruction;
 
 /**
  * Compiles the internal {@code %string-concat} built-in function: both arguments are
- * rendered back to back into a new heap string by the {@code _string_concat} runtime
+ * strings by contract (literals, format pieces, rendered messages, subseq results),
+ * byte-copied back to back into a new heap string by the {@code _string_concat} runtime
  * function.
  */
 final class WasmStringConcatCompiler {

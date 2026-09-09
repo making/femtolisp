@@ -3030,13 +3030,16 @@ final class WasmRuntimeBuilder {
 	}
 
 	/**
-	 * Builds the body of a string-runtime function (_princ_to_str, _prin1_to_str or
-	 * _string_concat). It renders the argument value(s) between two quote bytes into the
-	 * heap by turning on the capture mode of {@code _write_str}, bumps the heap pointer
-	 * and returns a new string struct over the captured bytes.
+	 * Builds the body of a string-runtime function ({@code _princ_to_str} or
+	 * {@code _prin1_to_str}). It renders the argument value between two quote bytes into
+	 * the heap by turning on the capture mode of {@code _write_str}, bumps the heap
+	 * pointer and returns a new string struct over the captured bytes.
+	 * ({@code _string_concat} used to share this shape and render both operands through
+	 * the value printer; it is now a byte copy in
+	 * {@code WasmStringRuntimeBuilder.buildStringConcatBody}.)
 	 * @param renderFunc the rendering function ({@code FUNC_PRINC_VAL} for display text,
 	 * {@code FUNC_PRINT_VAL} for the readable form)
-	 * @param argCount 1 (to-string) or 2 (concatenation: both rendered back to back)
+	 * @param argCount 1 (to-string)
 	 * @return the function body
 	 */
 	static byte[] buildToStringBody(int renderFunc, int argCount) {

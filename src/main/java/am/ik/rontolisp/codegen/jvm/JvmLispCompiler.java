@@ -49,6 +49,7 @@ import am.ik.rontolisp.compiler.LispCompiler;
 import am.ik.rontolisp.compiler.NestedDefunRedefinition;
 import am.ik.rontolisp.compiler.OptimizeLevel;
 import am.ik.rontolisp.compiler.ShadowedBuiltins;
+import am.ik.rontolisp.compiler.SequenceIoNarrowing;
 import am.ik.rontolisp.compiler.StreamDesignators;
 import am.ik.rontolisp.compiler.JvmExportDirective;
 import am.ik.rontolisp.compiler.WasmImportDirective;
@@ -1998,6 +1999,11 @@ public final class JvmLispCompiler implements LispCompiler {
 		// top-level form in its own chunk, so the debug hook above then ranks the forms
 		// themselves.
 		final int chunkCodeBudget = 24000;
+		// A sequence proven not to be a string takes the byte arm directly
+		// (compiler/SequenceIoNarrowing). After every gate scan, like the WASM twin:
+		// the narrowed expansion keeps the operator spellings the scans key on out of
+		// the way by running once they have all read the program.
+		topLevelExprs = SequenceIoNarrowing.narrow(topLevelExprs);
 		Ctx chunkCtx = null;
 		for (LispVal expr : topLevelExprs) {
 			if (chunkCtx == null || chunkCtx.code.size() >= chunkCodeBudget) {

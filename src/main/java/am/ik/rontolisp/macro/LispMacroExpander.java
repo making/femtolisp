@@ -8662,6 +8662,20 @@ public final class LispMacroExpander {
 	 * @return the expanded expression
 	 */
 	public static LispVal expandReadSequence(LispCons cons) {
+		return expandReadSequence(cons, false);
+	}
+
+	/**
+	 * Like {@link #expandReadSequence(LispCons)}, but with the sequence proven not to be
+	 * a string ({@code compiler.SequenceIoNarrowing}): the runtime {@code (stringp seq)}
+	 * test and the whole {@code read-char} arm are gone, so the loop reads bytes
+	 * unconditionally. The packed fast path stays -- a packed buffer still moves in one
+	 * transfer.
+	 * @param cons the read-sequence expression
+	 * @param byteOnly whether the sequence is certainly not a string
+	 * @return the expanded expression
+	 */
+	public static LispVal expandReadSequence(LispCons cons, boolean byteOnly) {
 		SequenceArgs args = parseSequenceArgs(cons, LispNames.READ_SEQUENCE);
 		LispSymbol seq = new LispSymbol("__rseq_seq");
 		LispSymbol st = new LispSymbol("__rseq_st");
@@ -8676,7 +8690,7 @@ public final class LispMacroExpander {
 				List.of(new LispSymbol(LispNames.READ_BYTE), st, LispNil.INSTANCE, LispNil.INSTANCE));
 		LispVal readChar = listToCons(
 				List.of(new LispSymbol(LispNames.READ_CHAR), st, LispNil.INSTANCE, LispNil.INSTANCE));
-		LispVal readElement = makeIf(chars, readChar, readByte);
+		LispVal readElement = byteOnly ? readByte : makeIf(chars, readChar, readByte);
 		LispVal store = listToCons(
 				List.of(new LispSymbol(LispNames.PROGN), listToCons(List.of(new LispSymbol(LispNames.ASET), seq, i, b)),
 						listToCons(List.of(new LispSymbol(LispNames.SETQ), i,
@@ -8685,10 +8699,13 @@ public final class LispMacroExpander {
 				listToCons(List.of(new LispSymbol(LispNames.SETQ), b, readElement)),
 				listToCons(List.of(new LispSymbol(LispNames.IF), b, store,
 						listToCons(List.of(new LispSymbol(LispNames.SETQ), eof, LispTrue.INSTANCE))))));
-		LispVal loopBindings = listToCons(
+		List<LispVal> charsBinding = new java.util.ArrayList<>(
 				List.of(listToCons(List.of(end, makeIf(end, end, callOf(LispNames.LENGTH, seq)))),
-						listToCons(List.of(b, LispNil.INSTANCE)), listToCons(List.of(eof, LispNil.INSTANCE)),
-						listToCons(List.of(chars, callOf(LispNames.STRINGP, seq)))));
+						listToCons(List.of(b, LispNil.INSTANCE)), listToCons(List.of(eof, LispNil.INSTANCE))));
+		if (!byteOnly) {
+			charsBinding.add(listToCons(List.of(chars, callOf(LispNames.STRINGP, seq))));
+		}
+		LispVal loopBindings = listToCons(charsBinding);
 		LispVal loopLet = listToCons(List.of(new LispSymbol(LispNames.LET), loopBindings, loop, i));
 		LispVal packed = listToCons(List.of(new LispSymbol(LispNames.READ_SEQUENCE_PACKED), seq, st, i, end));
 		LispVal innerBindings = listToCons(
@@ -8734,6 +8751,19 @@ public final class LispMacroExpander {
 	 * @return the expanded expression
 	 */
 	public static LispVal expandWriteSequence(LispCons cons) {
+		return expandWriteSequence(cons, false);
+	}
+
+	/**
+	 * Like {@link #expandWriteSequence(LispCons)}, but with the sequence proven not to be
+	 * a string ({@code compiler.SequenceIoNarrowing}): the runtime {@code (stringp seq)}
+	 * test and the whole {@code write-string} branch are gone, so the write-byte loop
+	 * runs unconditionally. The packed fast path stays.
+	 * @param cons the write-sequence expression
+	 * @param byteOnly whether the sequence is certainly not a string
+	 * @return the expanded expression
+	 */
+	public static LispVal expandWriteSequence(LispCons cons, boolean byteOnly) {
 		SequenceArgs args = parseSequenceArgs(cons, LispNames.WRITE_SEQUENCE);
 		LispSymbol seq = new LispSymbol("__wseq_seq");
 		LispSymbol st = new LispSymbol("__wseq_st");
@@ -8753,7 +8783,7 @@ public final class LispMacroExpander {
 		LispVal loop = listToCons(List.of(new LispSymbol(LispNames.WHILE), test, writeByte, step));
 		LispVal loopBindings = listToCons(List.of(listToCons(List.of(end, wholeEnd))));
 		LispVal arrayBranch = listToCons(List.of(new LispSymbol(LispNames.LET), loopBindings, loop, seq));
-		LispVal dispatch = makeIf(callOf(LispNames.STRINGP, seq), stringBranch, arrayBranch);
+		LispVal dispatch = byteOnly ? arrayBranch : makeIf(callOf(LispNames.STRINGP, seq), stringBranch, arrayBranch);
 		LispVal packed = listToCons(List.of(new LispSymbol(LispNames.WRITE_SEQUENCE_PACKED), seq, st, i, end));
 		LispVal innerBindings = listToCons(
 				List.of(listToCons(List.of(i, args.start())), listToCons(List.of(end, args.end()))));
@@ -30983,7 +31013,15 @@ public final class LispMacroExpander {
 		// (a make-array plus an inline copy loop, thousands of bytes) is dead here.
 		// The core lane is the string/list one both compilers lower to one call.
 		LispVal head = fmtCall(LispNames.SUBSEQ_CORE, s, new LispInteger(0), i);
-		LispVal mid = fmtCall(LispNames.STRING, c);
+		// A one-element MUTABLE character vector, not (string c): the charvec
+		// normalizer every %string-concat operand already passes through renders it
+		// into the same one-character string, while (string c) routes through the
+		// generic value printer and pins it into every module with a rebuild site
+		// (todo 338). The value answers the same on every backend -- this is the
+		// shape expandMakeString lowers to, so no backend learns a new one.
+		LispVal mid = fmtCall(LispNames.MAKE_ARRAY, new LispInteger(1), new LispSymbol(LispNames.ELEMENT_TYPE_KEYWORD),
+				listToCons(List.of(new LispSymbol(LispNames.QUOTE), new LispSymbol("CHARACTER"))),
+				new LispSymbol(LispNames.INITIAL_ELEMENT_KEYWORD), c);
 		LispVal tail = fmtCall(LispNames.SUBSEQ_CORE, s, fmtCall(LispNames.ADD, i, new LispInteger(1)));
 		LispVal rebuilt = fmtCall(LispNames.STRING_CONCAT, fmtCall(LispNames.STRING_CONCAT, head, mid), tail);
 		LispVal mutating = makeProgn(List.of(fmtCall(LispNames.ROW_MAJOR_ASET, s, i, c), s));

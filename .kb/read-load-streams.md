@@ -255,6 +255,20 @@ mean `read-byte` on a text-opened stream "works" there while interpreter/JVM sig
   test because the buffer arrives in a variable, which is also why `make-array`'s `:element-type`
   accepts a computed designator (`lowerRuntimeElementTypeMakeArray`). Unfinished: the character half
   is `.todo/219`.
+- **A provably byte-only buffer skips the dispatch** (`compiler/SequenceIoNarrowing`,
+  `.todo/338`): a sequence with `ArgumentShapes` `VECTOR` shape -- a numeric-typed or untyped
+  `make-array`, a `(vector ...)`, a `subseq`/`copy-seq` preserving one, directly or through a
+  `let`/`let*` binding with no rebinding, capture, shadowing or dynamic scope in between -- expands
+  through the byte-only lowering (`expandReadSequence`/`expandWriteSequence` with `byteOnly`),
+  which has no `read-char` arm and no `write-string` branch. The packed fast path stays first, so a
+  packed buffer still moves in one transfer. A parameter, a `setq`'d variable, a captured or
+  shadowed one, a special, a character buffer and a `stream-element-type`-derived buffer all stand
+  down to the runtime test (ci-spec `read-sequence-into-a-character-buffer`). Runs backend-locally
+  after the gate scans (the JVM and wasm-GC compile paths, next to `DeadTypeBranchPruner`), never
+  in `CompileFrontend`: the narrowed expansion still attempts the packed primitive first, and the
+  gates that emit that runtime key on the unexpanded spelling. Measured 2026-09-09: a byte-only
+  read loop 6,744 -> 5,735 B (`-1,009`), the zlib `--optimize=size` row 125,738 -> 125,081
+  (`-657`, the `FUNC_READ_CHAR` the todo estimated at 649).
 - The `_eval` interpreters know none of this, nor `require`/`provide` (a file read by the runtime
   `load` of compiled output must not contain them — `.kb/load-inliner.md`). The `CiSpecE2eTest`
   driver passes `--dir . --dir /tmp` to both wasmtime invocations.

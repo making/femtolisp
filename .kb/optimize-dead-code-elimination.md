@@ -211,6 +211,27 @@ type rather than failing -- so a new entry is earned by checking every backend's
 operator. Pinned by `staticallyTypedPrintArgumentsPrintWhatTheValueDispatchWouldHave`, ci-spec
 `statically-typed-print-arguments`.
 
+### `%string-concat` byte-copies instead of rendering through the value printer
+The internal `%string-concat` (what `format`, `concatenate 'string` and every
+`(setf (aref s i) c)` spelling lower through) used to share `_princ_to_str`'s capture-mode renderer
+and drag the whole value-printer family into any module with one immutable-string rebuild site.
+Its operands are strings by contract -- the interpreter throws and the JVM backend `CHECKCAST`s
+otherwise, and every lowering passes literals, format pieces, rendered messages or subseq results
+-- so `_string_concat` is now a byte copy in `WasmStringRuntimeBuilder.buildStringConcatBody`
+(normalize via the already-live `_charvec_to_str`, copy both contents around their frames into
+`HEAP_PTR` scratch, `_str_fresh` over the result; a non-string traps on the cast). The last
+concat-adjacent printer holder was the `(string c)` in the compiler-generated
+`%schar-set-runtime` defun -- now a one-element character vector, the shape `expandMakeString`
+lowers to, which the concat normalizer renders (the probe `.todo/338` reverted while the concat
+engine itself still rendered). Measured 2026-09-09: a print-free concat-only module
+16,201 -> 8,710 B (`-46%`); the zlib `--optimize=size` row does NOT move (125,738 -> 125,817 --
+the printer stays reachable through chipz's own `princ-to-string` uses and the `apply`-pulled
+`eval` runtime, so the `.todo/338` chain premise is stale for that row: the mechanism pays where
+concat was the only printer edge). Pinned by `internalStringConcatCopiesBytes` in
+`LispEvaluatorTest` / `JvmLispCompilerTest` / `WasmLispCompilerIntegrationTest` (empty operands,
+multi-byte UTF-8, a character-vector operand, the `setf`-`aref` rebuild, and the non-string
+contract error on the interpreter).
+
 ### The `name` section is DROPPED, not copied
 It maps **function and type indices** to names and this pass has renumbered both. Dropped in
 `WasmTreeShaker` (`SEC_CUSTOM`); every other custom section is index-free and still copied.
