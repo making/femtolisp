@@ -191,6 +191,15 @@ public final class ClosRegistry {
 	 */
 	public static final String EXPECTED_NUMBER_MESSAGE_PREFIX = "Expected number, got: ";
 
+	/**
+	 * The prefix of the message a complex number reaching an ordering or real-only
+	 * comparison reports (the interpreter's {@code compareNumeric}, and later the
+	 * compiled backends' own comparisons): a complex IS a number, so neither the integer
+	 * nor the number prefix fits, and SBCL's own complaint names the {@code REAL} type.
+	 * The printed operand follows.
+	 */
+	public static final String EXPECTED_REAL_MESSAGE_PREFIX = "Expected real number, got: ";
+
 	/** The prefix of the message a read of an unbound variable reports. */
 	public static final String UNBOUND_VARIABLE_MESSAGE_PREFIX = "The variable ";
 

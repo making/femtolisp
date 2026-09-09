@@ -268,6 +268,16 @@ public final class LispLexer {
 				this.pos += 3;
 			}
 			else if (c == '#' && this.pos + 2 < this.input.length()
+					&& (this.input.charAt(this.pos + 1) == 'C' || this.input.charAt(this.pos + 1) == 'c')
+					&& this.input.charAt(this.pos + 2) == '(') {
+				// #C( opens a complex literal (e.g., #C(1 2)); the contents are two
+				// real numbers read as data and folded to the canonical value. #C
+				// not followed by '(' falls through to symbol reading below, like
+				// #S.
+				add(tokens, new Token.SharpC(), tokenStart);
+				this.pos += 3;
+			}
+			else if (c == '#' && this.pos + 2 < this.input.length()
 					&& (this.input.charAt(this.pos + 1) == 'P' || this.input.charAt(this.pos + 1) == 'p')
 					&& this.input.charAt(this.pos + 2) == '"') {
 				// #P"foo/bar" is a pathname literal: the string that follows is the

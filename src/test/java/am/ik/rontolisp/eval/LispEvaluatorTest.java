@@ -14,6 +14,7 @@ import java.util.concurrent.CountDownLatch;
 import am.ik.rontolisp.LispBigInteger;
 import am.ik.rontolisp.LispChar;
 import am.ik.rontolisp.ArrayElementTypes;
+import am.ik.rontolisp.LispComplex;
 import am.ik.rontolisp.LispCons;
 import am.ik.rontolisp.LispDouble;
 import am.ik.rontolisp.LispFunction;
@@ -2303,6 +2304,177 @@ class LispEvaluatorTest {
 		assertThat(eval("(minusp -1)")).isSameAs(LispTrue.INSTANCE);
 		assertThat(eval("(minusp 0)")).isSameAs(LispNil.INSTANCE);
 		assertThat(eval("(minusp 1)")).isSameAs(LispNil.INSTANCE);
+	}
+
+	@Test
+	void evalComplexConstructor() {
+		// SBCL parity (.todo/751): a rational zero imaginary part demotes to the
+		// real, a float zero stays complex (the int zero coerced to 0.0), mixed
+		// rational/float coerces the rational side to float.
+		assertThat(eval("(complex 1 2)")).isEqualTo(LispComplex.valueOf(new LispInteger(1), new LispInteger(2)));
+		assertThat(eval("(complex 1 0)")).isEqualTo(new LispInteger(1));
+		assertThat(eval("(complex 1)")).isEqualTo(new LispInteger(1));
+		assertThat(eval("(complex 1/2 0)")).isEqualTo(new LispRatio(BigInteger.ONE, BigInteger.TWO));
+		assertThat(eval("(complex 2.0 0)").print()).isEqualTo("#C(2.0 0.0)");
+		assertThat(eval("(complex 1 0.0)").print()).isEqualTo("#C(1.0 0.0)");
+		assertThat(eval("(complex 1 2.0)").print()).isEqualTo("#C(1.0 2.0)");
+		assertThat(eval("(complex 0 1)")).isEqualTo(LispComplex.valueOf(new LispInteger(0), new LispInteger(1)));
+	}
+
+	@Test
+	void evalComplexConstructorRejectsNonRealParts() {
+		// Parts must be real: a nested complex (or any non-real) signals a
+		// catchable type-error, like SBCL.
+		assertThatThrownBy(() -> eval("(complex #c(1 2) 3)")).isInstanceOf(LispEvalException.class);
+		assertThatThrownBy(() -> eval("(complex 1 \"a\")")).isInstanceOf(LispEvalException.class);
+		assertThat(evalMulti("""
+				(handler-case (complex #c(1 2) 3) (type-error (e) :caught))
+				""")).isEqualTo(new LispSymbol(":CAUGHT"));
+	}
+
+	@Test
+	void evalSharpCReader() {
+		assertThat(eval("#C(1 2)")).isEqualTo(LispComplex.valueOf(new LispInteger(1), new LispInteger(2)));
+		assertThat(eval("#c(1 2)")).isEqualTo(LispComplex.valueOf(new LispInteger(1), new LispInteger(2)));
+		assertThat(eval("#C(1/2 1/3)").print()).isEqualTo("#C(1/2 1/3)");
+		assertThat(eval("#C(1 0)").print()).isEqualTo("1");
+		assertThat(eval("'#C(1 2)").print()).isEqualTo("#C(1 2)");
+		assertThatThrownBy(() -> LispReader.readFromString("#C(1)")).isInstanceOf(LispReadException.class);
+		assertThatThrownBy(() -> LispReader.readFromString("#C(1 2 3)")).isInstanceOf(LispReadException.class);
+		assertThatThrownBy(() -> LispReader.readFromString("#C(#C(1 2) 3)")).isInstanceOf(LispReadException.class);
+		assertThatThrownBy(() -> LispReader.readFromString("#C(a b)")).isInstanceOf(LispReadException.class);
+	}
+
+	@Test
+	void evalComplexArithmeticStaysExact() {
+		// Exact rationals stay exact (SBCL parity).
+		assertThat(eval("(+ #c(1 1/2) #c(1 1/3))").print()).isEqualTo("#C(2 5/6)");
+		assertThat(eval("(- #c(1 2) #c(3 4))").print()).isEqualTo("#C(-2 -2)");
+		assertThat(eval("(- #c(1 2))").print()).isEqualTo("#C(-1 -2)");
+		assertThat(eval("(* #c(1 2) 2)").print()).isEqualTo("#C(2 4)");
+		assertThat(eval("(/ #c(1 2) 2)").print()).isEqualTo("#C(1/2 1)");
+		assertThat(eval("(/ #c(1 2))").print()).isEqualTo("#C(1/5 -2/5)");
+		assertThat(eval("(+ #c(1 2) #c(3 4) 1)").print()).isEqualTo("#C(5 6)");
+		assertThat(eval("(1+ #c(1 2))").print()).isEqualTo("#C(2 2)");
+		assertThat(eval("(1- #c(1 2))").print()).isEqualTo("#C(0 2)");
+		assertThat(eval("(- #c(0 1) #c(0 1))")).isEqualTo(new LispInteger(0));
+	}
+
+	@Test
+	void evalComplexArithmeticContagion() {
+		// A float anywhere coerces the whole computation to float (SBCL parity).
+		assertThat(eval("(+ #c(1 2) 1.5)").print()).isEqualTo("#C(2.5 2.0)");
+		assertThat(eval("(* #c(1 2) 2.0)").print()).isEqualTo("#C(2.0 4.0)");
+		assertThat(eval("(- 1 #c(1 2))").print()).isEqualTo("#C(0 -2)");
+	}
+
+	@Test
+	void evalComplexAbs() {
+		// abs answers a real (a float even for exact parts, like SBCL).
+		assertThat(eval("(abs #c(3 4))")).isEqualTo(new LispDouble(5.0));
+		assertThat(eval("(abs #c(3 4))").print()).isEqualTo("5.0");
+		assertThat(eval("(abs 5)")).isEqualTo(new LispInteger(5));
+	}
+
+	@Test
+	void evalComplexSqrt() {
+		// A negative real roots into the complex plane (SBCL parity); a
+		// non-negative real still answers a double.
+		assertThat(eval("(sqrt -1)").print()).isEqualTo("#C(0.0 1.0)");
+		assertThat(eval("(sqrt -4)").print()).isEqualTo("#C(0.0 2.0)");
+		assertThat(eval("(sqrt #c(3 4))").print()).isEqualTo("#C(2.0 1.0)");
+		assertThat(eval("(sqrt 4)")).isEqualTo(new LispDouble(2.0));
+	}
+
+	@Test
+	void evalComplexEquality() {
+		assertThat(eval("(= #c(1 2) #c(1 2))")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(= 2.0 #c(2.0 0.0))")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(= #c(1 2) 1)")).isSameAs(LispNil.INSTANCE);
+		assertThat(eval("(= #c(1 2) #c(1 3))")).isSameAs(LispNil.INSTANCE);
+		assertThat(eval("(eql 1 #c(1 0))")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(eql 2.0 #c(2.0 0))")).isSameAs(LispNil.INSTANCE);
+		assertThat(eval("(eql #c(1 2) #c(1 2))")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(equal #c(1 2) #c(1 2))")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(/= #c(1 2) #c(1 3))")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(/= #c(1 2) #c(1 2))")).isSameAs(LispNil.INSTANCE);
+	}
+
+	@Test
+	void evalComplexPredicates() {
+		assertThat(eval("(complexp #c(1 2))")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(complexp 1)")).isSameAs(LispNil.INSTANCE);
+		assertThat(eval("(numberp #c(1 2))")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(numberp 1)")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(realp #c(1 2))")).isSameAs(LispNil.INSTANCE);
+		assertThat(eval("(realp 1)")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(realp 1.5)")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(realp 1/2)")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(realp nil)")).isSameAs(LispNil.INSTANCE);
+		assertThat(eval("(integerp #c(1 2))")).isSameAs(LispNil.INSTANCE);
+		assertThat(eval("(floatp #c(1.0 2.0))")).isSameAs(LispNil.INSTANCE);
+		assertThat(eval("(rationalp #c(1 2))")).isSameAs(LispNil.INSTANCE);
+		assertThat(eval("(zerop #c(0 0))")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(zerop #c(0.0 0.0))")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(zerop #c(1 2))")).isSameAs(LispNil.INSTANCE);
+	}
+
+	@Test
+	void evalComplexOrderingSignalsCatchableTypeErrors() {
+		// Ordering (and min/max, plusp/minusp) over a complex signals a catchable
+		// type-error (SBCL parity).
+		assertThat(evalMulti("""
+				(defun te-print (thunk)
+				  (handler-case (funcall thunk) (type-error (e) (princ-to-string e))))
+				(list (te-print (lambda () (minusp #c(1 2))))
+				      (te-print (lambda () (plusp #c(1 2))))
+				      (te-print (lambda () (< #c(1 2) #c(3 4))))
+				      (te-print (lambda () (> #c(1 2) 1)))
+				      (te-print (lambda () (min #c(1 2) 3)))
+				      (te-print (lambda () (max 3 #c(1 2)))))
+				""").print())
+			.isEqualTo("(\"Expected real number, got: #C(1 2)\"" + " \"Expected real number, got: #C(1 2)\""
+					+ " \"Expected real number, got: #C(1 2)\"" + " \"Expected real number, got: #C(1 2)\""
+					+ " \"Expected real number, got: #C(1 2)\"" + " \"Expected real number, got: #C(1 2)\")");
+	}
+
+	@Test
+	void evalComplexAccessors() {
+		assertThat(eval("(conjugate #c(1 2))").print()).isEqualTo("#C(1 -2)");
+		assertThat(eval("(conjugate 5)")).isEqualTo(new LispInteger(5));
+		assertThat(eval("(realpart #c(1 2))")).isEqualTo(new LispInteger(1));
+		assertThat(eval("(realpart 5)")).isEqualTo(new LispInteger(5));
+		assertThat(eval("(realpart #c(1.0 2))")).isEqualTo(new LispDouble(1.0));
+		assertThat(eval("(imagpart #c(1 2))")).isEqualTo(new LispInteger(2));
+		assertThat(eval("(imagpart 5)")).isEqualTo(new LispInteger(0));
+		assertThat(eval("(imagpart 5.5)")).isEqualTo(new LispDouble(0.0));
+		assertThat(eval("(phase #c(1 1))")).isEqualTo(new LispDouble(Math.PI / 4));
+		assertThat(eval("(phase 5)")).isEqualTo(new LispDouble(0.0));
+		assertThat(eval("(phase -5)")).isEqualTo(new LispDouble(Math.PI));
+		assertThatThrownBy(() -> eval("(realpart nil)")).isInstanceOf(LispEvalException.class);
+	}
+
+	@Test
+	void evalComplexExptExpLogTrig() {
+		// An integer exponent over complex parts stays exact (SBCL parity).
+		assertThat(eval("(expt #c(1 1) 2)").print()).isEqualTo("#C(0 2)");
+		assertThat(eval("(expt #c(1 1) -1)").print()).isEqualTo("#C(1/2 -1/2)");
+		assertThat(eval("(expt #c(0 1) 2)")).isEqualTo(new LispInteger(-1));
+		assertThat(eval("(exp #c(0 1))").print()).isEqualTo("#C(0.5403023058681398 0.8414709848078965)");
+		// log's real part is Math.log(Math.hypot(1, 1)): 1 ulp above the
+		// infinitely precise ln(sqrt(2)) -- the same call every backend makes, so
+		// all four pin this spelling.
+		assertThat(eval("(log #c(1 1))").print()).isEqualTo("#C(0.3465735902799727 0.7853981633974483)");
+		assertThat(eval("(sin #c(1 1))").print()).isEqualTo("#C(1.2984575814159773 0.6349639147847361)");
+		assertThat(eval("(exp 1)")).isEqualTo(new LispDouble(Math.exp(1)));
+		assertThat(eval("(expt 2 3)")).isEqualTo(new LispInteger(8));
+	}
+
+	@Test
+	void evalComplexFirstClass() {
+		assertThat(eval("(funcall #'complex 1 2)").print()).isEqualTo("#C(1 2)");
+		assertThat(eval("(funcall #'conjugate #c(1 2))").print()).isEqualTo("#C(1 -2)");
+		assertThat(eval("(mapcar #'complexp (list #c(1 2) 1))").print()).isEqualTo("(T NIL)");
 	}
 
 	@Test

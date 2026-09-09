@@ -742,6 +742,24 @@ class LispReaderTest {
 	}
 
 	@Test
+	void readSharpC() {
+		// #C(real imag) folds to the canonical value: a rational zero imaginary
+		// part demotes, a float zero stays complex.
+		assertThat(LispReader.readFromString("#C(1 2)").print()).isEqualTo("#C(1 2)");
+		assertThat(LispReader.readFromString("#c(1/2 -1/3)").print()).isEqualTo("#C(1/2 -1/3)");
+		assertThat(LispReader.readFromString("#C(1 0)").print()).isEqualTo("1");
+		assertThat(LispReader.readFromString("#C(2.0 0)").print()).isEqualTo("#C(2.0 0.0)");
+		assertThatThrownBy(() -> LispReader.readFromString("#C(1)")).isInstanceOf(LispReadException.class)
+			.hasMessageContaining("exactly two");
+		assertThatThrownBy(() -> LispReader.readFromString("#C(1 2 3)")).isInstanceOf(LispReadException.class)
+			.hasMessageContaining("exactly two");
+		assertThatThrownBy(() -> LispReader.readFromString("#C(a b)")).isInstanceOf(LispReadException.class)
+			.hasMessageContaining("real numbers");
+		assertThatThrownBy(() -> LispReader.readFromString("#C(#C(1 2) 3)")).isInstanceOf(LispReadException.class)
+			.hasMessageContaining("real numbers");
+	}
+
+	@Test
 	void readSharpLWithExplicitArity() {
 		assertThat(LispReader.readFromString("#3L(list !1)").print()).isEqualTo("#'(LAMBDA (!1 !2 !3) (LIST !1))");
 		assertThatThrownBy(() -> LispReader.readFromString("#1L(list !2)")).isInstanceOf(LispReadException.class)

@@ -139,10 +139,26 @@ public final class LispEquality {
 			case LispString string -> new LispString(upcase(string.value()));
 			case LispChar character -> new LispChar(Character.toUpperCase(character.codePoint()));
 			case LispDouble number -> integerValued(number.value());
+			case LispComplex complex when isZeroPart(complex.real()) && isZeroPart(complex.imag()) ->
+				equalpKey(complex.real(), depth - 1, budget);
 			case LispCons cons ->
 				new LispCons(equalpKey(cons.car(), depth - 1, budget), equalpKey(cons.cdr(), depth - 1, budget));
 			default -> v;
 		};
+	}
+
+	/**
+	 * Whether a real part is a zero, so a complex with two zero parts folds to its real
+	 * part below: {@code equalp} compares numbers with {@code =}, and
+	 * {@code (= 2.0 #C(2.0 0.0))} is true, so the two must share one key. A complex with
+	 * a non-zero imaginary part is its own fold (a miss, never a false match, like the
+	 * float-fraction deviation above).
+	 */
+	private static boolean isZeroPart(LispVal part) {
+		if (part instanceof LispDouble d) {
+			return d.value() == 0.0;
+		}
+		return LispComplex.isRationalZero(part);
 	}
 
 	/**

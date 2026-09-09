@@ -1425,9 +1425,10 @@ public final class BuiltinFunctionWrappers {
 			// Predicates (arity 1)
 			unary(LispNames.NULL), unary(LispNames.NOT), unary(LispNames.ATOM),
 			// Type predicates (arity 1)
-			unary(LispNames.NUMBERP), unary(LispNames.INTEGERP), unary(LispNames.FLOATP), unary(LispNames.SYMBOLP),
-			unary(LispNames.STRINGP), unary(LispNames.LISTP), unary(LispNames.CONSP), unary(LispNames.KEYWORDP),
-			unary(LispNames.FUNCTIONP), unary(LispNames.VALUES_LIST), unary(LispNames.VECTORP),
+			unary(LispNames.NUMBERP), unary(LispNames.INTEGERP), unary(LispNames.FLOATP), unary(LispNames.REALP),
+			unary(LispNames.COMPLEXP), unary(LispNames.SYMBOLP), unary(LispNames.STRINGP), unary(LispNames.LISTP),
+			unary(LispNames.CONSP), unary(LispNames.KEYWORDP), unary(LispNames.FUNCTIONP), unary(LispNames.VALUES_LIST),
+			unary(LispNames.VECTORP),
 			// Type conversion (arity 1)
 			unary(LispNames.FLOAT), unary(LispNames.TRUNCATE), unary(LispNames.FLOOR), unary(LispNames.CEILING),
 			unary(LispNames.ROUND), unary(LispNames.FFLOOR), unary(LispNames.FCEILING), unary(LispNames.FROUND),
@@ -1440,6 +1441,11 @@ public final class BuiltinFunctionWrappers {
 			unaryOptionalStream(LispNames.PRINC), unary(LispNames.PRINC_TO_STRING), unary(LispNames.PRIN1_TO_STRING),
 			// list is variadic: the rest list IS the result
 			new WrapperDef(LispNames.LIST, List.of(LispNames.LAMBDA_REST, "r"), List.of(new LispSymbol("r"))),
+			// Complex numbers: (complex real &optional imag), the accessors and the
+			// predicates above. The wrapper calls the function, so #'complex works
+			// before any backend compiles the call itself (.todo/752, .todo/753).
+			unaryOptionalSecond(LispNames.COMPLEX), unary(LispNames.REALPART), unary(LispNames.IMAGPART),
+			unary(LispNames.CONJUGATE), unary(LispNames.PHASE),
 			// Math functions (arity 1)
 			unary(LispNames.SQRT), unary(LispNames.ISQRT), unary(LispNames.SIGNUM), unary(LispNames.EXP),
 			unary(LispNames.LOG), unary(LispNames.SIN), unary(LispNames.COS), unary(LispNames.TAN),

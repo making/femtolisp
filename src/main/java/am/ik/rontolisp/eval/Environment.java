@@ -49,6 +49,7 @@ import am.ik.rontolisp.LispArray;
 import am.ik.rontolisp.LispBFloat16Array;
 import am.ik.rontolisp.LispBigInteger;
 import am.ik.rontolisp.LispChar;
+import am.ik.rontolisp.LispComplex;
 import am.ik.rontolisp.LispCons;
 import am.ik.rontolisp.LispDouble;
 import am.ik.rontolisp.LispDoubleFloatArray;
@@ -587,6 +588,7 @@ public final class Environment implements Scope {
 		Environment env = new Environment(null);
 		registerArithmetic(env);
 		registerMath(env);
+		registerComplex(env);
 		registerComparison(env);
 		registerIO(env, out, in);
 		registerPredicates(env);
@@ -2240,6 +2242,9 @@ public final class Environment implements Scope {
 
 	private static void registerArithmetic(Environment env) {
 		env.defineFunction(LispNames.ADD, new LispFunction(LispNames.ADD, args -> {
+			if (hasComplex(args)) {
+				return addComplex(args);
+			}
 			if (hasDouble(args)) {
 				// Seed from the first operand, not from an exact 0: 0.0 + -0.0 is 0.0
 				// under
@@ -2270,6 +2275,9 @@ public final class Environment implements Scope {
 			}
 		}));
 		env.defineFunction(LispNames.SUB, new LispFunction(LispNames.SUB, args -> {
+			if (hasComplex(args)) {
+				return subComplex(args);
+			}
 			if (hasDouble(args)) {
 				if (args.size() == 1) {
 					return new LispDouble(-asDouble(args.get(0)));
@@ -2301,6 +2309,9 @@ public final class Environment implements Scope {
 			}
 		}));
 		env.defineFunction(LispNames.MUL, new LispFunction(LispNames.MUL, args -> {
+			if (hasComplex(args)) {
+				return mulComplex(args);
+			}
 			if (hasDouble(args)) {
 				double result = 1;
 				for (LispVal arg : args) {
@@ -2326,6 +2337,9 @@ public final class Environment implements Scope {
 			}
 		}));
 		env.defineFunction(LispNames.DIV, new LispFunction(LispNames.DIV, args -> {
+			if (hasComplex(args)) {
+				return divComplex(args);
+			}
 			if (hasDouble(args)) {
 				if (args.size() == 1) {
 					return new LispDouble(1.0 / asDouble(args.get(0)));
@@ -2405,6 +2419,10 @@ public final class Environment implements Scope {
 		}));
 		env.defineFunction(LispNames.ABS, new LispFunction(LispNames.ABS, args -> {
 			requireArgCount(LispNames.ABS, args, 1);
+			if (args.get(0) instanceof LispComplex c) {
+				// The modulus is a real -- a float even for exact parts, like SBCL.
+				return new LispDouble(Math.hypot(realToDouble(c.real()), realToDouble(c.imag())));
+			}
 			if (hasDouble(args)) {
 				return new LispDouble(Math.abs(asDouble(args.get(0))));
 			}
@@ -2469,6 +2487,9 @@ public final class Environment implements Scope {
 		}));
 		env.defineFunction(LispNames.ONE_PLUS, new LispFunction(LispNames.ONE_PLUS, args -> {
 			requireArgCount(LispNames.ONE_PLUS, args, 1);
+			if (hasComplex(args)) {
+				return addComplex(List.of(args.get(0), new LispInteger(1)));
+			}
 			if (hasDouble(args)) {
 				return new LispDouble(asDouble(args.get(0)) + 1);
 			}
@@ -2487,6 +2508,9 @@ public final class Environment implements Scope {
 		}));
 		env.defineFunction(LispNames.ONE_MINUS, new LispFunction(LispNames.ONE_MINUS, args -> {
 			requireArgCount(LispNames.ONE_MINUS, args, 1);
+			if (hasComplex(args)) {
+				return subComplex(List.of(args.get(0), new LispInteger(1)));
+			}
 			if (hasDouble(args)) {
 				return new LispDouble(asDouble(args.get(0)) - 1);
 			}
@@ -2506,19 +2530,33 @@ public final class Environment implements Scope {
 	}
 
 	private static void registerMath(Environment env) {
-		// Unary floating-point functions: always return a double (Math.<name>).
-		defineUnaryDouble(env, LispNames.SQRT, Math::sqrt);
-		defineUnaryDouble(env, LispNames.EXP, Math::exp);
-		defineUnaryDouble(env, LispNames.LOG, Math::log);
-		defineUnaryDouble(env, LispNames.SIN, Math::sin);
-		defineUnaryDouble(env, LispNames.COS, Math::cos);
-		defineUnaryDouble(env, LispNames.TAN, Math::tan);
-		defineUnaryDouble(env, LispNames.ASIN, Math::asin);
-		defineUnaryDouble(env, LispNames.ACOS, Math::acos);
-		defineUnaryDouble(env, LispNames.ATAN, Math::atan);
-		defineUnaryDouble(env, LispNames.SINH, Math::sinh);
-		defineUnaryDouble(env, LispNames.COSH, Math::cosh);
-		defineUnaryDouble(env, LispNames.TANH, Math::tanh);
+		// Unary floating-point functions: a double for real operands (Math.<name>),
+		// the float complex formula for complex ones. Real paths are unchanged: a
+		// negative real still answers NaN here (only sqrt roots one into the
+		// complex plane, like SBCL).
+		env.defineFunction(LispNames.SQRT, new LispFunction(LispNames.SQRT, args -> {
+			requireArgCount(LispNames.SQRT, args, 1);
+			if (args.get(0) instanceof LispComplex c) {
+				double[] r = complexSqrt(realToDouble(c.real()), realToDouble(c.imag()));
+				return LispComplex.valueOf(new LispDouble(r[0]), new LispDouble(r[1]));
+			}
+			double d = asDouble(args.get(0));
+			if (d < 0) {
+				return LispComplex.valueOf(new LispDouble(0.0), new LispDouble(Math.sqrt(-d)));
+			}
+			return new LispDouble(Math.sqrt(d));
+		}));
+		defineUnaryComplex(env, LispNames.EXP, Math::exp, Environment::complexExp);
+		defineUnaryComplex(env, LispNames.LOG, Math::log, Environment::complexLog);
+		defineUnaryComplex(env, LispNames.SIN, Math::sin, Environment::complexSin);
+		defineUnaryComplex(env, LispNames.COS, Math::cos, Environment::complexCos);
+		defineUnaryComplex(env, LispNames.TAN, Math::tan, Environment::complexTan);
+		defineUnaryComplex(env, LispNames.ASIN, Math::asin, Environment::complexAsin);
+		defineUnaryComplex(env, LispNames.ACOS, Math::acos, Environment::complexAcos);
+		defineUnaryComplex(env, LispNames.ATAN, Math::atan, Environment::complexAtan);
+		defineUnaryComplex(env, LispNames.SINH, Math::sinh, Environment::complexSinh);
+		defineUnaryComplex(env, LispNames.COSH, Math::cosh, Environment::complexCosh);
+		defineUnaryComplex(env, LispNames.TANH, Math::tanh, Environment::complexTanh);
 		env.defineFunction(LispNames.SCALE_FLOAT, new LispFunction(LispNames.SCALE_FLOAT, args -> {
 			requireArgCount(LispNames.SCALE_FLOAT, args, 2);
 			// f * 2^n with exact IEEE semantics, including the subnormal range.
@@ -2799,9 +2837,15 @@ public final class Environment implements Scope {
 			return normalizeBig(n.sqrt());
 		}));
 		// expt: rational^integer stays exact (a negative exponent yields the
-		// reciprocal, e.g. (expt 2 -1) -> 1/2); otherwise Math.pow (double).
+		// reciprocal, e.g. (expt 2 -1) -> 1/2); otherwise Math.pow (double). A
+		// complex operand with an integer exponent stays exact by repeated
+		// multiplication (e.g. (expt #c(1 1) 2) -> #C(0 2)); any other complex
+		// exponentiation goes through exp(w*log(z)) in floats.
 		env.defineFunction(LispNames.EXPT, new LispFunction(LispNames.EXPT, args -> {
 			requireArgCount(LispNames.EXPT, args, 2);
+			if (hasComplex(args)) {
+				return exptComplex(args.get(0), args.get(1));
+			}
 			if (!hasDouble(args) && !(args.get(1) instanceof LispRatio)) {
 				long power = asLong(args.get(1));
 				if (power >= -Integer.MAX_VALUE && power <= Integer.MAX_VALUE) {
@@ -3025,11 +3069,72 @@ public final class Environment implements Scope {
 		throw new LispEvalException("byte specifier expected, got " + spec.print());
 	}
 
-	private static void defineUnaryDouble(Environment env, String name, DoubleUnaryOperator fn) {
+	/**
+	 * A unary math function with a complex path: a complex operand answers the float
+	 * complex formula (canonicalized, so a float zero imaginary part stays complex); any
+	 * other operand answers the real {@code Math} function, with the funnel signaling for
+	 * non-numbers exactly as before.
+	 */
+	private static void registerComplex(Environment env) {
+		// complex: the canonical value for one real part and an optional imaginary
+		// part (defaulting to zero). A non-real part signals a catchable
+		// type-error, like SBCL.
+		env.defineFunction(LispNames.COMPLEX, new LispFunction(LispNames.COMPLEX, args -> {
+			requireArgCountBetween(LispNames.COMPLEX, args, 1, 2);
+			LispVal real = requireReal(LispNames.COMPLEX, args.get(0));
+			LispVal imag = args.size() == 2 ? requireReal(LispNames.COMPLEX, args.get(1)) : new LispInteger(0);
+			return LispComplex.valueOf(real, imag);
+		}));
+		env.defineFunction(LispNames.REALPART, new LispFunction(LispNames.REALPART, args -> {
+			requireArgCount(LispNames.REALPART, args, 1);
+			if (args.get(0) instanceof LispComplex c) {
+				return c.real();
+			}
+			return requireReal(LispNames.REALPART, args.get(0));
+		}));
+		env.defineFunction(LispNames.IMAGPART, new LispFunction(LispNames.IMAGPART, args -> {
+			requireArgCount(LispNames.IMAGPART, args, 1);
+			if (args.get(0) instanceof LispComplex c) {
+				return c.imag();
+			}
+			LispVal arg = requireReal(LispNames.IMAGPART, args.get(0));
+			// A float answers a float zero, any other real an integer zero (SBCL).
+			return arg instanceof LispDouble ? new LispDouble(0.0) : new LispInteger(0);
+		}));
+		env.defineFunction(LispNames.CONJUGATE, new LispFunction(LispNames.CONJUGATE, args -> {
+			requireArgCount(LispNames.CONJUGATE, args, 1);
+			if (args.get(0) instanceof LispComplex c) {
+				return LispComplex.valueOf(c.real(), negateReal(c.imag()));
+			}
+			return requireReal(LispNames.CONJUGATE, args.get(0));
+		}));
+		env.defineFunction(LispNames.PHASE, new LispFunction(LispNames.PHASE, args -> {
+			requireArgCount(LispNames.PHASE, args, 1);
+			if (args.get(0) instanceof LispComplex c) {
+				return new LispDouble(Math.atan2(realToDouble(c.imag()), realToDouble(c.real())));
+			}
+			// A non-negative real is at angle zero, a negative one at pi (SBCL).
+			return new LispDouble(asDouble(requireReal(LispNames.PHASE, args.get(0))) < 0 ? Math.PI : 0.0);
+		}));
+	}
+
+	private static void defineUnaryComplex(Environment env, String name, DoubleUnaryOperator realFn,
+			ComplexFn complexFn) {
 		env.defineFunction(name, new LispFunction(name, args -> {
 			requireArgCount(name, args, 1);
-			return new LispDouble(fn.applyAsDouble(asDouble(args.get(0))));
+			if (args.get(0) instanceof LispComplex c) {
+				double[] r = complexFn.apply(realToDouble(c.real()), realToDouble(c.imag()));
+				return LispComplex.valueOf(new LispDouble(r[0]), new LispDouble(r[1]));
+			}
+			return new LispDouble(realFn.applyAsDouble(asDouble(args.get(0))));
 		}));
+	}
+
+	/** A float complex formula: two doubles in, two doubles out. */
+	private interface ComplexFn {
+
+		double[] apply(double real, double imag);
+
 	}
 
 	private static void registerComparison(Environment env) {
@@ -6675,7 +6780,17 @@ public final class Environment implements Scope {
 			requireArgCount(LispNames.NUMBERP, args, 1);
 			LispVal arg = args.get(0);
 			return (arg instanceof LispInteger || arg instanceof LispBigInteger || arg instanceof LispRatio
+					|| arg instanceof LispDouble || arg instanceof LispComplex) ? LispTrue.INSTANCE : LispNil.INSTANCE;
+		}));
+		env.defineFunction(LispNames.REALP, new LispFunction(LispNames.REALP, args -> {
+			requireArgCount(LispNames.REALP, args, 1);
+			LispVal arg = args.get(0);
+			return (arg instanceof LispInteger || arg instanceof LispBigInteger || arg instanceof LispRatio
 					|| arg instanceof LispDouble) ? LispTrue.INSTANCE : LispNil.INSTANCE;
+		}));
+		env.defineFunction(LispNames.COMPLEXP, new LispFunction(LispNames.COMPLEXP, args -> {
+			requireArgCount(LispNames.COMPLEXP, args, 1);
+			return args.get(0) instanceof LispComplex ? LispTrue.INSTANCE : LispNil.INSTANCE;
 		}));
 		env.defineFunction(LispNames.INTEGERP, new LispFunction(LispNames.INTEGERP, args -> {
 			requireArgCount(LispNames.INTEGERP, args, 1);
@@ -6718,6 +6833,9 @@ public final class Environment implements Scope {
 		}));
 		env.defineFunction(LispNames.ZEROP, new LispFunction(LispNames.ZEROP, args -> {
 			requireArgCount(LispNames.ZEROP, args, 1);
+			if (args.get(0) instanceof LispComplex c) {
+				return isZeroReal(c.real()) && isZeroReal(c.imag()) ? LispTrue.INSTANCE : LispNil.INSTANCE;
+			}
 			if (hasDouble(args)) {
 				return asDouble(args.get(0)) == 0.0 ? LispTrue.INSTANCE : LispNil.INSTANCE;
 			}
@@ -6730,6 +6848,7 @@ public final class Environment implements Scope {
 		}));
 		env.defineFunction(LispNames.PLUSP, new LispFunction(LispNames.PLUSP, args -> {
 			requireArgCount(LispNames.PLUSP, args, 1);
+			requireRealOperand(LispNames.PLUSP, args.get(0));
 			if (hasDouble(args)) {
 				return asDouble(args.get(0)) > 0.0 ? LispTrue.INSTANCE : LispNil.INSTANCE;
 			}
@@ -6743,6 +6862,7 @@ public final class Environment implements Scope {
 		}));
 		env.defineFunction(LispNames.MINUSP, new LispFunction(LispNames.MINUSP, args -> {
 			requireArgCount(LispNames.MINUSP, args, 1);
+			requireRealOperand(LispNames.MINUSP, args.get(0));
 			if (hasDouble(args)) {
 				return asDouble(args.get(0)) < 0.0 ? LispTrue.INSTANCE : LispNil.INSTANCE;
 			}
@@ -7366,9 +7486,17 @@ public final class Environment implements Scope {
 	 * Compares two numbers, returning -1, 0, 1 or {@link #UNORDERED}, promoting to the
 	 * widest type present (double &gt; ratio &gt; bigint &gt; long). Doubles compare per
 	 * IEEE 754: {@code -0.0} equals {@code 0.0}, and NaN is unordered against everything
-	 * (not {@code Double.compare}'s total order).
+	 * (not {@code Double.compare}'s total order). A complex operand never reaches here:
+	 * {@code =} compares complexes part-wise in {@link #compareChain}, and every other
+	 * comparison signals -- so one slipping through is a real-operand complaint.
 	 */
 	private static int compareNumeric(LispVal a, LispVal b) {
+		if (a instanceof LispComplex complex) {
+			throw realOperandError(complex);
+		}
+		if (b instanceof LispComplex complex) {
+			throw realOperandError(complex);
+		}
 		if (a instanceof LispDouble || b instanceof LispDouble) {
 			double x = asDouble(a);
 			double y = asDouble(b);
@@ -7392,10 +7520,21 @@ public final class Environment implements Scope {
 	/**
 	 * Evaluates a variadic numeric comparison: true when, for every adjacent pair, the
 	 * sign of the comparison falls within {@code [loSign, hiSign]}. A single argument is
-	 * trivially true. An {@link #UNORDERED} pair fails every window.
+	 * trivially true. An {@link #UNORDERED} pair fails every window. {@code =} over a
+	 * complex compares part-wise (a real counts as a zero-imagined complex, so
+	 * {@code (= 2.0 #C(2.0 0.0))} is true); every other comparison over a complex signals
+	 * a catchable type-error through {@link #compareNumeric}.
 	 */
 	private static LispVal compareChain(String name, List<LispVal> args, int loSign, int hiSign) {
 		requireMinArgCount(name, args, 1);
+		if (LispNames.EQ.equals(name) && hasComplex(args)) {
+			for (int i = 1; i < args.size(); i++) {
+				if (!complexEqual(args.get(i - 1), args.get(i))) {
+					return LispNil.INSTANCE;
+				}
+			}
+			return LispTrue.INSTANCE;
+		}
 		for (int i = 1; i < args.size(); i++) {
 			int sign = compareNumeric(args.get(i - 1), args.get(i));
 			if (sign < loSign || sign > hiSign) {
@@ -7430,6 +7569,404 @@ public final class Environment implements Scope {
 			}
 		}
 		return false;
+	}
+
+	// ---- Complex arithmetic ----
+	//
+	// A complex operand routes + - * / (and 1+/1-, expt, the unary math) through
+	// the helpers below, never through asDouble on the whole value. Exactness
+	// follows SBCL: all-rational parts compute exactly over BigInteger
+	// numerator/denominator pairs, while a float anywhere coerces the whole
+	// computation to doubles.
+
+	private static boolean hasComplex(List<LispVal> args) {
+		for (LispVal arg : args) {
+			if (arg instanceof LispComplex) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static LispEvalException realOperandError(LispVal complex) {
+		return LispEvalException.ofClass(ClosRegistry.TYPE_ERROR_CLASS_NAME,
+				ClosRegistry.EXPECTED_REAL_MESSAGE_PREFIX + complex.print());
+	}
+
+	// Signals for a complex operand only; any other value falls through to the
+	// caller's own funnel, so a non-number keeps its existing message.
+	private static void requireRealOperand(String name, LispVal val) {
+		if (val instanceof LispComplex) {
+			throw realOperandError(val);
+		}
+	}
+
+	private static LispVal requireReal(String name, LispVal val) {
+		if (val instanceof LispInteger || val instanceof LispBigInteger || val instanceof LispRatio
+				|| val instanceof LispDouble) {
+			return val;
+		}
+		throw LispEvalException.ofClass(ClosRegistry.TYPE_ERROR_CLASS_NAME,
+				ClosRegistry.EXPECTED_NUMBER_MESSAGE_PREFIX + val.print());
+	}
+
+	private static boolean isZeroReal(LispVal val) {
+		if (val instanceof LispDouble d) {
+			return d.value() == 0.0;
+		}
+		if (val instanceof LispRatio) {
+			// A normalized ratio is never zero.
+			return false;
+		}
+		if (val instanceof LispBigInteger b) {
+			return b.value().signum() == 0;
+		}
+		if (val instanceof LispInteger i) {
+			return i.value() == 0;
+		}
+		throw LispEvalException.ofClass(ClosRegistry.TYPE_ERROR_CLASS_NAME,
+				ClosRegistry.EXPECTED_NUMBER_MESSAGE_PREFIX + val.print());
+	}
+
+	// A real value as a double; a non-number signals through the float funnel.
+	private static double realToDouble(LispVal val) {
+		if (val instanceof LispDouble d) {
+			return d.value();
+		}
+		if (val instanceof LispInteger i) {
+			return (double) i.value();
+		}
+		if (val instanceof LispBigInteger b) {
+			return b.value().doubleValue();
+		}
+		if (val instanceof LispRatio r) {
+			return r.doubleValue();
+		}
+		throw LispEvalException.ofClass(ClosRegistry.TYPE_ERROR_CLASS_NAME,
+				ClosRegistry.EXPECTED_NUMBER_MESSAGE_PREFIX + val.print());
+	}
+
+	// The real part of a real-or-complex operand (a real answers itself; anything
+	// else is left for the caller's funnel to complain about).
+	private static LispVal complexReal(LispVal val) {
+		if (val instanceof LispComplex c) {
+			return c.real();
+		}
+		return val;
+	}
+
+	// The imaginary part: the complex's own, a double zero for a float, an integer
+	// zero for any other real.
+	private static LispVal complexImag(LispVal val) {
+		if (val instanceof LispComplex c) {
+			return c.imag();
+		}
+		if (val instanceof LispDouble) {
+			return new LispDouble(0.0);
+		}
+		if (val instanceof LispInteger || val instanceof LispBigInteger || val instanceof LispRatio) {
+			return new LispInteger(0);
+		}
+		return val;
+	}
+
+	private static double[] complexDoubleParts(LispVal val) {
+		if (val instanceof LispComplex c) {
+			return new double[] { realToDouble(c.real()), realToDouble(c.imag()) };
+		}
+		return new double[] { realToDouble(val), 0.0 };
+	}
+
+	private static boolean hasComplexDoublePart(List<LispVal> args) {
+		for (LispVal arg : args) {
+			if (arg instanceof LispDouble) {
+				return true;
+			}
+			if (arg instanceof LispComplex c && (c.real() instanceof LispDouble || c.imag() instanceof LispDouble)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static LispVal exactAdd(LispVal a, LispVal b) {
+		return LispRatio.valueOf(
+				numeratorOf(a).multiply(denominatorOf(b)).add(numeratorOf(b).multiply(denominatorOf(a))),
+				denominatorOf(a).multiply(denominatorOf(b)));
+	}
+
+	private static LispVal exactSub(LispVal a, LispVal b) {
+		return LispRatio.valueOf(
+				numeratorOf(a).multiply(denominatorOf(b)).subtract(numeratorOf(b).multiply(denominatorOf(a))),
+				denominatorOf(a).multiply(denominatorOf(b)));
+	}
+
+	private static LispVal exactMul(LispVal a, LispVal b) {
+		return LispRatio.valueOf(numeratorOf(a).multiply(numeratorOf(b)), denominatorOf(a).multiply(denominatorOf(b)));
+	}
+
+	private static LispVal exactDiv(LispVal a, LispVal b) {
+		if (numeratorOf(b).signum() == 0) {
+			throw LispEvalException.ofClass(ClosRegistry.DIVISION_BY_ZERO_CLASS_NAME, "Division by zero");
+		}
+		return LispRatio.valueOf(numeratorOf(a).multiply(denominatorOf(b)), denominatorOf(a).multiply(numeratorOf(b)));
+	}
+
+	private static LispVal exactNeg(LispVal a) {
+		return LispRatio.valueOf(numeratorOf(a).negate(), denominatorOf(a));
+	}
+
+	private static LispVal negateReal(LispVal val) {
+		if (val instanceof LispDouble d) {
+			return new LispDouble(-d.value());
+		}
+		return exactNeg(val);
+	}
+
+	private static LispVal addComplex(List<LispVal> args) {
+		if (hasDouble(args) || hasComplexDoublePart(args)) {
+			double re = 0.0;
+			double im = 0.0;
+			boolean first = true;
+			for (LispVal arg : args) {
+				double[] p = complexDoubleParts(arg);
+				if (first) {
+					re = p[0];
+					im = p[1];
+					first = false;
+				}
+				else {
+					re += p[0];
+					im += p[1];
+				}
+			}
+			return LispComplex.valueOf(new LispDouble(re), new LispDouble(im));
+		}
+		LispVal re = new LispInteger(0);
+		LispVal im = new LispInteger(0);
+		for (LispVal arg : args) {
+			re = exactAdd(re, complexReal(arg));
+			im = exactAdd(im, complexImag(arg));
+		}
+		return LispComplex.valueOf(re, im);
+	}
+
+	private static LispVal subComplex(List<LispVal> args) {
+		if (hasDouble(args) || hasComplexDoublePart(args)) {
+			double[] first = complexDoubleParts(args.get(0));
+			if (args.size() == 1) {
+				return LispComplex.valueOf(new LispDouble(-first[0]), new LispDouble(-first[1]));
+			}
+			double re = first[0];
+			double im = first[1];
+			for (int i = 1; i < args.size(); i++) {
+				double[] p = complexDoubleParts(args.get(i));
+				re -= p[0];
+				im -= p[1];
+			}
+			return LispComplex.valueOf(new LispDouble(re), new LispDouble(im));
+		}
+		if (args.size() == 1) {
+			return LispComplex.valueOf(exactNeg(complexReal(args.get(0))), exactNeg(complexImag(args.get(0))));
+		}
+		LispVal re = complexReal(args.get(0));
+		LispVal im = complexImag(args.get(0));
+		for (int i = 1; i < args.size(); i++) {
+			re = exactSub(re, complexReal(args.get(i)));
+			im = exactSub(im, complexImag(args.get(i)));
+		}
+		return LispComplex.valueOf(re, im);
+	}
+
+	private static LispVal mulComplex(List<LispVal> args) {
+		if (hasDouble(args) || hasComplexDoublePart(args)) {
+			double re = 1.0;
+			double im = 0.0;
+			for (LispVal arg : args) {
+				double[] p = complexDoubleParts(arg);
+				double next = re * p[0] - im * p[1];
+				im = re * p[1] + im * p[0];
+				re = next;
+			}
+			return LispComplex.valueOf(new LispDouble(re), new LispDouble(im));
+		}
+		LispVal re = new LispInteger(1);
+		LispVal im = new LispInteger(0);
+		for (LispVal arg : args) {
+			LispVal c = complexReal(arg);
+			LispVal d = complexImag(arg);
+			LispVal next = exactSub(exactMul(re, c), exactMul(im, d));
+			im = exactAdd(exactMul(re, d), exactMul(im, c));
+			re = next;
+		}
+		return LispComplex.valueOf(re, im);
+	}
+
+	private static LispVal divComplex(List<LispVal> args) {
+		if (hasDouble(args) || hasComplexDoublePart(args)) {
+			double[] first = complexDoubleParts(args.get(0));
+			double re = first[0];
+			double im = first[1];
+			int start = 1;
+			if (args.size() == 1) {
+				re = 1.0;
+				im = 0.0;
+				start = 0;
+			}
+			for (int i = start; i < args.size(); i++) {
+				double[] p = complexDoubleParts(args.get(i));
+				double denom = p[0] * p[0] + p[1] * p[1];
+				double next = (re * p[0] + im * p[1]) / denom;
+				im = (im * p[0] - re * p[1]) / denom;
+				re = next;
+			}
+			return LispComplex.valueOf(new LispDouble(re), new LispDouble(im));
+		}
+		LispVal re = new LispInteger(1);
+		LispVal im = new LispInteger(0);
+		int start = 1;
+		if (args.size() == 1) {
+			start = 0;
+		}
+		else {
+			re = complexReal(args.get(0));
+			im = complexImag(args.get(0));
+		}
+		for (int i = start; i < args.size(); i++) {
+			LispVal[] divided = exactDivComplex(re, im, complexReal(args.get(i)), complexImag(args.get(i)));
+			re = divided[0];
+			im = divided[1];
+		}
+		return LispComplex.valueOf(re, im);
+	}
+
+	// (a+bi)/(c+di) exactly: the denominator c^2+d^2 is real, so both parts divide
+	// by it. A zero divisor signals division-by-zero, like real (/ x 0).
+	private static LispVal[] exactDivComplex(LispVal a, LispVal b, LispVal c, LispVal d) {
+		LispVal denom = exactAdd(exactMul(c, c), exactMul(d, d));
+		if (isZeroReal(denom)) {
+			throw LispEvalException.ofClass(ClosRegistry.DIVISION_BY_ZERO_CLASS_NAME, "Division by zero");
+		}
+		return new LispVal[] { exactDiv(exactAdd(exactMul(a, c), exactMul(b, d)), denom),
+				exactDiv(exactSub(exactMul(b, c), exactMul(a, d)), denom) };
+	}
+
+	// Whether two numbers are = across the complex boundary: every part pair
+	// compares equal under the real comparison (a real counts as a zero-imagined
+	// complex). A non-number part signals through the real funnel.
+	private static boolean complexEqual(LispVal a, LispVal b) {
+		return compareNumeric(complexReal(a), complexReal(b)) == 0
+				&& compareNumeric(complexImag(a), complexImag(b)) == 0;
+	}
+
+	// z^w for a complex operand: an int-range integer exponent over rational parts
+	// stays exact by repeated squaring (a negative one through the exact
+	// reciprocal); anything else goes through exp(w*log(z)) in floats.
+	private static LispVal exptComplex(LispVal base, LispVal exp) {
+		double[] z = complexDoubleParts(base);
+		boolean exactBase = !hasComplexDoublePart(List.of(base)) && !(base instanceof LispDouble);
+		if (exactBase && exp instanceof LispInteger i && i.value() >= -Integer.MAX_VALUE
+				&& i.value() <= Integer.MAX_VALUE) {
+			long power = i.value();
+			LispVal re = new LispInteger(1);
+			LispVal im = new LispInteger(0);
+			LispVal bRe = complexReal(base);
+			LispVal bIm = complexImag(base);
+			if (power < 0) {
+				LispVal[] reciprocal = exactDivComplex(new LispInteger(1), new LispInteger(0), bRe, bIm);
+				bRe = reciprocal[0];
+				bIm = reciprocal[1];
+				power = -power;
+			}
+			while (power > 0) {
+				if ((power & 1) == 1) {
+					LispVal next = exactSub(exactMul(re, bRe), exactMul(im, bIm));
+					im = exactAdd(exactMul(re, bIm), exactMul(im, bRe));
+					re = next;
+				}
+				LispVal nextBase = exactSub(exactMul(bRe, bRe), exactMul(bIm, bIm));
+				bIm = exactAdd(exactMul(bRe, bIm), exactMul(bIm, bRe));
+				bRe = nextBase;
+				power >>= 1;
+			}
+			return LispComplex.valueOf(re, im);
+		}
+		double[] w = complexDoubleParts(exp);
+		double[] l = complexLog(z[0], z[1]);
+		double[] e = complexExp(w[0] * l[0] - w[1] * l[1], w[0] * l[1] + w[1] * l[0]);
+		return LispComplex.valueOf(new LispDouble(e[0]), new LispDouble(e[1]));
+	}
+
+	// The principal square root of (re, im) in floats.
+	private static double[] complexSqrt(double re, double im) {
+		if (re == 0.0 && im == 0.0) {
+			return new double[] { re, im };
+		}
+		double t = Math.sqrt((Math.abs(re) + Math.hypot(re, im)) / 2);
+		if (re >= 0) {
+			return new double[] { t, im / (2 * t) };
+		}
+		return new double[] { Math.abs(im) / (2 * t), Math.copySign(t, im) };
+	}
+
+	private static double[] complexExp(double re, double im) {
+		double e = Math.exp(re);
+		return new double[] { e * Math.cos(im), e * Math.sin(im) };
+	}
+
+	private static double[] complexLog(double re, double im) {
+		return new double[] { Math.log(Math.hypot(re, im)), Math.atan2(im, re) };
+	}
+
+	private static double[] complexSin(double re, double im) {
+		return new double[] { Math.sin(re) * Math.cosh(im), Math.cos(re) * Math.sinh(im) };
+	}
+
+	private static double[] complexCos(double re, double im) {
+		return new double[] { Math.cos(re) * Math.cosh(im), -Math.sin(re) * Math.sinh(im) };
+	}
+
+	private static double[] complexTan(double re, double im) {
+		double[] s = complexSin(re, im);
+		double[] c = complexCos(re, im);
+		double denom = c[0] * c[0] + c[1] * c[1];
+		return new double[] { (s[0] * c[0] + s[1] * c[1]) / denom, (s[1] * c[0] - s[0] * c[1]) / denom };
+	}
+
+	// asin(z) = -i*log(i*z + sqrt(1-z^2)).
+	private static double[] complexAsin(double re, double im) {
+		double z2re = re * re - im * im;
+		double z2im = 2 * re * im;
+		double[] s = complexSqrt(1 - z2re, -z2im);
+		double[] l = complexLog(-im + s[0], re + s[1]);
+		return new double[] { l[1], -l[0] };
+	}
+
+	private static double[] complexAcos(double re, double im) {
+		double[] a = complexAsin(re, im);
+		return new double[] { Math.PI / 2 - a[0], -a[1] };
+	}
+
+	// atan(z) = (i/2)*(log(1-i*z) - log(1+i*z)).
+	private static double[] complexAtan(double re, double im) {
+		double[] l1 = complexLog(1 + im, -re);
+		double[] l2 = complexLog(1 - im, re);
+		return new double[] { (l2[1] - l1[1]) / 2, (l1[0] - l2[0]) / 2 };
+	}
+
+	private static double[] complexSinh(double re, double im) {
+		return new double[] { Math.sinh(re) * Math.cos(im), Math.cosh(re) * Math.sin(im) };
+	}
+
+	private static double[] complexCosh(double re, double im) {
+		return new double[] { Math.cosh(re) * Math.cos(im), Math.sinh(re) * Math.sin(im) };
+	}
+
+	private static double[] complexTanh(double re, double im) {
+		double[] s = complexSinh(re, im);
+		double[] c = complexCosh(re, im);
+		double denom = c[0] * c[0] + c[1] * c[1];
+		return new double[] { (s[0] * c[0] + s[1] * c[1]) / denom, (s[1] * c[0] - s[0] * c[1]) / denom };
 	}
 
 	/**

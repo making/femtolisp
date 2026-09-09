@@ -5129,9 +5129,10 @@ public final class LispMacroExpander {
 
 	/**
 	 * Expands {@code (complex real imag)} (or one argument) into a check that the
-	 * imaginary part is zero: there is no complex number representation, so a zero
-	 * imaginary part yields the real part and anything else signals. This keeps sources
-	 * whose complex branch is never taken (e.g. parse-number's #C parser) loadable.
+	 * imaginary part is zero: a zero imaginary part yields the real part and anything
+	 * else signals. The interpreter no longer uses this -- it calls the real
+	 * {@code complex} function (.todo/751) -- but both compilers still route through it
+	 * until .todo/752 and .todo/753 rewire them, so it stays until then.
 	 * @param cons the complex expression
 	 * @return the expanded expression
 	 */

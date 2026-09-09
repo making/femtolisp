@@ -17,6 +17,7 @@ import am.ik.rontolisp.ClosRegistry;
 import am.ik.rontolisp.LambdaLists;
 import am.ik.rontolisp.LispBigInteger;
 import am.ik.rontolisp.LispCons;
+import am.ik.rontolisp.LispComplex;
 import am.ik.rontolisp.LispDouble;
 import am.ik.rontolisp.LispFunction;
 import am.ik.rontolisp.LispArray;
@@ -4459,6 +4460,8 @@ public final class LispEvaluator {
 			case LispBigInteger b -> b;
 			case LispRatio r -> r;
 			case LispDouble d -> d;
+			// A complex literal is self-evaluating, like every other number.
+			case LispComplex c -> c;
 			case LispString s -> s;
 			case LispChar c -> c;
 			case LispNil n -> n;
@@ -5683,8 +5686,10 @@ public final class LispEvaluator {
 				}
 				break;
 			}
-			case LispNames.COMPLEX:
-				return evalBuiltinMacro(cons, env, LispMacroExpander::expandComplexLite);
+			// complex is a real function now (Environment.registerComplex): no
+			// macro case here, so a call resolves to it like any other built-in.
+			// The JVM and WASM compilers still route through expandComplexLite
+			// until .todo/752 and .todo/753 rewire them.
 			case LispNames.NE:
 				return evalBuiltinMacro(cons, env, LispMacroExpander::expandNumericNotEqual);
 			case LispNames.PARSE_INTEGER:

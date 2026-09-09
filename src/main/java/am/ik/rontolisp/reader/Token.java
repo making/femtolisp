@@ -58,6 +58,14 @@ public sealed interface Token {
 	}
 
 	/**
+	 * Complex literal open ({@code #C(} / {@code #c(}) token; closed by the matching
+	 * {@link RightParen}. The contents are exactly two real numbers, read as data and
+	 * folded into the canonical complex (or demoted real) value.
+	 */
+	record SharpC() implements Token {
+	}
+
+	/**
 	 * Pathname literal open ({@code #P"} / {@code #p"}) token: the {@link StringToken}
 	 * that follows is the namestring, and the reader builds the pathname value (a
 	 * {@code LispInstance} over the fixed {@code LispLayout.PATHNAME}) from it. Only

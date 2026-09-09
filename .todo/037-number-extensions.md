@@ -45,15 +45,29 @@ only the decomposition/composition pair is missing.
 
 ### Complex numbers
 
-CL has a full complex number tower. RontoLisp does not. Implementing complex numbers requires:
-- A `LispComplex` type (real + imaginary parts).
-- Updating all arithmetic operators to handle complex operands.
-- New predicates and accessors.
-- JVM: represent as `Object[]` or dedicated class.
-- WASM GC: a struct type.
-- WASM scalar: no complex support (scalar backend is for pure numeric exports).
+> **Update 2026-09-09 (.todo/751 landed):** the split below IS the concrete use
+> case this section waited for. Step 1 (interpreter) is done: `LispComplex` with
+> SBCL canonicalization, the `#C` reader/printer, interpreter arithmetic
+> (`+ - * /`, `1+`/`1-`, `abs`, `sqrt`, `expt`/`exp`/`log`/trig, `phase`,
+> `conjugate`, `realpart`/`imagpart`, `complexp`/`realp`/`numberp`/`zerop`,
+> `=`/`eql`/`equal`/`equalp`) and first-class `#'complex`. `complex` is a real
+> `cl` function now (moved out of `CL_MACROS`); both compilers still route
+> through `expandComplexLite` until 752/753. Known gaps for 754: `signum` of a
+> complex still signals (SBCL answers the unit vector), `typep`'s `real` test and
+> `type-of`/`upgraded-complex-part-type` are untouched, and `log`/`expt`/`asin`
+> of a negative/fractional REAL still answer NaN (only complex operands and
+> `sqrt` of a negative real cross into the plane). New cross-backend message
+> `ClosRegistry.EXPECTED_REAL_MESSAGE_PREFIX` ("Expected real number, got: ")
+> for a complex reaching ordering/`min`/`max`/`plusp`/`minusp` -- 752/753 mirror
+> it byte-identical.
 
-This is a significant undertaking with limited ROI for the typical use cases RontoLisp targets.
+CL has a full complex number tower. RontoLisp implements it in four steps:
+- 751 (done): `LispComplex` (real + imaginary parts) + reader/printer +
+  interpreter arithmetic, predicates and accessors.
+- 752: JVM backend representation and arithmetic.
+- 753: WASM GC (struct type) + scalar backend behavior.
+- 754: type system (`typep`/`type-of`/`upgraded-complex-part-type`), corpus
+  (`ci-spec.yaml` cases), docs.
 
 ### Implementation approach (pragmatic subset)
 

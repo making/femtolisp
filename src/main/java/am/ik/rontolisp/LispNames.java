@@ -2683,6 +2683,12 @@ public final class LispNames {
 	/** The {@code rationalp} built-in function. */
 	public static final String RATIONALP = "RATIONALP";
 
+	/** The {@code realp} built-in function (true for integers, ratios and floats). */
+	public static final String REALP = "REALP";
+
+	/** The {@code complexp} built-in function (true for complex numbers). */
+	public static final String COMPLEXP = "COMPLEXP";
+
 	/** The {@code symbolp} built-in function. */
 	public static final String SYMBOLP = "SYMBOLP";
 
@@ -4811,11 +4817,29 @@ public final class LispNames {
 	public static final String VALUES_LIST = "VALUES-LIST";
 
 	/**
-	 * The {@code complex} operator. Lite: no complex representation exists, so a zero
-	 * imaginary part yields the real part and anything else signals (classified as a
-	 * macro here, in CL it is a function).
+	 * The {@code complex} built-in function: answers the canonical complex (or demoted
+	 * real) value for one real part and an optional imaginary part. A non-real part
+	 * signals a catchable type-error.
 	 */
 	public static final String COMPLEX = "COMPLEX";
+
+	/** The {@code realpart} built-in function (the real part; a real answers itself). */
+	public static final String REALPART = "REALPART";
+
+	/**
+	 * The {@code imagpart} built-in function (the imaginary part; a real answers zero --
+	 * an integer zero, or a float zero for a float argument, like SBCL).
+	 */
+	public static final String IMAGPART = "IMAGPART";
+
+	/** The {@code conjugate} built-in function (negates the imaginary part). */
+	public static final String CONJUGATE = "CONJUGATE";
+
+	/**
+	 * The {@code phase} built-in function (the angle in the complex plane: a float; zero
+	 * for a non-negative real, pi for a negative one).
+	 */
+	public static final String PHASE = "PHASE";
 
 	/**
 	 * The {@code *features*} variable: an ordinary special holding the active feature

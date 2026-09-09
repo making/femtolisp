@@ -47,6 +47,14 @@ class LispFormatterTest {
 	}
 
 	@Test
+	void keepsASharpCLiteralIntact() {
+		// #C( is one lexeme (the dispatch plus its contents), so format keeps it
+		// glued and never splits it into "#C" and a list (.todo/751).
+		assertThat(LispFormatter.format("(setq z #C(1 2))\n")).isEqualTo("(setq z #C(1 2))\n");
+		assertThat(LispFormatter.format("(setq z #c(1/2 -1/3))\n")).isEqualTo("(setq z #c(1/2 -1/3))\n");
+	}
+
+	@Test
 	void neverJoinsTwoBodyForms() {
 		// Two forms performed in order are two lines however short they are; only a
 		// single-form body may be joined onto the header line.

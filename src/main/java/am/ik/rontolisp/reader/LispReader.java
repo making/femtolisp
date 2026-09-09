@@ -11,6 +11,7 @@ import am.ik.rontolisp.FloatWidth;
 import am.ik.rontolisp.LispArray;
 import am.ik.rontolisp.LispBigInteger;
 import am.ik.rontolisp.LispChar;
+import am.ik.rontolisp.LispComplex;
 import am.ik.rontolisp.LispCons;
 import am.ik.rontolisp.LispDouble;
 import am.ik.rontolisp.BFloat16;
@@ -420,6 +421,7 @@ public final class LispReader {
 			case Token.Dot ignored -> throw err("Unexpected '.'");
 			case Token.Eof ignored -> throw err("Unexpected end of input");
 			case Token.SharpL sharp -> readSharpL(sharp.nArgs());
+			case Token.SharpC ignored -> readSharpC();
 			case Token.LabelDef def -> {
 				// #n=: record the next datum under the label. Lite: no circular
 				// structures -- a #n# inside the labeled datum itself is unresolvable.
@@ -851,6 +853,27 @@ public final class LispReader {
 	 */
 	private LispVal readSharpL(int declared) {
 		return sharpLForm(readExpr(), declared);
+	}
+
+	/**
+	 * {@code #C(real imag)}: a complex literal holding exactly two real numbers -- read
+	 * as data, like every other literal here (the opening parenthesis belongs to the
+	 * dispatch, as with {@code #S(}, so the contents are read grouped up to the closing
+	 * one). The parts fold through the canonicalizing factory, so {@code #C(1 0)} reads
+	 * as the integer {@code 1} and {@code #C(2.0 0)} as the float-parted complex;
+	 * anything else (a missing or extra part, a non-real part such as a nested
+	 * {@code #C}) is a read error, like SBCL.
+	 * @return the canonical complex (or demoted real) value
+	 */
+	private LispVal readSharpC() {
+		List<LispVal> parts = readGroupedElements();
+		if (parts.size() != 2) {
+			throw err("#C must hold exactly two real numbers, got " + parts.size());
+		}
+		if (!LispComplex.isRealPart(parts.get(0)) || !LispComplex.isRealPart(parts.get(1))) {
+			throw err("#C parts must be real numbers, got " + parts.get(0).print() + " " + parts.get(1).print());
+		}
+		return LispComplex.valueOf(parts.get(0), parts.get(1));
 	}
 
 	/**

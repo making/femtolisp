@@ -121,9 +121,9 @@ public final class FormatReader {
 			this.pos += 2;
 			return new CstNode.Atom(this.source.substring(start, this.pos) + readStringLiteral(), trivia);
 		}
-		// #S( / #s( structure, #f( / #d( packed float array.
+		// #S( / #s( structure, #C( / #c( complex, #f( / #d( packed float array.
 		if (this.pos + 2 < this.source.length() && this.source.charAt(this.pos + 2) == '('
-				&& "SsFfDd".indexOf(this.source.charAt(this.pos + 1)) >= 0) {
+				&& "SsCcFfDd".indexOf(this.source.charAt(this.pos + 1)) >= 0) {
 			return readListing(this.source.substring(start, start + 3), trivia);
 		}
 		// #nA( rank-n array, #n@( packed integer vector, #n= label, #n# reference.

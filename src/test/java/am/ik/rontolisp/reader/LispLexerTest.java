@@ -52,6 +52,16 @@ class LispLexerTest {
 	}
 
 	@Test
+	void tokenizeSharpC() {
+		assertThat(new LispLexer("#C(1 2)").tokenize()).containsExactly(new Token.SharpC(), new Token.NumberToken(1),
+				new Token.NumberToken(2), new Token.RightParen());
+		assertThat(new LispLexer("#c(1.5 -2)").tokenize()).containsExactly(new Token.SharpC(),
+				new Token.DoubleToken(1.5), new Token.NumberToken(-2), new Token.RightParen());
+		// #C not followed by '(' stays a symbol, like #S.
+		assertThat(new LispLexer("#CFOO").tokenize()).containsExactly(new Token.SymbolToken("#CFOO"));
+	}
+
+	@Test
 	void tokenizeEmptyList() {
 		List<Token> tokens = new LispLexer("()").tokenize();
 		assertThat(tokens).containsExactly(new Token.LeftParen(), new Token.RightParen());
