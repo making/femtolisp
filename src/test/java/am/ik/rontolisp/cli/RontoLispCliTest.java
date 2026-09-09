@@ -190,11 +190,14 @@ class RontoLispCliTest {
 		Map<String, byte[]> entries = entries(jar);
 		// The handle runtime travels INSIDE the artifact: the .class path writes it
 		// beside the output class, and a jar that left it out is a NoClassDefFoundError
-		// in the consumer rather than an error at compile time.
+		// in the consumer rather than an error at compile time. The complex holder
+		// travels for the same reason: norm2 roots through sqrt, which can answer a
+		// complex for a negative input (.kb/jvm-complex.md).
 		assertThat(entries.keySet()).containsExactly("META-INF/MANIFEST.MF",
 				"META-INF/maven/com.acme/acme-kernels/pom.xml", "META-INF/maven/com.acme/acme-kernels/pom.properties",
 				"com/acme/Kernels.class", "am/ik/rontolisp/runtime/RontoBoundary.class",
-				"am/ik/rontolisp/runtime/RontoFloatArray$Width.class", "am/ik/rontolisp/runtime/RontoFloatArray.class");
+				"am/ik/rontolisp/runtime/RontoComplex.class", "am/ik/rontolisp/runtime/RontoFloatArray$Width.class",
+				"am/ik/rontolisp/runtime/RontoFloatArray.class");
 		String manifest = new String(entries.get("META-INF/MANIFEST.MF"), StandardCharsets.UTF_8);
 		// A library is not a program: nobody should java -jar it, so it carries no
 		// Main-Class.

@@ -7056,6 +7056,157 @@ class JvmLispCompilerTest {
 		assertThat(compileAndRun("(print (expt 2 70))")).isEqualTo("1180591620717411303424");
 	}
 
+	// Complex numbers (.todo/752): every case mirrors the interpreter case of
+	// the same name in LispEvaluatorTest (SBCL parity pinned there), print-compared
+	// so the JVM leg answers identically.
+	@Test
+	void compileAndRunComplexConstructor() throws Exception {
+		assertThat(compileAndRun("(print (complex 1 2))")).isEqualTo("#C(1 2)");
+		assertThat(compileAndRun("(print (complex 1 0))")).isEqualTo("1");
+		assertThat(compileAndRun("(print (complex 1))")).isEqualTo("1");
+		assertThat(compileAndRun("(print (complex 1/2 0))")).isEqualTo("1/2");
+		assertThat(compileAndRun("(print (complex 2.0 0))")).isEqualTo("#C(2.0 0.0)");
+		assertThat(compileAndRun("(print (complex 1 0.0))")).isEqualTo("#C(1.0 0.0)");
+		assertThat(compileAndRun("(print (complex 1 2.0))")).isEqualTo("#C(1.0 2.0)");
+		assertThat(compileAndRun("(print (complex 0 1))")).isEqualTo("#C(0 1)");
+	}
+
+	@Test
+	void compileAndRunComplexConstructorRejectsNonRealParts() throws Exception {
+		assertThatThrownBy(() -> compileAndRun("(print (complex #c(1 2) 3))")).isInstanceOf(Exception.class);
+		assertThatThrownBy(() -> compileAndRun("(print (complex 1 \"a\"))")).isInstanceOf(Exception.class);
+		assertThat(compileAndRun("(print (handler-case (complex #c(1 2) 3) (type-error (e) :caught)))"))
+			.isEqualTo(":CAUGHT");
+	}
+
+	@Test
+	void compileAndRunComplexSharpCReader() throws Exception {
+		assertThat(compileAndRun("(print #C(1 2))")).isEqualTo("#C(1 2)");
+		assertThat(compileAndRun("(print #c(1 2))")).isEqualTo("#C(1 2)");
+		assertThat(compileAndRun("(print #C(1/2 1/3))")).isEqualTo("#C(1/2 1/3)");
+		assertThat(compileAndRun("(print #C(1 0))")).isEqualTo("1");
+		assertThat(compileAndRun("(print '#C(1 2))")).isEqualTo("#C(1 2)");
+	}
+
+	@Test
+	void compileAndRunComplexArithmeticStaysExact() throws Exception {
+		assertThat(compileAndRun("(print (+ #c(1 1/2) #c(1 1/3)))")).isEqualTo("#C(2 5/6)");
+		assertThat(compileAndRun("(print (- #c(1 2) #c(3 4)))")).isEqualTo("#C(-2 -2)");
+		assertThat(compileAndRun("(print (- #c(1 2)))")).isEqualTo("#C(-1 -2)");
+		assertThat(compileAndRun("(print (* #c(1 2) 2))")).isEqualTo("#C(2 4)");
+		assertThat(compileAndRun("(print (/ #c(1 2) 2))")).isEqualTo("#C(1/2 1)");
+		assertThat(compileAndRun("(print (/ #c(1 2)))")).isEqualTo("#C(1/5 -2/5)");
+		assertThat(compileAndRun("(print (+ #c(1 2) #c(3 4) 1))")).isEqualTo("#C(5 6)");
+		assertThat(compileAndRun("(print (1+ #c(1 2)))")).isEqualTo("#C(2 2)");
+		assertThat(compileAndRun("(print (1- #c(1 2)))")).isEqualTo("#C(0 2)");
+		assertThat(compileAndRun("(print (- #c(0 1) #c(0 1)))")).isEqualTo("0");
+	}
+
+	@Test
+	void compileAndRunComplexArithmeticContagion() throws Exception {
+		assertThat(compileAndRun("(print (+ #c(1 2) 1.5))")).isEqualTo("#C(2.5 2.0)");
+		assertThat(compileAndRun("(print (* #c(1 2) 2.0))")).isEqualTo("#C(2.0 4.0)");
+		assertThat(compileAndRun("(print (- 1 #c(1 2)))")).isEqualTo("#C(0 -2)");
+	}
+
+	@Test
+	void compileAndRunComplexAbs() throws Exception {
+		assertThat(compileAndRun("(print (abs #c(3 4)))")).isEqualTo("5.0");
+		assertThat(compileAndRun("(print (abs 5))")).isEqualTo("5");
+	}
+
+	@Test
+	void compileAndRunComplexSqrt() throws Exception {
+		assertThat(compileAndRun("(print (sqrt -1))")).isEqualTo("#C(0.0 1.0)");
+		assertThat(compileAndRun("(print (sqrt -4))")).isEqualTo("#C(0.0 2.0)");
+		assertThat(compileAndRun("(print (sqrt #c(3 4)))")).isEqualTo("#C(2.0 1.0)");
+		assertThat(compileAndRun("(print (sqrt 4))")).isEqualTo("2.0");
+	}
+
+	@Test
+	void compileAndRunComplexEquality() throws Exception {
+		assertThat(compileAndRun("(print (= #c(1 2) #c(1 2)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (= 2.0 #c(2.0 0.0)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (= #c(1 2) 1))")).isEqualTo("NIL");
+		assertThat(compileAndRun("(print (= #c(1 2) #c(1 3)))")).isEqualTo("NIL");
+		assertThat(compileAndRun("(print (eql 1 #c(1 0)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (eql 2.0 #c(2.0 0)))")).isEqualTo("NIL");
+		assertThat(compileAndRun("(print (eql #c(1 2) #c(1 2)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (equal #c(1 2) #c(1 2)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (/= #c(1 2) #c(1 3)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (/= #c(1 2) #c(1 2)))")).isEqualTo("NIL");
+	}
+
+	@Test
+	void compileAndRunComplexPredicates() throws Exception {
+		assertThat(compileAndRun("(print (complexp #c(1 2)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (complexp 1))")).isEqualTo("NIL");
+		assertThat(compileAndRun("(print (numberp #c(1 2)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (numberp 1))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (realp #c(1 2)))")).isEqualTo("NIL");
+		assertThat(compileAndRun("(print (realp 1))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (realp 1.5))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (realp 1/2))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (realp nil))")).isEqualTo("NIL");
+		assertThat(compileAndRun("(print (integerp #c(1 2)))")).isEqualTo("NIL");
+		assertThat(compileAndRun("(print (floatp #c(1.0 2.0)))")).isEqualTo("NIL");
+		assertThat(compileAndRun("(print (rationalp #c(1 2)))")).isEqualTo("NIL");
+		assertThat(compileAndRun("(print (zerop #c(0 0)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (zerop #c(0.0 0.0)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (zerop #c(1 2)))")).isEqualTo("NIL");
+	}
+
+	@Test
+	void compileAndRunComplexOrderingSignalsCatchableTypeErrors() throws Exception {
+		assertThat(compileAndRun("""
+				(defun te-print (thunk)
+				  (handler-case (funcall thunk) (type-error (e) (princ-to-string e))))
+				(print (list (te-print (lambda () (minusp #c(1 2))))
+				             (te-print (lambda () (plusp #c(1 2))))
+				             (te-print (lambda () (< #c(1 2) #c(3 4))))
+				             (te-print (lambda () (> #c(1 2) 1)))
+				             (te-print (lambda () (min #c(1 2) 3)))
+				             (te-print (lambda () (max 3 #c(1 2))))))
+				""")).isEqualTo("(\"Expected real number, got: #C(1 2)\"" + " \"Expected real number, got: #C(1 2)\""
+				+ " \"Expected real number, got: #C(1 2)\"" + " \"Expected real number, got: #C(1 2)\""
+				+ " \"Expected real number, got: #C(1 2)\"" + " \"Expected real number, got: #C(1 2)\")");
+	}
+
+	@Test
+	void compileAndRunComplexAccessors() throws Exception {
+		assertThat(compileAndRun("(print (conjugate #c(1 2)))")).isEqualTo("#C(1 -2)");
+		assertThat(compileAndRun("(print (conjugate 5))")).isEqualTo("5");
+		assertThat(compileAndRun("(print (realpart #c(1 2)))")).isEqualTo("1");
+		assertThat(compileAndRun("(print (realpart 5))")).isEqualTo("5");
+		assertThat(compileAndRun("(print (realpart #c(1.0 2)))")).isEqualTo("1.0");
+		assertThat(compileAndRun("(print (imagpart #c(1 2)))")).isEqualTo("2");
+		assertThat(compileAndRun("(print (imagpart 5))")).isEqualTo("0");
+		assertThat(compileAndRun("(print (imagpart 5.5))")).isEqualTo("0.0");
+		assertThat(compileAndRun("(print (phase #c(1 1)))")).isEqualTo("0.7853981633974483");
+		assertThat(compileAndRun("(print (phase 5))")).isEqualTo("0.0");
+		assertThat(compileAndRun("(print (phase -5))")).isEqualTo("3.141592653589793");
+		assertThatThrownBy(() -> compileAndRun("(print (realpart nil))")).isInstanceOf(Exception.class);
+	}
+
+	@Test
+	void compileAndRunComplexExptExpLogTrig() throws Exception {
+		assertThat(compileAndRun("(print (expt #c(1 1) 2))")).isEqualTo("#C(0 2)");
+		assertThat(compileAndRun("(print (expt #c(1 1) -1))")).isEqualTo("#C(1/2 -1/2)");
+		assertThat(compileAndRun("(print (expt #c(0 1) 2))")).isEqualTo("-1");
+		assertThat(compileAndRun("(print (exp #c(0 1)))")).isEqualTo("#C(0.5403023058681398 0.8414709848078965)");
+		assertThat(compileAndRun("(print (log #c(1 1)))")).isEqualTo("#C(0.3465735902799727 0.7853981633974483)");
+		assertThat(compileAndRun("(print (sin #c(1 1)))")).isEqualTo("#C(1.2984575814159773 0.6349639147847361)");
+		assertThat(compileAndRun("(print (exp 1))")).isEqualTo("2.718281828459045");
+		assertThat(compileAndRun("(print (expt 2 3))")).isEqualTo("8");
+	}
+
+	@Test
+	void compileAndRunComplexFirstClass() throws Exception {
+		assertThat(compileAndRun("(print (funcall #'complex 1 2))")).isEqualTo("#C(1 2)");
+		assertThat(compileAndRun("(print (funcall #'conjugate #c(1 2)))")).isEqualTo("#C(1 -2)");
+		assertThat(compileAndRun("(print (mapcar #'complexp (list #c(1 2) 1)))")).isEqualTo("(T NIL)");
+	}
+
 	@Test
 	void compileAndRunGcdLcm() throws Exception {
 		assertThat(compileAndRun("(print (gcd 12 18))")).isEqualTo("6");

@@ -33,20 +33,33 @@ class JvmSimdModuleFallbackTest {
 	@TempDir
 	Path tempDir;
 
-	private byte[] compileVec(String lispCode, boolean parallel) {
-		List<LispVal> program = VecLibrary.process(LispReader.readAllFromString(lispCode));
-		return new JvmLispCompiler("Test", false, OptimizeLevel.NONE, true, false, false, parallel).compile(program);
+	private record Compiled(byte[] classBytes, java.util.Map<String, byte[]> runtimeClasses) {
 	}
 
-	private byte[] compileLinalg(String lispCode, boolean parallel) {
+	private Compiled compileVec(String lispCode, boolean parallel) {
+		List<LispVal> program = VecLibrary.process(LispReader.readAllFromString(lispCode));
+		JvmLispCompiler compiler = new JvmLispCompiler("Test", false, OptimizeLevel.NONE, true, false, false, parallel);
+		return new Compiled(compiler.compile(program), compiler.runtimeClassFiles());
+	}
+
+	private Compiled compileLinalg(String lispCode, boolean parallel) {
 		List<LispVal> program = LinalgLibrary.process(LispReader.readAllFromString(lispCode));
-		return new JvmLispCompiler("Test", false, OptimizeLevel.NONE, true, false, false, parallel).compile(program);
+		JvmLispCompiler compiler = new JvmLispCompiler("Test", false, OptimizeLevel.NONE, true, false, false, parallel);
+		return new Compiled(compiler.compile(program), compiler.runtimeClassFiles());
 	}
 
 	/** Runs a compiled class in a fresh child JVM that never sees --add-modules. */
-	private Process runWithoutTheIncubatorModule(byte[] classBytes) throws Exception {
+	private Process runWithoutTheIncubatorModule(Compiled compiled) throws Exception {
 		Path dir = Files.createDirectories(this.tempDir.resolve("no-vector-" + System.nanoTime()));
-		Files.write(dir.resolve("Test.class"), classBytes);
+		Files.write(dir.resolve("Test.class"), compiled.classBytes());
+		// The artifact runs beside its travelling runtime, exactly as -o lays it
+		// out: a class whose gate fired (a sqrt mention pulls the complex group,
+		// whose holder the predicates test) resolves it from beside the class.
+		for (java.util.Map.Entry<String, byte[]> runtimeClass : compiled.runtimeClasses().entrySet()) {
+			Path target = dir.resolve(runtimeClass.getKey());
+			Files.createDirectories(target.getParent());
+			Files.write(target, runtimeClass.getValue());
+		}
 		String java = ProcessHandle.current().info().command().orElse("java");
 		return new ProcessBuilder(java, "-cp", dir.toString(), "Test").start();
 	}
@@ -54,8 +67,8 @@ class JvmSimdModuleFallbackTest {
 	private record Result(int exitCode, String out, String err) {
 	}
 
-	private Result run(byte[] classBytes) throws Exception {
-		Process process = runWithoutTheIncubatorModule(classBytes);
+	private Result run(Compiled compiled) throws Exception {
+		Process process = runWithoutTheIncubatorModule(compiled);
 		String out = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
 		String err = new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
 		int exitCode = process.waitFor();

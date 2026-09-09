@@ -29,6 +29,16 @@ final class JvmNumberpCompiler {
 		ctx.emit(Opcode.INSTANCEOF);
 		ctx.emitU2(JvmEmitHelper.ratioArrayClass(ctx).index());
 		ctx.emit(Opcode.IOR);
+		if (ctx.usesComplex) {
+			// A complex value is a number too -- but the holder test names the
+			// travelling class, so it is emitted only for a complex-capable
+			// program (`.kb/jvm-complex.md`).
+			ctx.emit(Opcode.ALOAD);
+			ctx.emit(temp);
+			ctx.emit(Opcode.INSTANCEOF);
+			ctx.emitU2(JvmComplexCompiler.complexClass(ctx).index());
+			ctx.emit(Opcode.IOR);
+		}
 		JvmEmitHelper.emitBoolFromInt(ctx);
 	}
 

@@ -8,6 +8,7 @@ import am.ik.jvm.ConstantPool.MethodrefConstant;
 import am.ik.jvm.ConstantPool.Utf8Constant;
 import am.ik.rontolisp.LispArray;
 import am.ik.rontolisp.LispBigInteger;
+import am.ik.rontolisp.LispComplex;
 import am.ik.rontolisp.LispCons;
 import am.ik.rontolisp.LispDouble;
 import am.ik.rontolisp.LispInteger;
@@ -297,6 +298,7 @@ final class JvmQuoteCompiler {
 			case LispBigInteger b -> JvmEmitHelper.compileBigInteger(b.value(), ctx);
 			case am.ik.rontolisp.LispRatio r -> JvmEmitHelper.compileRatio(r, ctx);
 			case LispDouble d -> JvmEmitHelper.compileDouble(d.value(), ctx);
+			case LispComplex c -> JvmComplexCompiler.compileLiteral(c, ctx, className);
 			case LispNil ignored -> ctx.emit(Opcode.ACONST_NULL);
 			case LispTrue ignored -> JvmEmitHelper.compileTrue(ctx);
 			case LispString s -> JvmEmitHelper.compileStringLiteral(s.literal(), ctx);

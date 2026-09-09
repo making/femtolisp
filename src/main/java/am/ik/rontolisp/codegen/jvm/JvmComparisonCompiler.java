@@ -18,7 +18,24 @@ final class JvmComparisonCompiler {
 	static void compile(LispCons cons, JvmLispCompiler.Ctx ctx, int branchOpcode, String className) {
 		List<LispVal> args = cons.toList();
 		int branch;
-		if (JvmLispCompiler.hasDoubleLiteral(args, ctx)) {
+		if (JvmLispCompiler.hasComplexOperand(args)) {
+			// A complex operand steers off the double path: = compares
+			// part-wise through _cmpb, every other operator signals through
+			// the gated _ccmpb (`.kb/jvm-complex.md`).
+			JvmExprCompiler.compileExpr(args.get(1), ctx, className);
+			JvmExprCompiler.compileExpr(args.get(2), ctx, className);
+			ctx.emit(Opcode.INVOKESTATIC);
+			if (branchOpcode == Opcode.IFEQ) {
+				ctx.emitU2(ctx.numOp(JvmNumericRuntimeBuilder.CMPB).index());
+			}
+			else {
+				ctx.emitU2(JvmComplexCompiler.complexOp(ctx, className, JvmComplexRuntimeBuilder.CCPMB).index());
+			}
+			JvmEmitHelper.emitIntConst(ctx, maskFor(branchOpcode));
+			ctx.emit(Opcode.IAND);
+			branch = Opcode.IFNE;
+		}
+		else if (JvmLispCompiler.hasDoubleLiteral(args, ctx)) {
 			JvmArithCompiler.compileUnboxedOperand(args.get(1), ctx, className);
 			JvmArithCompiler.compileUnboxedOperand(args.get(2), ctx, className);
 			// IEEE: a comparison against NaN is false. javac's rule: DCMPG for < and

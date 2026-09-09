@@ -83,6 +83,12 @@ final class JvmTypedLoopCompiler {
 		if (DISABLED || !ctx.typedLoops || ctx.dynamic) {
 			return false;
 		}
+		if (JvmLispCompiler.hasComplexOperand(cons.toList())) {
+			// A typed loop unboxes its numeric values as long/double; a complex
+			// literal or complex/conjugate form in the loop would unbox a
+			// holder (`.kb/jvm-complex.md`).
+			return false;
+		}
 		Analysis analysis = Analyzer.analyze(cons, ctx);
 		if (analysis == null) {
 			return false;

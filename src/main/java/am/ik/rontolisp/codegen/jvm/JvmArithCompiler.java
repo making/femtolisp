@@ -22,6 +22,10 @@ final class JvmArithCompiler {
 
 	static void compile(LispCons cons, JvmLispCompiler.Ctx ctx, String opKey, int doubleOpcode, String className) {
 		List<LispVal> args = cons.toList();
+		if (isComplexCapable(opKey) && JvmLispCompiler.hasComplexOperand(args)) {
+			compileComplex(args, ctx, opKey, className);
+			return;
+		}
 		boolean unaryDiv = JvmNumericRuntimeBuilder.DIV.equals(opKey) && args.size() == 2;
 		if (JvmLispCompiler.hasDoubleLiteral(args, ctx)) {
 			compileUnboxed(args, ctx, opKey, doubleOpcode, className);
@@ -48,6 +52,47 @@ final class JvmArithCompiler {
 			JvmExprCompiler.compileExpr(args.get(i), ctx, className);
 			ctx.emit(Opcode.INVOKESTATIC);
 			ctx.emitU2(ctx.numOp(opKey).index());
+		}
+	}
+
+	/**
+	 * Whether the operator has a complex-capable twin ({@code _cadd} and friends):
+	 * {@code mod} and {@code rem} stay real-only, signalling through the existing funnels
+	 * for a complex operand like the interpreter.
+	 */
+	private static boolean isComplexCapable(String opKey) {
+		return JvmNumericRuntimeBuilder.ADD.equals(opKey) || JvmNumericRuntimeBuilder.SUB.equals(opKey)
+				|| JvmNumericRuntimeBuilder.MUL.equals(opKey) || JvmNumericRuntimeBuilder.DIV.equals(opKey);
+	}
+
+	/**
+	 * The complex fold: the same left fold as the object path, but through the gated
+	 * {@code _c*} twins. Unary {@code -} negates from zero and unary {@code /} takes the
+	 * reciprocal from one, mirroring the real shapes.
+	 */
+	private static void compileComplex(List<LispVal> args, JvmLispCompiler.Ctx ctx, String opKey, String className) {
+		String complexOp = JvmNumericRuntimeBuilder.ADD.equals(opKey) ? JvmComplexRuntimeBuilder.ADD
+				: JvmNumericRuntimeBuilder.SUB.equals(opKey) ? JvmComplexRuntimeBuilder.SUB
+						: JvmNumericRuntimeBuilder.MUL.equals(opKey) ? JvmComplexRuntimeBuilder.MUL
+								: JvmComplexRuntimeBuilder.DIV;
+		if (JvmNumericRuntimeBuilder.DIV.equals(opKey) && args.size() == 2) {
+			JvmEmitHelper.compileLong(1, ctx);
+			JvmExprCompiler.compileExpr(args.get(1), ctx, className);
+			ctx.emit(Opcode.INVOKESTATIC);
+			ctx.emitU2(JvmComplexCompiler.complexOp(ctx, className, complexOp).index());
+			return;
+		}
+		if (JvmNumericRuntimeBuilder.SUB.equals(opKey) && args.size() == 2) {
+			JvmExprCompiler.compileExpr(args.get(1), ctx, className);
+			ctx.emit(Opcode.INVOKESTATIC);
+			ctx.emitU2(JvmComplexCompiler.complexOp(ctx, className, JvmComplexRuntimeBuilder.NEG).index());
+			return;
+		}
+		JvmExprCompiler.compileExpr(args.get(1), ctx, className);
+		for (int i = 2; i < args.size(); i++) {
+			JvmExprCompiler.compileExpr(args.get(i), ctx, className);
+			ctx.emit(Opcode.INVOKESTATIC);
+			ctx.emitU2(JvmComplexCompiler.complexOp(ctx, className, complexOp).index());
 		}
 	}
 

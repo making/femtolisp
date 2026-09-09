@@ -97,6 +97,8 @@ final class JvmEvalRuntimeBuilder {
 
 		private final Map<String, JvmLispCompiler.FunctionInfo> functions;
 
+		private final boolean complexValues;
+
 		private EvalConstants(Builder b) {
 			this.cp = Objects.requireNonNull(b.cp);
 			this.objectClass = Objects.requireNonNull(b.objectClass);
@@ -122,6 +124,7 @@ final class JvmEvalRuntimeBuilder {
 			this.invoke = Objects.requireNonNull(b.invoke);
 			this.invokeSpread = Objects.requireNonNull(b.invokeSpread);
 			this.functions = Objects.requireNonNull(b.functions);
+			this.complexValues = b.complexValues;
 		}
 
 		ConstantPool cp() {
@@ -220,6 +223,10 @@ final class JvmEvalRuntimeBuilder {
 			return this.functions;
 		}
 
+		boolean complexValues() {
+			return this.complexValues;
+		}
+
 		static Builder builder() {
 			return new Builder();
 		}
@@ -273,6 +280,8 @@ final class JvmEvalRuntimeBuilder {
 			private @Nullable MethodrefConstant invokeSpread;
 
 			private @Nullable Map<String, JvmLispCompiler.FunctionInfo> functions;
+
+			private boolean complexValues;
 
 			Builder cp(ConstantPool cp) {
 				this.cp = cp;
@@ -391,6 +400,11 @@ final class JvmEvalRuntimeBuilder {
 
 			Builder functions(Map<String, JvmLispCompiler.FunctionInfo> functions) {
 				this.functions = functions;
+				return this;
+			}
+
+			Builder complexValues(boolean complexValues) {
+				this.complexValues = complexValues;
 				return this;
 			}
 
@@ -1659,6 +1673,21 @@ final class JvmEvalRuntimeBuilder {
 		a.aload(VAL);
 		a.areturn();
 		a.bind(notRatio);
+
+		// --- complex values (RontoComplex) are self-evaluating, like ratios --
+		// emitted only for a complex-capable program, so the travelling class
+		// stays out of every other constant pool.
+		if (this.k.complexValues()) {
+			ClassConstant complexClass = this.k.cp()
+				.addClass(this.k.cp().addUtf8("am/ik/rontolisp/runtime/RontoComplex"));
+			int notComplex = a.label();
+			a.aload(VAL);
+			a.instanceOf(complexClass);
+			a.branch(Opcode.IFEQ, notComplex);
+			a.aload(VAL);
+			a.areturn();
+			a.bind(notComplex);
+		}
 
 		// --- strings: string literal (self-eval) or symbol (variable reference) ---
 		int notStr = a.label();

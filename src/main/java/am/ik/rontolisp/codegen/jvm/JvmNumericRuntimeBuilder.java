@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import am.ik.jvm.ConstantPool;
 import am.ik.jvm.ConstantPool.ClassConstant;
@@ -234,7 +235,7 @@ final class JvmNumericRuntimeBuilder {
 	 */
 	record TypeErrRefs(ClassConstant rte, MethodrefConstant rteInit, MethodrefConstant strConcat,
 			MethodrefConstant lispToString, ConstantPool.StringConstant intPrefix,
-			ConstantPool.StringConstant numPrefix) {
+			ConstantPool.StringConstant numPrefix, ConstantPool.StringConstant realPrefix) {
 	}
 
 	/**
@@ -272,7 +273,7 @@ final class JvmNumericRuntimeBuilder {
 	 */
 	static NumericRuntime build(ConstantPool cp, ClassConstant thisClass,
 			@org.jspecify.annotations.Nullable MethodrefConstant strvMethod,
-			@org.jspecify.annotations.Nullable ClassConstant strArrClass) {
+			@org.jspecify.annotations.Nullable ClassConstant strArrClass, boolean usesComplex) {
 		ClassConstant longClass = cp.addClass(cp.addUtf8("java/lang/Long"));
 		ClassConstant bigClass = cp.addClass(cp.addUtf8("java/math/BigInteger"));
 		ClassConstant arithEx = cp.addClass(cp.addUtf8("java/lang/ArithmeticException"));
@@ -348,6 +349,19 @@ final class JvmNumericRuntimeBuilder {
 				cp.addNameAndType(cp.addUtf8("pow"), cp.addUtf8("(I)" + BIG)));
 		MethodrefConstant mathPow = cp.addMethodref(mathClass,
 				cp.addNameAndType(cp.addUtf8("pow"), cp.addUtf8("(DD)D")));
+		// The complex arms' shared references, created only when the program may
+		// observe a complex: merely creating them would put the travelling holder
+		// in every constant pool, and every arm that tests for it would resolve
+		// the class the first time it runs (`.kb/jvm-complex.md`). The throw-only
+		// helpers (_ccmpb, _cphase) live in the gated group instead, for the same
+		// reason.
+		ClassConstant rcClass = usesComplex ? cp.addClass(cp.addUtf8("am/ik/rontolisp/runtime/RontoComplex")) : null;
+		FieldrefConstant rcReal = usesComplex ? cp.addFieldref(Objects.requireNonNull(rcClass),
+				cp.addNameAndType(cp.addUtf8("real"), cp.addUtf8(OBJ))) : null;
+		FieldrefConstant rcImag = usesComplex ? cp.addFieldref(Objects.requireNonNull(rcClass),
+				cp.addNameAndType(cp.addUtf8("imag"), cp.addUtf8(OBJ))) : null;
+		MethodrefConstant mathHypot = usesComplex
+				? cp.addMethodref(mathClass, cp.addNameAndType(cp.addUtf8("hypot"), cp.addUtf8("(DD)D"))) : null;
 		MethodrefConstant biShiftLeft = cp.addMethodref(bigClass,
 				cp.addNameAndType(cp.addUtf8("shiftLeft"), cp.addUtf8("(I)" + BIG)));
 		MethodrefConstant biTestBit = cp.addMethodref(bigClass,
@@ -386,7 +400,8 @@ final class JvmNumericRuntimeBuilder {
 						cp.addNameAndType(cp.addUtf8("_lispToString"),
 								cp.addUtf8("(Ljava/lang/Object;)Ljava/lang/String;"))),
 				cp.addString(am.ik.rontolisp.ClosRegistry.EXPECTED_INTEGER_MESSAGE_PREFIX),
-				cp.addString(am.ik.rontolisp.ClosRegistry.EXPECTED_NUMBER_MESSAGE_PREFIX));
+				cp.addString(am.ik.rontolisp.ClosRegistry.EXPECTED_NUMBER_MESSAGE_PREFIX),
+				cp.addString(am.ik.rontolisp.ClosRegistry.EXPECTED_REAL_MESSAGE_PREFIX));
 
 		MethodrefConstant bdInit = cp.addMethodref(bigDecClass,
 				cp.addNameAndType(cp.addUtf8("<init>"), cp.addUtf8("(" + BIG + ")V")));
@@ -540,16 +555,17 @@ final class JvmNumericRuntimeBuilder {
 		methods.add(buildFrem(nFrem, dFmod));
 		methods.add(buildCmp(nCmp, dCmp, longClass, longValue, rBig, biCompareTo, ratArrClass, rRatNum, rRatDen, biMul,
 				doubleClass, rDbl, numberClass, numDoubleValue));
-		methods.add(buildCmpBits(nCmpb, dCmp, doubleClass, rDbl, numberClass, numDoubleValue, rCmp, intSignum));
+		methods.add(buildCmpBits(nCmpb, dCmp, doubleClass, rDbl, numberClass, numDoubleValue, rCmp, intSignum, rcClass,
+				rcReal, rcImag, longValueOf));
 		methods.add(buildAbs(nAbs, dUnary, longClass, bigClass, longValue, longValueOf, absLong, biValueOf, biNeg,
 				biAbs, rNorm, cMin, ratArrClass, rRatNum, rRatDen, rRat, doubleClass, rDbl, numberClass, numDoubleValue,
-				doubleValueOf, absDouble, rBig));
+				doubleValueOf, absDouble, rBig, rcClass, rcReal, rcImag, mathHypot));
 		methods.add(buildSignum(nSignum, dUnary, doubleClass, rDbl, numberClass, numDoubleValue, doubleValueOf,
 				signumDouble, rRatNum, biSignum, longValueOf));
 		methods.add(buildRandom(nRandom, dUnary, doubleClass, rDbl, numberClass, numDoubleValue, doubleValueOf,
 				longValueOf, tlrCurrent, tlrNextDouble));
-		methods.add(buildSelect(nMin, dBinary, rCmpb, CMPB_LT | CMPB_EQ));
-		methods.add(buildSelect(nMax, dBinary, rCmpb, CMPB_GT | CMPB_EQ));
+		methods.add(buildSelect(nMin, dBinary, rCmpb, CMPB_LT | CMPB_EQ, rcClass, typeErrRefs));
+		methods.add(buildSelect(nMax, dBinary, rCmpb, CMPB_GT | CMPB_EQ, rcClass, typeErrRefs));
 		methods.add(buildFloatSelect(nFmin, dFmod, Opcode.DCMPG, Opcode.IFLE));
 		methods.add(buildFloatSelect(nFmax, dFmod, Opcode.DCMPL, Opcode.IFGE));
 		methods.add(buildDbl(nDbl, dUnary, ratArrClass, doubleClass, numberClass, bigDecClass, bdInit, bdDivide,
@@ -1218,8 +1234,70 @@ final class JvmNumericRuntimeBuilder {
 	// (exact, never unordered).
 	private static NumericMethod buildCmpBits(Utf8Constant name, Utf8Constant desc, ClassConstant doubleClass,
 			MethodrefConstant rDbl, ClassConstant numberClass, MethodrefConstant numDoubleValue, MethodrefConstant rCmp,
-			MethodrefConstant intSignum) {
+			MethodrefConstant intSignum, @Nullable ClassConstant rcClass, @Nullable FieldrefConstant rcReal,
+			@Nullable FieldrefConstant rcImag, MethodrefConstant longValueOf) {
 		List<Integer> c = new ArrayList<>();
+		if (rcClass != null) {
+			// A complex operand compares part-wise: equal exactly when both part
+			// pairs are _cmp-equal (a real counts as a zero-imagined complex, so
+			// (= 2.0 #C(2.0 0.0)) is true); anything else answers unordered, which
+			// fails every operator. Ordering over a complex never reaches here --
+			// the gated call sites use _ccmpb, which signals. Like the _abs arm,
+			// emitted only for a complex-capable program.
+			ClassConstant complexClass = Objects.requireNonNull(rcClass);
+			FieldrefConstant complexReal = Objects.requireNonNull(rcReal);
+			FieldrefConstant complexImag = Objects.requireNonNull(rcImag);
+			c.add(Opcode.ALOAD_0);
+			c.add(Opcode.INSTANCEOF);
+			JvmRuntimeBuilder.emitU2(c, complexClass.index());
+			int ifAReal = c.size();
+			c.add(Opcode.IFEQ);
+			JvmRuntimeBuilder.emitU2(c, 0);
+			int toComplex = c.size();
+			c.add(Opcode.GOTO);
+			JvmRuntimeBuilder.emitU2(c, 0);
+			JvmRuntimeBuilder.patchBranch(c, ifAReal, c.size());
+			c.add(Opcode.ALOAD_1);
+			c.add(Opcode.INSTANCEOF);
+			JvmRuntimeBuilder.emitU2(c, complexClass.index());
+			int ifNotComplex = c.size();
+			c.add(Opcode.IFEQ);
+			JvmRuntimeBuilder.emitU2(c, 0);
+			JvmRuntimeBuilder.patchBranch(c, toComplex, c.size());
+			emitComplexPart(c, Opcode.ALOAD_0, complexClass, complexReal);
+			c.add(Opcode.ASTORE_2);
+			emitComplexImag(c, Opcode.ALOAD_0, complexClass, complexImag, longValueOf);
+			c.add(Opcode.ASTORE_3);
+			emitComplexPart(c, Opcode.ALOAD_1, complexClass, complexReal);
+			c.add(Opcode.ASTORE);
+			c.add(4);
+			emitComplexImag(c, Opcode.ALOAD_1, complexClass, complexImag, longValueOf);
+			c.add(Opcode.ASTORE);
+			c.add(5);
+			c.add(Opcode.ALOAD_2);
+			c.add(Opcode.ALOAD);
+			c.add(4);
+			c.add(Opcode.INVOKESTATIC);
+			JvmRuntimeBuilder.emitU2(c, rCmp.index());
+			int ifReNe = c.size();
+			c.add(Opcode.IFNE);
+			JvmRuntimeBuilder.emitU2(c, 0);
+			c.add(Opcode.ALOAD_3);
+			c.add(Opcode.ALOAD);
+			c.add(5);
+			c.add(Opcode.INVOKESTATIC);
+			JvmRuntimeBuilder.emitU2(c, rCmp.index());
+			int ifImNe = c.size();
+			c.add(Opcode.IFNE);
+			JvmRuntimeBuilder.emitU2(c, 0);
+			c.add(Opcode.ICONST_2);
+			c.add(Opcode.IRETURN);
+			JvmRuntimeBuilder.patchBranch(c, ifReNe, c.size());
+			JvmRuntimeBuilder.patchBranch(c, ifImNe, c.size());
+			c.add(Opcode.ICONST_0);
+			c.add(Opcode.IRETURN);
+			JvmRuntimeBuilder.patchBranch(c, ifNotComplex, c.size());
+		}
 		c.add(Opcode.ALOAD_0);
 		c.add(Opcode.INSTANCEOF);
 		JvmRuntimeBuilder.emitU2(c, doubleClass.index());
@@ -1290,6 +1368,82 @@ final class JvmNumericRuntimeBuilder {
 		return new NumericMethod(name, desc, c, 4, 6, List.of());
 	}
 
+	// _ccmpb(Object a, Object b): like _cmpb, but a complex operand signals the
+	// interpreter's "Expected real number" text instead of comparing -- the
+	// ordering operators' comparison once a complex literal steered them off
+	// the double path (`.kb/jvm-complex.md`).
+	/**
+	 * Emits {@code throw new RuntimeException("Expected real number, got: " +
+	 * _lispToString(value))} for the value loaded by {@code loadOpcode}.
+	 */
+	private static void emitRealErrThrow(List<Integer> c, TypeErrRefs refs, int loadOpcode) {
+		c.add(Opcode.NEW);
+		JvmRuntimeBuilder.emitU2(c, refs.rte().index());
+		c.add(Opcode.DUP);
+		JvmRuntimeBuilder.emitLdc(c, refs.realPrefix().index());
+		c.add(loadOpcode);
+		c.add(Opcode.INVOKESTATIC);
+		JvmRuntimeBuilder.emitU2(c, refs.lispToString().index());
+		c.add(Opcode.INVOKEVIRTUAL);
+		JvmRuntimeBuilder.emitU2(c, refs.strConcat().index());
+		c.add(Opcode.INVOKESPECIAL);
+		JvmRuntimeBuilder.emitU2(c, refs.rteInit().index());
+		c.add(Opcode.ATHROW);
+	}
+
+	/**
+	 * Emits the real part of the value loaded by {@code loadOpcode}: the holder's field,
+	 * or the value itself.
+	 */
+	private static void emitComplexPart(List<Integer> c, int loadOpcode, ClassConstant rcClass,
+			FieldrefConstant rcReal) {
+		c.add(loadOpcode);
+		c.add(Opcode.INSTANCEOF);
+		JvmRuntimeBuilder.emitU2(c, rcClass.index());
+		int ifReal = c.size();
+		c.add(Opcode.IFEQ);
+		JvmRuntimeBuilder.emitU2(c, 0);
+		c.add(loadOpcode);
+		c.add(Opcode.CHECKCAST);
+		JvmRuntimeBuilder.emitU2(c, rcClass.index());
+		c.add(Opcode.GETFIELD);
+		JvmRuntimeBuilder.emitU2(c, rcReal.index());
+		int done = c.size();
+		c.add(Opcode.GOTO);
+		JvmRuntimeBuilder.emitU2(c, 0);
+		JvmRuntimeBuilder.patchBranch(c, ifReal, c.size());
+		c.add(loadOpcode);
+		JvmRuntimeBuilder.patchBranch(c, done, c.size());
+	}
+
+	/**
+	 * Emits the imaginary part of the value loaded by {@code loadOpcode}: the holder's
+	 * field, or an integer zero (float contagion is decided by the real parts in every
+	 * caller, so the zero's own kind never matters).
+	 */
+	private static void emitComplexImag(List<Integer> c, int loadOpcode, ClassConstant rcClass, FieldrefConstant rcImag,
+			MethodrefConstant longValueOf) {
+		c.add(loadOpcode);
+		c.add(Opcode.INSTANCEOF);
+		JvmRuntimeBuilder.emitU2(c, rcClass.index());
+		int ifReal = c.size();
+		c.add(Opcode.IFEQ);
+		JvmRuntimeBuilder.emitU2(c, 0);
+		c.add(loadOpcode);
+		c.add(Opcode.CHECKCAST);
+		JvmRuntimeBuilder.emitU2(c, rcClass.index());
+		c.add(Opcode.GETFIELD);
+		JvmRuntimeBuilder.emitU2(c, rcImag.index());
+		int done = c.size();
+		c.add(Opcode.GOTO);
+		JvmRuntimeBuilder.emitU2(c, 0);
+		JvmRuntimeBuilder.patchBranch(c, ifReal, c.size());
+		c.add(Opcode.LCONST_0);
+		c.add(Opcode.INVOKESTATIC);
+		JvmRuntimeBuilder.emitU2(c, longValueOf.index());
+		JvmRuntimeBuilder.patchBranch(c, done, c.size());
+	}
+
 	// _abs(Object a): Math.abs for a Double (float), Math.abs for Long (promoting
 	// Long.MIN_VALUE), numerator.abs() for a ratio, BigInteger.abs otherwise. The Double
 	// branch handles a float reaching abs through a variable (no compile-time literal),
@@ -1301,8 +1455,54 @@ final class JvmNumericRuntimeBuilder {
 			MethodrefConstant rNorm, LongConstant cMin, ClassConstant ratArrClass, MethodrefConstant rRatNum,
 			MethodrefConstant rRatDen, MethodrefConstant rRat, ClassConstant doubleClass, MethodrefConstant rDbl,
 			ClassConstant numberClass, MethodrefConstant numDoubleValue, MethodrefConstant doubleValueOf,
-			MethodrefConstant absDouble, MethodrefConstant rBig) {
+			MethodrefConstant absDouble, MethodrefConstant rBig, @Nullable ClassConstant rcClass,
+			@Nullable FieldrefConstant rcReal, @Nullable FieldrefConstant rcImag,
+			@Nullable MethodrefConstant mathHypot) {
 		List<Integer> c = new ArrayList<>();
+		if (rcClass != null) {
+			// A complex operand answers its float modulus -- hypot over the double
+			// parts, a real even for exact parts like the interpreter. Emitted
+			// only for a complex-capable program, so the holder class the test
+			// resolves stays out of every other constant pool.
+			ClassConstant complexClass = Objects.requireNonNull(rcClass);
+			FieldrefConstant complexReal = Objects.requireNonNull(rcReal);
+			FieldrefConstant complexImag = Objects.requireNonNull(rcImag);
+			MethodrefConstant hypot = Objects.requireNonNull(mathHypot);
+			c.add(Opcode.ALOAD_0);
+			c.add(Opcode.INSTANCEOF);
+			JvmRuntimeBuilder.emitU2(c, complexClass.index());
+			int ifNotComplex = c.size();
+			c.add(Opcode.IFEQ);
+			JvmRuntimeBuilder.emitU2(c, 0);
+			c.add(Opcode.ALOAD_0);
+			c.add(Opcode.CHECKCAST);
+			JvmRuntimeBuilder.emitU2(c, complexClass.index());
+			c.add(Opcode.GETFIELD);
+			JvmRuntimeBuilder.emitU2(c, complexReal.index());
+			c.add(Opcode.INVOKESTATIC);
+			JvmRuntimeBuilder.emitU2(c, rDbl.index());
+			c.add(Opcode.CHECKCAST);
+			JvmRuntimeBuilder.emitU2(c, numberClass.index());
+			c.add(Opcode.INVOKEVIRTUAL);
+			JvmRuntimeBuilder.emitU2(c, numDoubleValue.index());
+			c.add(Opcode.ALOAD_0);
+			c.add(Opcode.CHECKCAST);
+			JvmRuntimeBuilder.emitU2(c, complexClass.index());
+			c.add(Opcode.GETFIELD);
+			JvmRuntimeBuilder.emitU2(c, complexImag.index());
+			c.add(Opcode.INVOKESTATIC);
+			JvmRuntimeBuilder.emitU2(c, rDbl.index());
+			c.add(Opcode.CHECKCAST);
+			JvmRuntimeBuilder.emitU2(c, numberClass.index());
+			c.add(Opcode.INVOKEVIRTUAL);
+			JvmRuntimeBuilder.emitU2(c, numDoubleValue.index());
+			c.add(Opcode.INVOKESTATIC);
+			JvmRuntimeBuilder.emitU2(c, hypot.index());
+			c.add(Opcode.INVOKESTATIC);
+			JvmRuntimeBuilder.emitU2(c, doubleValueOf.index());
+			c.add(Opcode.ARETURN);
+			JvmRuntimeBuilder.patchBranch(c, ifNotComplex, c.size());
+		}
 		// Double fast path: Math.abs((double) a) when a is a Double.
 		c.add(Opcode.ALOAD_0);
 		c.add(Opcode.INSTANCEOF);
@@ -1471,8 +1671,31 @@ final class JvmNumericRuntimeBuilder {
 	// in neither, so a NaN operand always yields b. Both match upstream Common Lisp,
 	// checked against SBCL over every ordered pair of {-0.0, 0.0, +/-1.0, NaN, +/-inf}.
 	private static NumericMethod buildSelect(Utf8Constant name, Utf8Constant desc, MethodrefConstant rCmpb,
-			int acceptMask) {
+			int acceptMask, @Nullable ClassConstant rcClass, TypeErrRefs typeErrRefs) {
 		List<Integer> c = new ArrayList<>();
+		if (rcClass != null) {
+			// Ordering over a complex signals the interpreter's "Expected real
+			// number" text, like the interpreter (min and max select over an
+			// ordering, so both throw here). Emitted only for a
+			// complex-capable program, like the _abs arm.
+			ClassConstant complexClass = Objects.requireNonNull(rcClass);
+			c.add(Opcode.ALOAD_0);
+			c.add(Opcode.INSTANCEOF);
+			JvmRuntimeBuilder.emitU2(c, complexClass.index());
+			int ifAReal = c.size();
+			c.add(Opcode.IFEQ);
+			JvmRuntimeBuilder.emitU2(c, 0);
+			emitRealErrThrow(c, typeErrRefs, Opcode.ALOAD_0);
+			JvmRuntimeBuilder.patchBranch(c, ifAReal, c.size());
+			c.add(Opcode.ALOAD_1);
+			c.add(Opcode.INSTANCEOF);
+			JvmRuntimeBuilder.emitU2(c, complexClass.index());
+			int ifBReal = c.size();
+			c.add(Opcode.IFEQ);
+			JvmRuntimeBuilder.emitU2(c, 0);
+			emitRealErrThrow(c, typeErrRefs, Opcode.ALOAD_1);
+			JvmRuntimeBuilder.patchBranch(c, ifBReal, c.size());
+		}
 		c.add(Opcode.ALOAD_0);
 		c.add(Opcode.ALOAD_1);
 		c.add(Opcode.INVOKESTATIC);
@@ -1488,7 +1711,7 @@ final class JvmNumericRuntimeBuilder {
 		JvmRuntimeBuilder.patchBranch(c, ifB, c.size());
 		c.add(Opcode.ALOAD_1);
 		c.add(Opcode.ARETURN);
-		return new NumericMethod(name, desc, c, 2, 2, List.of());
+		return new NumericMethod(name, desc, c, 4, 2, List.of());
 	}
 
 	// _fmin/_fmax(double a, double b): the same select on raw doubles, for the call sites

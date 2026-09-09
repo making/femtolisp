@@ -418,6 +418,12 @@ final class JvmIntFusionCompiler {
 		if (!enabled(ctx)) {
 			return false;
 		}
+		if (JvmLispCompiler.hasComplexOperand(cons.toList())) {
+			// A complex literal or complex/conjugate form voids every integer
+			// proof: the fused tree would unbox a holder as a long
+			// (`.kb/jvm-complex.md`).
+			return false;
+		}
 		Site site = new Site(cons);
 		Node root = classify(cons, ctx, Map.of(), site, 0);
 		if (!(root instanceof OpNode)) {
@@ -483,6 +489,11 @@ final class JvmIntFusionCompiler {
 			return false;
 		}
 		List<LispVal> parts = cons.toList();
+		if (JvmLispCompiler.hasComplexOperand(parts)) {
+			// Same void integer proof as tryCompile: = compares part-wise and
+			// ordering signals, neither of which a raw long compare expresses.
+			return false;
+		}
 		if (JvmLispCompiler.hasDoubleLiteral(parts, ctx)) {
 			// The double-literal path owns this shape (IEEE compare over unboxed
 			// doubles); fusing it would change nothing for the better.
@@ -700,7 +711,12 @@ final class JvmIntFusionCompiler {
 			emitFlagStore(target, ctx);
 			return;
 		}
-		if (enabled(ctx)) {
+		if (enabled(ctx) && !LispMacroExpander.containsComplex(expr)) {
+			// A complex literal or complex/conjugate form voids every integer
+			// proof (the fused bail would fall back to _add, which signals
+			// for a holder instead of answering complex -- `.kb/jvm-complex.md`).
+			// The boxed value lands in the shadow instead, which is then
+			// authoritative.
 			Site site = new Site(expr);
 			Node root = classify(expr, ctx, Map.of(), site, 0);
 			if (root instanceof ConstLeaf c) {

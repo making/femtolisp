@@ -16201,6 +16201,60 @@ public final class LispMacroExpander {
 		return mayCreateInstance(cons.car()) || mayCreateInstance(cons.cdr());
 	}
 
+	/**
+	 * Whether a complex value can exist in this program -- the gate for the JVM backend's
+	 * {@code _c*} helper group and its travelling holder ({@code .kb/jvm-complex.md}). A
+	 * {@code #C(...)} literal, a {@code complex} call, or a {@code conjugate} call whose
+	 * operand may itself be complex constructs one; {@code sqrt} can root a negative into
+	 * the plane, so the JVM caller ors in a {@code sqrt} mention separately.
+	 * Over-approximating costs unused helpers; under-approximating re-runs with the group
+	 * forced on.
+	 * @param program the program to scan
+	 * @param closRegistry the condition registry (whose reports are scanned too)
+	 * @return whether the program may create a complex value
+	 */
+	public static boolean mayCreateComplex(List<LispVal> program, ClosRegistry closRegistry) {
+		for (LispVal form : program) {
+			if (containsComplex(form)) {
+				return true;
+			}
+		}
+		for (LispVal report : closRegistry.conditionReports().values()) {
+			if (containsComplex(report)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Whether the form syntactically carries a certainly-complex producer: a
+	 * {@code LispComplex} literal, or a call headed by {@code complex} or
+	 * {@code conjugate}. A rounding form ({@code floor} and friends) yields an integer
+	 * whatever sits under it, so the walk does not descend into one -- the same exclusion
+	 * the JVM's {@code containsDouble} applies.
+	 * @param form the form to inspect
+	 * @return whether a complex value is syntactically visible
+	 */
+	public static boolean containsComplex(LispVal form) {
+		if (form instanceof am.ik.rontolisp.LispComplex) {
+			return true;
+		}
+		if (!(form instanceof LispCons cons)) {
+			return false;
+		}
+		if (cons.car() instanceof LispSymbol head) {
+			if (LispNames.COMPLEX.equals(head.name()) || LispNames.CONJUGATE.equals(head.name())) {
+				return true;
+			}
+			if (LispNames.ROUND.equals(head.name()) || LispNames.TRUNCATE.equals(head.name())
+					|| LispNames.FLOOR.equals(head.name()) || LispNames.CEILING.equals(head.name())) {
+				return false;
+			}
+		}
+		return containsComplex(cons.car()) || containsComplex(cons.cdr());
+	}
+
 	/** The per-operator half of {@link #mayCreateInstances}. */
 	private static boolean constructsInstance(String head, LispCons form) {
 		switch (head) {

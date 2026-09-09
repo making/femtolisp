@@ -51,8 +51,9 @@ only the decomposition/composition pair is missing.
 > (`+ - * /`, `1+`/`1-`, `abs`, `sqrt`, `expt`/`exp`/`log`/trig, `phase`,
 > `conjugate`, `realpart`/`imagpart`, `complexp`/`realp`/`numberp`/`zerop`,
 > `=`/`eql`/`equal`/`equalp`) and first-class `#'complex`. `complex` is a real
-> `cl` function now (moved out of `CL_MACROS`); both compilers still route
-> through `expandComplexLite` until 752/753. Known gaps for 754: `signum` of a
+> `cl` function now (moved out of `CL_MACROS`); the JVM backend routes through
+> `JvmComplexCompiler` since 752, the WASM backend still through
+> `expandComplexLite` until 753. Known gaps for 754: `signum` of a
 > complex still signals (SBCL answers the unit vector), `typep`'s `real` test and
 > `type-of`/`upgraded-complex-part-type` are untouched, and `log`/`expt`/`asin`
 > of a negative/fractional REAL still answer NaN (only complex operands and
@@ -64,7 +65,9 @@ only the decomposition/composition pair is missing.
 CL has a full complex number tower. RontoLisp implements it in four steps:
 - 751 (done): `LispComplex` (real + imaginary parts) + reader/printer +
   interpreter arithmetic, predicates and accessors.
-- 752: JVM backend representation and arithmetic.
+- 752 (done): JVM backend -- the `RontoComplex` holder, the gated `_c*` helper
+  group (`.kb/jvm-complex.md`), every 751 interpreter case answering
+  identically via `java Prog`.
 - 753: WASM GC (struct type) + scalar backend behavior.
 - 754: type system (`typep`/`type-of`/`upgraded-complex-part-type`), corpus
   (`ci-spec.yaml` cases), docs.

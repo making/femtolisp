@@ -81,11 +81,40 @@ final class JvmMathFnCompiler {
 
 	static void compile(LispCons cons, JvmLispCompiler.Ctx ctx, String className, String name) {
 		List<LispVal> args = cons.toList();
+		if (JvmLispCompiler.hasComplexOperand(args)) {
+			// A complex operand answers the float complex formula through the
+			// gated _cu1 helper (`.kb/jvm-complex.md`); anything else keeps the
+			// inline Math call below.
+			JvmExprCompiler.compileExpr(args.get(1), ctx, className);
+			ctx.emit(Opcode.BIPUSH);
+			ctx.emit(u1Op(name));
+			ctx.emit(Opcode.INVOKESTATIC);
+			ctx.emitU2(JvmComplexCompiler.complexOp(ctx, className, JvmComplexRuntimeBuilder.U1).index());
+			return;
+		}
 		// Number.doubleValue() coerces both Long and Double arguments to double.
 		JvmArithCompiler.compileUnboxedOperand(args.get(1), ctx, className);
 		ctx.emit(Opcode.INVOKESTATIC);
 		ctx.emitU2(ctx.mathOp(name).index());
 		JvmEmitHelper.boxDouble(ctx);
+	}
+
+	/** The {@code _cu1} opcode selecting the formula for a Lisp name. */
+	private static int u1Op(String name) {
+		return switch (name) {
+			case LispNames.EXP -> JvmComplexRuntimeBuilder.U1_EXP;
+			case LispNames.LOG -> JvmComplexRuntimeBuilder.U1_LOG;
+			case LispNames.SIN -> JvmComplexRuntimeBuilder.U1_SIN;
+			case LispNames.COS -> JvmComplexRuntimeBuilder.U1_COS;
+			case LispNames.TAN -> JvmComplexRuntimeBuilder.U1_TAN;
+			case LispNames.ASIN -> JvmComplexRuntimeBuilder.U1_ASIN;
+			case LispNames.ACOS -> JvmComplexRuntimeBuilder.U1_ACOS;
+			case LispNames.ATAN -> JvmComplexRuntimeBuilder.U1_ATAN;
+			case LispNames.SINH -> JvmComplexRuntimeBuilder.U1_SINH;
+			case LispNames.COSH -> JvmComplexRuntimeBuilder.U1_COSH;
+			case LispNames.TANH -> JvmComplexRuntimeBuilder.U1_TANH;
+			default -> throw new IllegalArgumentException("not a unary math function: " + name);
+		};
 	}
 
 }

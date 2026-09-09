@@ -134,6 +134,7 @@ deliberate boundaries the audit must not undo: user-facing operator catalogues l
 - [jvm-export.md](jvm-export.md) -- `rontolisp:jvm-export`, `--no-main`, `-o out.jar`, the `-o` path-to-class-name rule, the Maven plugin
 - [jvm-int-fusion.md](jvm-int-fusion.md) -- integer expression-tree fusion into unboxed arithmetic
 - [jvm-double-arithmetic.md](jvm-double-arithmetic.md) -- `hasDoubleLiteral` routing and unboxed IEEE operations
+- [jvm-complex.md](jvm-complex.md) -- the `RontoComplex` holder, the gated `_c*` group, and the `hasComplexOperand` steering
 - [jvm-typed-loops.md](jvm-typed-loops.md) -- typed numeric loops over packed float arrays
 - [jvm-bignum-literal-pool.md](jvm-bignum-literal-pool.md) -- one `BigInteger` instance per distinct literal in a `_bi$N` pool
 - [jvm-method-size-limits.md](jvm-method-size-limits.md) -- the 64 KB method code limit and the signed-16-bit branch offset

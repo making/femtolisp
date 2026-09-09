@@ -146,6 +146,13 @@ public final class JvmLispCompiler implements LispCompiler {
 	 */
 	private boolean needsHashFoldRuntime;
 
+	/**
+	 * Whether the last {@link #compile} can observe a complex value, i.e. whether the
+	 * emitted class needs the {@code _c*} helpers' travelling holder
+	 * ({@code RontoComplex}) beside it.
+	 */
+	private boolean needsComplexRuntime;
+
 	/** The array runtime helper group ({@link JvmArrayRuntimeBuilder}). */
 	private static final String GROUP_ARRAYS = "arrays";
 
@@ -161,6 +168,9 @@ public final class JvmLispCompiler implements LispCompiler {
 
 	/** The embedded eval/apply runtime group ({@link JvmEvalRuntimeBuilder}). */
 	private static final String GROUP_EVAL = "eval";
+
+	/** The complex-number runtime helper group ({@link JvmComplexRuntimeBuilder}). */
+	private static final String GROUP_COMPLEX = "complex";
 
 	/**
 	 * The eval runtime's own methods; {@code _lookup$N} segments hang off
@@ -186,6 +196,9 @@ public final class JvmLispCompiler implements LispCompiler {
 		}
 		if (EVAL_METHOD_NAMES.contains(helperName)) {
 			return GROUP_EVAL;
+		}
+		if (JvmComplexRuntimeBuilder.METHOD_NAMES.contains(helperName)) {
+			return GROUP_COMPLEX;
 		}
 		return null;
 	}
@@ -456,9 +469,10 @@ public final class JvmLispCompiler implements LispCompiler {
 	 * The runtime class files the compiled class needs BESIDE it — the packed float-array
 	 * handle a {@code :float-vector} / {@code :float-matrix} export hands out with its
 	 * marshalling seam, the embedded HTTP server a {@code rontolisp:http-handler} program
-	 * serves through, and the {@code equalp} key fold a program that writes
-	 * {@code :test 'equalp} places its keys by. Empty unless the program does one of
-	 * those, so an ordinary compilation still produces exactly one file.
+	 * serves through, the {@code equalp} key fold a program that writes
+	 * {@code :test 'equalp} places its keys by, and the complex holder a program that can
+	 * observe a complex value builds. Empty unless the program does one of those, so an
+	 * ordinary compilation still produces exactly one file.
 	 *
 	 * <p>
 	 * They are written at their canonical names rather than renamed into the program's
@@ -468,7 +482,8 @@ public final class JvmLispCompiler implements LispCompiler {
 	 * @return each class file's path within an output tree (or jar), mapped to its bytes
 	 */
 	public Map<String, byte[]> runtimeClassFiles() {
-		if (!this.needsHandleRuntime && !this.needsHttpRuntime && !this.needsHashFoldRuntime) {
+		if (!this.needsHandleRuntime && !this.needsHttpRuntime && !this.needsHashFoldRuntime
+				&& !this.needsComplexRuntime) {
 			return Map.of();
 		}
 		Map<String, byte[]> files = new LinkedHashMap<>();
@@ -477,6 +492,9 @@ public final class JvmLispCompiler implements LispCompiler {
 		}
 		if (this.needsHashFoldRuntime) {
 			files.putAll(JvmRuntimeClassFiles.read(JvmHashRuntimeBuilder.RUNTIME_CLASS_FILES));
+		}
+		if (this.needsComplexRuntime) {
+			files.putAll(JvmComplexRuntimeBuilder.runtimeClassFiles());
 		}
 		if (this.needsHttpRuntime) {
 			files.putAll(JvmHttpHandlerRuntimeBuilder.runtimeClassFiles());
@@ -1359,6 +1377,17 @@ public final class JvmLispCompiler implements LispCompiler {
 				wrapperExcludes.add(op);
 			}
 		}
+		// #'complex/#'conjugate/#'sqrt/#'phase wrappers call the gated _c* helpers, so
+		// they are injected only when the program takes the operator as a
+		// first-class value -- otherwise every program would carry a wrapper
+		// calling a helper its gate left out (the widen-float-bits precedent in
+		// BuiltinFunctionWrappers). The designator spelling counts, like the
+		// reference gate above.
+		for (String op : List.of(LispNames.COMPLEX, LispNames.CONJUGATE, LispNames.SQRT, LispNames.PHASE)) {
+			if (!referencesFunctionDesignator(program, closRegistry, op)) {
+				wrapperExcludes.add(op);
+			}
+		}
 		List<LispVal> wrappers = BuiltinFunctionWrappers.generate(userDefinedNames, wrapperExcludes);
 		for (LispVal wrapper : wrappers) {
 			defuns.add(extractSetqLambda(wrapper));
@@ -1671,13 +1700,28 @@ public final class JvmLispCompiler implements LispCompiler {
 		MethodrefConstant strvMethod = usesArrays ? cp.addMethodref(thisClass, cp
 			.addNameAndType(cp.addUtf8(JvmArrayRuntimeBuilder.STRV), cp.addUtf8(JvmArrayRuntimeBuilder.STRV_DESC)))
 				: null;
-
 		// Numeric runtime helpers (long arithmetic with automatic BigInteger promotion)
 		// The interned layout array of an instance -- the discriminator the structural
 		// _equal and _hash arms share, minted once so both see the same constant.
 		ClassConstant instanceLayoutClass = mayUseInstances ? cp.addClass(cp.addUtf8("[Ljava/lang/String;")) : null;
+		// Complex numbers (.kb/jvm-complex.md): the _c* helpers are emitted only
+		// when the program may create a complex -- a #C literal, a
+		// complex/conjugate call, or a sqrt, which can root a negative into the
+		// plane. forcedGroups carries the verdict of a previous run whose scan
+		// under-predicted this gate (see compile(List)); it never turns the gate
+		// OFF. The holder travels exactly then (needsComplexRuntime below), so a
+		// complex-free program keeps its single-file output.
+		boolean usesComplex = LispMacroExpander.mayCreateComplex(program, closRegistry)
+				|| programUsesSymbol(program, LispNames.SQRT)
+				|| referencesFunctionDesignator(program, closRegistry, LispNames.COMPLEX)
+				|| referencesFunctionDesignator(program, closRegistry, LispNames.CONJUGATE)
+				|| referencesFunctionDesignator(program, closRegistry, LispNames.PHASE)
+				|| forcedGroups.contains(GROUP_COMPLEX);
+		this.needsComplexRuntime = usesComplex;
 		JvmNumericRuntimeBuilder.NumericRuntime numericRuntime = JvmNumericRuntimeBuilder.build(cp, thisClass,
-				strvMethod, instanceLayoutClass);
+				strvMethod, instanceLayoutClass, usesComplex);
+		final JvmComplexRuntimeBuilder.@Nullable ComplexRuntime complexRuntime = usesComplex
+				? JvmComplexRuntimeBuilder.build(cp, thisClass) : null;
 
 		// --vec: emit the Vector API acceleration bridge only when the program actually
 		// references one of the six accelerated vec: kernels (directly or via a spliced
@@ -1874,6 +1918,7 @@ public final class JvmLispCompiler implements LispCompiler {
 			.usesSeqString(usesSeqString)
 			.mutableStringProducers(mutableStringProducers)
 			.mayUseInstances(mayUseInstances)
+			.usesComplex(usesComplex)
 			.hasLandingPad(hasLandingPad)
 			.usesSynonymStreams(programUsesSymbol(program, LispNames.MAKE_SYNONYM_STREAM))
 			.usesStreamValues(usesStreamValues)
@@ -2362,6 +2407,7 @@ public final class JvmLispCompiler implements LispCompiler {
 				.invoke(invoke)
 				.invokeSpread(invokeSpread)
 				.functions(functions)
+				.complexValues(usesComplex)
 				.build();
 			if (usesEval) {
 				evalCode = JvmEvalRuntimeBuilder.buildEval(ec);
@@ -2698,11 +2744,27 @@ public final class JvmLispCompiler implements LispCompiler {
 				stringReplace, cp.addString("E"), cp.addString("e"));
 
 		// Build _lispToString and _consToString helper method bodies
+		// The complex print branch names the travelling holder, so its
+		// references are created only for a complex-capable program (null
+		// otherwise, keeping the branch -- and the class -- out entirely).
+		ClassConstant rcClass = usesComplex ? cp.addClass(cp.addUtf8("am/ik/rontolisp/runtime/RontoComplex")) : null;
+		ConstantPool.FieldrefConstant rcReal = usesComplex ? cp.addFieldref(Objects.requireNonNull(rcClass),
+				cp.addNameAndType(cp.addUtf8("real"), cp.addUtf8("Ljava/lang/Object;"))) : null;
+		ConstantPool.FieldrefConstant rcImag = usesComplex ? cp.addFieldref(Objects.requireNonNull(rcClass),
+				cp.addNameAndType(cp.addUtf8("imag"), cp.addUtf8("Ljava/lang/Object;"))) : null;
+		JvmRuntimeBuilder.@Nullable ComplexPrintRefs prin1Complex = usesComplex
+				? new JvmRuntimeBuilder.ComplexPrintRefs(rcClass, rcReal, rcImag, lispToStringMethod,
+						cp.addString("#C("), spaceStr, cp.addString(")"))
+				: null;
+		JvmRuntimeBuilder.@Nullable ComplexPrintRefs princComplex = usesComplex
+				? new JvmRuntimeBuilder.ComplexPrintRefs(rcClass, rcReal, rcImag, lispToDisplayStringMethod,
+						cp.addString("#C("), spaceStr, cp.addString(")"))
+				: null;
 		List<Integer> ltsCode = JvmRuntimeBuilder.buildLispToStringBody(longClass, doubleClass, stringClass,
 				objectArrayClass, integerClass, longToString, doubleToString, floatPrint, objectToString,
 				consToStringMethod, nilStr, funcPrint, ratioArrayClass, stringConcat, slashStr, charBoxClass,
 				charPrin1Method, arrayListClassForPrint, arrayToStringMethod, strvMethod, javaPrint, objcPrint,
-				ffiPrint, futurePrint, packedPrint, packedIntPrint, instPrint, strEscMethod, hashPrint);
+				ffiPrint, futurePrint, packedPrint, packedIntPrint, instPrint, strEscMethod, hashPrint, prin1Complex);
 		List<Integer> ctsCode = JvmRuntimeBuilder.buildConsToStringBody(objectArrayClass, stringBuilderClass, sbInitStr,
 				sbAppendStr, sbToString, lispToStringMethod, openParenStr, closeParenStr, spaceStr, dotStr,
 				ratioArrayClass, renderGuard, quoteAbbrev);
@@ -2711,7 +2773,7 @@ public final class JvmLispCompiler implements LispCompiler {
 				consToDisplayStringMethod, nilStr, funcPrint, stringCharAt, stringLength, stringSubstring,
 				stringLastIndexOf, ratioArrayClass, stringConcat, slashStr, charBoxClass, characterToString,
 				arrayListClassForPrint, arrayToDisplayStringMethod, strvMethod, javaPrint, objcPrint, ffiPrint,
-				futurePrint, packedPrint, packedIntPrint, instPrint, hashPrint);
+				futurePrint, packedPrint, packedIntPrint, instPrint, hashPrint, princComplex);
 		List<Integer> instCode = usesInstances ? JvmRuntimeBuilder.buildInstToStringBody(objectArrayClass,
 				mainCtx.layoutPool.stringArrayClass(cp), stringBuilderClass, sbInitStr, sbAppendStr, sbToString,
 				objectEquals, lispToStringMethod, cp.addString("S"), cp.addString("#S("), cp.addString("#<"),
@@ -4081,6 +4143,20 @@ public final class JvmLispCompiler implements LispCompiler {
 								attr.writeU2(0);
 							})));
 				}
+				// The gated complex helpers, present only when the program may
+				// create a complex -- a complex-free program keeps its bytes.
+				if (complexRuntime != null) {
+					for (JvmComplexRuntimeBuilder.ComplexMethod cm : complexRuntime.methods()) {
+						methods.add(AccessFlag.ACC_PRIVATE | AccessFlag.ACC_STATIC, cm.nameUtf8(), cm.descUtf8(),
+								method -> method.writeAttributes(attrs -> attrs.add(codeUtf8, attr -> {
+									attr.writeU2(cm.maxStack())
+										.writeU2(cm.maxLocals())
+										.writeCode((Object[]) cm.code().toArray(new Integer[0]))
+										.writeU2(0)
+										.writeU2(0);
+								})));
+					}
+				}
 				// The outlined fused-site methods (.kb/jvm-int-fusion.md) and their
 				// two shared helpers, present only when Pass 2 registered a site / a
 				// raw local -- a program without one is byte-identical to before.
@@ -4807,6 +4883,26 @@ public final class JvmLispCompiler implements LispCompiler {
 	static boolean hasDoubleLiteral(List<LispVal> args, Ctx ctx) {
 		for (int i = 1; i < args.size(); i++) {
 			if (containsDouble(args.get(i), ctx)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Whether a complex value is syntactically visible in a call's arguments: a
+	 * {@code LispComplex} literal, or a {@code complex}/{@code conjugate} form. Anything
+	 * answering complex steers off the unboxed double fast path onto the object path
+	 * (and, for the constructors, onto the {@code _c*} helpers), so a complex operand
+	 * never reaches an unboxing ({@code .kb/jvm-complex.md}). A complex arriving only
+	 * through a variable is invisible here -- it takes the guarded object path's funnels
+	 * instead.
+	 * @param args the call with its operator at index 0
+	 * @return true when a complex producer occurs in the arguments
+	 */
+	static boolean hasComplexOperand(List<LispVal> args) {
+		for (int i = 1; i < args.size(); i++) {
+			if (LispMacroExpander.containsComplex(args.get(i))) {
 				return true;
 			}
 		}
@@ -6047,6 +6143,15 @@ public final class JvmLispCompiler implements LispCompiler {
 		boolean mayUseInstances = false;
 
 		/**
+		 * True when the program may observe a complex value (see
+		 * {@code LispMacroExpander.mayCreateComplex}). Gates the holder-aware arms of the
+		 * predicates and accessors, so a program that cannot build one compiles
+		 * byte-identically -- and, crucially, never names the travelling holder class it
+		 * does not carry. Shared across every context.
+		 */
+		boolean usesComplex = false;
+
+		/**
 		 * True when the program establishes a handler landing pad
 		 * ({@code LispMacroExpander.establishesLandingPad}): a {@code %program-error}
 		 * signal then carries a fresh {@code program-error} instance, so a
@@ -6363,6 +6468,7 @@ public final class JvmLispCompiler implements LispCompiler {
 			this.usesSeqString = builder.usesSeqString;
 			this.mutableStringProducers = builder.mutableStringProducers;
 			this.mayUseInstances = builder.mayUseInstances;
+			this.usesComplex = builder.usesComplex;
 			this.hasLandingPad = builder.hasLandingPad;
 			this.usesSynonymStreams = builder.usesSynonymStreams;
 			this.usesStreamValues = builder.usesStreamValues;
@@ -6674,6 +6780,8 @@ public final class JvmLispCompiler implements LispCompiler {
 			private boolean mutableStringProducers = false;
 
 			private boolean mayUseInstances = false;
+
+			private boolean usesComplex = false;
 
 			private boolean hasLandingPad = false;
 
@@ -7165,6 +7273,11 @@ public final class JvmLispCompiler implements LispCompiler {
 
 			Builder mayUseInstances(boolean mayUseInstances) {
 				this.mayUseInstances = mayUseInstances;
+				return this;
+			}
+
+			Builder usesComplex(boolean usesComplex) {
+				this.usesComplex = usesComplex;
 				return this;
 			}
 

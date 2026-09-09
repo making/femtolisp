@@ -705,7 +705,8 @@ final class JvmHandlerCaseCompiler {
 		return switch (index) {
 			case 0 -> {
 				// A cast failure, an out-of-range index, or the numeric runtime's
-				// "Expected integer|number, got:" message: type-error. Neither is an
+				// "Expected integer|number|real number, got:" message: type-error.
+				// Neither is an
 				// ArithmeticException, so testing this arm first costs the arithmetic
 				// arms nothing. The message tests exist because those throw sites are
 				// plain RuntimeExceptions with no channel to carry a class (the
@@ -716,6 +717,7 @@ final class JvmHandlerCaseCompiler {
 				hits.add(emitInstanceOfJump(excSlot, "java/lang/ClassCastException", ctx, true));
 				hits.add(emitMessagePrefixHit(rawSlot, ClosRegistry.EXPECTED_INTEGER_MESSAGE_PREFIX, ctx));
 				hits.add(emitMessagePrefixHit(rawSlot, ClosRegistry.EXPECTED_NUMBER_MESSAGE_PREFIX, ctx));
+				hits.add(emitMessagePrefixHit(rawSlot, ClosRegistry.EXPECTED_REAL_MESSAGE_PREFIX, ctx));
 				skips.add(emitInstanceOfJump(excSlot, "java/lang/IndexOutOfBoundsException", ctx, false));
 				for (int hit : hits) {
 					JvmEmitHelper.patchBranch(ctx, hit, ctx.code.size());

@@ -4,6 +4,7 @@ import java.util.List;
 
 import am.ik.rontolisp.LispBigInteger;
 import am.ik.rontolisp.LispChar;
+import am.ik.rontolisp.LispComplex;
 import am.ik.rontolisp.LispCons;
 import am.ik.rontolisp.LispDouble;
 import am.ik.rontolisp.LispInteger;
@@ -97,6 +98,7 @@ final class JvmExprCompiler {
 			case LispBigInteger b -> JvmEmitHelper.compileBigInteger(b.value(), ctx);
 			case LispRatio r -> JvmEmitHelper.compileRatio(r, ctx);
 			case LispDouble d -> JvmEmitHelper.compileDouble(d.value(), ctx);
+			case LispComplex c -> JvmComplexCompiler.compileLiteral(c, ctx, className);
 			case LispNil ignored -> ctx.emit(Opcode.ACONST_NULL);
 			case LispTrue ignored -> JvmEmitHelper.compileTrue(ctx);
 			case LispString s -> JvmEmitHelper.compileStringLiteral(s.literal(), ctx);
@@ -1021,8 +1023,7 @@ final class JvmExprCompiler {
 					.compileExpr(LispMacroExpander.expandSetDispatchMacroCharacter(cons), ctx, className);
 				case LispNames.READTABLE_CASE ->
 					JvmExprCompiler.compileExpr(LispMacroExpander.expandReadtableCase(cons), ctx, className);
-				case LispNames.COMPLEX ->
-					JvmExprCompiler.compileExpr(LispMacroExpander.expandComplexLite(cons), ctx, className);
+				case LispNames.COMPLEX -> JvmComplexCompiler.compileComplex(cons, ctx, className);
 				case LispNames.NE ->
 					JvmExprCompiler.compileExpr(LispMacroExpander.expandNumericNotEqual(cons), ctx, className);
 				case LispNames.READ_FROM_STRING -> JvmReadFromStringCompiler.compile(cons, ctx, className);
@@ -1487,6 +1488,12 @@ final class JvmExprCompiler {
 				case LispNames.NULL -> JvmNullPredCompiler.compile(cons, ctx, className);
 				case LispNames.ATOM -> JvmAtomCompiler.compile(cons, ctx, className);
 				case LispNames.NUMBERP -> JvmNumberpCompiler.compile(cons, ctx, className);
+				case LispNames.COMPLEXP -> JvmComplexCompiler.compileComplexp(cons, ctx, className);
+				case LispNames.REALP -> JvmComplexCompiler.compileRealp(cons, ctx, className);
+				case LispNames.REALPART -> JvmComplexCompiler.compileRealpart(cons, ctx, className);
+				case LispNames.IMAGPART -> JvmComplexCompiler.compileImagpart(cons, ctx, className);
+				case LispNames.CONJUGATE -> JvmComplexCompiler.compileConjugate(cons, ctx, className);
+				case LispNames.PHASE -> JvmComplexCompiler.compilePhase(cons, ctx, className);
 				case LispNames.INTEGERP -> JvmIntegerpCompiler.compile(cons, ctx, className);
 				case LispNames.FLOATP -> JvmFloatpCompiler.compile(cons, ctx, className);
 				case LispNames.RATIONALP -> JvmRationalpCompiler.compile(cons, ctx, className);
@@ -1611,9 +1618,9 @@ final class JvmExprCompiler {
 						JvmExprCompiler.compileExpr(LispMacroExpander.expandReduction(cons), ctx, className);
 					}
 				}
-				case LispNames.SQRT, LispNames.EXP, LispNames.LOG, LispNames.SIN, LispNames.COS, LispNames.TAN,
-						LispNames.ASIN, LispNames.ACOS, LispNames.ATAN, LispNames.SINH, LispNames.COSH,
-						LispNames.TANH ->
+				case LispNames.SQRT -> JvmComplexCompiler.compileSqrt(cons, ctx, className);
+				case LispNames.EXP, LispNames.LOG, LispNames.SIN, LispNames.COS, LispNames.TAN, LispNames.ASIN,
+						LispNames.ACOS, LispNames.ATAN, LispNames.SINH, LispNames.COSH, LispNames.TANH ->
 					JvmMathFnCompiler.compile(cons, ctx, className, sym.name());
 				case LispNames.RANDOM -> {
 					if (cons.toList().size() == 3) {

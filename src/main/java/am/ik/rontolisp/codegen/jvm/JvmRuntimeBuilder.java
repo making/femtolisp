@@ -536,7 +536,8 @@ final class JvmRuntimeBuilder {
 			@org.jspecify.annotations.Nullable PackedPrint packedPrint,
 			@org.jspecify.annotations.Nullable PackedIntPrint packedIntPrint,
 			@org.jspecify.annotations.Nullable InstPrint instPrint, MethodrefConstant strEscMethod,
-			@org.jspecify.annotations.Nullable HashPrint hashPrint) {
+			@org.jspecify.annotations.Nullable HashPrint hashPrint,
+			@org.jspecify.annotations.Nullable ComplexPrintRefs cplx) {
 		List<Integer> code = new ArrayList<>();
 		// if (val == null) return "nil";
 		code.add(Opcode.ALOAD_0);
@@ -659,8 +660,15 @@ final class JvmRuntimeBuilder {
 		patchBranch(code, ifNotCharPos, code.size());
 		int ifNotRatioPos = emitRatioToString(code, ratioArrayClass, objectToString, stringConcat, slashStr);
 
-		// if (val instanceof Object[])
+		// if (val instanceof RontoComplex) -> "#C(re im)" (complex-capable
+		// programs only, so the travelling class stays out of every other
+		// constant pool)
 		patchBranch(code, ifNotRatioPos, code.size());
+		if (cplx != null) {
+			patchBranch(code, emitComplexToString(code, cplx, stringConcat), code.size());
+		}
+
+		// if (val instanceof Object[])
 		code.add(Opcode.ALOAD_0);
 		code.add(Opcode.INSTANCEOF);
 		emitU2(code, objectArrayClass.index());
@@ -1054,6 +1062,49 @@ final class JvmRuntimeBuilder {
 		return ifNotRatioPos;
 	}
 
+	// Emits the complex branch of _lispToString/_lispToDisplayString: if the value
+	// in slot 0 is a RontoComplex, returns "#C(" + str(real) + " " + str(imag) +
+	// ")", each part through the same renderer (so a ratio part prints as 1/2).
+	// Returns the branch position to patch to the next type check.
+	private static int emitComplexToString(List<Integer> code, ComplexPrintRefs cplx, MethodrefConstant stringConcat) {
+		ClassConstant rcClass = java.util.Objects.requireNonNull(cplx.rcClass());
+		FieldrefConstant rcReal = java.util.Objects.requireNonNull(cplx.rcReal());
+		FieldrefConstant rcImag = java.util.Objects.requireNonNull(cplx.rcImag());
+		code.add(Opcode.ALOAD_0);
+		code.add(Opcode.INSTANCEOF);
+		emitU2(code, rcClass.index());
+		int ifNotComplexPos = code.size();
+		code.add(Opcode.IFEQ);
+		emitU2(code, 0);
+		code.add(Opcode.ALOAD_0);
+		code.add(Opcode.CHECKCAST);
+		emitU2(code, rcClass.index());
+		code.add(Opcode.ASTORE_1);
+		emitLdc(code, cplx.openStr().index());
+		code.add(Opcode.ALOAD_1);
+		code.add(Opcode.GETFIELD);
+		emitU2(code, rcReal.index());
+		code.add(Opcode.INVOKESTATIC);
+		emitU2(code, cplx.selfStr().index());
+		code.add(Opcode.INVOKEVIRTUAL);
+		emitU2(code, stringConcat.index());
+		emitLdc(code, cplx.spaceStr().index());
+		code.add(Opcode.INVOKEVIRTUAL);
+		emitU2(code, stringConcat.index());
+		code.add(Opcode.ALOAD_1);
+		code.add(Opcode.GETFIELD);
+		emitU2(code, rcImag.index());
+		code.add(Opcode.INVOKESTATIC);
+		emitU2(code, cplx.selfStr().index());
+		code.add(Opcode.INVOKEVIRTUAL);
+		emitU2(code, stringConcat.index());
+		emitLdc(code, cplx.closeStr().index());
+		code.add(Opcode.INVOKEVIRTUAL);
+		emitU2(code, stringConcat.index());
+		code.add(Opcode.ARETURN);
+		return ifNotComplexPos;
+	}
+
 	static List<Integer> buildConsToStringBody(ClassConstant objectArrayClass, ClassConstant stringBuilderClass,
 			MethodrefConstant sbInitStr, MethodrefConstant sbAppendStr, MethodrefConstant sbToString,
 			MethodrefConstant lispToStringMethod, ConstantPool.StringConstant openParenStr,
@@ -1323,7 +1374,8 @@ final class JvmRuntimeBuilder {
 			@org.jspecify.annotations.Nullable PackedPrint packedPrint,
 			@org.jspecify.annotations.Nullable PackedIntPrint packedIntPrint,
 			@org.jspecify.annotations.Nullable InstPrint instPrint,
-			@org.jspecify.annotations.Nullable HashPrint hashPrint) {
+			@org.jspecify.annotations.Nullable HashPrint hashPrint,
+			@org.jspecify.annotations.Nullable ComplexPrintRefs cplx) {
 		List<Integer> code = new ArrayList<>();
 		// if (val == null) return "nil";
 		code.add(Opcode.ALOAD_0);
@@ -1478,8 +1530,14 @@ final class JvmRuntimeBuilder {
 		patchBranch(code, ifNotCharPos, code.size());
 		int ifNotRatioPos = emitRatioToString(code, ratioArrayClass, objectToString, stringConcat, slashStr);
 
-		// if (val instanceof Object[])
+		// if (val instanceof RontoComplex) -> "#C(re im)" (complex-capable
+		// programs only)
 		patchBranch(code, ifNotRatioPos, code.size());
+		if (cplx != null) {
+			patchBranch(code, emitComplexToString(code, cplx, stringConcat), code.size());
+		}
+
+		// if (val instanceof Object[])
 		code.add(Opcode.ALOAD_0);
 		code.add(Opcode.INSTANCEOF);
 		emitU2(code, objectArrayClass.index());
@@ -1741,6 +1799,19 @@ final class JvmRuntimeBuilder {
 	 */
 	record FloatPrint(ClassConstant floatClass, MethodrefConstant floatToString, MethodrefConstant stringReplace,
 			ConstantPool.StringConstant upperE, ConstantPool.StringConstant lowerE) {
+	}
+
+	/**
+	 * Constant-pool references for printing a complex value as {@code #C(re im)}, each
+	 * part rendered through the same renderer (so a ratio part prints as {@code 1/2},
+	 * like the interpreter). Created only for a complex-capable program; every component
+	 * is null together with the bundle itself.
+	 */
+	record ComplexPrintRefs(@org.jspecify.annotations.Nullable ClassConstant rcClass,
+			@org.jspecify.annotations.Nullable FieldrefConstant rcReal,
+			@org.jspecify.annotations.Nullable FieldrefConstant rcImag, MethodrefConstant selfStr,
+			ConstantPool.StringConstant openStr, ConstantPool.StringConstant spaceStr,
+			ConstantPool.StringConstant closeStr) {
 	}
 
 	record PackedPrint(ClassConstant doubleArrayClass, ClassConstant floatArrayClass, ClassConstant shortArrayClass,

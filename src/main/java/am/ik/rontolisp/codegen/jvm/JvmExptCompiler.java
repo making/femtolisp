@@ -11,7 +11,8 @@ import am.ik.jvm.Opcode;
  * delegates to {@code Math.pow} (returning a double); otherwise it calls the {@code _pow}
  * runtime helper, which keeps an exact rational result for an integer exponent (a
  * negative one yields the reciprocal) and falls over to {@code Math.pow} when the
- * exponent turns out at run time to be a float or a ratio.
+ * exponent turns out at run time to be a float or a ratio. A complex operand routes to
+ * the gated {@code _cpow} instead (`.kb/jvm-complex.md`).
  */
 final class JvmExptCompiler {
 
@@ -20,6 +21,13 @@ final class JvmExptCompiler {
 
 	static void compile(LispCons cons, JvmLispCompiler.Ctx ctx, String className) {
 		List<LispVal> args = cons.toList();
+		if (JvmLispCompiler.hasComplexOperand(args)) {
+			JvmExprCompiler.compileExpr(args.get(1), ctx, className);
+			JvmExprCompiler.compileExpr(args.get(2), ctx, className);
+			ctx.emit(Opcode.INVOKESTATIC);
+			ctx.emitU2(JvmComplexCompiler.complexOp(ctx, className, JvmComplexRuntimeBuilder.POW).index());
+			return;
+		}
 		if (JvmLispCompiler.hasDoubleLiteral(args, ctx)) {
 			JvmArithCompiler.compileUnboxedOperand(args.get(1), ctx, className);
 			JvmArithCompiler.compileUnboxedOperand(args.get(2), ctx, className);
