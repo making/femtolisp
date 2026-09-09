@@ -2889,6 +2889,18 @@ public final class Environment implements Scope {
 		env.defineFunction(LispNames.SIGNUM, new LispFunction(LispNames.SIGNUM, args -> {
 			requireArgCount(LispNames.SIGNUM, args, 1);
 			LispVal arg = args.get(0);
+			if (arg instanceof LispComplex c) {
+				// The unit vector z/|z| in floats (SBCL parity: (signum #c(3 4)) is
+				// #C(0.6 0.8)). A zero answers the canonicalization of its own parts
+				// -- 0 for exact parts, #C(0.0 0.0) for float parts, like SBCL.
+				double re = realToDouble(c.real());
+				double im = realToDouble(c.imag());
+				double abs = Math.hypot(re, im);
+				if (abs == 0.0) {
+					return LispComplex.valueOf(c.real(), c.imag());
+				}
+				return LispComplex.valueOf(new LispDouble(re / abs), new LispDouble(im / abs));
+			}
 			if (arg instanceof LispDouble d) {
 				return new LispDouble(Math.signum(d.value()));
 			}
@@ -7141,6 +7153,9 @@ public final class Environment implements Scope {
 			// subtype; the runtime has a single float representation, so it is ignored.
 			requireArgCountBetween(LispNames.FLOAT, args, 1, 2);
 			LispVal arg = args.get(0);
+			// A complex has no float coercion (SBCL signals a type-error); any other
+			// non-number keeps the historical message below.
+			requireRealOperand(LispNames.FLOAT, arg);
 			if (arg instanceof LispDouble) {
 				return arg;
 			}
@@ -7158,6 +7173,9 @@ public final class Environment implements Scope {
 		env.defineFunction(LispNames.TRUNCATE, new LispFunction(LispNames.TRUNCATE, args -> {
 			requireArgCount(LispNames.TRUNCATE, args, 1);
 			LispVal arg = args.get(0);
+			// Real-only by contract: a complex signals a catchable type-error (SBCL
+			// parity); any other non-number keeps the historical message below.
+			requireRealOperand(LispNames.TRUNCATE, arg);
 			if (arg instanceof LispInteger || arg instanceof LispBigInteger) {
 				return arg;
 			}
@@ -7172,6 +7190,7 @@ public final class Environment implements Scope {
 		env.defineFunction(LispNames.FLOOR, new LispFunction(LispNames.FLOOR, args -> {
 			requireArgCount(LispNames.FLOOR, args, 1);
 			LispVal arg = args.get(0);
+			requireRealOperand(LispNames.FLOOR, arg);
 			if (arg instanceof LispInteger || arg instanceof LispBigInteger) {
 				return arg;
 			}
@@ -7186,6 +7205,7 @@ public final class Environment implements Scope {
 		env.defineFunction(LispNames.CEILING, new LispFunction(LispNames.CEILING, args -> {
 			requireArgCount(LispNames.CEILING, args, 1);
 			LispVal arg = args.get(0);
+			requireRealOperand(LispNames.CEILING, arg);
 			if (arg instanceof LispInteger || arg instanceof LispBigInteger) {
 				return arg;
 			}
@@ -7200,6 +7220,7 @@ public final class Environment implements Scope {
 		env.defineFunction(LispNames.ROUND, new LispFunction(LispNames.ROUND, args -> {
 			requireArgCount(LispNames.ROUND, args, 1);
 			LispVal arg = args.get(0);
+			requireRealOperand(LispNames.ROUND, arg);
 			if (arg instanceof LispInteger || arg instanceof LispBigInteger) {
 				return arg;
 			}
@@ -7237,6 +7258,7 @@ public final class Environment implements Scope {
 		env.defineFunction(LispNames.NUMERATOR, new LispFunction(LispNames.NUMERATOR, args -> {
 			requireArgCount(LispNames.NUMERATOR, args, 1);
 			LispVal arg = args.get(0);
+			requireRealOperand(LispNames.NUMERATOR, arg);
 			if (arg instanceof LispRatio r) {
 				return normalizeBig(r.numerator());
 			}
@@ -7248,6 +7270,7 @@ public final class Environment implements Scope {
 		env.defineFunction(LispNames.DENOMINATOR, new LispFunction(LispNames.DENOMINATOR, args -> {
 			requireArgCount(LispNames.DENOMINATOR, args, 1);
 			LispVal arg = args.get(0);
+			requireRealOperand(LispNames.DENOMINATOR, arg);
 			if (arg instanceof LispRatio r) {
 				return normalizeBig(r.denominator());
 			}

@@ -2478,6 +2478,140 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void evalComplexTypep() {
+		// SBCL parity (.todo/754): a complex is of type complex (and of type
+		// number) but not of type real; a real is not of type complex.
+		assertThat(eval("(typep #c(1 2) 'complex)")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(typep #c(1 2) 'real)")).isSameAs(LispNil.INSTANCE);
+		assertThat(eval("(typep #c(1 2) 'number)")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(typep 5 'complex)")).isSameAs(LispNil.INSTANCE);
+		assertThat(eval("(typep 5 'real)")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(typep 5 'number)")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(typep #c(1 2) '(complex integer))")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(typep #c(1.0 2.0) '(complex integer))")).isSameAs(LispNil.INSTANCE);
+		assertThat(eval("(typep #c(1.0 2.0) '(complex single-float))")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(typep #c(1 2) '(complex *))")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(typep 5 '(complex *))")).isSameAs(LispNil.INSTANCE);
+		assertThat(eval("(typep #c(1 2) '(complex rational))")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(typep #c(1 2) 'complex)")).isSameAs(LispTrue.INSTANCE);
+		// typecase/etypecase/check-type ride the same specifier mapping.
+		assertThat(eval("(typecase #c(1 2) (real :real) (complex :complex))")).isEqualTo(new LispSymbol(":COMPLEX"));
+		assertThat(eval("(typecase 5 (complex :complex) (real :real))")).isEqualTo(new LispSymbol(":REAL"));
+		assertThat(evalMulti("""
+				(check-type #c(1 2) complex)
+				:checked
+				""")).isEqualTo(new LispSymbol(":CHECKED"));
+		assertThatThrownBy(() -> eval("(check-type 5 complex)")).isInstanceOf(LispEvalException.class);
+	}
+
+	@Test
+	void evalComplexTypeOfAndSubtypep() {
+		// type-of answers the atomic COMPLEX (the numeric convention here is atomic,
+		// unlike SBCL's bounded (COMPLEX (INTEGER ...))); the round trip holds.
+		assertThat(eval("(type-of #c(1 2))")).isEqualTo(new LispSymbol("COMPLEX"));
+		assertThat(eval("(typep #c(1 2) (type-of #c(1 2)))")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(subtypep 'complex 'number)")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(subtypep 'real 'number)")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(subtypep 'complex 'real)")).isSameAs(LispNil.INSTANCE);
+		assertThat(eval("(subtypep '(complex integer) 'complex)")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(subtypep '(complex integer) '(complex rational))")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(subtypep 'complex '(complex integer))")).isSameAs(LispNil.INSTANCE);
+		assertThat(eval("(subtypep '(complex integer) 'number)")).isSameAs(LispTrue.INSTANCE);
+		assertThat(eval("(class-of #c(1 2))")).isEqualTo(eval("(find-class 'complex)"));
+	}
+
+	@Test
+	void evalUpgradedComplexPartType() {
+		// SBCL parity (.todo/754, host 2.2.9): a real-subtype name answers itself, a
+		// compound real specifier answers its head's name, anything else signals.
+		assertThat(eval("(upgraded-complex-part-type 'integer)")).isEqualTo(new LispSymbol("INTEGER"));
+		assertThat(eval("(upgraded-complex-part-type 'single-float)")).isEqualTo(new LispSymbol("SINGLE-FLOAT"));
+		assertThat(eval("(upgraded-complex-part-type 'float)")).isEqualTo(new LispSymbol("FLOAT"));
+		assertThat(eval("(upgraded-complex-part-type 'real)")).isEqualTo(new LispSymbol("REAL"));
+		assertThat(eval("(upgraded-complex-part-type 'ratio)")).isEqualTo(new LispSymbol("RATIO"));
+		assertThat(eval("(upgraded-complex-part-type '(integer 0 10))")).isEqualTo(new LispSymbol("INTEGER"));
+		assertThat(eval("(funcall #'upgraded-complex-part-type 'integer)")).isEqualTo(new LispSymbol("INTEGER"));
+		assertThatThrownBy(() -> eval("(upgraded-complex-part-type 'string)")).isInstanceOf(LispEvalException.class);
+		assertThatThrownBy(() -> eval("(upgraded-complex-part-type 'complex)")).isInstanceOf(LispEvalException.class);
+		assertThatThrownBy(() -> eval("(upgraded-complex-part-type 'number)")).isInstanceOf(LispEvalException.class);
+		assertThat(evalMulti("""
+				(handler-case (upgraded-complex-part-type 'string) (error (e) :caught))
+				""")).isEqualTo(new LispSymbol(":CAUGHT"));
+	}
+
+	@Test
+	void evalCoerceToComplex() {
+		// SBCL parity (.todo/754): a real demotes when exact (5 stays 5), a float
+		// stays complex, a complex answers itself, a part-typed target coerces both
+		// parts first, and a real target answers a real as is.
+		assertThat(eval("(coerce 5 'complex)")).isEqualTo(new LispInteger(5));
+		assertThat(eval("(coerce 5.0 'complex)").print()).isEqualTo("#C(5.0 0.0)");
+		assertThat(eval("(coerce 1/2 'complex)")).isEqualTo(new LispRatio(BigInteger.ONE, BigInteger.TWO));
+		assertThat(eval("(coerce #c(1 2) 'complex)").print()).isEqualTo("#C(1 2)");
+		assertThat(eval("(coerce 5 '(complex single-float))").print()).isEqualTo("#C(5.0 0.0)");
+		assertThat(eval("(coerce #c(1 2) '(complex single-float))").print()).isEqualTo("#C(1.0 2.0)");
+		assertThat(eval("(coerce #c(1.0 2.0) '(complex single-float))").print()).isEqualTo("#C(1.0 2.0)");
+		assertThat(eval("(coerce 5 'real)")).isEqualTo(new LispInteger(5));
+		assertThat(evalMulti("""
+				(defun pick-complex-type () 'complex)
+				(coerce 5.0 (pick-complex-type))
+				""").print()).isEqualTo("#C(5.0 0.0)");
+		assertThat(evalMulti("""
+				(handler-case (coerce #c(1 2) 'real) (type-error (e) :caught))
+				""")).isEqualTo(new LispSymbol(":CAUGHT"));
+		assertThat(evalMulti("""
+				(handler-case (coerce #c(1 2) 'single-float) (type-error (e) :caught))
+				""")).isEqualTo(new LispSymbol(":CAUGHT"));
+	}
+
+	@Test
+	void evalComplexSignum() {
+		// SBCL parity (.todo/754): the unit vector z/|z| in floats; a zero answers
+		// the canonicalization of its own parts (0 for exact, #C(0.0 0.0) for float).
+		assertThat(eval("(signum #c(3 4))").print()).isEqualTo("#C(0.6 0.8)");
+		assertThat(eval("(signum #c(0 0))")).isEqualTo(new LispInteger(0));
+		assertThat(eval("(signum #c(0.0 0.0))").print()).isEqualTo("#C(0.0 0.0)");
+		assertThat(eval("(signum #c(0 1))").print()).isEqualTo("#C(0.0 1.0)");
+		assertThat(eval("(funcall #'signum #c(3 4))").print()).isEqualTo("#C(0.6 0.8)");
+	}
+
+	@Test
+	void evalComplexRealOnlyOperationsSignalCatchableTypeErrors() {
+		// Real-only by contract (.todo/754): isqrt, the floor family, mod/rem,
+		// gcd/lcm, the bitwise operators, float and numerator/denominator signal a
+		// catchable type-error over a complex (SBCL parity; the message prefix is
+		// what the compiled backends mirror byte-identical).
+		assertThat(evalMulti("""
+				(defun te-print (thunk)
+				  (handler-case (funcall thunk) (type-error (e) (princ-to-string e))))
+				(list (te-print (lambda () (floor #c(1 2))))
+				      (te-print (lambda () (truncate #c(1 2))))
+				      (te-print (lambda () (ceiling #c(1 2))))
+				      (te-print (lambda () (round #c(1 2))))
+				      (te-print (lambda () (float #c(1 2))))
+				      (te-print (lambda () (numerator #c(1 2))))
+				      (te-print (lambda () (denominator #c(1 2)))))
+				""").print()).isEqualTo("(\"Expected real number, got: #C(1 2)\""
+				+ " \"Expected real number, got: #C(1 2)\"" + " \"Expected real number, got: #C(1 2)\""
+				+ " \"Expected real number, got: #C(1 2)\"" + " \"Expected real number, got: #C(1 2)\""
+				+ " \"Expected real number, got: #C(1 2)\"" + " \"Expected real number, got: #C(1 2)\")");
+		assertThat(evalMulti("""
+				(defun te-print (thunk)
+				  (handler-case (funcall thunk) (type-error (e) (princ-to-string e))))
+				(list (te-print (lambda () (isqrt #c(1 2))))
+				      (te-print (lambda () (mod #c(1 2) 3)))
+				      (te-print (lambda () (rem #c(1 2) 3)))
+				      (te-print (lambda () (gcd #c(1 2) 3)))
+				      (te-print (lambda () (lcm 4 #c(1 2))))
+				      (te-print (lambda () (logand #c(1 2) 3)))
+				      (te-print (lambda () (ash #c(1 2) 1))))
+				""").print()).isEqualTo("(\"Expected integer, got: #C(1 2)\"" + " \"Expected integer, got: #C(1 2)\""
+				+ " \"Expected integer, got: #C(1 2)\"" + " \"Expected integer, got: #C(1 2)\""
+				+ " \"Expected integer, got: #C(1 2)\"" + " \"Expected integer, got: #C(1 2)\""
+				+ " \"Expected integer, got: #C(1 2)\")");
+	}
+
+	@Test
 	void evalEvenp() {
 		assertThat(eval("(evenp 4)")).isSameAs(LispTrue.INSTANCE);
 		assertThat(eval("(evenp 3)")).isSameAs(LispNil.INSTANCE);

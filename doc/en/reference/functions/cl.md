@@ -290,6 +290,14 @@ page.
 | `gcd` | `(gcd 12 18)`, `(gcd 24 36 60)` | `6`, `12` (variadic; greatest common divisor, `(gcd)` is `0`) |
 | `lcm` | `(lcm 4 6)`, `(lcm 2 3 4)` | `12`, `12` (variadic; least common multiple; `0` if any argument is `0`, `(lcm)` is `1`) |
 | `signum` | `(signum -5)`, `(signum 3.5)` | `-1`, `1.0` (sign, preserving integer/float type) |
+| `complex` | `(complex 1 2)`, `(complex 1 0)` | `#C(1 2)`, `1` (a rational zero imaginary part demotes to the real; a float zero stays complex) |
+| `complexp` | `(complexp #c(1 2))` | `t` |
+| `realp` | `(realp 1/2)`, `(realp #c(1 2))` | `t`, `nil` (integers, ratios and floats are real; complexes are not) |
+| `realpart` | `(realpart #c(1 2))` | `1` (a real answers itself) |
+| `imagpart` | `(imagpart #c(1 2))`, `(imagpart 5.5)` | `2`, `0.0` (a real answers zero, float zero for a float) |
+| `conjugate` | `(conjugate #c(1 2))` | `#C(1 -2)` (a real answers itself) |
+| `phase` | `(phase 5)`, `(phase -5)` | `0.0`, pi (the angle in the complex plane, always a float) |
+| `upgraded-complex-part-type` | `(upgraded-complex-part-type 'integer)` | `INTEGER` (a real-subtype name answers itself; a compound real specifier answers its head) |
 | `logand` | `(logand 12 10)`, `(logand 12 10 6)` | `8`, `0` (variadic bitwise AND; `(logand)` is `-1`) |
 | `logior` | `(logior 12 10)`, `(logior 1 2 4 8)` | `14`, `15` (variadic bitwise inclusive OR; `(logior)` is `0`) |
 | `logxor` | `(logxor 12 10)` | `6` (variadic bitwise exclusive OR; `(logxor)` is `0`) |

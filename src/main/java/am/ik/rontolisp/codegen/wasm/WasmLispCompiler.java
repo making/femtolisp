@@ -1571,7 +1571,13 @@ public final class WasmLispCompiler implements LispCompiler {
 	// fixed helper so no index above shifts.
 	static final int FUNC_TYPE_ERR_REAL = FUNC_C_NEG + 1;
 
-	static final int FX_FUNC_LAST = FUNC_TYPE_ERR_REAL;
+	// _csignum ((ref null eq)) -> (ref null eq): the unit vector of a complex
+	// operand (WasmComplexRuntimeBuilder.buildCsignumBody). Reuses the unary
+	// (TYPE_CALLABLE_BASE + 0) signature; appended after the last fixed helper so
+	// no index above shifts.
+	static final int FUNC_C_SIGNUM = FUNC_TYPE_ERR_REAL + 1;
+
+	static final int FX_FUNC_LAST = FUNC_C_SIGNUM;
 
 	// The vec: SIMD block (_v_new/_v_get/_v_set + the twelve v128 kernels), emitted ONLY
 	// under --simd. Fixed indices relative to FX_FUNC_LAST, so every constant
@@ -3193,6 +3199,20 @@ public final class WasmLispCompiler implements LispCompiler {
 						.noneMatch(report -> BuiltinFunctionWrappers.referencesFunctionValue(report, op))) {
 				wrapperExcludes.add(op);
 			}
+		}
+		// #'upgraded-complex-part-type wrapper probes (subtypep <var> 'real), which
+		// compiles to the gated %subtypep-runtime -- inject it only when the program
+		// takes the operator as a first-class value (the JVM complex-wrapper gate
+		// mirrored).
+		if (program.stream()
+			.noneMatch(
+					expr -> BuiltinFunctionWrappers.referencesFunctionValue(expr, LispNames.UPGRADED_COMPLEX_PART_TYPE))
+				&& closRegistry.conditionReports()
+					.values()
+					.stream()
+					.noneMatch(report -> BuiltinFunctionWrappers.referencesFunctionValue(report,
+							LispNames.UPGRADED_COMPLEX_PART_TYPE))) {
+			wrapperExcludes.add(LispNames.UPGRADED_COMPLEX_PART_TYPE);
 		}
 		// The defuns from here down are INJECTED runtime, not the user's program: the
 		// built-in wrapper catalog and the shared sequence helpers. Their bodies funcall
@@ -5979,6 +5999,8 @@ public final class WasmLispCompiler implements LispCompiler {
 															// (FUNC_C_NEG)
 				fnDef.addFunction(TYPE_PRINT_VAL); // _type_err_real (culprit) -> ()
 													// (FUNC_TYPE_ERR_REAL)
+				fnDef.addFunction(TYPE_CALLABLE_BASE + 0); // _csignum (a) -> value
+															// (FUNC_C_SIGNUM)
 				// vec: SIMD block (--simd only): the three element helpers + twelve
 				// kernels
 				if (this.simd) {
@@ -6813,6 +6835,8 @@ public final class WasmLispCompiler implements LispCompiler {
 				code.addFunction(WasmComplexRuntimeBuilder.buildNegBody());
 				// ordering-over-complex landing body (FUNC_TYPE_ERR_REAL)
 				code.addFunction(WasmEmitHelper.buildTypeErrBody(ehMode, expRealEntry));
+				// complex signum body (FUNC_C_SIGNUM)
+				code.addFunction(WasmComplexRuntimeBuilder.buildCsignumBody());
 				// vec: SIMD block bodies (--simd only), in FUNC_VEC_BASE index order.
 				if (this.simd) {
 					// Each helper is handed the function index of the scalar vec.lisp

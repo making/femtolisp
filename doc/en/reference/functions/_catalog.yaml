@@ -60,6 +60,17 @@ categories:
       - { slug: make-random-state, name: "make-random-state" }
       - { slug: scale-float, name: "scale-float" }
       - { slug: decode-float, name: "decode-float" }
+  - title: "Complex Numbers"
+    index_page: reference/functions/cl.md
+    functions:
+      - { slug: complex, name: "complex" }
+      - { slug: complexp, name: "complexp" }
+      - { slug: realp, name: "realp" }
+      - { slug: realpart, name: "realpart" }
+      - { slug: imagpart, name: "imagpart" }
+      - { slug: conjugate, name: "conjugate" }
+      - { slug: phase, name: "phase" }
+      - { slug: upgraded-complex-part-type, name: "upgraded-complex-part-type" }
   - title: "Bitwise Operations"
     index_page: reference/functions/cl.md
     functions:

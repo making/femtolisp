@@ -4842,6 +4842,13 @@ public final class LispNames {
 	public static final String PHASE = "PHASE";
 
 	/**
+	 * The {@code upgraded-complex-part-type} built-in function (the upgraded part type
+	 * for a complex type specifier: a real-subtype name answers itself, a compound real
+	 * specifier answers its head's name; anything else signals an error, like SBCL).
+	 */
+	public static final String UPGRADED_COMPLEX_PART_TYPE = "UPGRADED-COMPLEX-PART-TYPE";
+
+	/**
 	 * The {@code *features*} variable: an ordinary special holding the active feature
 	 * list on every backend, seeded from the set the frontend READ the program with (see
 	 * {@code reader.Features} and {@code .kb/reader-features.md}). Not a read-time

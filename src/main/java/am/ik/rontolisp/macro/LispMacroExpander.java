@@ -15181,6 +15181,9 @@ public final class LispMacroExpander {
 		clauses.add(listToCons(List.of(mvCall(LispNames.INTEGERP, v), unspelledQuoteOf("INTEGER"))));
 		clauses.add(listToCons(List.of(mvCall(LispNames.RATIONALP, v), unspelledQuoteOf("RATIO"))));
 		clauses.add(listToCons(List.of(mvCall(LispNames.FLOATP, v), unspelledQuoteOf("FLOAT"))));
+		// A complex value is its own designator (the interpreter's builtinTypeName
+		// agrees, so class-of/type-of name the same class on every backend).
+		clauses.add(listToCons(List.of(mvCall(LispNames.COMPLEXP, v), unspelledQuoteOf("COMPLEX"))));
 		clauses.add(listToCons(List.of(mvCall(LispNames.STRINGP, v), unspelledQuoteOf("STRING"))));
 		clauses.add(listToCons(List.of(mvCall(LispNames.CHARACTERP, v), unspelledQuoteOf("CHARACTER"))));
 		clauses.add(listToCons(List.of(mvCall(LispNames.KEYWORDP, v), unspelledQuoteOf("KEYWORD"))));
@@ -24497,6 +24500,20 @@ public final class LispMacroExpander {
 			// signals through symbol-function's type check (.todo/750).
 			return coerceToFunctionBody(parts.get(1));
 		}
+		LispVal complexTarget = quotedComplexTarget(parts.get(2));
+		if (complexTarget != null) {
+			// (coerce x 'complex) / (coerce x '(complex <part-type>)): the
+			// canonical value (a complex answers itself, a real demotes when exact),
+			// with both parts coerced first for a part-typed target (SBCL parity).
+			LispSymbol cx = new LispSymbol("__coerce_x");
+			return makeLet(cx.name(), parts.get(1), coerceTempToComplex(cx, complexTarget));
+		}
+		if ("REAL".equals(type)) {
+			// (coerce x 'real): a real answers itself, anything else (a complex
+			// included) signals a catchable type-error, like SBCL.
+			LispSymbol cx = new LispSymbol("__coerce_x");
+			return makeLet(cx.name(), parts.get(1), makeIf(callOf(LispNames.REALP, cx), cx, coerceTypeError(cx)));
+		}
 		if (type == null && !(parts.get(2) instanceof LispString)) {
 			return expandComputedCoerce(parts.get(1), parts.get(2), arraysExist, helpersPresent, aliasResolverPresent,
 					closRegistry);
@@ -24632,8 +24649,14 @@ public final class LispMacroExpander {
 				vectorArm);
 		LispVal stringArm = makeIf(memberOfTypeNames(t, "STRING", "BASE-STRING"), toString, simpleStringArm);
 		LispVal listArm = makeIf(memberOfTypeNames(t, "LIST", "CONS"), toList, stringArm);
+		// A computed designator naming COMPLEX answers the canonical value (a real
+		// demotes when exact, like the literal arm); REAL answers a real as is and
+		// signals a catchable type-error otherwise (SBCL parity).
+		LispVal complexArm = makeIf(memberOfTypeNames(t, "COMPLEX"), coerceComputedComplex(x, spec), listArm);
+		LispVal realArm = makeIf(memberOfTypeNames(t, "REAL"),
+				makeIf(callOf(LispNames.REALP, x), x, coerceTypeError(x)), complexArm);
 		LispVal body = makeIf(memberOfTypeNames(t, FLOAT_TYPE_NAMES.toArray(new String[0])), mvCall(LispNames.FLOAT, x),
-				listArm);
+				realArm);
 		LispVal head = makeIf(callOf(LispNames.CONSP, spec), callOf(LispNames.CAR, spec), spec);
 		// A designator naming a user deftype is resolved into spec BEFORE the head is
 		// read, so an alias of a SEQUENCE type reaches its family arm rather than the
@@ -24709,6 +24732,200 @@ public final class LispMacroExpander {
 	private static LispVal coerceTempToFunction(LispSymbol x) {
 		return makeIf(callOf(LispNames.FUNCTIONP, x), x,
 				listToCons(List.of(new LispSymbol(LispNames.SYMBOL_FUNCTION), x)));
+	}
+
+	/**
+	 * The signal for a value that fails a {@code real} coercion: the {@code float}
+	 * conversion over the value. An instance-free signal is required here -- an
+	 * {@code (error 'type-error ...)} designator builds a condition instance and cannot
+	 * compile into an instance-free program -- and every backend's {@code float} funnel
+	 * throws the interpreter's "Expected real number" text for a complex (and an error
+	 * for any other non-real), catchable as a type-error where the backend types its
+	 * throws. Only reached for a non-real value (a real answers itself upstream).
+	 * @param value the offending value form
+	 * @return the signalling form
+	 */
+	private static LispVal coerceTypeError(LispVal value) {
+		return mvCall(LispNames.FLOAT, value);
+	}
+
+	/**
+	 * Coerces one part value to a statically known part-type designator: a float name
+	 * takes the {@code float} conversion, any other designator keeps a value that is
+	 * already of the type and signals otherwise (the computed fallback's "already of that
+	 * type" rule, inlined so the expansion cannot re-enter {@code coerce} -- a nested
+	 * computed coerce would emit the complex arm again without end).
+	 * @param valueForm the part value form
+	 * @param partDatum the part-type designator datum (a symbol or a compound spec)
+	 * @return the coerced part form
+	 */
+	private static LispVal coercePartStatic(LispVal valueForm, LispVal partDatum) {
+		if (partDatum instanceof LispSymbol sym && isFloatTypeName(plainTypeName(sym))) {
+			return mvCall(LispNames.FLOAT, valueForm);
+		}
+		LispVal spec = quotedValue(partDatum);
+		return makeIf(mvCall(LispNames.TYPEP, valueForm, spec), valueForm, listToCons(
+				List.of(new LispSymbol(LispNames.ERROR), new LispString("coerce: unsupported result type ~s"), spec)));
+	}
+
+	/**
+	 * Coerces one part value to a part-type designator held in a temp: {@code t} (an
+	 * atomic designator) and {@code *} answer the value uncoerced, a float name takes the
+	 * {@code float} conversion, any other designator keeps a value that is already of the
+	 * type and signals otherwise. Like {@link #coercePartStatic} but over a runtime
+	 * value, so the {@code typep} probe takes the shared runtime dispatch (finite: no arm
+	 * re-enters {@code coerce}).
+	 * @param valueForm the part value form
+	 * @param p the (temp-bound) part-type designator value
+	 * @return the coerced part form
+	 */
+	private static LispVal coercePartComputed(LispVal valueForm, LispSymbol p) {
+		LispVal isTrivial = listToCons(List.of(new LispSymbol(LispNames.OR),
+				listToCons(List.of(new LispSymbol(LispNames.EQ_GENERAL), p, LispTrue.INSTANCE)),
+				listToCons(List.of(new LispSymbol(LispNames.AND), callOf(LispNames.SYMBOLP, p),
+						listToCons(List.of(new LispSymbol(LispNames.STRING_EQ),
+								listToCons(List.of(new LispSymbol(LispNames.SYMBOL_NAME), p)),
+								new LispString("*")))))));
+		List<LispVal> floatSyms = new java.util.ArrayList<>();
+		for (String floatName : FLOAT_TYPE_NAMES) {
+			floatSyms.add(new LispSymbol(floatName));
+		}
+		LispVal isFloat = mvCall(LispNames.MEMBER, p,
+				listToCons(List.of(new LispSymbol(LispNames.QUOTE), listToCons(floatSyms))));
+		LispVal check = mvCall(LispNames.TYPEP, valueForm, p);
+		LispVal fail = listToCons(
+				List.of(new LispSymbol(LispNames.ERROR), new LispString("coerce: unsupported result type ~s"), p));
+		return makeIf(isTrivial, valueForm,
+				makeIf(isFloat, mvCall(LispNames.FLOAT, valueForm), makeIf(check, valueForm, fail)));
+	}
+
+	/**
+	 * When the quoted coerce result type names a complex type, answers its part type:
+	 * {@code LispTrue} for the atomic {@code 'complex} (and the bare {@code '(complex)})
+	 * spellings, which coerce no part, otherwise the part-type designator form of
+	 * {@code '(complex <part-type>)}. Answers null for any other result type.
+	 * @param form the quoted result-type form
+	 * @return the part target, or null when the result type is not a complex type
+	 */
+	private static @Nullable LispVal quotedComplexTarget(LispVal form) {
+		String name = quotedSymbolName(form);
+		if (name != null) {
+			PackageRegistry.QualifiedName qn = PackageRegistry.splitQualified(name);
+			String member = qn == null ? name : qn.member();
+			return "COMPLEX".equals(member) ? LispTrue.INSTANCE : null;
+		}
+		if (form instanceof LispCons quoted) {
+			List<LispVal> p = quoted.toList();
+			if (p.size() == 2 && p.get(0) instanceof LispSymbol q && LispNames.QUOTE.equals(q.name())
+					&& p.get(1) instanceof LispCons spec && spec.car() instanceof LispSymbol head) {
+				PackageRegistry.QualifiedName qn = PackageRegistry.splitQualified(head.name());
+				String member = qn == null ? head.name() : qn.member();
+				if (!"COMPLEX".equals(member)) {
+					return null;
+				}
+				List<LispVal> specParts = spec.toList();
+				if (specParts.size() == 1) {
+					return LispTrue.INSTANCE;
+				}
+				if (specParts.size() == 2) {
+					return specParts.get(1);
+				}
+				throw new UnsupportedOperationException("coerce: unsupported complex result type " + p.get(1).print());
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * The {@code 'complex} / {@code '(complex <part-type>)} conversion body over an
+	 * already-bound temp: a complex answers itself (with its parts coerced for a
+	 * part-typed target), a real answers {@code (complex x)} -- demoted when exact, so
+	 * {@code (coerce 5 'complex)} is {@code 5} and {@code (coerce 5.0 'complex)} is
+	 * {@code #C(5.0 0.0)}, like SBCL -- and anything else signals through
+	 * {@code complex}'s own type check.
+	 * @param x the (temp-bound) value form
+	 * @param partTarget {@code LispTrue} for no part coercion, otherwise the part-type
+	 * designator form (a {@code *} part coerces nothing)
+	 * @return the form to answer for a complex result type
+	 */
+	private static LispVal coerceTempToComplex(LispSymbol x, LispVal partTarget) {
+		if (partTarget instanceof LispTrue
+				|| (partTarget instanceof LispSymbol star && "*".equals(plainTypeName(star)))) {
+			return makeIf(callOf(LispNames.COMPLEXP, x), x, mvCall(LispNames.COMPLEX, x));
+		}
+		if (partTarget instanceof LispCons partSpec && partSpec.car() instanceof LispSymbol partHead
+				&& "COMPLEX".equals(plainTypeName(partHead))) {
+			throw new UnsupportedOperationException(
+					"coerce: unsupported complex result type (complex " + partTarget.print() + ")");
+		}
+		LispVal coerceReal = coercePartStatic(callOf(LispNames.REALPART, x), partTarget);
+		LispVal coerceImag = coercePartStatic(callOf(LispNames.IMAGPART, x), partTarget);
+		LispVal coerceValue = coercePartStatic(x, partTarget);
+		LispVal coerceZero = coercePartStatic(new LispInteger(0), partTarget);
+		return makeIf(callOf(LispNames.COMPLEXP, x), mvCall(LispNames.COMPLEX, coerceReal, coerceImag),
+				mvCall(LispNames.COMPLEX, coerceValue, coerceZero));
+	}
+
+	/**
+	 * The computed-designator {@code 'complex} / {@code (complex <part-type>)} conversion
+	 * over already-bound temps: like {@link #coerceTempToComplex} but reading the part
+	 * type out of the specifier VALUE (the cdr-car of a compound spec, {@code t} for an
+	 * atomic designator, a {@code *} part answering the value uncoerced since
+	 * {@code (coerce v t)} is the identity). A malformed compound (two part types)
+	 * signals.
+	 * @param x the (temp-bound) value form
+	 * @param spec the (temp-bound) result-type designator value
+	 * @return the form to answer for a complex result type
+	 */
+	private static LispVal coerceComputedComplex(LispSymbol x, LispSymbol spec) {
+		LispSymbol p = new LispSymbol("__coerce_cp");
+		LispVal rawPart = makeIf(callOf(LispNames.CONSP, spec), makeIf(mvCall(LispNames.CDR, spec),
+				mvCall(LispNames.CAR, mvCall(LispNames.CDR, spec)), LispTrue.INSTANCE), LispTrue.INSTANCE);
+		LispVal malformed = listToCons(List.of(new LispSymbol(LispNames.ERROR),
+				new LispString("coerce: unsupported complex result type ~s"), spec));
+		LispVal coerceReal = coercePartComputed(callOf(LispNames.REALPART, x), p);
+		LispVal coerceImag = coercePartComputed(callOf(LispNames.IMAGPART, x), p);
+		LispVal coerceValue = coercePartComputed(x, p);
+		LispVal coerceZero = coercePartComputed(new LispInteger(0), p);
+		LispVal body = makeIf(callOf(LispNames.COMPLEXP, x), mvCall(LispNames.COMPLEX, coerceReal, coerceImag),
+				mvCall(LispNames.COMPLEX, coerceValue, coerceZero));
+		LispVal guarded = makeIf(listToCons(List.of(new LispSymbol(LispNames.AND), callOf(LispNames.CONSP, spec),
+				mvCall(LispNames.CDR, mvCall(LispNames.CDR, spec)))), malformed, body);
+		return makeLet(p.name(), rawPart, guarded);
+	}
+
+	/**
+	 * Expands {@code (upgraded-complex-part-type type)} into a validation returning the
+	 * upgraded part type: an atomic designator naming a subtype of {@code real} answers
+	 * itself (SBCL echoes the spelling, so {@code single-float} stays
+	 * {@code single-float}); a compound specifier answers its head's name when that names
+	 * a real subtype (lite: {@code (integer 0 10)} answers {@code integer} where SBCL
+	 * answers {@code (mod 11)}); anything else signals. The {@code subtypep} probe takes
+	 * a computed specifier, so a call site counts for the shared
+	 * {@code %subtypep-runtime} injection like a computed {@code subtypep} does (see
+	 * {@link #containsRuntimeSubtypep}).
+	 * @param cons the upgraded-complex-part-type expression
+	 * @return the expanded expression
+	 */
+	public static LispVal expandUpgradedComplexPartType(LispCons cons) {
+		List<LispVal> parts = cons.toList();
+		if (parts.size() != 2) {
+			throw new UnsupportedOperationException("upgraded-complex-part-type expects a type specifier");
+		}
+		LispSymbol ty = new LispSymbol("__ucpt_t");
+		LispSymbol head = new LispSymbol("__ucpt_h");
+		LispVal realSpec = quoteOf("REAL");
+		LispVal atomicOk = listToCons(List.of(new LispSymbol(LispNames.AND), callOf(LispNames.SYMBOLP, ty),
+				listToCons(List.of(new LispSymbol(LispNames.SUBTYPEP), ty, realSpec))));
+		LispVal headOk = listToCons(List.of(new LispSymbol(LispNames.AND), callOf(LispNames.SYMBOLP, head),
+				listToCons(List.of(new LispSymbol(LispNames.SUBTYPEP), head, realSpec))));
+		LispVal errorCall = listToCons(List.of(new LispSymbol(LispNames.ERROR),
+				new LispString("upgraded-complex-part-type cannot upgrade ~s"), ty));
+		LispVal compoundBranch = makeLet(head.name(), mvCall(LispNames.CAR, ty), makeIf(headOk, head, errorCall));
+		LispVal body = listToCons(List.of(new LispSymbol(LispNames.COND), listToCons(List.of(atomicOk, ty)),
+				listToCons(List.of(callOf(LispNames.CONSP, ty), compoundBranch)),
+				listToCons(List.of(LispTrue.INSTANCE, errorCall))));
+		return makeLet(ty.name(), parts.get(1), body);
 	}
 
 	/**
@@ -27744,7 +27961,12 @@ public final class LispMacroExpander {
 		return switch (name) {
 			case "INTEGER", "FIXNUM", "BIGNUM" -> LispNames.INTEGERP;
 			case "FLOAT", "SINGLE-FLOAT", "DOUBLE-FLOAT", "SHORT-FLOAT", "LONG-FLOAT" -> LispNames.FLOATP;
-			case "NUMBER", "REAL" -> LispNames.NUMBERP;
+			case "NUMBER" -> LispNames.NUMBERP;
+			// REAL is the real numbers only: a complex is a NUMBER but not a REAL
+			// (SBCL parity -- mapping REAL to NUMBERP made (typep #c(1 2) 'real)
+			// answer T).
+			case "REAL" -> LispNames.REALP;
+			case "COMPLEX" -> LispNames.COMPLEXP;
 			case "RATIONAL", "RATIO" -> LispNames.RATIONALP;
 			case "STRING", "BASE-STRING" -> LispNames.STRINGP;
 			case "SYMBOL" -> LispNames.SYMBOLP;
@@ -27770,7 +27992,7 @@ public final class LispMacroExpander {
 	 * {@code makeCompoundTypeTest}'s default arm).
 	 */
 	private static final java.util.Set<String> NUMERIC_TYPE_PREDICATES = java.util.Set.of(LispNames.INTEGERP,
-			LispNames.FLOATP, LispNames.NUMBERP, LispNames.RATIONALP);
+			LispNames.FLOATP, LispNames.NUMBERP, LispNames.RATIONALP, LispNames.REALP);
 
 	/** True for the {@code *} that stands for "any" in a compound type specifier. */
 	private static boolean isWildcardTypeArgument(LispVal arg) {
@@ -28112,6 +28334,27 @@ public final class LispMacroExpander {
 					tests.add(listToCons(List.of(new LispSymbol(LispNames.LE), value,
 							new LispBigInteger(half.subtract(java.math.BigInteger.ONE)))));
 				}
+				return listToCons(tests);
+			}
+			case "COMPLEX": {
+				// (complex [{part-type}]) -- CL's complex specifier takes at most one
+				// part-type argument: a bare (complex) (or (complex *)) is any
+				// complex, otherwise BOTH parts must satisfy the part type (an
+				// integer part satisfies (complex rational), like SBCL, because the
+				// part test itself is the ordinary one).
+				if (parts.size() > 2) {
+					throw new IllegalArgumentException("Unsupported type specifier: " + spec.print());
+				}
+				LispVal isComplex = callOf(LispNames.COMPLEXP, value);
+				if (parts.size() == 1 || isWildcardTypeArgument(parts.get(1))) {
+					return isComplex;
+				}
+				LispVal partType = parts.get(1);
+				List<LispVal> tests = new java.util.ArrayList<>();
+				tests.add(new LispSymbol(LispNames.AND));
+				tests.add(isComplex);
+				tests.add(makeTypeTest(callOf(LispNames.REALPART, value), partType, closRegistry));
+				tests.add(makeTypeTest(callOf(LispNames.IMAGPART, value), partType, closRegistry));
 				return listToCons(tests);
 			}
 			default: {
@@ -33051,8 +33294,8 @@ public final class LispMacroExpander {
 	 */
 	private static final List<String> RUNTIME_TYPEP_BUILTINS = List.of("NULL", "BOOLEAN", "KEYWORD", "SYMBOL",
 			"INTEGER", "FIXNUM", "BIGNUM", "RATIONAL", "RATIO", "FLOAT", "SINGLE-FLOAT", "DOUBLE-FLOAT", "SHORT-FLOAT",
-			"LONG-FLOAT", "REAL", "NUMBER", "CHARACTER", "STRING", "SIMPLE-STRING", "CONS", "LIST", "ATOM", "VECTOR",
-			"SIMPLE-VECTOR", "ARRAY", "SIMPLE-ARRAY", "SEQUENCE", "HASH-TABLE", "FUNCTION", "STANDARD-OBJECT",
+			"LONG-FLOAT", "REAL", "NUMBER", "COMPLEX", "CHARACTER", "STRING", "SIMPLE-STRING", "CONS", "LIST", "ATOM",
+			"VECTOR", "SIMPLE-VECTOR", "ARRAY", "SIMPLE-ARRAY", "SEQUENCE", "HASH-TABLE", "FUNCTION", "STANDARD-OBJECT",
 			"STRUCTURE-OBJECT", "UNSIGNED-BYTE", "PACKAGE", "STREAM", "T");
 
 	/**
@@ -33138,6 +33381,14 @@ public final class LispMacroExpander {
 			              (or (null %tpc-a) %tpc-xw
 			                  (and (>= %tpc-value (- 0 (ash 1 (- %tpc-x 1))))
 			                       (<= %tpc-value (- (ash 1 (- %tpc-x 1)) 1)))))
+			         t
+			         nil))
+			    ((string= %tpc-n "COMPLEX")
+			     (if (and (complexp %tpc-value)
+			              (or (null %tpc-a) %tpc-xw
+			                  (and (null (cdr %tpc-a))
+			                       (%typep-recur (realpart %tpc-value) %tpc-x)
+			                       (%typep-recur (imagpart %tpc-value) %tpc-x))))
 			         t
 			         nil))
 			    ((or (string= %tpc-n "ARRAY") (string= %tpc-n "SIMPLE-ARRAY")
@@ -33396,10 +33647,10 @@ public final class LispMacroExpander {
 			java.util.Map.entry("SIGNED-BYTE", List.of("INTEGER")), java.util.Map.entry("INTEGER", List.of("RATIONAL")),
 			java.util.Map.entry("RATIO", List.of("RATIONAL")), java.util.Map.entry("RATIONAL", List.of("REAL")),
 			java.util.Map.entry("BFLOAT16", List.of("FLOAT")), java.util.Map.entry("FLOAT", List.of("REAL")),
-			java.util.Map.entry("REAL", List.of("NUMBER")), java.util.Map.entry("KEYWORD", List.of("SYMBOL")),
-			java.util.Map.entry("BOOLEAN", List.of("SYMBOL")), java.util.Map.entry("NULL", List.of("SYMBOL", "LIST")),
-			java.util.Map.entry("CONS", List.of("LIST")), java.util.Map.entry("LIST", List.of("SEQUENCE")),
-			java.util.Map.entry("STRING", List.of("VECTOR")),
+			java.util.Map.entry("REAL", List.of("NUMBER")), java.util.Map.entry("COMPLEX", List.of("NUMBER")),
+			java.util.Map.entry("KEYWORD", List.of("SYMBOL")), java.util.Map.entry("BOOLEAN", List.of("SYMBOL")),
+			java.util.Map.entry("NULL", List.of("SYMBOL", "LIST")), java.util.Map.entry("CONS", List.of("LIST")),
+			java.util.Map.entry("LIST", List.of("SEQUENCE")), java.util.Map.entry("STRING", List.of("VECTOR")),
 			java.util.Map.entry("VECTOR", List.of("ARRAY", "SEQUENCE")),
 			java.util.Map.entry("SIMPLE-STRING", List.of("SIMPLE-ARRAY", "STRING")),
 			java.util.Map.entry("SIMPLE-VECTOR", List.of("SIMPLE-ARRAY", "VECTOR")),
@@ -33502,6 +33753,9 @@ public final class LispMacroExpander {
 	 * <li>{@code (not ...)}/{@code (member ...)}/{@code (eql ...)}/{@code (satisfies ...)}
 	 * stay unknown ({@link #OPAQUE_COMPOUND_TYPE_HEADS}): none of them relates to its
 	 * head by inclusion.
+	 * <li>{@code (complex Y)} as the super admits only a {@code (complex X)} sub with
+	 * {@code X} a subtype of {@code Y} (a missing or {@code *} part is the whole complex
+	 * type, so it qualifies only as the super).
 	 * </ul>
 	 * @param subV the sub type designator (a symbol, {@code t}, {@code nil} or a compound
 	 * specifier list)
@@ -33547,6 +33801,12 @@ public final class LispMacroExpander {
 					}
 				}
 				return true;
+			}
+			else if ("COMPLEX".equals(supHead)) {
+				// (complex Y) as the super: only a (complex X) sub qualifies, with X
+				// a subtype of Y (a missing or * part is the whole complex type, so
+				// it qualifies only as the SUPER side).
+				return complexSubtypep(subV, supCons, closRegistry);
 			}
 			return false;
 		}
@@ -33635,6 +33895,36 @@ public final class LispMacroExpander {
 			}
 		}
 		return false;
+	}
+
+	/**
+	 * Whether a {@code (complex X)} sub is a subtype of a {@code (complex Y)} super: the
+	 * part types decide (a missing or {@code *} part is the whole complex type, so it
+	 * qualifies only as the SUPER side). Anything that is not a well-formed
+	 * {@code (complex ...)} pair answers false.
+	 * @param subV the sub type designator
+	 * @param supCons the compound super specifier, headed by {@code complex}
+	 * @param closRegistry the class registry for class-name part types
+	 * @return whether the sub denotes a subtype of the super
+	 */
+	private static boolean complexSubtypep(LispVal subV, LispCons supCons, ClosRegistry closRegistry) {
+		if (!(subV instanceof LispCons subCons) || !"COMPLEX".equals(compoundTypeHead(subCons))) {
+			return false;
+		}
+		List<LispVal> subParts = subCons.toList();
+		List<LispVal> supParts = supCons.toList();
+		if (subParts.size() > 2 || supParts.size() > 2) {
+			return false;
+		}
+		LispVal subPart = subParts.size() == 2 ? subParts.get(1) : null;
+		LispVal supPart = supParts.size() == 2 ? supParts.get(1) : null;
+		if (supPart == null || isWildcardTypeArgument(supPart)) {
+			return true;
+		}
+		if (subPart == null || isWildcardTypeArgument(subPart)) {
+			return false;
+		}
+		return subtypep(subPart, supPart, closRegistry);
 	}
 
 	/**
@@ -34026,6 +34316,21 @@ public final class LispMacroExpander {
 						&& (literalTypeSpecifier(parts.get(1)) == null || literalTypeSpecifier(parts.get(2)) == null)) {
 					return true;
 				}
+			}
+			if (LispNames.UPGRADED_COMPLEX_PART_TYPE.equals(member) && cons.isProperList()) {
+				// The expansion probes (subtypep <var> 'real) with a computed
+				// specifier, emitted long after this scan runs -- like a computed
+				// coerce's trailing typep, the call site is what has to be counted
+				// here.
+				return true;
+			}
+			if (LispNames.FUNCTION.equals(op.name()) && cons.cdr() instanceof LispCons named
+					&& named.car() instanceof LispSymbol target
+					&& LispNames.UPGRADED_COMPLEX_PART_TYPE.equals(memberOf(target.name()))) {
+				// #'upgraded-complex-part-type: the injected wrapper's body is a
+				// call site, so the reference counts like one (the #'typep/#'coerce
+				// rule in containsRuntimeTypep).
+				return true;
 			}
 		}
 		return containsRuntimeSubtypep(cons.car()) || containsRuntimeSubtypep(cons.cdr());
@@ -35762,13 +36067,29 @@ public final class LispMacroExpander {
 			   (let* ((%stc-h (car %stc-sup))
 			          (%stc-n (if (symbolp %stc-h) (symbol-name %stc-h) "")))
 			     (cond
-			       ((string= %stc-n "OR")
-			        (dolist (%stc-e (cdr %stc-sup) nil)
-			          (if (%subtypep-recur %stc-sub %stc-e) (return t) nil)))
-			       ((string= %stc-n "AND")
-			        (dolist (%stc-e (cdr %stc-sup) t)
-			          (if (%subtypep-recur %stc-sub %stc-e) nil (return nil))))
-			       (t nil))))
+			     ((string= %stc-n "OR")
+			      (dolist (%stc-e (cdr %stc-sup) nil)
+			        (if (%subtypep-recur %stc-sub %stc-e) (return t) nil)))
+			     ((string= %stc-n "AND")
+			      (dolist (%stc-e (cdr %stc-sup) t)
+			        (if (%subtypep-recur %stc-sub %stc-e) nil (return nil))))
+			     ((string= %stc-n "COMPLEX")
+			      (if (and (consp %stc-sub)
+			               (let ((%stc-sh (car %stc-sub)))
+			                 (and (symbolp %stc-sh) (string= (symbol-name %stc-sh) "COMPLEX"))))
+			          (let* ((%stc-sa (cdr %stc-sub))
+			                 (%stc-sb (cdr %stc-sup))
+			                 (%stc-sp (if (null %stc-sa) t (car %stc-sa)))
+			                 (%stc-yp (if (null %stc-sb) t (car %stc-sb)))
+			                 (%stc-sw (if (symbolp %stc-sp) (string= (symbol-name %stc-sp) "*") nil))
+			                 (%stc-yw (if (symbolp %stc-yp) (string= (symbol-name %stc-yp) "*") nil)))
+			            (if (or (and (consp %stc-sa) (cdr %stc-sa)) (and (consp %stc-sb) (cdr %stc-sb)))
+			                nil
+			                (if (or %stc-yw (eq %stc-yp t)) t
+			                    (if (or %stc-sw (eq %stc-sp t)) nil
+			                        (if (%subtypep-recur %stc-sp %stc-yp) t nil)))))
+			          nil))
+			     (t nil))))
 			  (t
 			   (let* ((%stc-h (car %stc-sub))
 			          (%stc-n (if (symbolp %stc-h) (symbol-name %stc-h) "")))

@@ -520,7 +520,7 @@ public final class ClosRegistry {
 	 * names too ({@link #builtinClassMetaobject}).
 	 */
 	public static final List<String> BUILTIN_CLASS_NAMES = List.of("T", "NULL", "BOOLEAN", "INTEGER", "RATIO", "FLOAT",
-			"STRING", "CHARACTER", "KEYWORD", "SYMBOL", "HASH-TABLE", "FUNCTION", "CONS");
+			"COMPLEX", "STRING", "CHARACTER", "KEYWORD", "SYMBOL", "HASH-TABLE", "FUNCTION", "CONS");
 
 	/**
 	 * Names {@code find-class} resolves to a memoized slot-less metaobject but that are

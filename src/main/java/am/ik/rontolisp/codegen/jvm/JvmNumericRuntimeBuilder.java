@@ -261,6 +261,24 @@ final class JvmNumericRuntimeBuilder {
 		c.add(Opcode.ATHROW);
 	}
 
+	// The real-context twin of emitTypeErrThrow: a complex reaching a real-only
+	// funnel throws the interpreter's "Expected real number" text (catchable as a
+	// type-error by the handler-case prefix classification, like _ccmpb's).
+	private static void emitRealErrThrow(List<Integer> c, TypeErrRefs refs) {
+		c.add(Opcode.NEW);
+		JvmRuntimeBuilder.emitU2(c, refs.rte().index());
+		c.add(Opcode.DUP);
+		JvmRuntimeBuilder.emitLdc(c, refs.realPrefix().index());
+		c.add(Opcode.ALOAD_0);
+		c.add(Opcode.INVOKESTATIC);
+		JvmRuntimeBuilder.emitU2(c, refs.lispToString().index());
+		c.add(Opcode.INVOKEVIRTUAL);
+		JvmRuntimeBuilder.emitU2(c, refs.strConcat().index());
+		c.add(Opcode.INVOKESPECIAL);
+		JvmRuntimeBuilder.emitU2(c, refs.rteInit().index());
+		c.add(Opcode.ATHROW);
+	}
+
 	/**
 	 * Builds all numeric helper methods and registers their constant-pool entries.
 	 * @param cp the constant pool to populate
@@ -362,6 +380,13 @@ final class JvmNumericRuntimeBuilder {
 				cp.addNameAndType(cp.addUtf8("imag"), cp.addUtf8(OBJ))) : null;
 		MethodrefConstant mathHypot = usesComplex
 				? cp.addMethodref(mathClass, cp.addNameAndType(cp.addUtf8("hypot"), cp.addUtf8("(DD)D"))) : null;
+		// The gated _csignum reference for _signum's holder arm: a self-methodref the
+		// complex group emits beside it (JvmComplexRuntimeBuilder.SIGNUM), created
+		// only with the gate on so no complex-free constant pool names it.
+		MethodrefConstant rCsignum = usesComplex
+				? cp.addMethodref(thisClass, cp.addNameAndType(cp.addUtf8(JvmComplexRuntimeBuilder.SIGNUM),
+						cp.addUtf8(JvmComplexRuntimeBuilder.descFor(JvmComplexRuntimeBuilder.SIGNUM))))
+				: null;
 		MethodrefConstant biShiftLeft = cp.addMethodref(bigClass,
 				cp.addNameAndType(cp.addUtf8("shiftLeft"), cp.addUtf8("(I)" + BIG)));
 		MethodrefConstant biTestBit = cp.addMethodref(bigClass,
@@ -561,7 +586,7 @@ final class JvmNumericRuntimeBuilder {
 				biAbs, rNorm, cMin, ratArrClass, rRatNum, rRatDen, rRat, doubleClass, rDbl, numberClass, numDoubleValue,
 				doubleValueOf, absDouble, rBig, rcClass, rcReal, rcImag, mathHypot));
 		methods.add(buildSignum(nSignum, dUnary, doubleClass, rDbl, numberClass, numDoubleValue, doubleValueOf,
-				signumDouble, rRatNum, biSignum, longValueOf));
+				signumDouble, rRatNum, biSignum, longValueOf, rcClass, rCsignum));
 		methods.add(buildRandom(nRandom, dUnary, doubleClass, rDbl, numberClass, numDoubleValue, doubleValueOf,
 				longValueOf, tlrCurrent, tlrNextDouble));
 		methods.add(buildSelect(nMin, dBinary, rCmpb, CMPB_LT | CMPB_EQ, rcClass, typeErrRefs));
@@ -569,7 +594,7 @@ final class JvmNumericRuntimeBuilder {
 		methods.add(buildFloatSelect(nFmin, dFmod, Opcode.DCMPG, Opcode.IFLE));
 		methods.add(buildFloatSelect(nFmax, dFmod, Opcode.DCMPL, Opcode.IFGE));
 		methods.add(buildDbl(nDbl, dUnary, ratArrClass, doubleClass, numberClass, bigDecClass, bdInit, bdDivide,
-				bdDoubleValue, mcDecimal64, doubleValueOf, numDoubleValue, rRatNum, rRatDen, typeErrRefs));
+				bdDoubleValue, mcDecimal64, doubleValueOf, numDoubleValue, rRatNum, rRatDen, typeErrRefs, rcClass));
 		methods.add(buildPow(nPow, dBinary, rRatNum, rRatDen, rRat, biPow, doubleClass, longClass, longValue,
 				numberClass, numDoubleValue, doubleValueOf, mathPow, rDbl));
 		methods.add(buildEqv(nEqv, dCmp, ratArrClass, intArrClass, objEquals, strvMethod));
@@ -1590,8 +1615,26 @@ final class JvmNumericRuntimeBuilder {
 	private static NumericMethod buildSignum(Utf8Constant name, Utf8Constant desc, ClassConstant doubleClass,
 			MethodrefConstant rDbl, ClassConstant numberClass, MethodrefConstant numDoubleValue,
 			MethodrefConstant doubleValueOf, MethodrefConstant signumDouble, MethodrefConstant rRatNum,
-			MethodrefConstant biSignum, MethodrefConstant longValueOf) {
+			MethodrefConstant biSignum, MethodrefConstant longValueOf, @Nullable ClassConstant rcClass,
+			@Nullable MethodrefConstant rCsignum) {
 		List<Integer> c = new ArrayList<>();
+		if (rcClass != null) {
+			// A complex operand answers the gated _csignum unit vector, like the
+			// interpreter. Emitted only for a complex-capable program, so the
+			// holder class the test resolves stays out of every other constant
+			// pool (the _abs arm pattern).
+			c.add(Opcode.ALOAD_0);
+			c.add(Opcode.INSTANCEOF);
+			JvmRuntimeBuilder.emitU2(c, rcClass.index());
+			int ifNotComplex = c.size();
+			c.add(Opcode.IFEQ);
+			JvmRuntimeBuilder.emitU2(c, 0);
+			c.add(Opcode.ALOAD_0);
+			c.add(Opcode.INVOKESTATIC);
+			JvmRuntimeBuilder.emitU2(c, java.util.Objects.requireNonNull(rCsignum).index());
+			c.add(Opcode.ARETURN);
+			JvmRuntimeBuilder.patchBranch(c, ifNotComplex, c.size());
+		}
 		// Double fast path: Math.signum((double) a).
 		c.add(Opcode.ALOAD_0);
 		c.add(Opcode.INSTANCEOF);
@@ -1754,8 +1797,22 @@ final class JvmNumericRuntimeBuilder {
 			ClassConstant doubleClass, ClassConstant numberClass, ClassConstant bigDecClass, MethodrefConstant bdInit,
 			MethodrefConstant bdDivide, MethodrefConstant bdDoubleValue, FieldrefConstant mcDecimal64,
 			MethodrefConstant doubleValueOf, MethodrefConstant numDoubleValue, MethodrefConstant rRatNum,
-			MethodrefConstant rRatDen, TypeErrRefs typeErrRefs) {
+			MethodrefConstant rRatDen, TypeErrRefs typeErrRefs, @Nullable ClassConstant rcClass) {
 		List<Integer> c = new ArrayList<>();
+		if (rcClass != null) {
+			// A complex reaching the f64 coercion is not silently reduced to its
+			// real part: it throws the interpreter's "Expected real number" text.
+			// Emitted only for a complex-capable program, so the holder class stays
+			// out of every other constant pool (the _abs arm pattern).
+			c.add(Opcode.ALOAD_0);
+			c.add(Opcode.INSTANCEOF);
+			JvmRuntimeBuilder.emitU2(c, rcClass.index());
+			int ifNotComplex = c.size();
+			c.add(Opcode.IFEQ);
+			JvmRuntimeBuilder.emitU2(c, 0);
+			emitRealErrThrow(c, typeErrRefs);
+			JvmRuntimeBuilder.patchBranch(c, ifNotComplex, c.size());
+		}
 		c.add(Opcode.ALOAD_0);
 		c.add(Opcode.INSTANCEOF);
 		JvmRuntimeBuilder.emitU2(c, doubleClass.index());

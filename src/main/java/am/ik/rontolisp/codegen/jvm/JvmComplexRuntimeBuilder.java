@@ -79,6 +79,14 @@ final class JvmComplexRuntimeBuilder {
 	/** {@code phase} over real-or-complex operands (an angle, always a double). */
 	static final String CPHASE = "_cphase";
 
+	/**
+	 * {@code signum} over a complex holder: the unit vector z/|z| in floats (a zero
+	 * answers the canonicalization of its own parts, like the interpreter). Called from
+	 * the unconditional {@code _signum}'s gated holder arm; never called with a real
+	 * (those take {@code _signum}'s own arms).
+	 */
+	static final String SIGNUM = "_csignum";
+
 	/** {@link #U1} selector for {@code exp}. */
 	static final int U1_EXP = 0;
 
@@ -118,7 +126,7 @@ final class JvmComplexRuntimeBuilder {
 	 * complex group forced on.
 	 */
 	static final Set<String> METHOD_NAMES = Set.of(COMPLEX, ADD, SUB, MUL, DIV, NEG, SQRT, POW, U1, CONJUGATE, CCPMB,
-			CPHASE);
+			CPHASE, SIGNUM);
 
 	/**
 	 * The class files that travel beside a compiled program using this group
@@ -148,7 +156,7 @@ final class JvmComplexRuntimeBuilder {
 		if (CCPMB.equals(op)) {
 			return CMP_DESC;
 		}
-		if (SQRT.equals(op) || CONJUGATE.equals(op) || NEG.equals(op) || CPHASE.equals(op)) {
+		if (SQRT.equals(op) || CONJUGATE.equals(op) || NEG.equals(op) || CPHASE.equals(op) || SIGNUM.equals(op)) {
 			return UNARY_DESC;
 		}
 		return BINARY_DESC;
@@ -269,6 +277,8 @@ final class JvmComplexRuntimeBuilder {
 				buildCCmpBits(refs, cp, cp.addUtf8(CCPMB), cp.addUtf8(CMP_DESC)));
 		addMethod(cp, thisClass, methods, ops, CPHASE, UNARY_DESC,
 				buildCPhase(refs, cp, cp.addUtf8(CPHASE), cp.addUtf8(UNARY_DESC)));
+		addMethod(cp, thisClass, methods, ops, SIGNUM, UNARY_DESC,
+				buildCSignum(refs, cp, cp.addUtf8(SIGNUM), cp.addUtf8(UNARY_DESC)));
 		return new ComplexRuntime(methods, ops);
 	}
 
@@ -1686,6 +1696,72 @@ final class JvmComplexRuntimeBuilder {
 		emitBoxDouble(c, refs);
 		c.add(Opcode.ARETURN);
 		return new ComplexMethod(name, desc, c, 4, 3, List.of());
+	}
+
+	// _csignum(Object x): the unit vector of a complex holder (re/|z| + (im/|z|)i
+	// in floats, like the interpreter). A zero answers the canonicalization of its
+	// own parts through _ccomplex (0 for exact parts, #C(0.0 0.0) for float
+	// parts). Only the unconditional _signum's gated holder arm calls this, after
+	// its own instanceof, so the argument is always a holder here.
+	private static ComplexMethod buildCSignum(Refs refs, ConstantPool cp, Utf8Constant name, Utf8Constant desc) {
+		List<Integer> c = new ArrayList<>();
+		// re = _dbl(real), im = _dbl(imag).
+		aload(c, 0);
+		c.add(Opcode.CHECKCAST);
+		emitU2(c, refs.rcClass().index());
+		c.add(Opcode.GETFIELD);
+		emitU2(c, refs.rcReal().index());
+		call(c, refs.rDbl());
+		c.add(Opcode.CHECKCAST);
+		emitU2(c, refs.numberClass().index());
+		c.add(Opcode.INVOKEVIRTUAL);
+		emitU2(c, refs.numDoubleValue().index());
+		dstore(c, 1);
+		aload(c, 0);
+		c.add(Opcode.CHECKCAST);
+		emitU2(c, refs.rcClass().index());
+		c.add(Opcode.GETFIELD);
+		emitU2(c, refs.rcImag().index());
+		call(c, refs.rDbl());
+		c.add(Opcode.CHECKCAST);
+		emitU2(c, refs.numberClass().index());
+		c.add(Opcode.INVOKEVIRTUAL);
+		emitU2(c, refs.numDoubleValue().index());
+		dstore(c, 3);
+		// abs = hypot(re, im); a zero takes the canonicalize-own-parts exit.
+		dload(c, 1);
+		dload(c, 3);
+		callMath(c, refs, cp, "hypot", "(DD)D");
+		dstore(c, 5);
+		dload(c, 5);
+		c.add(Opcode.DCONST_0);
+		c.add(Opcode.DCMPG);
+		int ifNonZero = jump(c, Opcode.IFNE);
+		aload(c, 0);
+		c.add(Opcode.CHECKCAST);
+		emitU2(c, refs.rcClass().index());
+		c.add(Opcode.GETFIELD);
+		emitU2(c, refs.rcReal().index());
+		aload(c, 0);
+		c.add(Opcode.CHECKCAST);
+		emitU2(c, refs.rcClass().index());
+		c.add(Opcode.GETFIELD);
+		emitU2(c, refs.rcImag().index());
+		call(c, refs.rCComplex());
+		c.add(Opcode.ARETURN);
+		patch(c, ifNonZero);
+		// _ccomplex(Double(re/abs), Double(im/abs)).
+		dload(c, 1);
+		dload(c, 5);
+		c.add(Opcode.DDIV);
+		emitBoxDouble(c, refs);
+		dload(c, 3);
+		dload(c, 5);
+		c.add(Opcode.DDIV);
+		emitBoxDouble(c, refs);
+		call(c, refs.rCComplex());
+		c.add(Opcode.ARETURN);
+		return new ComplexMethod(name, desc, c, 6, 7, List.of());
 	}
 
 	// _cconjugate(Object x): (re, -im) for a holder, the value itself for a

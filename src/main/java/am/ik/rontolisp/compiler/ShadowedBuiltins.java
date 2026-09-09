@@ -100,11 +100,12 @@ public final class ShadowedBuiltins {
 			LispNames.REMOVE_IF_NOT, LispNames.SIMPLE_CONDITION_FORMAT_ARGUMENTS,
 			LispNames.SIMPLE_CONDITION_FORMAT_CONTROL, LispNames.SOME, LispNames.SORT, LispNames.STABLE_SORT,
 			LispNames.SUBSTITUTE_IF, LispNames.SUBSTITUTE_IF_NOT, LispNames.SYMBOL_VALUE, LispNames.ELT,
-			LispNames.COERCE, LispNames.TYPEP, LispNames.ENDP, LispNames.LIST_STAR, LispNames.REVAPPEND,
-			LispNames.NRECONC, LispNames.VECTOR, LispNames.SVREF, LispNames.ARRAY_RANK, LispNames.ARRAY_DIMENSION,
-			LispNames.ARRAY_TOTAL_SIZE, LispNames.ARRAY_ROW_MAJOR_INDEX, LispNames.MAP, LispNames.MAP_INTO,
-			LispNames.NOTANY, LispNames.NOTEVERY, LispNames.READ_SEQUENCE, LispNames.WRITE_SEQUENCE,
-			LispNames.COPY_READTABLE, LispNames.READTABLE_CASE, LispNames.SET_DISPATCH_MACRO_CHARACTER);
+			LispNames.COERCE, LispNames.TYPEP, LispNames.UPGRADED_COMPLEX_PART_TYPE, LispNames.ENDP,
+			LispNames.LIST_STAR, LispNames.REVAPPEND, LispNames.NRECONC, LispNames.VECTOR, LispNames.SVREF,
+			LispNames.ARRAY_RANK, LispNames.ARRAY_DIMENSION, LispNames.ARRAY_TOTAL_SIZE,
+			LispNames.ARRAY_ROW_MAJOR_INDEX, LispNames.MAP, LispNames.MAP_INTO, LispNames.NOTANY, LispNames.NOTEVERY,
+			LispNames.READ_SEQUENCE, LispNames.WRITE_SEQUENCE, LispNames.COPY_READTABLE, LispNames.READTABLE_CASE,
+			LispNames.SET_DISPATCH_MACRO_CHARACTER);
 
 	private static volatile @org.jspecify.annotations.Nullable Set<String> lowered;
 

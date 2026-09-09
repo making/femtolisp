@@ -2037,6 +2037,8 @@ final class WasmExprCompiler {
 					WasmExprCompiler.compileExpr(LispMacroExpander.expandTypep(cons, ctx.closRegistry, false), ctx);
 				case LispNames.SUBTYPEP ->
 					WasmExprCompiler.compileExpr(LispMacroExpander.expandSubtypep(cons, ctx.closRegistry), ctx);
+				case LispNames.UPGRADED_COMPLEX_PART_TYPE ->
+					WasmExprCompiler.compileExpr(LispMacroExpander.expandUpgradedComplexPartType(cons), ctx);
 				case LispNames.CHECK_TYPE -> WasmExprCompiler.compileExpr(LispMacroExpander.expandCheckType(cons), ctx);
 				case LispNames.ASSERT -> WasmExprCompiler.compileExpr(LispMacroExpander.expandAssert(cons), ctx);
 				case LispNames.DECLARE -> WasmExprCompiler.compileExpr(LispMacroExpander.expandDeclare(cons), ctx);

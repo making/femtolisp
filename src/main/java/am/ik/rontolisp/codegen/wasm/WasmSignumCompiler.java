@@ -11,7 +11,8 @@ import am.ik.wasm.Type;
  * Compiles the {@code signum} built-in: the sign of a number as -1/0/1. The type is
  * preserved at runtime -- an integer or ratio argument yields an integer (the sign of a
  * ratio is the sign of its numerator) and a float argument yields a float (-1.0/0.0/1.0)
- * -- by testing whether the value is a float struct.
+ * -- by testing whether the value is a float struct. A complex argument answers the gated
+ * {@code _csignum} unit vector instead, like the interpreter.
  */
 final class WasmSignumCompiler {
 
@@ -34,6 +35,22 @@ final class WasmSignumCompiler {
 		int slot = ctx.allocTemp();
 		ctx.writer.write(Instruction.SET_LOCAL);
 		ctx.writer.writeUnsignedLeb128(slot);
+
+		// A complex argument answers the _csignum unit vector, like the
+		// interpreter -- tested first so the float/ratio arms below never see one.
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(slot);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.REF_TEST);
+		ctx.writer.writeHeapType(WasmLispCompiler.TYPE_COMPLEX);
+		ctx.writer.write(Instruction.IF);
+		ctx.writer.writeRefType(true, Type.EQ.code());
+
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(slot);
+		ctx.writer.write(Instruction.CALL);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.FUNC_C_SIGNUM);
+
+		ctx.writer.write(Instruction.ELSE);
 
 		// Branch on whether the argument is a float struct or an integer/ratio.
 		ctx.writer.write(Instruction.GET_LOCAL);
@@ -82,6 +99,7 @@ final class WasmSignumCompiler {
 		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.FUNC_RAT_CMP);
 		ctx.writer.write(Instruction.GC_PREFIX, Instruction.I31_REF_NEW);
 
+		ctx.writer.write(Instruction.END);
 		ctx.writer.write(Instruction.END);
 	}
 

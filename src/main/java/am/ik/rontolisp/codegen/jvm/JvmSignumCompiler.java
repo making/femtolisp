@@ -9,7 +9,10 @@ import am.ik.jvm.Opcode;
 /**
  * Compiles the {@code signum} built-in: the sign of a number as -1/0/1. A floating-point
  * literal argument yields a double (-1.0/0.0/1.0) via {@code Math.signum}; otherwise the
- * integer sign is returned via {@code BigInteger.signum()}.
+ * integer sign is returned via {@code BigInteger.signum()}. A syntactic complex (a
+ * {@code #C} literal, a {@code complex}/{@code conjugate} form) steers off the unboxed
+ * path onto the object path first, so it never reaches an unboxing (the {@code abs}
+ * steering pattern, `.kb/jvm-complex.md`).
  */
 final class JvmSignumCompiler {
 
@@ -19,7 +22,7 @@ final class JvmSignumCompiler {
 	static void compile(LispCons cons, JvmLispCompiler.Ctx ctx, String className) {
 		List<LispVal> args = cons.toList();
 		JvmExprCompiler.compileExpr(args.get(1), ctx, className);
-		if (JvmLispCompiler.hasDoubleLiteral(args, ctx)) {
+		if (!JvmLispCompiler.hasComplexOperand(args) && JvmLispCompiler.hasDoubleLiteral(args, ctx)) {
 			JvmEmitHelper.unboxDouble(ctx);
 			ctx.emit(Opcode.INVOKESTATIC);
 			ctx.emitU2(ctx.mathOp(JvmMathFnCompiler.SIGNUM_D).index());

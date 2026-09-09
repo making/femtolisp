@@ -13044,6 +13044,126 @@ class WasmLispCompilerIntegrationTest {
 		assertThat(compileComponentAndRun("(print (complex 1 2))")).isEqualTo("#C(1 2)");
 		assertThat(compileComponentAndRun("(print (+ #c(1 2) 1.5))")).isEqualTo("#C(2.5 2.0)");
 		assertThat(compileComponentAndRun("(print (sqrt -1))")).isEqualTo("#C(0.0 1.0)");
+		assertThat(compileComponentAndRun("(print (signum #c(3 4)))")).isEqualTo("#C(0.6 0.8)");
+		assertThat(compileComponentAndRun("(print (typep #c(1 2) '(complex integer)))")).isEqualTo("T");
+	}
+
+	@Test
+	void compileAndRunComplexTypep() throws Exception {
+		// SBCL parity (.todo/754): a complex is of type complex (and of type
+		// number) but not of type real; a real is not of type complex.
+		assertThat(compileAndRun("(print (typep #c(1 2) 'complex))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (typep #c(1 2) 'real))")).isEqualTo("NIL");
+		assertThat(compileAndRun("(print (typep #c(1 2) 'number))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (typep 5 'complex))")).isEqualTo("NIL");
+		assertThat(compileAndRun("(print (typep 5 'real))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (typep #c(1 2) '(complex integer)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (typep #c(1.0 2.0) '(complex integer)))")).isEqualTo("NIL");
+		assertThat(compileAndRun("(print (typep #c(1.0 2.0) '(complex single-float)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (typep #c(1 2) '(complex *)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (typep 5 '(complex *)))")).isEqualTo("NIL");
+		assertThat(compileAndRun("(print (typep #c(1 2) '(complex rational)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (typecase #c(1 2) (real :real) (complex :complex)))")).isEqualTo(":COMPLEX");
+		assertThat(compileAndRun("(print (typecase 5 (complex :complex) (real :real)))")).isEqualTo(":REAL");
+		assertThat(compileAndRunEhExpectTrap("(print (check-type 5 complex))")).contains("unreachable");
+	}
+
+	@Test
+	void compileAndRunComplexTypeOfAndSubtypep() throws Exception {
+		// type-of/class-of are prelude defuns, so those programs take the prelude
+		// splice like every other prelude-reaching test in this file.
+		assertThat(compileAndRunPrelude("(print (type-of #c(1 2)))")).isEqualTo("COMPLEX");
+		assertThat(compileAndRunPrelude("(print (typep #c(1 2) (type-of #c(1 2))))")).isEqualTo("T");
+		assertThat(compileAndRunPrelude("(print (eq (class-of #c(1 2)) (find-class 'complex)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (subtypep 'complex 'number))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (subtypep 'real 'number))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (subtypep 'complex 'real))")).isEqualTo("NIL");
+		assertThat(compileAndRun("(print (subtypep '(complex integer) 'complex))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (subtypep '(complex integer) '(complex rational)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (subtypep 'complex '(complex integer)))")).isEqualTo("NIL");
+		assertThat(compileAndRun("(print (subtypep '(complex integer) 'number))")).isEqualTo("T");
+	}
+
+	@Test
+	void compileAndRunUpgradedComplexPartType() throws Exception {
+		assertThat(compileAndRun("(print (upgraded-complex-part-type 'integer))")).isEqualTo("INTEGER");
+		assertThat(compileAndRun("(print (upgraded-complex-part-type 'single-float))")).isEqualTo("SINGLE-FLOAT");
+		assertThat(compileAndRun("(print (upgraded-complex-part-type 'real))")).isEqualTo("REAL");
+		assertThat(compileAndRun("(print (upgraded-complex-part-type '(integer 0 10)))")).isEqualTo("INTEGER");
+		assertThat(compileAndRun("(print (funcall #'upgraded-complex-part-type 'integer))")).isEqualTo("INTEGER");
+		assertThat(compileAndRunEh("(print (handler-case (upgraded-complex-part-type 'string) (error (e) :caught)))"))
+			.isEqualTo(":CAUGHT");
+		assertThat(compileAndRunEhExpectTrap("(print (upgraded-complex-part-type 'complex))")).contains("unreachable");
+	}
+
+	@Test
+	void compileAndRunCoerceToComplex() throws Exception {
+		assertThat(compileAndRun("(print (coerce 5 'complex))")).isEqualTo("5");
+		assertThat(compileAndRun("(print (coerce 5.0 'complex))")).isEqualTo("#C(5.0 0.0)");
+		assertThat(compileAndRun("(print (coerce #c(1 2) 'complex))")).isEqualTo("#C(1 2)");
+		assertThat(compileAndRun("(print (coerce 5 '(complex single-float)))")).isEqualTo("#C(5.0 0.0)");
+		assertThat(compileAndRun("(print (coerce #c(1 2) '(complex single-float)))")).isEqualTo("#C(1.0 2.0)");
+		assertThat(compileAndRun("(print (coerce 5 'real))")).isEqualTo("5");
+		assertThat(compileAndRun("""
+				(defun pick-complex-type () 'complex)
+				(print (coerce 5.0 (pick-complex-type)))
+				""")).isEqualTo("#C(5.0 0.0)");
+		assertThat(compileAndRunEh("(print (handler-case (coerce #c(1 2) 'real) (error (e) :caught)))"))
+			.isEqualTo(":CAUGHT");
+		assertThat(compileAndRunEh("(print (handler-case (coerce #c(1 2) 'single-float) (error (e) :caught)))"))
+			.isEqualTo(":CAUGHT");
+	}
+
+	@Test
+	void compileAndRunComplexSignum() throws Exception {
+		// SBCL parity (.todo/754): the unit vector z/|z| in floats; a zero answers
+		// the canonicalization of its own parts. The (1 2) unit vector is closeness
+		// pinned (the scaled hypot rounds apart from Math.hypot in the last ulp).
+		assertThat(compileAndRun("(print (signum #c(3 4)))")).isEqualTo("#C(0.6 0.8)");
+		assertThat(compileAndRun("(print (signum #c(0 0)))")).isEqualTo("0");
+		assertThat(compileAndRun("(print (signum #c(0.0 0.0)))")).isEqualTo("#C(0.0 0.0)");
+		assertThat(compileAndRun("(print (signum #c(0 1)))")).isEqualTo("#C(0.0 1.0)");
+		assertThat(compileAndRun("(print (funcall #'signum #c(3 4)))")).isEqualTo("#C(0.6 0.8)");
+		assertThat(Double.parseDouble(compileAndRun("(print (realpart (signum #c(1 2))))")))
+			.isCloseTo(0.4472135954999579, within(1e-12));
+		assertThat(Double.parseDouble(compileAndRun("(print (imagpart (signum #c(1 2))))")))
+			.isCloseTo(0.8944271909999159, within(1e-12));
+	}
+
+	@Test
+	void compileAndRunComplexRealOnlyOperationsSignalCatchableErrors() throws Exception {
+		// Real-only by contract (.todo/754): caught as a plain error (not
+		// type-error) -- the documented instance-less-throw divergence -- so the
+		// test catches (error ...) and compares the message, like the ordering test
+		// above it.
+		assertThat(compileAndRunEh("""
+				(defun te-print (thunk)
+				  (handler-case (funcall thunk) (error (e) (princ-to-string e))))
+				(print (list (te-print (lambda () (floor #c(1 2))))
+				             (te-print (lambda () (truncate #c(1 2))))
+				             (te-print (lambda () (ceiling #c(1 2))))
+				             (te-print (lambda () (round #c(1 2))))
+				             (te-print (lambda () (float #c(1 2))))
+				             (te-print (lambda () (numerator #c(1 2))))
+				             (te-print (lambda () (denominator #c(1 2))))))
+				""")).isEqualTo("(\"Expected real number, got: #C(1 2)\"" + " \"Expected real number, got: #C(1 2)\""
+				+ " \"Expected real number, got: #C(1 2)\"" + " \"Expected real number, got: #C(1 2)\""
+				+ " \"Expected real number, got: #C(1 2)\"" + " \"Expected real number, got: #C(1 2)\""
+				+ " \"Expected real number, got: #C(1 2)\")");
+		assertThat(compileAndRunEh("""
+				(defun te-print (thunk)
+				  (handler-case (funcall thunk) (error (e) (princ-to-string e))))
+				(print (list (te-print (lambda () (isqrt #c(1 2))))
+				             (te-print (lambda () (mod #c(1 2) 3)))
+				             (te-print (lambda () (rem #c(1 2) 3)))
+				             (te-print (lambda () (gcd #c(1 2) 3)))
+				             (te-print (lambda () (lcm 4 #c(1 2))))
+				             (te-print (lambda () (logand #c(1 2) 3)))
+				             (te-print (lambda () (ash #c(1 2) 1)))))
+				""")).isEqualTo("(\"Expected integer, got: #C(1 2)\"" + " \"Expected integer, got: #C(1 2)\""
+				+ " \"Expected integer, got: #C(1 2)\"" + " \"Expected integer, got: #C(1 2)\""
+				+ " \"Expected integer, got: #C(1 2)\"" + " \"Expected integer, got: #C(1 2)\""
+				+ " \"Expected integer, got: #C(1 2)\")");
 	}
 
 	@Test

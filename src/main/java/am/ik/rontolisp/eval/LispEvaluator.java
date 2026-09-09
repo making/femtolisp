@@ -3411,6 +3411,7 @@ public final class LispEvaluator {
 			case LispBigInteger ignored -> "integer";
 			case LispRatio ignored -> "ratio";
 			case LispDouble ignored -> "float";
+			case LispComplex ignored -> "complex";
 			case LispString ignored -> "string";
 			case LispChar ignored -> "character";
 			case LispTrue ignored -> "boolean";
@@ -5800,6 +5801,8 @@ public final class LispEvaluator {
 				ensureAsdfClassesFor(cons);
 				ensureGeomClassesFor(cons);
 				return eval(LispMacroExpander.expandTypep(cons, this.closRegistry), env);
+			case LispNames.UPGRADED_COMPLEX_PART_TYPE:
+				return evalBuiltinMacro(cons, env, LispMacroExpander::expandUpgradedComplexPartType);
 			case LispNames.PRINT_UNREADABLE_OBJECT:
 				return evalBuiltinMacro(cons, env, LispMacroExpander::expandPrintUnreadableObject);
 			case LispNames.WITH_OPEN_STREAM:

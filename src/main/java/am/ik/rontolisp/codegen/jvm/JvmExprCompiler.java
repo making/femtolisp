@@ -1742,6 +1742,8 @@ final class JvmExprCompiler {
 					.compileExpr(LispMacroExpander.expandTypep(cons, ctx.closRegistry, false), ctx, className);
 				case LispNames.SUBTYPEP -> JvmExprCompiler
 					.compileExpr(LispMacroExpander.expandSubtypep(cons, ctx.closRegistry), ctx, className);
+				case LispNames.UPGRADED_COMPLEX_PART_TYPE ->
+					JvmExprCompiler.compileExpr(LispMacroExpander.expandUpgradedComplexPartType(cons), ctx, className);
 				case LispNames.CHECK_TYPE ->
 					JvmExprCompiler.compileExpr(LispMacroExpander.expandCheckType(cons), ctx, className);
 				case LispNames.ASSERT ->

@@ -45,23 +45,14 @@ only the decomposition/composition pair is missing.
 
 ### Complex numbers
 
-> **Update 2026-09-09 (.todo/751 landed):** the split below IS the concrete use
-> case this section waited for. Step 1 (interpreter) is done: `LispComplex` with
-> SBCL canonicalization, the `#C` reader/printer, interpreter arithmetic
-> (`+ - * /`, `1+`/`1-`, `abs`, `sqrt`, `expt`/`exp`/`log`/trig, `phase`,
-> `conjugate`, `realpart`/`imagpart`, `complexp`/`realp`/`numberp`/`zerop`,
-> `=`/`eql`/`equal`/`equalp`) and first-class `#'complex`. `complex` is a real
-> `cl` function now (moved out of `CL_MACROS`); the JVM backend routes through
-> `JvmComplexCompiler` since 752; the WASM backend routes through
-> `WasmComplexCompiler` since 753 (tagged `TYPE_COMPLEX`, `.kb/wasm-complex.md`;
-> `expandComplexLite` deleted). Known gaps for 754: `signum` of a
-> complex still signals (SBCL answers the unit vector), `typep`'s `real` test and
-> `type-of`/`upgraded-complex-part-type` are untouched, and `log`/`expt`/`asin`
-> of a negative/fractional REAL still answer NaN (only complex operands and
-> `sqrt` of a negative real cross into the plane). New cross-backend message
-> `ClosRegistry.EXPECTED_REAL_MESSAGE_PREFIX` ("Expected real number, got: ")
-> for a complex reaching ordering/`min`/`max`/`plusp`/`minusp` -- 752/753 mirror
-> it byte-identical.
+> **Update 2026-09-09 (.todo/754 landed):** the four-step split is complete --
+> type system, corpus and docs are in (see the step list below). Remaining
+> lite edges, all documented where they occur: `log`/`expt`/`asin` of a
+> negative/fractional REAL still answer NaN (only complex operands and `sqrt`
+> of a negative real cross into the plane); `(integer 0 10)` upgrades to
+> `integer` where SBCL answers `(mod 11)`; variable-carried complex arithmetic
+> on the compiled backends steers syntactically (see `.todo/755` for the one
+> place that steering goes wrong today).
 
 CL has a full complex number tower. RontoLisp implements it in four steps:
 - 751 (done): `LispComplex` (real + imaginary parts) + reader/printer +
@@ -74,8 +65,22 @@ CL has a full complex number tower. RontoLisp implements it in four steps:
   interpreter case answering identically via `wasmtime run test.wasm` (plus a
   `--component` smoke leg); the `--no-gc` scalar backend refuses complex
   construction and operators at compile time.
-- 754: type system (`typep`/`type-of`/`upgraded-complex-part-type`), corpus
-  (`ci-spec.yaml` cases), docs.
+- 754 (done 2026-09-09): type system, corpus, docs. `typep`/`typecase`/
+  `etypecase`/`check-type` arms for `complex` (incl. `(complex part-type)`)
+  and the `real`-vs-`number` split (`(typep #c(1 2) 'real)` is NIL now);
+  `subtypep` lattice (`complex` under `number`, `(complex x)` part-wise);
+  `coerce` to/from `complex`/`real` (incl. `(complex part-type)` and computed
+  designators); `upgraded-complex-part-type` (expansion-only, so all four
+  backends share it);   `type-of` answering atomic `COMPLEX` (the numeric
+  convention here is atomic, unlike SBCL's bounded specifier) with
+  `class-of`/`find-class` following via the new built-in class.
+  `signum` of a complex answers the
+  unit vector on all four backends (JVM `_csignum`, WASM `_csignum`);
+  `float`/`floor`-family/`numerator`/`denominator` over a complex signal the
+  catchable "Expected real number" on all four (the funnel arms are one
+  message now); `isqrt`/`mod`/`rem`/`gcd`/`lcm`/bitwise stay
+  "Expected integer". `ci-spec.yaml` pins the contract (three cases; `+ - *`
+  stay out -- `.todo/755`); per-operator EN+JA pages for the eight names.
 
 ### Implementation approach (pragmatic subset)
 

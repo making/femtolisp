@@ -15548,6 +15548,111 @@ cases:
         0
         NIL
 
+  - name: complex-reader-constructor-predicates
+    source: |
+      (print #C(1 2))
+      (print #C(1/2 1/3))
+      (print (complex 1 0))
+      (print (complex 2.0 0))
+      (print (complex 1 2))
+      (print (complexp #c(1 2)))
+      (print (complexp 1))
+      (print (realp #c(1 2)))
+      (print (realp 1/2))
+      (print (numberp #c(1 2)))
+      (print (= #c(1 2) #c(1 2)))
+      (print (zerop #c(0 0)))
+    expected: |
+      #C(1 2)
+      #C(1/2 1/3)
+      1
+      #C(2.0 0.0)
+      #C(1 2)
+      T
+      NIL
+      NIL
+      T
+      T
+      T
+      T
+  - name: complex-unary-arithmetic-and-accessors
+    source: |
+      (print (- #c(1 2)))
+      (print (/ #c(1 2) 2))
+      (print (/ #c(1 2)))
+      (print (abs #c(3 4)))
+      (print (sqrt -1))
+      (print (expt #c(1 1) 2))
+      (print (conjugate #c(1 2)))
+      (print (conjugate 5))
+      (print (realpart #c(1 2)))
+      (print (imagpart 5.5))
+      (print (signum #c(3 4)))
+      (print (signum #c(0 0)))
+      (print (phase 5))
+    expected: |
+      #C(-1 -2)
+      #C(1/2 1)
+      #C(1/5 -2/5)
+      5.0
+      #C(0.0 1.0)
+      #C(0 2)
+      #C(1 -2)
+      5
+      1
+      0.0
+      #C(0.6 0.8)
+      0
+      0.0
+  - name: complex-type-system
+    source: |
+      (print (typep #c(1 2) 'complex))
+      (print (typep #c(1 2) 'real))
+      (print (typep #c(1 2) '(complex integer)))
+      (print (typep #c(1.0 2.0) '(complex single-float)))
+      (print (typep 5 '(complex *)))
+      (print (type-of #c(1 2)))
+      (print (typep #c(1 2) (type-of #c(1 2))))
+      (print (subtypep '(complex integer) '(complex rational)))
+      (print (subtypep 'complex 'real))
+      (print (upgraded-complex-part-type 'integer))
+      (print (upgraded-complex-part-type '(integer 0 10)))
+      (print (coerce 5 'complex))
+      (print (coerce 5.0 'complex))
+      (print (coerce 5 '(complex single-float)))
+      (print (coerce 5 'real))
+      (print (typecase #c(1 2) (real :real) (complex :complex)))
+      (print (handler-case (minusp #c(1 2)) (error (e) (princ-to-string e))))
+      (print (handler-case (< #c(1 2) 3) (error (e) (princ-to-string e))))
+      (print (handler-case (floor #c(1 2)) (error (e) (princ-to-string e))))
+      (print (handler-case (isqrt #c(1 2)) (error (e) (princ-to-string e))))
+      (print (handler-case (coerce #c(1 2) 'real) (error (e) (princ-to-string e))))
+      (defun cx-pick-type () 'complex)
+      (print (coerce 5.0 (cx-pick-type)))
+    expected: |
+      T
+      NIL
+      T
+      T
+      NIL
+      COMPLEX
+      T
+      T
+      NIL
+      INTEGER
+      INTEGER
+      5
+      #C(5.0 0.0)
+      #C(5.0 0.0)
+      5
+      :COMPLEX
+      "Expected real number, got: #C(1 2)"
+      "Expected real number, got: #C(1 2)"
+      "Expected real number, got: #C(1 2)"
+      "Expected integer, got: #C(1 2)"
+      "Expected real number, got: #C(1 2)"
+      #C(5.0 0.0)
+
 # Cases that cannot join the corpus above: one that ENDS the program, one whose
 # subject a backend does not have at all. Each is compiled and run on its own.
 # What an ending case asserts is the standard-error report plus a non-zero exit

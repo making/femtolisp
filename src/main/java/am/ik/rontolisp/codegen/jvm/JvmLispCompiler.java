@@ -1382,8 +1382,11 @@ public final class JvmLispCompiler implements LispCompiler {
 		// first-class value -- otherwise every program would carry a wrapper
 		// calling a helper its gate left out (the widen-float-bits precedent in
 		// BuiltinFunctionWrappers). The designator spelling counts, like the
-		// reference gate above.
-		for (String op : List.of(LispNames.COMPLEX, LispNames.CONJUGATE, LispNames.SQRT, LispNames.PHASE)) {
+		// reference gate above. #'upgraded-complex-part-type joins them: its body
+		// probes (subtypep <var> 'real), which compiles to the gated
+		// %subtypep-runtime.
+		for (String op : List.of(LispNames.COMPLEX, LispNames.CONJUGATE, LispNames.SQRT, LispNames.PHASE,
+				LispNames.UPGRADED_COMPLEX_PART_TYPE)) {
 			if (!referencesFunctionDesignator(program, closRegistry, op)) {
 				wrapperExcludes.add(op);
 			}

@@ -418,11 +418,12 @@ final class WasmEmitHelper {
 		w.write(Instruction.F64_DIV);
 		w.write(Instruction.ELSE);
 		// A complex reaching the f64 coercion is not silently reduced to its real
-		// part (that would be a wrong number): it lands in _type_err_num, like any
-		// other non-coercible value -- the JVM backend's _dbl corner, catchable and
-		// correctly rendered in EH mode. Complex arithmetic never reaches here for
-		// a syntactically visible complex (the call sites steer it to the _c*
-		// helpers, whose parts -- always real -- flow through this same function).
+		// part (that would be a wrong number): it lands in _type_err_real, like a
+		// complex reaching any other real-only funnel on every backend (the
+		// interpreter's requireRealOperand, the JVM backend's _dbl holder arm).
+		// Complex arithmetic never reaches here for a syntactically visible complex
+		// (the call sites steer it to the _c* helpers, whose parts -- always real
+		// -- flow through this same function).
 		w.write(Instruction.GET_LOCAL);
 		w.writeUnsignedLeb128(tmpSlot);
 		w.write(Instruction.GC_PREFIX, Instruction.REF_TEST);
@@ -432,7 +433,7 @@ final class WasmEmitHelper {
 		w.write(Instruction.GET_LOCAL);
 		w.writeUnsignedLeb128(tmpSlot);
 		w.write(Instruction.CALL);
-		w.writeUnsignedLeb128(WasmLispCompiler.FUNC_TYPE_ERR_NUM);
+		w.writeUnsignedLeb128(WasmLispCompiler.FUNC_TYPE_ERR_REAL);
 		w.write(Instruction.UNREACHABLE);
 		w.write(Instruction.ELSE);
 		// NON-number landing: _type_err_num throws a catchable $lisp-cond in EH

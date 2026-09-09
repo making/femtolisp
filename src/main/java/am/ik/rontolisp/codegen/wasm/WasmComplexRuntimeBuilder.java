@@ -336,6 +336,88 @@ final class WasmComplexRuntimeBuilder {
 		return body.toByteArray();
 	}
 
+	// _csignum((ref null eq) a) -> (ref null eq): the unit vector of a complex
+	// operand (re/|z| + (im/|z|)i as floats, like the interpreter). A zero answers
+	// the canonicalization of its own parts through _ccomplex (0 for exact parts,
+	// #C(0.0 0.0) for float parts). Only the signum call site calls this, after
+	// its own complex test, so the argument is always a complex here. The modulus
+	// is scaled (m * sqrt((re/m)^2 + (im/m)^2)) so huge parts do not overflow to
+	// infinity the way a naive sqrt(re^2+im^2) would.
+	static byte[] buildCsignumBody() {
+		ByteArrayOutputStream body = new ByteArrayOutputStream();
+		WasmWriter w = new WasmWriter(body);
+
+		// Locals: 0=a (param), 1=re, 2=im, 3=m, 4=r1, 5=r2, 6=abs (f64).
+		w.write(1);
+		w.write(6);
+		w.write(Type.F64);
+
+		emitComplexReal(w, 0);
+		call(w, WasmLispCompiler.FUNC_AS_F64);
+		w.write(Instruction.SET_LOCAL);
+		w.writeUnsignedLeb128(1);
+		emitComplexImag(w, 0);
+		call(w, WasmLispCompiler.FUNC_AS_F64);
+		w.write(Instruction.SET_LOCAL);
+		w.writeUnsignedLeb128(2);
+		// m = max(|re|, |im|).
+		getLocal(w, 1);
+		w.write(Instruction.F64_ABS);
+		getLocal(w, 2);
+		w.write(Instruction.F64_ABS);
+		w.write(Instruction.F64_MAX);
+		w.write(Instruction.SET_LOCAL);
+		w.writeUnsignedLeb128(3);
+		// A zero modulus takes the canonicalize-own-parts exit.
+		getLocal(w, 3);
+		w.write(Instruction.F64_CONST);
+		w.writeF64(0.0);
+		w.write(Instruction.F64_EQ);
+		w.write(Instruction.IF);
+		w.writeRefType(true, Type.EQ.code());
+		emitComplexReal(w, 0);
+		emitComplexImag(w, 0);
+		call(w, WasmLispCompiler.FUNC_C_COMPLEX);
+		w.write(Instruction.ELSE);
+		// r1 = re/m, r2 = im/m, abs = m * sqrt(r1^2 + r2^2).
+		getLocal(w, 1);
+		getLocal(w, 3);
+		w.write(Instruction.F64_DIV);
+		w.write(Instruction.SET_LOCAL);
+		w.writeUnsignedLeb128(4);
+		getLocal(w, 2);
+		getLocal(w, 3);
+		w.write(Instruction.F64_DIV);
+		w.write(Instruction.SET_LOCAL);
+		w.writeUnsignedLeb128(5);
+		getLocal(w, 3);
+		getLocal(w, 4);
+		getLocal(w, 4);
+		w.write(Instruction.F64_MUL);
+		getLocal(w, 5);
+		getLocal(w, 5);
+		w.write(Instruction.F64_MUL);
+		w.write(Instruction.F64_ADD);
+		w.write(Instruction.F64_SQRT);
+		w.write(Instruction.F64_MUL);
+		w.write(Instruction.SET_LOCAL);
+		w.writeUnsignedLeb128(6);
+		// _ccomplex(box(re/abs), box(im/abs)): float parts, so it always builds.
+		getLocal(w, 1);
+		getLocal(w, 6);
+		w.write(Instruction.F64_DIV);
+		boxF64(w);
+		getLocal(w, 2);
+		getLocal(w, 6);
+		w.write(Instruction.F64_DIV);
+		boxF64(w);
+		call(w, WasmLispCompiler.FUNC_C_COMPLEX);
+		w.write(Instruction.END);
+
+		w.write(Instruction.END);
+		return body.toByteArray();
+	}
+
 	// Pushes the real part of local[slot]: field 0 for a complex, the value itself
 	// otherwise (a non-number is left for the caller's _rat_* funnel to complain
 	// about, like the interpreter leaves it for its funnel).

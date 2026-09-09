@@ -78,20 +78,20 @@ public final class PackageRegistry {
 			LispNames.REMOVE_IF_NOT, LispNames.NOT, LispNames.NULL, LispNames.ATOM, LispNames.NUMBERP,
 			LispNames.INTEGERP, LispNames.FLOATP, LispNames.RATIONALP, LispNames.REALP, LispNames.COMPLEXP,
 			LispNames.COMPLEX, LispNames.REALPART, LispNames.IMAGPART, LispNames.CONJUGATE, LispNames.PHASE,
-			LispNames.NUMERATOR, LispNames.DENOMINATOR, LispNames.SYMBOLP, LispNames.STRINGP, LispNames.LISTP,
-			LispNames.CONSP, LispNames.KEYWORDP, LispNames.FLOAT, LispNames.TRUNCATE, LispNames.FLOOR,
-			LispNames.CEILING, LispNames.ROUND, LispNames.FTRUNCATE, LispNames.FFLOOR, LispNames.FCEILING,
-			LispNames.FROUND, LispNames.ONE_PLUS, LispNames.ONE_MINUS, LispNames.ZEROP, LispNames.PLUSP,
-			LispNames.MINUSP, LispNames.EVENP, LispNames.ODDP, LispNames.FIRST, LispNames.SECOND, LispNames.THIRD,
-			LispNames.FOURTH, LispNames.FIFTH, LispNames.SIXTH, LispNames.SEVENTH, LispNames.EIGHTH, LispNames.NINTH,
-			LispNames.TENTH, LispNames.NTH, LispNames.PRINT, LispNames.PRIN1, LispNames.PRINC, LispNames.TERPRI,
-			LispNames.FRESH_LINE, LispNames.READ_LINE, LispNames.READ, LispNames.EVAL, LispNames.LOAD,
-			LispNames.REQUIRE, LispNames.PROVIDE, LispNames.SYMBOL_FUNCTION, LispNames.LENGTH, LispNames.REVERSE,
-			LispNames.MEMBER, LispNames.FIND, LispNames.FIND_IF, LispNames.FIND_IF_NOT, LispNames.MEMBER_IF,
-			LispNames.POSITION, LispNames.POSITION_IF, LispNames.POSITION_IF_NOT, LispNames.COUNT, LispNames.COUNT_IF,
-			LispNames.ASSOC, LispNames.ASSOC_IF, LispNames.LAST, LispNames.BUTLAST, LispNames.GETF,
-			LispNames.REMOVE_DUPLICATES, LispNames.DELETE_DUPLICATES, LispNames.NCONC, LispNames.REST,
-			LispNames.PRINC_TO_STRING,
+			LispNames.UPGRADED_COMPLEX_PART_TYPE, LispNames.NUMERATOR, LispNames.DENOMINATOR, LispNames.SYMBOLP,
+			LispNames.STRINGP, LispNames.LISTP, LispNames.CONSP, LispNames.KEYWORDP, LispNames.FLOAT,
+			LispNames.TRUNCATE, LispNames.FLOOR, LispNames.CEILING, LispNames.ROUND, LispNames.FTRUNCATE,
+			LispNames.FFLOOR, LispNames.FCEILING, LispNames.FROUND, LispNames.ONE_PLUS, LispNames.ONE_MINUS,
+			LispNames.ZEROP, LispNames.PLUSP, LispNames.MINUSP, LispNames.EVENP, LispNames.ODDP, LispNames.FIRST,
+			LispNames.SECOND, LispNames.THIRD, LispNames.FOURTH, LispNames.FIFTH, LispNames.SIXTH, LispNames.SEVENTH,
+			LispNames.EIGHTH, LispNames.NINTH, LispNames.TENTH, LispNames.NTH, LispNames.PRINT, LispNames.PRIN1,
+			LispNames.PRINC, LispNames.TERPRI, LispNames.FRESH_LINE, LispNames.READ_LINE, LispNames.READ,
+			LispNames.EVAL, LispNames.LOAD, LispNames.REQUIRE, LispNames.PROVIDE, LispNames.SYMBOL_FUNCTION,
+			LispNames.LENGTH, LispNames.REVERSE, LispNames.MEMBER, LispNames.FIND, LispNames.FIND_IF,
+			LispNames.FIND_IF_NOT, LispNames.MEMBER_IF, LispNames.POSITION, LispNames.POSITION_IF,
+			LispNames.POSITION_IF_NOT, LispNames.COUNT, LispNames.COUNT_IF, LispNames.ASSOC, LispNames.ASSOC_IF,
+			LispNames.LAST, LispNames.BUTLAST, LispNames.GETF, LispNames.REMOVE_DUPLICATES, LispNames.DELETE_DUPLICATES,
+			LispNames.NCONC, LispNames.REST, LispNames.PRINC_TO_STRING,
 			// The printer generic: a defmethod on it belongs to cl, so a method defined
 			// inside a package that uses cl specializes CL:PRINT-OBJECT rather than
 			// minting that package's own (quri's uri method).
@@ -214,10 +214,10 @@ public final class PackageRegistry {
 	 * become {@code pkg::double-float}); they are not callable and do not appear in the
 	 * introspection listings.
 	 */
-	private static final Set<String> CL_TYPES = Set.of("INTEGER", "NUMBER", "RATIONAL", "RATIO", "REAL", "FIXNUM",
-			"BIGNUM", "SINGLE-FLOAT", "DOUBLE-FLOAT", "SHORT-FLOAT", "LONG-FLOAT", "UNSIGNED-BYTE", "SIGNED-BYTE",
-			"BOOLEAN", "SEQUENCE", "ARRAY", "SIMPLE-ARRAY", "SIMPLE-VECTOR", "SIMPLE-STRING", "BASE-STRING",
-			"CHARACTER", "BASE-CHAR", "STANDARD-CHAR", "SATISFIES", "OTHERWISE", "STREAM",
+	private static final Set<String> CL_TYPES = Set.of("INTEGER", "NUMBER", "RATIONAL", "RATIO", "REAL", "COMPLEX",
+			"FIXNUM", "BIGNUM", "SINGLE-FLOAT", "DOUBLE-FLOAT", "SHORT-FLOAT", "LONG-FLOAT", "UNSIGNED-BYTE",
+			"SIGNED-BYTE", "BOOLEAN", "SEQUENCE", "ARRAY", "SIMPLE-ARRAY", "SIMPLE-VECTOR", "SIMPLE-STRING",
+			"BASE-STRING", "CHARACTER", "BASE-CHAR", "STANDARD-CHAR", "SATISFIES", "OTHERWISE", "STREAM",
 			// The stream SUBtypes and the readtable type. Every stream is a
 			// self-describing value carrying its KIND, so `file-stream`,
 			// `string-stream` and `synonym-stream` all have exact tests; a "readtable"

@@ -1445,7 +1445,7 @@ public final class BuiltinFunctionWrappers {
 			// predicates above. The wrapper calls the function, so #'complex works
 			// before any backend compiles the call itself (.todo/752, .todo/753).
 			unaryOptionalSecond(LispNames.COMPLEX), unary(LispNames.REALPART), unary(LispNames.IMAGPART),
-			unary(LispNames.CONJUGATE), unary(LispNames.PHASE),
+			unary(LispNames.CONJUGATE), unary(LispNames.PHASE), unary(LispNames.UPGRADED_COMPLEX_PART_TYPE),
 			// Math functions (arity 1)
 			unary(LispNames.SQRT), unary(LispNames.ISQRT), unary(LispNames.SIGNUM), unary(LispNames.EXP),
 			unary(LispNames.LOG), unary(LispNames.SIN), unary(LispNames.COS), unary(LispNames.TAN),

@@ -290,6 +290,14 @@
 | `gcd` | `(gcd 12 18)`, `(gcd 24 36 60)` | `6`, `12`(可変長引数。最大公約数、`(gcd)` は `0`) |
 | `lcm` | `(lcm 4 6)`, `(lcm 2 3 4)` | `12`, `12`(可変長引数。最小公倍数。いずれかの引数が `0` なら `0`、`(lcm)` は `1`) |
 | `signum` | `(signum -5)`, `(signum 3.5)` | `-1`, `1.0`(符号。整数/浮動小数点の型を保ちます) |
+| `complex` | `(complex 1 2)`, `(complex 1 0)` | `#C(1 2)`、`1`(有理数のゼロ虚部は実数に降格し、浮動小数点数のゼロは複素数のまま残ります) |
+| `complexp` | `(complexp #c(1 2))` | `t` |
+| `realp` | `(realp 1/2)`、`(realp #c(1 2))` | `t`、`nil`(整数・有理数・浮動小数点数が実数で、複素数は実数ではありません) |
+| `realpart` | `(realpart #c(1 2))` | `1`(実数はその数自身を答えます) |
+| `imagpart` | `(imagpart #c(1 2))`、`(imagpart 5.5)` | `2`、`0.0`(実数はゼロ、浮動小数点数には浮動小数点数のゼロを答えます) |
+| `conjugate` | `(conjugate #c(1 2))` | `#C(1 -2)`(実数はその数自身を答えます) |
+| `phase` | `(phase 5)`、`(phase -5)` | `0.0`、円周率(複素平面上の偏角で、常に浮動小数点数です) |
+| `upgraded-complex-part-type` | `(upgraded-complex-part-type 'integer)` | `INTEGER`(`real` の下位型名はそのまま答え、複合指定子は先頭を答えます) |
 | `logand` | `(logand 12 10)`, `(logand 12 10 6)` | `8`, `0`(可変長引数のビット単位AND。`(logand)` は `-1`) |
 | `logior` | `(logior 12 10)`, `(logior 1 2 4 8)` | `14`, `15`(可変長引数のビット単位OR。`(logior)` は `0`) |
 | `logxor` | `(logxor 12 10)` | `6`(可変長引数のビット単位XOR。`(logxor)` は `0`) |
