@@ -12855,6 +12855,187 @@ class WasmLispCompilerIntegrationTest {
 		assertThat(compileAndRun("(print (eval '(let ((s (list 1 2 3))) (pop s) s)))")).isEqualTo("(2 3)");
 	}
 
+	// Complex numbers (.todo/753): every case mirrors the interpreter case of the
+	// same name in LispEvaluatorTest (SBCL parity pinned there), print-compared so
+	// the WASM GC leg answers identically. The transcendental formulas (exp/log/sin
+	// over complex, phase) reuse the backend's software cores, so like every WASM
+	// transcendental they are close but not bit-exact (the expSoftwareApproximation
+	// precedent); those assert closeness, everything else print equality. Ordering
+	// over a complex is catchable with the interpreter's "Expected real number"
+	// text, but as a simple-error -- the documented instance-less-throw divergence
+	// (ehANonNumberArithmeticOperandIsCaughtAsASimpleErrorHere) -- so the ordering
+	// test catches (error ...) and compares the message.
+	@Test
+	void compileAndRunComplexConstructor() throws Exception {
+		assertThat(compileAndRun("(print (complex 1 2))")).isEqualTo("#C(1 2)");
+		assertThat(compileAndRun("(print (complex 1 0))")).isEqualTo("1");
+		assertThat(compileAndRun("(print (complex 1))")).isEqualTo("1");
+		assertThat(compileAndRun("(print (complex 1/2 0))")).isEqualTo("1/2");
+		assertThat(compileAndRun("(print (complex 2.0 0))")).isEqualTo("#C(2.0 0.0)");
+		assertThat(compileAndRun("(print (complex 1 0.0))")).isEqualTo("#C(1.0 0.0)");
+		assertThat(compileAndRun("(print (complex 1 2.0))")).isEqualTo("#C(1.0 2.0)");
+		assertThat(compileAndRun("(print (complex 0 1))")).isEqualTo("#C(0 1)");
+	}
+
+	@Test
+	void compileAndRunComplexConstructorRejectsNonRealParts() throws Exception {
+		assertThat(compileAndRunEh("(print (handler-case (complex #c(1 2) 3) (error (e) (princ-to-string e))))"))
+			.isEqualTo("\"Expected number, got: #C(1 2)\"");
+		assertThat(compileAndRunEhExpectTrap("(print (complex #c(1 2) 3))")).contains("unreachable");
+		assertThat(compileAndRunEhExpectTrap("(print (complex 1 \"a\"))")).contains("unreachable");
+		// Caught as a plain error (not type-error): the documented
+		// instance-less-throw divergence
+		// (ehANonNumberArithmeticOperandIsCaughtAsASimpleErrorHere).
+		assertThat(compileAndRunEh("(print (handler-case (complex #c(1 2) 3) (error (e) :caught)))"))
+			.isEqualTo(":CAUGHT");
+	}
+
+	@Test
+	void compileAndRunComplexSharpCReader() throws Exception {
+		assertThat(compileAndRun("(print #C(1 2))")).isEqualTo("#C(1 2)");
+		assertThat(compileAndRun("(print #c(1 2))")).isEqualTo("#C(1 2)");
+		assertThat(compileAndRun("(print #C(1/2 1/3))")).isEqualTo("#C(1/2 1/3)");
+		assertThat(compileAndRun("(print #C(1 0))")).isEqualTo("1");
+		assertThat(compileAndRun("(print '#C(1 2))")).isEqualTo("#C(1 2)");
+	}
+
+	@Test
+	void compileAndRunComplexArithmeticStaysExact() throws Exception {
+		assertThat(compileAndRun("(print (+ #c(1 1/2) #c(1 1/3)))")).isEqualTo("#C(2 5/6)");
+		assertThat(compileAndRun("(print (- #c(1 2) #c(3 4)))")).isEqualTo("#C(-2 -2)");
+		assertThat(compileAndRun("(print (- #c(1 2)))")).isEqualTo("#C(-1 -2)");
+		assertThat(compileAndRun("(print (* #c(1 2) 2))")).isEqualTo("#C(2 4)");
+		assertThat(compileAndRun("(print (/ #c(1 2) 2))")).isEqualTo("#C(1/2 1)");
+		assertThat(compileAndRun("(print (/ #c(1 2)))")).isEqualTo("#C(1/5 -2/5)");
+		assertThat(compileAndRun("(print (+ #c(1 2) #c(3 4) 1))")).isEqualTo("#C(5 6)");
+		assertThat(compileAndRun("(print (1+ #c(1 2)))")).isEqualTo("#C(2 2)");
+		assertThat(compileAndRun("(print (1- #c(1 2)))")).isEqualTo("#C(0 2)");
+		assertThat(compileAndRun("(print (- #c(0 1) #c(0 1)))")).isEqualTo("0");
+	}
+
+	@Test
+	void compileAndRunComplexArithmeticContagion() throws Exception {
+		assertThat(compileAndRun("(print (+ #c(1 2) 1.5))")).isEqualTo("#C(2.5 2.0)");
+		assertThat(compileAndRun("(print (* #c(1 2) 2.0))")).isEqualTo("#C(2.0 4.0)");
+		assertThat(compileAndRun("(print (- 1 #c(1 2)))")).isEqualTo("#C(0 -2)");
+	}
+
+	@Test
+	void compileAndRunComplexAbs() throws Exception {
+		assertThat(Double.parseDouble(compileAndRun("(print (abs #c(3 4)))"))).isCloseTo(5.0, within(1e-12));
+		assertThat(compileAndRun("(print (abs 5))")).isEqualTo("5");
+	}
+
+	@Test
+	void compileAndRunComplexSqrt() throws Exception {
+		assertThat(compileAndRun("(print (sqrt -1))")).isEqualTo("#C(0.0 1.0)");
+		assertThat(compileAndRun("(print (sqrt -4))")).isEqualTo("#C(0.0 2.0)");
+		assertThat(compileAndRun("(print (sqrt #c(3 4)))")).isEqualTo("#C(2.0 1.0)");
+		assertThat(compileAndRun("(print (sqrt 4))")).isEqualTo("2.0");
+	}
+
+	@Test
+	void compileAndRunComplexEquality() throws Exception {
+		assertThat(compileAndRun("(print (= #c(1 2) #c(1 2)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (= 2.0 #c(2.0 0.0)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (= #c(1 2) 1))")).isEqualTo("NIL");
+		assertThat(compileAndRun("(print (= #c(1 2) #c(1 3)))")).isEqualTo("NIL");
+		assertThat(compileAndRun("(print (eql 1 #c(1 0)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (eql 2.0 #c(2.0 0)))")).isEqualTo("NIL");
+		assertThat(compileAndRun("(print (eql #c(1 2) #c(1 2)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (equal #c(1 2) #c(1 2)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (/= #c(1 2) #c(1 3)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (/= #c(1 2) #c(1 2)))")).isEqualTo("NIL");
+	}
+
+	@Test
+	void compileAndRunComplexPredicates() throws Exception {
+		assertThat(compileAndRun("(print (complexp #c(1 2)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (complexp 1))")).isEqualTo("NIL");
+		assertThat(compileAndRun("(print (numberp #c(1 2)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (numberp 1))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (realp #c(1 2)))")).isEqualTo("NIL");
+		assertThat(compileAndRun("(print (realp 1))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (realp 1.5))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (realp 1/2))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (realp nil))")).isEqualTo("NIL");
+		assertThat(compileAndRun("(print (integerp #c(1 2)))")).isEqualTo("NIL");
+		assertThat(compileAndRun("(print (floatp #c(1.0 2.0)))")).isEqualTo("NIL");
+		assertThat(compileAndRun("(print (rationalp #c(1 2)))")).isEqualTo("NIL");
+		assertThat(compileAndRun("(print (zerop #c(0 0)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (zerop #c(0.0 0.0)))")).isEqualTo("T");
+		assertThat(compileAndRun("(print (zerop #c(1 2)))")).isEqualTo("NIL");
+	}
+
+	@Test
+	void compileAndRunComplexOrderingSignalsCatchableErrors() throws Exception {
+		assertThat(compileAndRunEh("""
+				(defun te-print (thunk)
+				  (handler-case (funcall thunk) (error (e) (princ-to-string e))))
+				(print (list (te-print (lambda () (minusp #c(1 2))))
+				             (te-print (lambda () (plusp #c(1 2))))
+				             (te-print (lambda () (< #c(1 2) #c(3 4))))
+				             (te-print (lambda () (> #c(1 2) 1)))
+				             (te-print (lambda () (min #c(1 2) 3)))
+				             (te-print (lambda () (max 3 #c(1 2))))))
+				""")).isEqualTo("(\"Expected real number, got: #C(1 2)\"" + " \"Expected real number, got: #C(1 2)\""
+				+ " \"Expected real number, got: #C(1 2)\"" + " \"Expected real number, got: #C(1 2)\""
+				+ " \"Expected real number, got: #C(1 2)\"" + " \"Expected real number, got: #C(1 2)\")");
+	}
+
+	@Test
+	void compileAndRunComplexAccessors() throws Exception {
+		assertThat(compileAndRun("(print (conjugate #c(1 2)))")).isEqualTo("#C(1 -2)");
+		assertThat(compileAndRun("(print (conjugate 5))")).isEqualTo("5");
+		assertThat(compileAndRun("(print (realpart #c(1 2)))")).isEqualTo("1");
+		assertThat(compileAndRun("(print (realpart 5))")).isEqualTo("5");
+		assertThat(compileAndRun("(print (realpart #c(1.0 2)))")).isEqualTo("1.0");
+		assertThat(compileAndRun("(print (imagpart #c(1 2)))")).isEqualTo("2");
+		assertThat(compileAndRun("(print (imagpart 5))")).isEqualTo("0");
+		assertThat(compileAndRun("(print (imagpart 5.5))")).isEqualTo("0.0");
+		assertThat(Double.parseDouble(compileAndRun("(print (phase #c(1 1)))"))).isCloseTo(Math.PI / 4, within(1e-9));
+		assertThat(compileAndRun("(print (phase 5))")).isEqualTo("0.0");
+		assertThat(compileAndRun("(print (phase -5))")).isEqualTo("3.141592653589793");
+		assertThat(compileAndRunEhExpectTrap("(print (realpart nil))")).contains("unreachable");
+	}
+
+	@Test
+	void compileAndRunComplexExptExpLogTrig() throws Exception {
+		assertThat(compileAndRun("(print (expt #c(1 1) 2))")).isEqualTo("#C(0 2)");
+		assertThat(compileAndRun("(print (expt #c(1 1) -1))")).isEqualTo("#C(1/2 -1/2)");
+		assertThat(compileAndRun("(print (expt #c(0 1) 2))")).isEqualTo("-1");
+		assertThat(Double.parseDouble(compileAndRun("(print (realpart (exp #c(0 1))))"))).isCloseTo(0.5403023058681398,
+				within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (imagpart (exp #c(0 1))))"))).isCloseTo(0.8414709848078965,
+				within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (realpart (log #c(1 1))))"))).isCloseTo(0.3465735902799727,
+				within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (imagpart (log #c(1 1))))"))).isCloseTo(0.7853981633974483,
+				within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (realpart (sin #c(1 1))))"))).isCloseTo(1.2984575814159773,
+				within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (imagpart (sin #c(1 1))))"))).isCloseTo(0.6349639147847361,
+				within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (exp 1))"))).isCloseTo(Math.exp(1), within(1e-4));
+		assertThat(compileAndRun("(print (expt 2 3))")).isEqualTo("8");
+	}
+
+	@Test
+	void compileAndRunComplexFirstClass() throws Exception {
+		assertThat(compileAndRun("(print (funcall #'complex 1 2))")).isEqualTo("#C(1 2)");
+		assertThat(compileAndRun("(print (funcall #'conjugate #c(1 2)))")).isEqualTo("#C(1 -2)");
+		assertThat(compileAndRun("(print (mapcar #'complexp (list #c(1 2) 1)))")).isEqualTo("(T NIL)");
+	}
+
+	@Test
+	void compileAndRunComplexComponentSmoke() throws Exception {
+		// The component leg carries complex values end to end (Preview 1 and the
+		// component share the core module's complex representation).
+		assertThat(compileComponentAndRun("(print (complex 1 2))")).isEqualTo("#C(1 2)");
+		assertThat(compileComponentAndRun("(print (+ #c(1 2) 1.5))")).isEqualTo("#C(2.5 2.0)");
+		assertThat(compileComponentAndRun("(print (sqrt -1))")).isEqualTo("#C(0.0 1.0)");
+	}
+
 	@Test
 	void expSoftwareApproximation() throws Exception {
 		// WASM has no native exp instruction; it is approximated in f64 (range reduction

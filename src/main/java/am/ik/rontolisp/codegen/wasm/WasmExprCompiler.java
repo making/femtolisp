@@ -77,6 +77,7 @@ final class WasmExprCompiler {
 				ctx.writer.write(Instruction.GC_PREFIX, Instruction.STRUCT_NEW);
 				ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TYPE_FLOAT);
 			}
+			case am.ik.rontolisp.LispComplex c -> WasmComplexCompiler.compileLiteral(c, ctx);
 			case LispString s -> WasmEmitHelper.compileStringLiteral(s.literal(), ctx);
 			case am.ik.rontolisp.LispChar c -> {
 				ctx.writer.write(Instruction.I32_CONST);
@@ -834,22 +835,37 @@ final class WasmExprCompiler {
 			// at the call site.
 			switch (sym.name()) {
 				case LispNames.ADD -> {
-					if (!WasmIntFusionCompiler.tryCompile(cons, ctx)) {
+					if (WasmComplexCompiler.hasComplex(cons)) {
+						WasmComplexCompiler.compileArith(cons, ctx, WasmLispCompiler.FUNC_C_ADD);
+					}
+					else if (!WasmIntFusionCompiler.tryCompile(cons, ctx)) {
 						WasmArithCompiler.compile(cons, ctx, Instruction.F64_ADD, WasmLispCompiler.FUNC_RAT_ADD);
 					}
 				}
 				case LispNames.SUB -> {
-					if (!WasmIntFusionCompiler.tryCompile(cons, ctx)) {
+					if (WasmComplexCompiler.hasComplex(cons)) {
+						WasmComplexCompiler.compileArith(cons, ctx, WasmLispCompiler.FUNC_C_SUB);
+					}
+					else if (!WasmIntFusionCompiler.tryCompile(cons, ctx)) {
 						WasmArithCompiler.compile(cons, ctx, Instruction.F64_SUB, WasmLispCompiler.FUNC_RAT_SUB);
 					}
 				}
 				case LispNames.MUL -> {
-					if (!WasmIntFusionCompiler.tryCompile(cons, ctx)) {
+					if (WasmComplexCompiler.hasComplex(cons)) {
+						WasmComplexCompiler.compileArith(cons, ctx, WasmLispCompiler.FUNC_C_MUL);
+					}
+					else if (!WasmIntFusionCompiler.tryCompile(cons, ctx)) {
 						WasmArithCompiler.compile(cons, ctx, Instruction.F64_MUL, WasmLispCompiler.FUNC_RAT_MUL);
 					}
 				}
-				case LispNames.DIV ->
-					WasmArithCompiler.compile(cons, ctx, Instruction.F64_DIV, WasmLispCompiler.FUNC_RAT_DIV);
+				case LispNames.DIV -> {
+					if (WasmComplexCompiler.hasComplex(cons)) {
+						WasmComplexCompiler.compileArith(cons, ctx, WasmLispCompiler.FUNC_C_DIV);
+					}
+					else {
+						WasmArithCompiler.compile(cons, ctx, Instruction.F64_DIV, WasmLispCompiler.FUNC_RAT_DIV);
+					}
+				}
 				case LispNames.MOD -> {
 					if (!WasmIntFusionCompiler.tryCompile(cons, ctx)) {
 						WasmArithCompiler.compileModRem(cons, ctx, WasmLispCompiler.FUNC_RAT_MOD);
@@ -1336,8 +1352,15 @@ final class WasmExprCompiler {
 					WasmExprCompiler.compileExpr(LispMacroExpander.expandSetDispatchMacroCharacter(cons), ctx);
 				case LispNames.READTABLE_CASE ->
 					WasmExprCompiler.compileExpr(LispMacroExpander.expandReadtableCase(cons), ctx);
-				case LispNames.COMPLEX -> WasmExprCompiler.compileExpr(LispMacroExpander.expandComplexLite(cons), ctx);
-				case LispNames.NE -> WasmExprCompiler.compileExpr(LispMacroExpander.expandNumericNotEqual(cons), ctx);
+				case LispNames.COMPLEX -> WasmComplexCompiler.compileComplex(cons, ctx);
+				case LispNames.NE -> {
+					if (WasmComplexCompiler.hasComplex(cons)) {
+						WasmComplexCompiler.compileNotEqual(cons, ctx);
+					}
+					else {
+						WasmExprCompiler.compileExpr(LispMacroExpander.expandNumericNotEqual(cons), ctx);
+					}
+				}
 				case LispNames.READ_FROM_STRING -> WasmReadFromStringCompiler.compile(cons, ctx);
 				// A string=/string-equal call with the bounding-index keywords is lowered
 				// onto subseq first, so the intrinsic below always sees two strings.
@@ -1769,6 +1792,12 @@ final class WasmExprCompiler {
 				case LispNames.INTEGERP -> WasmIntegerpCompiler.compile(cons, ctx);
 				case LispNames.FLOATP -> WasmFloatpCompiler.compile(cons, ctx);
 				case LispNames.RATIONALP -> WasmRationalpCompiler.compile(cons, ctx);
+				case LispNames.COMPLEXP -> WasmComplexCompiler.compileComplexp(cons, ctx);
+				case LispNames.REALP -> WasmComplexCompiler.compileRealp(cons, ctx);
+				case LispNames.REALPART -> WasmComplexCompiler.compileRealpart(cons, ctx);
+				case LispNames.IMAGPART -> WasmComplexCompiler.compileImagpart(cons, ctx);
+				case LispNames.CONJUGATE -> WasmComplexCompiler.compileConjugate(cons, ctx);
+				case LispNames.PHASE -> WasmComplexCompiler.compilePhase(cons, ctx);
 				case LispNames.NUMERATOR -> WasmRatioAccessorCompiler.compile(cons, ctx, WasmLispCompiler.FUNC_RAT_NUM);
 				case LispNames.DENOMINATOR ->
 					WasmRatioAccessorCompiler.compile(cons, ctx, WasmLispCompiler.FUNC_RAT_DEN);
@@ -1843,7 +1872,14 @@ final class WasmExprCompiler {
 				case LispNames.MINUSP -> WasmExprCompiler.compileExpr(LispMacroExpander.expandMinusp(cons), ctx);
 				case LispNames.EVENP -> WasmExprCompiler.compileExpr(LispMacroExpander.expandEvenp(cons), ctx);
 				case LispNames.ODDP -> WasmExprCompiler.compileExpr(LispMacroExpander.expandOddp(cons), ctx);
-				case LispNames.ABS -> WasmAbsCompiler.compile(cons, ctx);
+				case LispNames.ABS -> {
+					if (WasmComplexCompiler.hasComplex(cons)) {
+						WasmComplexCompiler.compileAbs(cons, ctx);
+					}
+					else {
+						WasmAbsCompiler.compile(cons, ctx);
+					}
+				}
 				case LispNames.MIN -> {
 					if (isBinaryCall(cons)) {
 						WasmMinCompiler.compile(cons, ctx);
@@ -1878,13 +1914,55 @@ final class WasmExprCompiler {
 				// where the reason lives.
 				case LispNames.GET_UNIVERSAL_TIME, LispNames.GET_INTERNAL_REAL_TIME, LispNames.GET_INTERNAL_RUN_TIME ->
 					WasmTimeCompiler.compile(cons, ctx, sym.name());
-				case LispNames.SQRT -> WasmSqrtCompiler.compile(cons, ctx);
-				case LispNames.EXP -> WasmExpCompiler.compile(cons, ctx);
-				case LispNames.LOG -> WasmLogCompiler.compile(cons, ctx);
-				case LispNames.TANH -> WasmTanhCompiler.compile(cons, ctx);
-				case LispNames.SIN, LispNames.COS, LispNames.TAN -> WasmSinCosCompiler.compile(cons, ctx, sym.name());
-				case LispNames.ASIN, LispNames.ACOS, LispNames.ATAN -> WasmAtanCompiler.compile(cons, ctx, sym.name());
-				case LispNames.SINH, LispNames.COSH -> WasmSinhCoshCompiler.compile(cons, ctx, sym.name());
+				case LispNames.SQRT -> WasmComplexCompiler.compileSqrt(cons, ctx);
+				case LispNames.EXP -> {
+					if (WasmComplexCompiler.hasComplex(cons)) {
+						WasmComplexCompiler.compileUnaryMath(cons, ctx, sym.name());
+					}
+					else {
+						WasmExpCompiler.compile(cons, ctx);
+					}
+				}
+				case LispNames.LOG -> {
+					if (WasmComplexCompiler.hasComplex(cons)) {
+						WasmComplexCompiler.compileUnaryMath(cons, ctx, sym.name());
+					}
+					else {
+						WasmLogCompiler.compile(cons, ctx);
+					}
+				}
+				case LispNames.TANH -> {
+					if (WasmComplexCompiler.hasComplex(cons)) {
+						WasmComplexCompiler.compileUnaryMath(cons, ctx, sym.name());
+					}
+					else {
+						WasmTanhCompiler.compile(cons, ctx);
+					}
+				}
+				case LispNames.SIN, LispNames.COS, LispNames.TAN -> {
+					if (WasmComplexCompiler.hasComplex(cons)) {
+						WasmComplexCompiler.compileUnaryMath(cons, ctx, sym.name());
+					}
+					else {
+						WasmSinCosCompiler.compile(cons, ctx, sym.name());
+					}
+				}
+				case LispNames.ASIN, LispNames.ACOS, LispNames.ATAN -> {
+					if (WasmComplexCompiler.hasComplex(cons)) {
+						WasmComplexCompiler.compileUnaryMath(cons, ctx, sym.name());
+					}
+					else {
+						WasmAtanCompiler.compile(cons, ctx, sym.name());
+					}
+				}
+				case LispNames.SINH, LispNames.COSH -> {
+					if (WasmComplexCompiler.hasComplex(cons)) {
+						WasmComplexCompiler.compileUnaryMath(cons, ctx, sym.name());
+					}
+					else {
+						WasmSinhCoshCompiler.compile(cons, ctx, sym.name());
+					}
+				}
 				case LispNames.ISQRT -> WasmIsqrtCompiler.compile(cons, ctx);
 				case LispNames.SIGNUM -> WasmSignumCompiler.compile(cons, ctx);
 				case LispNames.LOGAND -> {
@@ -2019,7 +2097,14 @@ final class WasmExprCompiler {
 						WasmExprCompiler.compileExpr(LispMacroExpander.expandReduction(cons), ctx);
 					}
 				}
-				case LispNames.EXPT -> WasmExptCompiler.compile(cons, ctx);
+				case LispNames.EXPT -> {
+					if (WasmComplexCompiler.hasComplex(cons)) {
+						WasmComplexCompiler.compileExpt(cons, ctx);
+					}
+					else {
+						WasmExptCompiler.compile(cons, ctx);
+					}
+				}
 				case LispNames.FIRST -> WasmExprCompiler.compileExpr(LispMacroExpander.expandFirst(cons), ctx);
 				case LispNames.REST -> WasmExprCompiler.compileExpr(LispMacroExpander.expandRest(cons), ctx);
 				case LispNames.NTH -> WasmExprCompiler.compileExpr(LispMacroExpander.expandNth(cons), ctx);
@@ -2080,12 +2165,35 @@ final class WasmExprCompiler {
 	 * compiler; any other arity is desugared into nested binary comparisons.
 	 */
 	private static void compileComparison(LispCons cons, WasmLispCompiler.Ctx ctx, int i32Opcode, int f64Opcode) {
+		// A syntactic complex anywhere in the form takes the complex-aware
+		// compilation at any arity: the n-ary expansion binds its operands to
+		// temporaries first, which would hide the complex from this gate.
+		if (WasmComplexCompiler.hasComplex(cons)) {
+			if (i32Opcode == Instruction.I32_EQ) {
+				WasmComplexCompiler.compileEqual(cons, ctx);
+			}
+			else {
+				WasmComplexCompiler.compileOrdering(cons, ctx, maskForComplex(i32Opcode));
+			}
+			return;
+		}
 		if (isBinaryCall(cons)) {
 			WasmComparisonCompiler.compile(cons, ctx, i32Opcode, f64Opcode);
 		}
 		else {
 			WasmExprCompiler.compileExpr(LispMacroExpander.expandComparison(cons), ctx);
 		}
+	}
+
+	// The _rat_cmp_bits mask accepting the relation (1 = lt, 2 = eq, 4 = gt).
+	private static int maskForComplex(int i32Opcode) {
+		return switch (i32Opcode) {
+			case Instruction.I32_LT_S -> 0b001;
+			case Instruction.I32_GT_S -> 0b100;
+			case Instruction.I32_LE_S -> 0b011;
+			case Instruction.I32_GE_S -> 0b110;
+			default -> throw new IllegalArgumentException("unexpected comparison opcode: " + i32Opcode);
+		};
 	}
 
 	/**

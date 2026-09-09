@@ -484,6 +484,10 @@ final class WasmQuoteCompiler {
 				ctx.writer.write(Instruction.GC_PREFIX, Instruction.STRUCT_NEW);
 				ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TYPE_FLOAT);
 			}
+			// A quoted complex is one inline construction: the reader already
+			// canonicalized it, so its parts plus struct.new are the value (an atom,
+			// so no shared-constant global -- it keeps the inline emission above).
+			case am.ik.rontolisp.LispComplex c -> WasmComplexCompiler.compileLiteral(c, ctx);
 			case LispNil ignored -> {
 				ctx.writer.write(Instruction.REF_NULL);
 				ctx.writer.writeHeapType(Type.EQ.code());

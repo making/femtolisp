@@ -70,6 +70,13 @@ final class WasmMinMaxCompiler {
 		ctx.writer.write(Instruction.SET_LOCAL);
 		ctx.writer.writeUnsignedLeb128(bSlot);
 
+		// A complex in either operand signals "Expected real number" (catchable in
+		// EH mode), like the interpreter -- the n-ary expansion reduces to this
+		// binary shape, so one guard covers every arity.
+		if (WasmComplexCompiler.hasComplex(cons)) {
+			WasmComplexCompiler.emitMinMaxComplexGuard(ctx, aSlot, bSlot);
+		}
+
 		if (WasmLispCompiler.hasDoubleLiteral(args)) {
 			// Float path: one native f64.le / f64.ge, no call. It is already false for
 			// an unordered pair, so NaN needs no separate rung.

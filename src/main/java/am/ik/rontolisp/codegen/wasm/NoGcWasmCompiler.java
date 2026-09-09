@@ -5304,6 +5304,9 @@ public final class NoGcWasmCompiler implements LispCompiler {
 				}
 			}
 			case LispCons cons -> collectCallsCons(cons, bound, defuns, callees, fnName);
+			case am.ik.rontolisp.LispComplex c ->
+				throw new UnsupportedOperationException("--no-gc: complex numbers are not supported in function '"
+						+ fnName + "': " + c.print() + " (the scalar backend is for pure numeric exports)");
 			default -> throw new UnsupportedOperationException(
 					"--no-gc: unsupported value in function '" + fnName + "': " + expr.print());
 		}
@@ -5321,6 +5324,13 @@ public final class NoGcWasmCompiler implements LispCompiler {
 		if (expanded != null) {
 			collectCalls(expanded, bound, defuns, callees, fnName);
 			return;
+		}
+		if (isComplexOperator(name)) {
+			// The scalar backend is for pure numeric exports: constructing,
+			// testing or dissecting a complex is refused here, naming the form --
+			// never a trap, never a wrong number.
+			throw new UnsupportedOperationException("--no-gc: complex numbers are not supported in function '" + fnName
+					+ "': (" + name + " ...) (the scalar backend is for pure numeric exports)");
 		}
 		if (LispNames.LET.equals(name)) {
 			collectLet(cons, bound, defuns, callees, fnName);
@@ -5401,6 +5411,14 @@ public final class NoGcWasmCompiler implements LispCompiler {
 		}
 		throw new UnsupportedOperationException("--no-gc: unsupported operation '" + name + "' in function '" + fnName
 				+ "' (not a numeric primitive or an eligible function)");
+	}
+
+	// A complex constructor, predicate or accessor: refused outright, since the
+	// scalar value model (unboxed i64/f64) has no complex representation.
+	private static boolean isComplexOperator(String name) {
+		return LispNames.COMPLEX.equals(name) || LispNames.COMPLEXP.equals(name) || LispNames.REALP.equals(name)
+				|| LispNames.REALPART.equals(name) || LispNames.IMAGPART.equals(name)
+				|| LispNames.CONJUGATE.equals(name) || LispNames.PHASE.equals(name);
 	}
 
 	private void collectSetq(List<LispVal> args, Set<String> bound, Map<String, Defun> defuns, Set<String> callees,

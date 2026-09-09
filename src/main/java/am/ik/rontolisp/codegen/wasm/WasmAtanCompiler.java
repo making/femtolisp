@@ -139,7 +139,10 @@ final class WasmAtanCompiler {
 	}
 
 	// The atan core over the argument in xSlot; leaves the f64 result on the stack.
-	private static void emitAtanCore(WasmLispCompiler.Ctx ctx, int xSlot, int tSlot, int uSlot, int zSlot, int rSlot) {
+	// Package-private for the complex formulas (WasmComplexCompiler): the caller
+	// boxes the argument into xSlot and supplies the scratch slots; the result is
+	// left on the stack.
+	static void emitAtanCore(WasmLispCompiler.Ctx ctx, int xSlot, int tSlot, int uSlot, int zSlot, int rSlot) {
 		// t = x < 0 ? 0 - x : x (the odd-symmetry fold; -0.0 passes through unnegated).
 		unbox(ctx, xSlot);
 		f64Const(ctx, 0.0);

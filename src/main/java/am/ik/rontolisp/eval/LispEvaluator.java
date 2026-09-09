@@ -5688,9 +5688,8 @@ public final class LispEvaluator {
 			}
 			// complex is a real function now (Environment.registerComplex): no
 			// macro case here, so a call resolves to it like any other built-in.
-			// The JVM compiler routes through JvmComplexCompiler (.todo/752);
-			// the WASM compiler still routes through expandComplexLite until
-			// .todo/753 rewires it.
+			// Both compilers route it through their complex implementations
+			// (JvmComplexCompiler, WasmComplexCompiler).
 			case LispNames.NE:
 				return evalBuiltinMacro(cons, env, LispMacroExpander::expandNumericNotEqual);
 			case LispNames.PARSE_INTEGER:

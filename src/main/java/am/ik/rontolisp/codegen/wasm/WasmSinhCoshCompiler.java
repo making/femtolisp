@@ -102,6 +102,13 @@ final class WasmSinhCoshCompiler {
 		WasmExpCompiler.boxF64(ctx);
 	}
 
+	// The finite sinh path; leaves the f64 result on the stack. Package-private
+	// for the complex formulas (WasmComplexCompiler): the caller boxes the argument
+	// into xSlot and supplies the three scratch slots, like compile does.
+	static void emitSinhF64(WasmLispCompiler.Ctx ctx, int xSlot, int tSlot, int kSlot, int accSlot) {
+		emitSinhMain(ctx, xSlot, tSlot, kSlot, accSlot);
+	}
+
 	// The finite sinh path; leaves the f64 result on the stack.
 	private static void emitSinhMain(WasmLispCompiler.Ctx ctx, int xSlot, int tSlot, int kSlot, int accSlot) {
 		// if (|x| > SMALL) exp derivation else the odd Taylor series.
@@ -150,6 +157,12 @@ final class WasmSinhCoshCompiler {
 		unbox(ctx, xSlot);
 		ctx.writer.write(Instruction.F64_MUL);
 		ctx.writer.write(Instruction.END);
+	}
+
+	// The finite cosh path; leaves the f64 result on the stack. Package-private
+	// for the complex formulas (WasmComplexCompiler).
+	static void emitCoshF64(WasmLispCompiler.Ctx ctx, int xSlot, int tSlot, int kSlot, int accSlot) {
+		emitCoshMain(ctx, xSlot, tSlot, kSlot, accSlot);
 	}
 
 	// The finite cosh path; leaves the f64 result on the stack.

@@ -77,6 +77,11 @@ final class WasmComparisonCompiler {
 		if (args.size() != 3) {
 			return false;
 		}
+		// A syntactic complex takes the complex-aware compilation (which signals
+		// for ordering), never the fused i32 fast path.
+		if (WasmComplexCompiler.hasComplex(test)) {
+			return false;
+		}
 		int i32Opcode = switch (head.name()) {
 			case am.ik.rontolisp.LispNames.EQ -> am.ik.wasm.Instruction.I32_EQ;
 			case am.ik.rontolisp.LispNames.LT -> am.ik.wasm.Instruction.I32_LT_S;

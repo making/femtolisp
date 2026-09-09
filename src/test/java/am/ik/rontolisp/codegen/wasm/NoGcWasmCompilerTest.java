@@ -368,6 +368,33 @@ class NoGcWasmCompilerTest {
 	}
 
 	@Test
+	void rejectsComplexNumbers() {
+		// The scalar backend is for pure numeric exports: a complex construction, a
+		// #C literal, or a complex-only operator is a compile-time refusal naming
+		// the form -- never a trap, never a wrong number (.todo/753).
+		assertThatThrownBy(() -> compile("""
+				(defun f (n) (complex n 2))
+				(rontolisp:wasm-export 'f :params '(:int) :returns :int)
+				""")).isInstanceOf(UnsupportedOperationException.class)
+			.hasMessageContaining("complex numbers are not supported")
+			.hasMessageContaining("COMPLEX")
+			.hasMessageContaining("f");
+		assertThatThrownBy(() -> compile("""
+				(defun f (n) (+ n #c(1 2)))
+				(rontolisp:wasm-export 'f :params '(:int) :returns :int)
+				""")).isInstanceOf(UnsupportedOperationException.class)
+			.hasMessageContaining("complex numbers are not supported")
+			.hasMessageContaining("#C(1 2)");
+		assertThatThrownBy(() -> compile("""
+				(defun f (n) (realpart n))
+				(rontolisp:wasm-export 'f :params '(:int) :returns :int)
+				""")).isInstanceOf(UnsupportedOperationException.class)
+			.hasMessageContaining("complex numbers are not supported")
+			.hasMessageContaining("REALPART")
+			.hasMessageContaining("f");
+	}
+
+	@Test
 	void rejectsFreeVariable() {
 		assertThatThrownBy(() -> compile("""
 				(defun f (n) (+ n missing))

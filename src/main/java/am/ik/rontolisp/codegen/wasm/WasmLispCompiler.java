@@ -1543,7 +1543,35 @@ public final class WasmLispCompiler implements LispCompiler {
 	// index above shifts.
 	static final int FUNC_FUN_NAME = FUNC_F64_FDIV + 1;
 
-	static final int FX_FUNC_LAST = FUNC_FUN_NAME;
+	// Complex-number runtime (WasmComplexRuntimeBuilder, always present): _ccomplex
+	// canonicalizes two real parts, _cadd/_csub/_cmul/_cdiv fold real-or-complex
+	// operands pairwise through the exact _rat_* helpers (so funnels match real
+	// arithmetic), _cneg negates part-wise (signed-zero exact, unlike _csub from
+	// zero). All reuse the binary ((ref null eq), (ref null eq)) -> (ref null eq)
+	// signature (TYPE_CALLABLE_BASE + 1), _cneg the unary one
+	// (TYPE_CALLABLE_BASE + 0), so no new type entries; appended after the last
+	// fixed helper so no index above shifts.
+	static final int FUNC_C_COMPLEX = FUNC_FUN_NAME + 1;
+
+	static final int FUNC_C_ADD = FUNC_C_COMPLEX + 1;
+
+	static final int FUNC_C_SUB = FUNC_C_ADD + 1;
+
+	static final int FUNC_C_MUL = FUNC_C_SUB + 1;
+
+	static final int FUNC_C_DIV = FUNC_C_MUL + 1;
+
+	static final int FUNC_C_NEG = FUNC_C_DIV + 1;
+
+	// _type_err_real ((ref null eq)) -> (): the landing for a complex reaching an
+	// ordering operator (or min/max) -- the interpreter's "Expected real number,
+	// got: <prin1>" text, a catchable $lisp-cond throw in EH mode (caught as a
+	// simple-error, the documented instance-less-throw divergence) and a bare
+	// `unreachable` outside it. Reuses TYPE_PRINT_VAL; appended after the last
+	// fixed helper so no index above shifts.
+	static final int FUNC_TYPE_ERR_REAL = FUNC_C_NEG + 1;
+
+	static final int FX_FUNC_LAST = FUNC_TYPE_ERR_REAL;
 
 	// The vec: SIMD block (_v_new/_v_get/_v_set + the twelve v128 kernels), emitted ONLY
 	// under --simd. Fixed indices relative to FX_FUNC_LAST, so every constant
@@ -1781,6 +1809,17 @@ public final class WasmLispCompiler implements LispCompiler {
 
 	static final int BIGINT_TYPE_LAST = TYPE_BIG_TO_F64;
 
+	// TYPE_COMPLEX: struct {i32 tag, (ref null eq) re, (ref null eq) im} -- a
+	// complex number with two real-part fields (an integer, ratio or float each,
+	// never a nested complex; see WasmComplexRuntimeBuilder). The tag (always 0)
+	// is structural ballast, not data: the bare two-eqref shape is TYPE_FARRAY's
+	// twin, and wasmtime canonicalizes structurally identical types together, so
+	// ref.test could not tell a complex from a packed array without it. Own rec
+	// group on top, following the ratio/bignum precedent.
+	static final int TYPE_COMPLEX = BIGINT_TYPE_LAST + 1; // 57
+
+	static final int COMPLEX_TYPE_LAST = TYPE_COMPLEX;
+
 	// --- the unboxed-fixnum fusion helper signatures (always present) --------------
 	//
 	// The _fx_* helpers of WasmFxRuntimeBuilder (integer expression-tree fusion). The
@@ -1788,13 +1827,13 @@ public final class WasmLispCompiler implements LispCompiler {
 	// need their own entries.
 
 	// _fx_val ((ref null eq)) -> (i64, i32)
-	static final int TYPE_FX_VAL = BIGINT_TYPE_LAST + 1; // 57
+	static final int TYPE_FX_VAL = COMPLEX_TYPE_LAST + 1; // 58
 
 	// _fx_add/_fx_sub/_fx_mul/_fx_ash (i64, i64) -> (i64, i32)
-	static final int TYPE_FX_BIN = TYPE_FX_VAL + 1; // 58
+	static final int TYPE_FX_BIN = TYPE_FX_VAL + 1; // 59
 
 	// _fx_mod/_fx_rem (i64, i64) -> i64
-	static final int TYPE_FX_DIV = TYPE_FX_BIN + 1; // 59
+	static final int TYPE_FX_DIV = TYPE_FX_BIN + 1; // 60
 
 	static final int FX_TYPE_LAST = TYPE_FX_DIV;
 
@@ -1810,36 +1849,36 @@ public final class WasmLispCompiler implements LispCompiler {
 	// ref.test discriminates the width directly.
 
 	// array (mut i8) -- an (unsigned-byte 8) vector.
-	static final int TYPE_I8ARR = FX_TYPE_LAST + 1; // 60
+	static final int TYPE_I8ARR = FX_TYPE_LAST + 1; // 61
 
 	// array (mut i16) -- an (unsigned-byte 16) vector.
-	static final int TYPE_I16ARR = TYPE_I8ARR + 1; // 61
+	static final int TYPE_I16ARR = TYPE_I8ARR + 1; // 62
 
 	// array (mut i32) -- an (unsigned-byte 32) vector.
-	static final int TYPE_I32ARR = TYPE_I16ARR + 1; // 62
+	static final int TYPE_I32ARR = TYPE_I16ARR + 1; // 63
 
 	// _iv_set ((ref null eq), i32, i64) -> (): the packed integer-vector raw store.
-	static final int TYPE_IV_SET = TYPE_I32ARR + 1; // 63
+	static final int TYPE_IV_SET = TYPE_I32ARR + 1; // 64
 
 	// _t_sym () -> eqref: the cached-t helper's signature.
-	static final int TYPE_T_SYM = TYPE_IV_SET + 1; // 64
+	static final int TYPE_T_SYM = TYPE_IV_SET + 1; // 65
 
 	// fd_readdir(fd, buf, buf_len, cookie, retptr) -> errno:
 	// (i32, i32, i32, i64, i32) -> i32. Appended after the last fixed type rather than
 	// slotted next to TYPE_PATH_OPEN so every type index above keeps its value; the
 	// conditional --simd / async / instance blocks follow it through IARR_TYPE_LAST.
-	static final int TYPE_FD_READDIR = TYPE_T_SYM + 1; // 65
+	static final int TYPE_FD_READDIR = TYPE_T_SYM + 1; // 66
 
 	// _ub_read ((ref null eq) shadow, i64 raw) -> (ref null eq): the unboxed-local
 	// boxed-read helper's signature. Appended after the last fixed type, like
 	// TYPE_FD_READDIR above, so every type index keeps its value.
-	static final int TYPE_UB_READ = TYPE_FD_READDIR + 1; // 66
+	static final int TYPE_UB_READ = TYPE_FD_READDIR + 1; // 67
 
 	// _arr_set ((ref null eq) header, i32 flat, (ref null eq) value) -> (ref null eq):
 	// the shared general-array store's signature. _arr_get reuses TYPE_BIG_SHIFT, which
 	// is already ((ref null eq), i32) -> (ref null eq). Appended after the last fixed
 	// type, like the two above, so every type index keeps its value.
-	static final int TYPE_ARR_SET = TYPE_UB_READ + 1; // 67
+	static final int TYPE_ARR_SET = TYPE_UB_READ + 1; // 68
 
 	static final int IARR_TYPE_LAST = TYPE_ARR_SET;
 
@@ -1879,7 +1918,7 @@ public final class WasmLispCompiler implements LispCompiler {
 	// array (mut v128) -- the lane-group storage of a packed float array under --simd.
 	// A bare array comptype (implicitly sub final), so a subtype of eq. array.new_default
 	// zeroes every lane, which is what lets the kernels drop their scalar tails.
-	static final int TYPE_V128ARR = SCHUB_TYPE_LAST + 1; // 68
+	static final int TYPE_V128ARR = SCHUB_TYPE_LAST + 1; // 69
 
 	// struct {i32 count, i32 kind, (ref null eq) groups} -- the --simd replacement for
 	// the
@@ -1891,13 +1930,13 @@ public final class WasmLispCompiler implements LispCompiler {
 	// TYPE_V128ARR, and `groups` holds ceil(count / lanes) + 1 groups -- the trailing one
 	// a
 	// zero sentinel so matvec's shuffle window can always read one group past its last.
-	static final int TYPE_VBLOCK = SCHUB_TYPE_LAST + 2; // 69
+	static final int TYPE_VBLOCK = SCHUB_TYPE_LAST + 2; // 70
 
 	// _v_get ((ref null eq) vblock, i32 index) -> f64
-	static final int TYPE_V_GET = SCHUB_TYPE_LAST + 3; // 70
+	static final int TYPE_V_GET = SCHUB_TYPE_LAST + 3; // 71
 
 	// _v_set ((ref null eq) vblock, i32 index, f64 value) -> f64 (the value AS STORED)
-	static final int TYPE_V_SET = SCHUB_TYPE_LAST + 4; // 71
+	static final int TYPE_V_SET = SCHUB_TYPE_LAST + 4; // 72
 
 	// How many type entries the --simd block appends.
 	static final int SIMD_TYPE_COUNT = 4;
@@ -3368,15 +3407,18 @@ public final class WasmLispCompiler implements LispCompiler {
 		int dataBase = this.component && !this.noWasi ? COMPONENT_DATA_BASE_OFFSET : DATA_BASE_OFFSET;
 		StringTable stringTable = new StringTable(dataBase, this.usesEqualpHashTables);
 		StringTable.StringEntry tSymEntry = stringTable.addBodyString("T");
-		// The _type_err_int/_type_err_num message prefixes, interned HERE -- before any
-		// body compiles -- because a string added during code emission would land after
-		// the data segment's content is fixed. EH mode only: outside it both bodies are
-		// a bare `unreachable` that cites no bytes.
+		// The _type_err_int/_type_err_num/_type_err_real message prefixes, interned
+		// HERE -- before any body compiles -- because a string added during code
+		// emission would land after the data segment's content is fixed. EH mode only:
+		// outside it all three bodies are a bare `unreachable` that cites no bytes.
 		StringTable.StringEntry expIntEntry = ehMode
 				? stringTable.addBodyString("\"" + am.ik.rontolisp.ClosRegistry.EXPECTED_INTEGER_MESSAGE_PREFIX + "\"")
 				: null;
 		StringTable.StringEntry expNumEntry = ehMode
 				? stringTable.addBodyString("\"" + am.ik.rontolisp.ClosRegistry.EXPECTED_NUMBER_MESSAGE_PREFIX + "\"")
+				: null;
+		StringTable.StringEntry expRealEntry = ehMode
+				? stringTable.addBodyString("\"" + am.ik.rontolisp.ClosRegistry.EXPECTED_REAL_MESSAGE_PREFIX + "\"")
 				: null;
 		// The Schubfach float-printer tables (todo-431): ONE shakeable blob whose only
 		// readers are the _schub_* helper bodies built later, so a program that never
@@ -5243,6 +5285,14 @@ public final class WasmLispCompiler implements LispCompiler {
 					w.write(1);
 					w.write(Type.F64);
 				});
+				// (TYPE_COMPLEX): struct {i32 tag, (ref null eq) re, (ref null eq)
+				// im} -- a complex number's tag plus its two real parts. Own rec
+				// group (see the constant's comment for why the tag exists).
+				types.addRecGroup(rec -> rec.addSubFinalStruct(fields -> {
+					fields.addField(false, w -> w.write(Type.I32));
+					fields.addField(false, w -> w.writeRefType(true, Type.EQ.code()));
+					fields.addField(false, w -> w.writeRefType(true, Type.EQ.code()));
+				}));
 				// type 54 (TYPE_FX_VAL): _fx_val ((ref null eq)) -> (i64, i32)
 				types.add(w -> {
 					w.write(Type.FUNC);
@@ -5915,6 +5965,20 @@ public final class WasmLispCompiler implements LispCompiler {
 													// | null (FUNC_F64_FDIV)
 				fnDef.addFunction(TYPE_PRINT_I32); // _fun_name (funcId) -> write name tag
 													// (FUNC_FUN_NAME)
+				fnDef.addFunction(TYPE_CALLABLE_BASE + 1); // _ccomplex (re, im) -> value
+															// (FUNC_C_COMPLEX)
+				fnDef.addFunction(TYPE_CALLABLE_BASE + 1); // _cadd (a, b) -> value
+															// (FUNC_C_ADD)
+				fnDef.addFunction(TYPE_CALLABLE_BASE + 1); // _csub (a, b) -> value
+															// (FUNC_C_SUB)
+				fnDef.addFunction(TYPE_CALLABLE_BASE + 1); // _cmul (a, b) -> value
+															// (FUNC_C_MUL)
+				fnDef.addFunction(TYPE_CALLABLE_BASE + 1); // _cdiv (a, b) -> value
+															// (FUNC_C_DIV)
+				fnDef.addFunction(TYPE_CALLABLE_BASE + 0); // _cneg (a) -> value
+															// (FUNC_C_NEG)
+				fnDef.addFunction(TYPE_PRINT_VAL); // _type_err_real (culprit) -> ()
+													// (FUNC_TYPE_ERR_REAL)
 				// vec: SIMD block (--simd only): the three element helpers + twelve
 				// kernels
 				if (this.simd) {
@@ -6740,6 +6804,15 @@ public final class WasmLispCompiler implements LispCompiler {
 				// closure-value name tag body (FUNC_FUN_NAME); a constant when the
 				// funcId -> name table has no rows
 				code.addFunction(WasmRuntimeBuilder.buildFunNameBody(stringTable, funNameBase, funNameCount));
+				// complex-number runtime bodies (FUNC_C_COMPLEX .. FUNC_C_NEG)
+				code.addFunction(WasmComplexRuntimeBuilder.buildComplexBody());
+				code.addFunction(WasmComplexRuntimeBuilder.buildAddBody());
+				code.addFunction(WasmComplexRuntimeBuilder.buildSubBody());
+				code.addFunction(WasmComplexRuntimeBuilder.buildMulBody());
+				code.addFunction(WasmComplexRuntimeBuilder.buildDivBody());
+				code.addFunction(WasmComplexRuntimeBuilder.buildNegBody());
+				// ordering-over-complex landing body (FUNC_TYPE_ERR_REAL)
+				code.addFunction(WasmEmitHelper.buildTypeErrBody(ehMode, expRealEntry));
 				// vec: SIMD block bodies (--simd only), in FUNC_VEC_BASE index order.
 				if (this.simd) {
 					// Each helper is handed the function index of the scalar vec.lisp
@@ -9501,6 +9574,11 @@ public final class WasmLispCompiler implements LispCompiler {
 
 		final StringEntry sfPrefix;
 
+		// Complex printing: the "#C(" prefix of the "#C(re im)" form the printer
+		// writes around the two recursively rendered parts (the space between them
+		// and the closing paren reuse space/rparen).
+		final StringEntry complexPrefix;
+
 		final StringEntry minus;
 
 		final StringEntry period;
@@ -9564,6 +9642,7 @@ public final class WasmLispCompiler implements LispCompiler {
 			this.rankA = addBodyString("A");
 			this.fPrefix = addBodyString("#d(");
 			this.sfPrefix = addBodyString("#f(");
+			this.complexPrefix = addBodyString("#C(");
 			this.minus = addBodyString("-");
 			this.period = addBodyString(".");
 			this.slash = addBodyString("/");

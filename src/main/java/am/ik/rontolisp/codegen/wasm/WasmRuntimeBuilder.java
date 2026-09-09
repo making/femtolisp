@@ -216,9 +216,33 @@ final class WasmRuntimeBuilder {
 		w.write(Instruction.I32_AND);
 		w.write(Instruction.ELSE);
 
+		// both complexes -> _equal(re, re) && _equal(im, im) (parts are always
+		// real, so the recursion bottoms out in the value arms above)
+		refTest(w, 0, WasmLispCompiler.TYPE_COMPLEX);
+		refTest(w, 1, WasmLispCompiler.TYPE_COMPLEX);
+		w.write(Instruction.I32_AND);
+		w.write(Instruction.IF);
+		w.write(Type.I32);
+		complexField(w, 0, 0);
+		complexField(w, 1, 0);
+		w.write(Instruction.CALL);
+		w.writeUnsignedLeb128(WasmLispCompiler.FUNC_EQUAL);
+		w.write(Instruction.IF);
+		w.write(Type.I32);
+		complexField(w, 0, 1);
+		complexField(w, 1, 1);
+		w.write(Instruction.CALL);
+		w.writeUnsignedLeb128(WasmLispCompiler.FUNC_EQUAL);
+		w.write(Instruction.ELSE);
+		w.write(Instruction.I32_CONST);
+		w.writeSignedLeb128(0);
+		w.write(Instruction.END);
+		w.write(Instruction.ELSE);
+
 		// symbols and strings -> byte-wise same content (via _string_eq), so a
 		// runtime-built string is equal to a literal with the same content
 		emitStringContentEq(w);
+		w.write(Instruction.END); // end complex if
 		w.write(Instruction.END); // end ratio if
 		w.write(Instruction.END); // end float if
 		w.write(Instruction.END); // end limb-integer if
@@ -873,6 +897,16 @@ final class WasmRuntimeBuilder {
 		w.write(Instruction.GC_PREFIX, Instruction.STRUCT_GET);
 		w.writeUnsignedLeb128(WasmLispCompiler.TYPE_CONS);
 		w.writeUnsignedLeb128(field);
+	}
+
+	// Field 0 is the tag; part 0 (real) lives in field 1, part 1 in field 2.
+	private static void complexField(WasmWriter w, int local, int field) {
+		getLocal(w, local);
+		w.write(Instruction.GC_PREFIX, Instruction.REF_CAST);
+		w.writeHeapType(WasmLispCompiler.TYPE_COMPLEX);
+		w.write(Instruction.GC_PREFIX, Instruction.STRUCT_GET);
+		w.writeUnsignedLeb128(WasmLispCompiler.TYPE_COMPLEX);
+		w.writeUnsignedLeb128(field + 1);
 	}
 
 	// Pushes 1 (i32) when the (ref null eq) held in `local` is a bare symbol name --
@@ -3344,6 +3378,9 @@ final class WasmRuntimeBuilder {
 		// Check ratio struct -> "numerator/denominator"
 		emitPrintRatio(w, st);
 
+		// Check complex struct -> "#C(re im)"
+		emitPrintComplex(w, st, WasmLispCompiler.FUNC_PRINT_VAL);
+
 		// Check float struct
 		w.write(Instruction.GET_LOCAL);
 		w.writeUnsignedLeb128(0);
@@ -3575,6 +3612,9 @@ final class WasmRuntimeBuilder {
 
 		// Check ratio struct -> "numerator/denominator"
 		emitPrintRatio(w, st);
+
+		// Check complex struct -> "#C(re im)"
+		emitPrintComplex(w, st, WasmLispCompiler.FUNC_PRINC_VAL);
 
 		// Check float struct
 		w.write(Instruction.GET_LOCAL);
@@ -4901,6 +4941,31 @@ final class WasmRuntimeBuilder {
 		w.writeUnsignedLeb128(WasmLispCompiler.FUNC_RAT_DEN);
 		w.write(Instruction.CALL);
 		w.writeUnsignedLeb128(WasmLispCompiler.FUNC_PRINT_I32_NO_NL);
+		w.write(Instruction.RETURN);
+		w.write(Instruction.END);
+	}
+
+	// Emits the complex branch shared by _print_val and _princ_val: if the value in
+	// param 0 is a complex struct, prints "#C(" + <re> + " " + <im> + ")" and
+	// returns. Each part renders through elementFunc, so print and princ spell a
+	// part exactly as they would alone (a ratio part prints as "1/2" either way; a
+	// string part could never occur -- parts are always real numbers). No cycle
+	// guard: parts are never aggregates, let alone cyclic ones.
+	private static void emitPrintComplex(WasmWriter w, WasmLispCompiler.StringTable st, int elementFunc) {
+		w.write(Instruction.GET_LOCAL);
+		w.writeUnsignedLeb128(0);
+		w.write(Instruction.GC_PREFIX, Instruction.REF_TEST);
+		w.writeHeapType(WasmLispCompiler.TYPE_COMPLEX);
+		w.write(Instruction.IF, 0x40);
+		writeStr(w, st.complexPrefix);
+		complexField(w, 0, 0);
+		w.write(Instruction.CALL);
+		w.writeUnsignedLeb128(elementFunc);
+		writeStr(w, st.space);
+		complexField(w, 0, 1);
+		w.write(Instruction.CALL);
+		w.writeUnsignedLeb128(elementFunc);
+		writeStr(w, st.rparen);
 		w.write(Instruction.RETURN);
 		w.write(Instruction.END);
 	}

@@ -5128,31 +5128,6 @@ public final class LispMacroExpander {
 	}
 
 	/**
-	 * Expands {@code (complex real imag)} (or one argument) into a check that the
-	 * imaginary part is zero: a zero imaginary part yields the real part and anything
-	 * else signals. The interpreter no longer uses this -- it calls the real
-	 * {@code complex} function (.todo/751) -- but both compilers still route through it
-	 * until .todo/752 and .todo/753 rewire them, so it stays until then.
-	 * @param cons the complex expression
-	 * @return the expanded expression
-	 */
-	public static LispVal expandComplexLite(LispCons cons) {
-		List<LispVal> parts = cons.toList();
-		if (parts.size() < 2 || parts.size() > 3) {
-			throw new IllegalArgumentException("complex expects a real part and an optional imaginary part");
-		}
-		if (parts.size() == 2) {
-			return parts.get(1);
-		}
-		LispSymbol re = new LispSymbol("__complex_r");
-		LispSymbol im = new LispSymbol("__complex_i");
-		LispVal errorCall = listToCons(List.of(new LispSymbol(LispNames.ERROR),
-				new LispString("complex numbers are not supported (imaginary part ~s)"), im));
-		LispVal body = makeIf(mvCall(LispNames.ZEROP, im), re, errorCall);
-		return makeLet(re.name(), parts.get(1), makeLet(im.name(), parts.get(2), body));
-	}
-
-	/**
 	 * Expands {@code (parse-integer string &key start end radix junk-allowed)} into a
 	 * shared digit-accumulation scan over the {@code char}/{@code digit-char-p}
 	 * primitives, so every backend gets the full keyword set and BOTH return values (the

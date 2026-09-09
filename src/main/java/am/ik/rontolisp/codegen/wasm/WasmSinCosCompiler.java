@@ -141,6 +141,20 @@ final class WasmSinCosCompiler {
 		WasmExpCompiler.boxF64(ctx);
 	}
 
+	// The finite path; leaves the f64 result on the stack. Package-private for the
+	// complex formulas (WasmComplexCompiler), which need sin and cos of one part
+	// each: the caller boxes the argument into xSlot and supplies the four scratch
+	// slots, like compile does.
+	static void emitSinMain(WasmLispCompiler.Ctx ctx, int xSlot, int kSlot, int zSlot, int sSlot, int cSlot) {
+		emitMain(ctx, LispNames.SIN, xSlot, kSlot, zSlot, sSlot, cSlot);
+	}
+
+	// The finite path; leaves the f64 result on the stack. Package-private for the
+	// complex formulas (WasmComplexCompiler).
+	static void emitCosMain(WasmLispCompiler.Ctx ctx, int xSlot, int kSlot, int zSlot, int sSlot, int cSlot) {
+		emitMain(ctx, LispNames.COS, xSlot, kSlot, zSlot, sSlot, cSlot);
+	}
+
 	// The finite path; leaves the f64 result on the stack.
 	private static void emitMain(WasmLispCompiler.Ctx ctx, String name, int xSlot, int kSlot, int zSlot, int sSlot,
 			int cSlot) {

@@ -60,6 +60,12 @@ public final class DoubleValuedForms {
 		}
 		List<LispVal> parts = call.toList();
 		for (int i = 1; i < parts.size(); i++) {
+			// A complex operand answers a complex, not a double -- even beside a
+			// literal double argument -- so the form is not certainly double (the
+			// same gate the JVM backend steers its complex arithmetic on).
+			if (am.ik.rontolisp.macro.LispMacroExpander.containsComplex(parts.get(i))) {
+				return false;
+			}
 			if (parts.get(i) instanceof LispDouble) {
 				return true;
 			}

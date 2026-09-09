@@ -417,6 +417,24 @@ final class WasmEmitHelper {
 		w.write(Instruction.F64_CONVERT_S_I32);
 		w.write(Instruction.F64_DIV);
 		w.write(Instruction.ELSE);
+		// A complex reaching the f64 coercion is not silently reduced to its real
+		// part (that would be a wrong number): it lands in _type_err_num, like any
+		// other non-coercible value -- the JVM backend's _dbl corner, catchable and
+		// correctly rendered in EH mode. Complex arithmetic never reaches here for
+		// a syntactically visible complex (the call sites steer it to the _c*
+		// helpers, whose parts -- always real -- flow through this same function).
+		w.write(Instruction.GET_LOCAL);
+		w.writeUnsignedLeb128(tmpSlot);
+		w.write(Instruction.GC_PREFIX, Instruction.REF_TEST);
+		w.writeHeapType(WasmLispCompiler.TYPE_COMPLEX);
+		w.write(Instruction.IF);
+		w.write(Type.F64);
+		w.write(Instruction.GET_LOCAL);
+		w.writeUnsignedLeb128(tmpSlot);
+		w.write(Instruction.CALL);
+		w.writeUnsignedLeb128(WasmLispCompiler.FUNC_TYPE_ERR_NUM);
+		w.write(Instruction.UNREACHABLE);
+		w.write(Instruction.ELSE);
 		// NON-number landing: _type_err_num throws a catchable $lisp-cond in EH
 		// mode ("Expected number, got: <prin1>") and is a bare `unreachable`
 		// outside it -- the arm that replaced the uncatchable cast-failure trap.
@@ -425,6 +443,7 @@ final class WasmEmitHelper {
 		w.write(Instruction.CALL);
 		w.writeUnsignedLeb128(WasmLispCompiler.FUNC_TYPE_ERR_NUM);
 		w.write(Instruction.UNREACHABLE);
+		w.write(Instruction.END);
 		w.write(Instruction.END);
 		w.write(Instruction.END);
 		w.write(Instruction.END);
@@ -446,11 +465,13 @@ final class WasmEmitHelper {
 	}
 
 	/**
-	 * Builds {@code _type_err_int} / {@code _type_err_num} ({@code FUNC_TYPE_ERR_INT} /
-	 * {@code FUNC_TYPE_ERR_NUM}): the landing for a non-number reaching the arithmetic
-	 * runtime ({@code _int_val}'s non-integer arm, {@code _as_f64}'s non-number arm).
-	 * Signature {@code ((ref null eq)) -> ()} ({@code TYPE_PRINT_VAL}); it never returns,
-	 * so every call site follows it with {@code unreachable}.
+	 * Builds {@code _type_err_int} / {@code _type_err_num} / {@code _type_err_real}
+	 * ({@code FUNC_TYPE_ERR_INT} / {@code FUNC_TYPE_ERR_NUM} /
+	 * {@code FUNC_TYPE_ERR_REAL}): the landing for a non-number reaching the arithmetic
+	 * runtime ({@code _int_val}'s non-integer arm, {@code _as_f64}'s non-number arm, a
+	 * complex reaching an ordering operator). Signature {@code ((ref null eq)) -> ()}
+	 * ({@code TYPE_PRINT_VAL}); it never returns, so every call site follows it with
+	 * {@code unreachable}.
 	 *
 	 * <p>
 	 * In EH mode the body renders {@code "Expected integer|number, got: <prin1>"} (prefix
@@ -789,6 +810,73 @@ final class WasmEmitHelper {
 	}
 
 	private static void emitEqlNonCharTail(WasmLispCompiler.Ctx ctx, int aSlot, int bSlot) {
+		// Both complexes: _equal(reA, reB) && _equal(imA, imB) through the shared
+		// _equal -- its eql base case answers part-wise eql for real parts
+		// (bignum fields, float bits, ratio components), so no value chain is
+		// inlined here and a site stays one pair of calls.
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(aSlot);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.REF_TEST);
+		ctx.writer.writeHeapType(WasmLispCompiler.TYPE_COMPLEX);
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(bSlot);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.REF_TEST);
+		ctx.writer.writeHeapType(WasmLispCompiler.TYPE_COMPLEX);
+		ctx.writer.write(Instruction.I32_AND);
+		ctx.writer.write(Instruction.IF);
+		ctx.writer.write(Type.I32);
+		int reASlot = ctx.allocTemp();
+		int reBSlot = ctx.allocTemp();
+		int imASlot = ctx.allocTemp();
+		int imBSlot = ctx.allocTemp();
+		emitComplexPart(ctx, aSlot, 0);
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(reASlot);
+		emitComplexPart(ctx, bSlot, 0);
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(reBSlot);
+		emitComplexPart(ctx, aSlot, 1);
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(imASlot);
+		emitComplexPart(ctx, bSlot, 1);
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(imBSlot);
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(reASlot);
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(reBSlot);
+		ctx.writer.write(Instruction.CALL);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.FUNC_EQUAL);
+		ctx.writer.write(Instruction.IF);
+		ctx.writer.write(Type.I32);
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(imASlot);
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(imBSlot);
+		ctx.writer.write(Instruction.CALL);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.FUNC_EQUAL);
+		ctx.writer.write(Instruction.ELSE);
+		ctx.writer.write(Instruction.I32_CONST);
+		ctx.writer.writeSignedLeb128(0);
+		ctx.writer.write(Instruction.END);
+		ctx.writer.write(Instruction.ELSE);
+		emitEqlValueTail(ctx, aSlot, bSlot);
+		ctx.writer.write(Instruction.END); // end both-complex if
+	}
+
+	// Pushes part 0 (real) or 1 (imaginary) of the TYPE_COMPLEX in {@code slot}
+	// (field 0 is the tag; the parts live in fields 1 and 2).
+	private static void emitComplexPart(WasmLispCompiler.Ctx ctx, int slot, int field) {
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(slot);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.REF_CAST);
+		ctx.writer.writeHeapType(WasmLispCompiler.TYPE_COMPLEX);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.STRUCT_GET);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TYPE_COMPLEX);
+		ctx.writer.writeUnsignedLeb128(field + 1);
+	}
+
+	private static void emitEqlValueTail(WasmLispCompiler.Ctx ctx, int aSlot, int bSlot) {
 		// Both boxed integers: compare i64 fields (the _int_new normalization keeps
 		// every in-range integer an i31, so a boxed value only ever equals another
 		// boxed value)
