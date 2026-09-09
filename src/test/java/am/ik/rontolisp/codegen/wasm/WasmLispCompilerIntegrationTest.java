@@ -13682,6 +13682,46 @@ class WasmLispCompilerIntegrationTest {
 		assertThat(compileComponentAndRunPrelude(FUNCTION_PRINT_PIN_PROGRAM)).isEqualTo(FUNCTION_PRINT_PIN_OUTPUT);
 	}
 
+	private static final String RUNTIME_DESIGNATOR_VALUE_PROGRAM = """
+			(defun rrd-add (a b) (+ a b))
+			(defun rrd-mul (a b) (* a b))
+			(defun rrd-sub (a b) (- a b))
+			(defun rrd-div (a b) (/ a b))
+			(print (symbol-function (car (list 'car))))
+			(let ((fn (symbol-function (car (list 'rrd-add)))))
+			  (print (functionp fn)) (print fn) (print (funcall fn 2 3)))
+			(let ((fn (fdefinition (car (list 'rrd-mul)))))
+			  (print (functionp fn)) (print fn) (print (funcall fn 2 3)))
+			(let ((fn (coerce (car (list 'rrd-sub)) 'function)))
+			  (print (functionp fn)) (print fn) (print (funcall fn 5 3)))
+			(let ((ty 'function))
+			  (let ((fn (coerce (car (list 'rrd-div)) ty)))
+			    (print (functionp fn)) (print fn) (print (funcall fn 6 3))))
+			(print (princ-to-string (coerce 'car 'function)))
+			(print (funcall (coerce 'car 'function) '(7 8)))
+			(print (funcall (coerce #'(lambda (x) (* x x)) 'function) 9))
+			(print (funcall (coerce '(lambda (x) (* x x)) 'function) 9))
+			""";
+
+	private static final String RUNTIME_DESIGNATOR_VALUE_OUTPUT = "#<function CAR>\n" + "T\n" + "#<function RRD-ADD>\n"
+			+ "5\n" + "T\n" + "#<function RRD-MUL>\n" + "6\n" + "T\n" + "#<function RRD-SUB>\n" + "2\n" + "T\n"
+			+ "#<function RRD-DIV>\n" + "2\n" + "\"#<function CAR>\"\n" + "7\n" + "81\n" + "81";
+
+	@Test
+	void runtimeResolvedDesignatorsAreFunctionValues() throws Exception {
+		// A run-time name resolution boxes the resolved funcId as a closure struct, so
+		// functionp answers t, _fun_name prints the registered name, and the ladders
+		// dispatch -- the interpreter's answer on every shape
+		// (LispEvaluatorTest#runtimeResolvedDesignatorsAreFunctionValues, .todo/750).
+		assertThat(compileAndRun(RUNTIME_DESIGNATOR_VALUE_PROGRAM)).isEqualTo(RUNTIME_DESIGNATOR_VALUE_OUTPUT);
+	}
+
+	@Test
+	void theComponentBoxesRuntimeResolvedDesignatorsToo() throws Exception {
+		// The fourth backend shares the boxing emission; its I/O adapter only renders.
+		assertThat(compileComponentAndRun(RUNTIME_DESIGNATOR_VALUE_PROGRAM)).isEqualTo(RUNTIME_DESIGNATOR_VALUE_OUTPUT);
+	}
+
 	@Test
 	void fboundpChecksFunctionsMacrosAndSpecialForms() throws Exception {
 		// literal arguments resolve at compile time (macros/special forms included);

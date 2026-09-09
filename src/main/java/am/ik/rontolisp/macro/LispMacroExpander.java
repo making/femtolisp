@@ -12071,29 +12071,6 @@ public final class LispMacroExpander {
 	}
 
 	/**
-	 * The compiled-backend lowering of {@code (symbol-function s)} on a symbol that is
-	 * not a compile-time literal: the IDENTITY (it used to be a call-time signal, whose
-	 * "no runtime symbol-to-function table" reason died with the {@code _lookup}
-	 * registry). On the compiled backends a symbol IS a function designator wherever a
-	 * function value is consumed -- {@code funcall}/{@code apply} and the dispatchers
-	 * resolve it through the registry late, exactly like the interpreter's live lookup --
-	 * so the symbol itself is the most faithful value (the jzon {@code :key-fn} shape,
-	 * {@code (funcall (symbol-function sym) str)}). Two deviations from the interpreter,
-	 * both documented in {@code .kb/symbol-runtime-api.md}: {@code functionp} of the
-	 * result answers nil, and an undefined name signals at the CALL, not here.
-	 * @param cons the symbol-function expression
-	 * @return the expanded expression
-	 */
-	public static LispVal expandRuntimeSymbolFunction(LispCons cons) {
-		List<LispVal> parts = cons.toList();
-		if (parts.size() != 2) {
-			throw new IllegalArgumentException(
-					LispNames.SYMBOL_FUNCTION + " expects exactly one argument: " + cons.print());
-		}
-		return parts.get(1);
-	}
-
-	/**
 	 * Lowers a {@code (write-string str [stream] :start s :end e)} call carrying literal
 	 * bounding keywords into {@code (write-string (subseq str start end) [stream])} over
 	 * once-evaluated temps, with a runtime {@code nil} {@code :end} defaulting to the
@@ -24482,6 +24459,14 @@ public final class LispMacroExpander {
 			// Every float type is the same double representation here.
 			return mvCall(LispNames.FLOAT, parts.get(1));
 		}
+		if ("FUNCTION".equals(type)) {
+			// (coerce x 'function): a designator-to-function conversion, not a
+			// sequence one. A function is returned as is; a symbol resolves through
+			// symbol-function (signalling when unbound); a literal lambda list folds
+			// to (function ...) so the compilers build the closure. Anything else
+			// signals through symbol-function's type check (.todo/750).
+			return coerceToFunctionBody(parts.get(1));
+		}
 		if (type == null && !(parts.get(2) instanceof LispString)) {
 			return expandComputedCoerce(parts.get(1), parts.get(2), arraysExist, helpersPresent, aliasResolverPresent,
 					closRegistry);
@@ -24597,6 +24582,10 @@ public final class LispMacroExpander {
 		// (coerce 0.5 'fixnum) still signals.
 		LispVal alreadyOfType = makeIf(mvCall(LispNames.TYPEP, x, spec), x, errorCall);
 		LispVal identity = makeIf(mvCall(LispNames.EQ_GENERAL, t, LispTrue.INSTANCE), x, alreadyOfType);
+		// A computed designator naming FUNCTION coerces the value the way the literal
+		// 'function arm does; anything else falls through to the identity/typep tail
+		// (.todo/750).
+		LispVal functionArm = makeIf(memberOfTypeNames(t, "FUNCTION"), coerceTempToFunction(x), identity);
 		LispVal toVector = helpersPresent ? listToCons(List.of(new LispSymbol(LispNames.SEQ_TO_VECTOR), x))
 				: coerceToVectorBody(x);
 		LispVal toString = helpersPresent ? listToCons(List.of(new LispSymbol(LispNames.SEQ_TO_STRING), x))
@@ -24604,7 +24593,7 @@ public final class LispMacroExpander {
 		LispVal toList = helpersPresent ? listToCons(List.of(new LispSymbol(LispNames.SEQ_TO_LIST), x))
 				: coerceToListBody(x, arraysExist);
 		LispVal vectorArm = makeIf(memberOfTypeNames(t, "VECTOR", "SIMPLE-VECTOR", "ARRAY", "SIMPLE-ARRAY",
-				"BIT-VECTOR", "SIMPLE-BIT-VECTOR"), toVector, identity);
+				"BIT-VECTOR", "SIMPLE-BIT-VECTOR"), toVector, functionArm);
 		// The SIMPLE- string designators take the same conversion, then narrow the
 		// "already of the result type" answer to the simple strings -- a computed
 		// designator means what the literal one means (.kb/declarations-type-checks.md).
@@ -24657,6 +24646,39 @@ public final class LispMacroExpander {
 		return listToCons(List.of(new LispSymbol(LispNames.MAP),
 				listToCons(List.of(new LispSymbol(LispNames.QUOTE), new LispSymbol("LIST"))),
 				listToCons(List.of(new LispSymbol(LispNames.FUNCTION), new LispSymbol(LispNames.IDENTITY))), x));
+	}
+
+	/**
+	 * The {@code 'function} conversion body:
+	 * {@code (let ((__coerce_f x)) (if (functionp __coerce_f) __coerce_f
+	 * (symbol-function __coerce_f)))}. A quoted literal lambda list folds to
+	 * {@code (function ...)} so the compilers build the closure directly; anything that
+	 * is neither a function nor a symbol signals through {@code symbol-function}'s type
+	 * check (.todo/750).
+	 * @param value the coerced value form, evaluated once
+	 * @return the expanded expression
+	 */
+	private static LispVal coerceToFunctionBody(LispVal value) {
+		if (value instanceof LispCons quoted && quoted.toList().size() == 2
+				&& quoted.toList().get(0) instanceof LispSymbol q && LispNames.QUOTE.equals(q.name())
+				&& quoted.toList().get(1) instanceof LispCons lambda && lambda.car() instanceof LispSymbol lh
+				&& LispNames.LAMBDA.equals(lh.name())) {
+			return listToCons(List.of(new LispSymbol(LispNames.FUNCTION), quoted.toList().get(1)));
+		}
+		LispSymbol f = new LispSymbol("__coerce_f");
+		return makeLet(f.name(), value, makeIf(callOf(LispNames.FUNCTIONP, f), f,
+				listToCons(List.of(new LispSymbol(LispNames.SYMBOL_FUNCTION), f))));
+	}
+
+	/**
+	 * The {@code 'function} conversion over an already-bound temp: {@code (if
+	 * (functionp x) x (symbol-function x))}.
+	 * @param x the (temp-bound) value form
+	 * @return the form to answer for a function designator
+	 */
+	private static LispVal coerceTempToFunction(LispSymbol x) {
+		return makeIf(callOf(LispNames.FUNCTIONP, x), x,
+				listToCons(List.of(new LispSymbol(LispNames.SYMBOL_FUNCTION), x)));
 	}
 
 	/**
@@ -34126,6 +34148,66 @@ public final class LispMacroExpander {
 			}
 		}
 		return containsRuntimeFunctionDesignator(cons.car()) || containsRuntimeFunctionDesignator(cons.cdr());
+	}
+
+	/**
+	 * Whether the program materializes a function VALUE from a name resolved at run time
+	 * -- a computed {@code (symbol-function x)} / {@code (fdefinition x)}, a
+	 * {@code (coerce v 'function)} over a literal function designator, or a
+	 * {@code (coerce v ty)} over a computed result type (which can name FUNCTION at run
+	 * time). The compiled backends must BOX such a resolution as a function value (not
+	 * the symbol), so the name registry has to be live and the print table has to answer
+	 * the name even though no compile-time gate can predict WHICH funcId (.todo/750).
+	 * Like {@code usesRuntimeFunctionDesignator} this scans the pre-lowering spelling:
+	 * the coerce-to-function lowering itself synthesizes a computed symbol-function after
+	 * the gates ran.
+	 * @param program the top-level forms
+	 * @return {@code true} when a runtime-resolved designator can become a value
+	 */
+	public static boolean usesRuntimeFunctionBox(List<LispVal> program) {
+		return program.stream().anyMatch(LispMacroExpander::containsRuntimeFunctionBox);
+	}
+
+	private static boolean containsRuntimeFunctionBox(LispVal form) {
+		if (!(form instanceof LispCons cons)) {
+			return false;
+		}
+		if (cons.car() instanceof LispSymbol op) {
+			if (LispNames.QUOTE.equals(op.name())) {
+				return false;
+			}
+			String member = memberOf(op.name());
+			if ((LispNames.SYMBOL_FUNCTION.equals(member) || LispNames.FDEFINITION.equals(member))
+					&& cons.isProperList()) {
+				List<LispVal> parts = cons.toList();
+				if (parts.size() == 2 && !isQuotedSymbol(parts.get(1))) {
+					return true;
+				}
+			}
+			if (LispNames.COERCE.equals(member) && cons.isProperList()) {
+				List<LispVal> parts = cons.toList();
+				if (parts.size() == 3) {
+					String type = quotedSymbolName(parts.get(2));
+					if (type != null) {
+						String typeMember = memberOf(type);
+						if ("FUNCTION".equals(typeMember)) {
+							return true;
+						}
+					}
+					else if (!(parts.get(2) instanceof LispString)) {
+						// A computed result type can name FUNCTION at run time.
+						return true;
+					}
+				}
+			}
+		}
+		return containsRuntimeFunctionBox(cons.car()) || containsRuntimeFunctionBox(cons.cdr());
+	}
+
+	private static boolean isQuotedSymbol(LispVal form) {
+		return form instanceof LispCons quoted && quoted.toList().size() == 2
+				&& quoted.toList().get(0) instanceof LispSymbol q && LispNames.QUOTE.equals(q.name())
+				&& quoted.toList().get(1) instanceof LispSymbol;
 	}
 
 	/**

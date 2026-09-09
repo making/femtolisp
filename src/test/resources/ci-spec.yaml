@@ -11072,6 +11072,47 @@ cases:
       "x=5 y=7"
       to-stdout ok
       "\"q\""
+  - name: runtime-resolved-designators-are-function-values
+    source: |
+      ;; A designator the compiler cannot read still resolves to a FUNCTION value:
+      ;; functionp answers t, the value prints its registered name, and funcall
+      ;; works -- one text and one value on all four backends, matching SBCL.
+      (defun ci-rd-add (a b) (+ a b))
+      (defun ci-rd-mul (a b) (* a b))
+      (defun ci-rd-sub (a b) (- a b))
+      (defun ci-rd-div (a b) (/ a b))
+      (print (symbol-function (car (list 'car))))
+      (let ((fn (symbol-function (car (list 'ci-rd-add)))))
+        (print (functionp fn)) (print fn) (print (funcall fn 2 3)))
+      (let ((fn (fdefinition (car (list 'ci-rd-mul)))))
+        (print (functionp fn)) (print fn) (print (funcall fn 2 3)))
+      (let ((fn (coerce (car (list 'ci-rd-sub)) 'function)))
+        (print (functionp fn)) (print fn) (print (funcall fn 5 3)))
+      (let ((ty 'function))
+        (let ((fn (coerce (car (list 'ci-rd-div)) ty)))
+          (print (functionp fn)) (print fn) (print (funcall fn 6 3))))
+      (print (princ-to-string (coerce 'car 'function)))
+      (print (funcall (coerce 'car 'function) '(7 8)))
+      (print (funcall (coerce #'(lambda (x) (* x x)) 'function) 9))
+      (print (funcall (coerce '(lambda (x) (* x x)) 'function) 9))
+    expected: |
+      #<function CAR>
+      T
+      #<function CI-RD-ADD>
+      5
+      T
+      #<function CI-RD-MUL>
+      6
+      T
+      #<function CI-RD-SUB>
+      2
+      T
+      #<function CI-RD-DIV>
+      2
+      "#<function CAR>"
+      7
+      81
+      81
   - name: reader-pipe-escaped-symbols
     source: |
       (print (symbol-name '|when used|))

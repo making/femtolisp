@@ -1904,6 +1904,32 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void runtimeResolvedDesignatorsAreFunctionValues() {
+		// A designator the compiler cannot read still resolves to a FUNCTION value:
+		// functionp answers t, the value prints its registered name, and funcall
+		// works -- on the interpreter and (see the matching compiler tests) every
+		// compiled backend, matching SBCL (.todo/750).
+		assertThat(evalMulti("(defun rrd-add (a b) (+ a b))" + "(let ((fn (symbol-function (car (list 'rrd-add)))))"
+				+ " (list (functionp fn) (princ-to-string fn) (funcall fn 2 3)))"))
+			.isEqualTo(eval("(list t \"#<function RRD-ADD>\" 5)"));
+		assertThat(evalMulti("(defun rrd-mul (a b) (* a b))" + "(let ((fn (fdefinition (car (list 'rrd-mul)))))"
+				+ " (list (functionp fn) (princ-to-string fn) (funcall fn 2 3)))"))
+			.isEqualTo(eval("(list t \"#<function RRD-MUL>\" 6)"));
+		assertThat(evalMulti("(defun rrd-sub (a b) (- a b))" + "(let ((fn (coerce (car (list 'rrd-sub)) 'function)))"
+				+ " (list (functionp fn) (princ-to-string fn) (funcall fn 5 3)))"))
+			.isEqualTo(eval("(list t \"#<function RRD-SUB>\" 2)"));
+		assertThat(evalMulti(
+				"(defun rrd-div (a b) (/ a b)) (let ((ty 'function))" + "(let ((fn (coerce (car (list 'rrd-div)) ty)))"
+						+ " (list (functionp fn) (princ-to-string fn) (funcall fn 6 3))))"))
+			.isEqualTo(eval("(list t \"#<function RRD-DIV>\" 2)"));
+		assertThat(eval("(functionp (coerce 'car 'function))")).isEqualTo(LispTrue.INSTANCE);
+		assertThat(eval("(princ-to-string (coerce 'car 'function))")).isEqualTo(new LispString("#<function CAR>"));
+		assertThat(eval("(funcall (coerce 'car 'function) '(7 8))")).isEqualTo(new LispInteger(7));
+		assertThat(eval("(funcall (coerce #'(lambda (x) (* x x)) 'function) 9)")).isEqualTo(new LispInteger(81));
+		assertThat(eval("(funcall (coerce '(lambda (x) (* x x)) 'function) 9)")).isEqualTo(new LispInteger(81));
+	}
+
+	@Test
 	void equalpComparesArraysElementwise() {
 		assertThat(eval("(equalp #(1 \"A\" (2 3)) #(1 \"a\" (2 3.0)))")).isEqualTo(LispTrue.INSTANCE);
 		assertThat(eval("(equalp #(1) #(1 2))")).isEqualTo(LispNil.INSTANCE);

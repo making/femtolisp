@@ -2303,7 +2303,12 @@ public final class JvmLispCompiler implements LispCompiler {
 		// always-on gate is what covered them, and without this clause
 		// (mapcar (car (list 'pred)) l) lost the registry and died on the symbol.
 		boolean needsLookup = usesEval || LispMacroExpander.usesRuntimeFunctionDesignator(program)
-				|| !indirectCallArities.isEmpty();
+				|| !indirectCallArities.isEmpty()
+				// A computed (symbol-function x) / (fdefinition x) boxes through _lookup,
+				// and so does a (coerce v 'function) over a literal function designator
+				// (or a computed result type, which can name FUNCTION at run time) --
+				// even in a program with no call site spelling the registry (.todo/750).
+				|| LispMacroExpander.usesRuntimeFunctionBox(program);
 		// Which funcIds the _invoke_N dispatchers (and the _lookup registry) must be
 		// able to reach. Every method body has been emitted by now, so valueFuncIds is
 		// exactly the set of funcIds this program turns into function VALUES -- macro

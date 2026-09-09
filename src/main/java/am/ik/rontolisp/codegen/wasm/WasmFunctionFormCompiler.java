@@ -57,10 +57,118 @@ final class WasmFunctionFormCompiler {
 			compileNamed(sym.name(), ctx);
 			return;
 		}
-		// A non-literal designator lowers to the symbol itself: funcall /
-		// apply / the dispatchers resolve a symbol late through the _lookup registry,
-		// so the designator IS the function value here.
-		WasmExprCompiler.compileExpr(LispMacroExpander.expandRuntimeSymbolFunction(cons), ctx);
+		if (parts.size() != 2) {
+			throw new IllegalArgumentException(
+					LispNames.SYMBOL_FUNCTION + " expects exactly one argument: " + cons.print());
+		}
+		// A run-time name resolution BOXES the resolved funcId as a closure struct
+		// {funcId, null env} -- exactly the value #'name would have produced -- so
+		// functionp answers t and the value prints its registered name (.todo/750).
+		// The runtime function namespace (GLOBAL_FENV, where (setf
+		// (symbol-function ...)) installs and fmakunbound leaves its tombstone) is
+		// probed first and decides on its own; otherwise the compiled-function
+		// registry (_lookup, live through usesRuntimeFunctionBox) answers, and a miss
+		// traps exactly like the dispatchers' late binding. Only the function
+		// namespace is read: a global VARIABLE holding a lambda is not a function
+		// binding (the interpreter and SBCL signal for it).
+		WasmExprCompiler.compileExpr(parts.get(1), ctx);
+		int symTemp = ctx.allocTemp();
+		int bindTemp = ctx.allocTemp();
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(symTemp);
+		// nil or a non-string names no function.
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(symTemp);
+		ctx.writer.write(Instruction.REF_IS_NULL);
+		ctx.writer.write(Instruction.IF, 0x40);
+		ctx.writer.write(Instruction.UNREACHABLE);
+		ctx.writer.write(Instruction.END);
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(symTemp);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.REF_TEST);
+		ctx.writer.writeHeapType(WasmLispCompiler.TYPE_STRING);
+		ctx.writer.write(Instruction.I32_EQZ);
+		ctx.writer.write(Instruction.IF, 0x40);
+		ctx.writer.write(Instruction.UNREACHABLE);
+		ctx.writer.write(Instruction.END);
+		// bind = _env_lookup(off, GLOBAL_FENV).
+		emitStringOffset(ctx, symTemp);
+		ctx.writer.write(Instruction.GET_GLOBAL);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.GLOBAL_FENV);
+		ctx.writer.write(Instruction.CALL);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.FUNC_ENV_LOOKUP);
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(bindTemp);
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(bindTemp);
+		ctx.writer.write(Instruction.REF_IS_NULL);
+		ctx.writer.write(Instruction.IF);
+		ctx.writer.writeRefType(true, Type.EQ.code());
+		// No binding: resolve through the registry and box.
+		emitRegistryBox(ctx, symTemp);
+		ctx.writer.write(Instruction.ELSE);
+		// A binding decides on its own: the value cell, trapping on fmakunbound's
+		// tombstone (cdr nil) which shadows the registry.
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(bindTemp);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.REF_CAST);
+		ctx.writer.writeHeapType(WasmLispCompiler.TYPE_CONS);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.STRUCT_GET);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TYPE_CONS);
+		ctx.writer.writeUnsignedLeb128(1);
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(bindTemp);
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(bindTemp);
+		ctx.writer.write(Instruction.REF_IS_NULL);
+		ctx.writer.write(Instruction.IF);
+		ctx.writer.writeRefType(true, Type.EQ.code());
+		ctx.writer.write(Instruction.UNREACHABLE);
+		ctx.writer.write(Instruction.ELSE);
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(bindTemp);
+		ctx.writer.write(Instruction.END);
+		ctx.writer.write(Instruction.END);
+	}
+
+	/** Pushes the interned string-table offset of the symbol in {@code symTemp}. */
+	private static void emitStringOffset(WasmLispCompiler.Ctx ctx, int symTemp) {
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(symTemp);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.REF_CAST);
+		ctx.writer.writeHeapType(WasmLispCompiler.TYPE_STRING);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.STRUCT_GET);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TYPE_STRING);
+		ctx.writer.writeUnsignedLeb128(0);
+	}
+
+	/**
+	 * Resolves the symbol in {@code symTemp} through the compiled-function registry and
+	 * boxes the hit as a closure struct, trapping on a miss. Leaves the closure on the
+	 * stack.
+	 */
+	private static void emitRegistryBox(WasmLispCompiler.Ctx ctx, int symTemp) {
+		// found = _lookup(off) != -1?
+		emitStringOffset(ctx, symTemp);
+		ctx.writer.write(Instruction.CALL);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.FUNC_LOOKUP);
+		ctx.writer.write(Instruction.I32_CONST);
+		ctx.writer.writeSignedLeb128(-1);
+		ctx.writer.write(Instruction.I32_NE);
+		ctx.writer.write(Instruction.IF);
+		ctx.writer.writeRefType(true, Type.EQ.code());
+		// Reload (no i32 temp exists inline) and box {funcId, null env}.
+		emitStringOffset(ctx, symTemp);
+		ctx.writer.write(Instruction.CALL);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.FUNC_LOOKUP);
+		ctx.writer.write(Instruction.I32_LOAD, 0x02, 0x04);
+		ctx.writer.write(Instruction.REF_NULL);
+		ctx.writer.writeHeapType(Type.EQ.code());
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.STRUCT_NEW);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TYPE_CLOSURE);
+		ctx.writer.write(Instruction.ELSE);
+		ctx.writer.write(Instruction.UNREACHABLE);
+		ctx.writer.write(Instruction.END);
 	}
 
 	static void compileNamed(String name, WasmLispCompiler.Ctx ctx) {

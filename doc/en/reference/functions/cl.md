@@ -312,7 +312,7 @@ page.
 | `some` | `(some #'oddp '(2 4 5))`, `(some #'> '(1 5) '(3 4))` | The first non-nil predicate result, or `nil` if every element (tuple) fails; any number of sequences |
 | `notany` | `(notany #'evenp '(1 3 5))` | `t` if the predicate is nil for every element (tuple), else `nil` (the complement of `some`) |
 | `notevery` | `(notevery #'evenp '(2 4 5))` | `t` if the predicate is nil for some element (tuple), else `nil` (the complement of `every`) |
-| `symbol-function` | `(symbol-function 'car)` | Return the function named by a symbol (compilers: the argument must be a quoted symbol literal) |
+| `symbol-function` | `(symbol-function 'car)` | Return the function named by a symbol (a runtime-computed symbol resolves late to the same function value) |
 | `identity` | `(identity 42)` | `42` (return the argument unchanged) |
 | `constantly` | `(mapcar (constantly 7) '(a b c))` | `(7 7 7)` (a function of any arguments answering one fixed value) |
 | `make-hash-table` | `(make-hash-table)`, `(make-hash-table :test 'equal)` | Create an empty hash table. `:test` is accepted but informational (see the note below); other keywords such as `:size` are ignored |
