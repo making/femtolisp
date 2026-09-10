@@ -196,8 +196,9 @@ Pointers, not records -- the home is where it gets updated.
 
 **Each orchestrator drives ONE lane at a time, serialized: an item completes, is committed
 and pushed, and only then does the next start.** What that buys is the thing two lanes cost
--- the surface-accounting overhead in `.todo/709` exists entirely because two lanes on one
-box can touch one mechanism without either seeing the other. **Documentation-only items are
+-- the surface-accounting overhead `.todo/709` was written about (cut 2026-09-10) exists
+entirely because two lanes on one box can touch one mechanism without either seeing the
+other. **Documentation-only items are
 the stated exception and run BESIDE the lane** -- rule 14.
 
 Model by difficulty, `effort=high` throughout: **High -> Fable, Medium -> Opus, Low ->
@@ -304,7 +305,7 @@ B's previous lane closed `726`, `727` and `728`. What outlived them:
 
 | # | item | difficulty | why here, why now |
 | --- | --- | --- | --- |
-| B-1 | `729` the binary's downcalls through SubstrateVM's own AOT route | High | The lane, and open-ended: `727` left the measurement done and the COST accepted rather than the design. 10.7 ns against 2-7 us on the same address in the same image, ~5 ms of a decode forward's ~1300 driver calls, and a `--blas` floor that exists only to pay for it. What is unsettled is the SHAPE -- a `-Pnative` source set substituting the binding halves of `am.ik.gpu.CudaDriver`, `eval/LinalgBlasKernels` and `am.ik.objc`, one interface method per shape across 45 CUDA + 6 BLAS + the objc table, against core libraries that import nothing. **The honest first step is deciding whether that seam is payable, and "not worth it" is a close** |
+| B-1 | `729` the binary's downcalls through SubstrateVM's own AOT route | High | **CLOSED 2026-09-10, half built and half refused on a measurement** (`.kb/native-downcalls.md`). The seam is real and payable: a `-Pnative` source set (`src/native/java`, `org.graalvm.sdk:nativeimage` provided) substituting the four CBLAS products with `@InvokeCFunctionPointer` calls on the addresses the FFM bind records -- 11-16 ns for the CUDA shapes and ~90 ns for the BLAS ones (three `PinnedObject`s) against 2.1-7.3 us through the handle -- and the binary's `--blas` crossover is the JVM's again, so `MIN_WORK` is ONE number (64). The CUDA half was measured and NOT widened: the binary's `--gpu` forward on Qwen3.5-0.8B is the interpreter's, 0.12 tok/s (8.3 s), so the ~5 ms of driver interpretation is 0.06% of it; objc/Metal are unmeasurable here. The certification run (`d0daa93f0` merged, 10331 / 2 failures / 0 errors / 189 skipped, 240 reports) found two GB10-only reds that reproduce WITHOUT the change and are filed as `756` (aarch64 `(exp 1)` digit) and `757` (`RontoComplex` missing from a standalone `--gpu` class) -- rule 4 again. Was: the lane, and open-ended: `727` left the measurement done and the COST accepted rather than the design. 10.7 ns against 2-7 us on the same address in the same image, ~5 ms of a decode forward's ~1300 driver calls, and a `--blas` floor that exists only to pay for it. What is unsettled is the SHAPE -- a `-Pnative` source set substituting the binding halves of `am.ik.gpu.CudaDriver`, `eval/LinalgBlasKernels` and `am.ik.objc`, one interface method per shape across 45 CUDA + 6 BLAS + the objc table, against core libraries that import nothing. **The honest first step is deciding whether that seam is payable, and "not worth it" is a close** |
 | B-2 | `480`'s remainder -- the `--simd` GEMV accumulator chain, audited to a close | Medium | Second, and a CLOSE before it is a build: the four independent accumulators landed 2026-09-03 in all four `--simd` implementations, `matvecRowsBf16` carries the same two constants, and `488`'s README withdrew its 0.80x / 1.02x tables -- the 1.6x headline reproduces against the SHIPPED kernels (GB10 1.32-1.49x Graal, 1.81-2.00x C2 at 4096x4096; x64 1.63-1.85x). So `.kb/bfloat16.md`'s "`.todo/480` (the one-thread 1.6x waits on its accumulator count)" is STALE, and correcting it is the first move. What is actually left is the item's own "What this is NOT verified on" list: `Solo.java`'s GB10 numbers, still to be taken; columns 16-31, the single-chain path no example reaches; and a head dimension other than 48 -- **which `489` satisfied on 2026-09-06, when Qwen3.5-0.8B (`head_dim` 128) ran end to end, and nobody noticed. That is rule 11 in its own file rather than someone else's.** GB10 is where every number in the item was taken, which is what puts it here rather than in A's pool |
 
 **The device pool did not refill this time.** Two lanes ago both closers filed a device
@@ -328,13 +329,15 @@ needs a person to post it. `514` (`LinalgGpuTest` never finishes on Apple silico
 neither dorian nor GB10 is -- parking those is not a deferral under rule 3, since no box in
 this plan can even fail them.
 
-**The one decision still open, and not either lane's to take alone: `.todo/709` is an
-explicit DRAFT and needs co-signing or cutting by both orchestrators.** It is process, so
-one side adopting it unilaterally is the failure it is written about. It has now outlived
-seven full lanes, which is evidence about the item rather than about its subject. It is also
-where the general reading disciplines belong -- diff the lists rather than reasoning about
-which terms ought to differ; a sum that closes is not evidence about its terms; relay a
-census with its total AND its class count -- **there or nowhere**.
+**That decision was taken on 2026-09-10, above both lanes: `.todo/709` is CUT.** The draft
+asked to be co-signed into `.kb` or cut, and it had outlived seven full lanes without either
+happening -- which was already evidence about the item rather than about its subject. Cut is
+the honest reading of that: a process card nobody reached for in seven lanes is not a
+practice, and landing it late on one orchestrator's say-so is the exact failure it was
+written about. What it held stays where it already worked: Part 3's three practices were in
+use on both sides before the draft existed and are unaffected, and the mis-record procedure
+and the reading disciplines go **nowhere** rather than into `.kb` -- the alternative the
+draft itself named. The text is recoverable in full from the commit that removed it.
 
 ## Standing rules this run earned, in the order they cost the most
 

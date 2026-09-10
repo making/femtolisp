@@ -301,8 +301,41 @@ gitBranch=${git.branch}
 	<profiles>
 		<profile>
 			<id>native</id>
+			<dependencies>
+				<!-- The SubstrateVM API (@TargetClass / @Substitute, @InvokeCFunctionPointer,
+				     PinnedObject) that src/native/java compiles against: provided, so it is
+				     the image builder's own copy at build time and nothing on any other
+				     classpath. Version-locked to the GraalVM the image is built with. -->
+				<dependency>
+					<groupId>org.graalvm.sdk</groupId>
+					<artifactId>nativeimage</artifactId>
+					<version>25.0.4</version>
+					<scope>provided</scope>
+				</dependency>
+			</dependencies>
 			<build>
 				<plugins>
+					<!-- src/native/java holds the native-image substitutions (the downcalls
+					     re-issued through SubstrateVM's AOT route, .kb/native-downcalls.md);
+					     compiled only for this profile, the way src/web/java is for -Pweb. -->
+					<plugin>
+						<groupId>org.codehaus.mojo</groupId>
+						<artifactId>build-helper-maven-plugin</artifactId>
+						<executions>
+							<execution>
+								<id>add-native-source</id>
+								<phase>generate-sources</phase>
+								<goals>
+									<goal>add-source</goal>
+								</goals>
+								<configuration>
+									<sources>
+										<source>${project.basedir}/src/native/java</source>
+									</sources>
+								</configuration>
+							</execution>
+						</executions>
+					</plugin>
 					<plugin>
 						<groupId>org.graalvm.buildtools</groupId>
 						<artifactId>native-maven-plugin</artifactId>
