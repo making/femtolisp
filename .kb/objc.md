@@ -90,7 +90,10 @@ pointers are refused by name.
   argument on top of `invokeWithArguments`' own boxing (`.kb/gpu.md`, "An FFM downcall inside a native
   image costs", `.todo/727`; measured on Linux/aarch64 through the same SVM path, not on macOS). A
   per-frame loop of sends is where it would show; nothing in `appkit.lisp` / `metal.lisp` is
-  calibrated against the JVM's send cost, so there is no threshold here to re-derive.
+  calibrated against the JVM's send cost, so there is no threshold here to re-derive. The route that
+  takes the floor out exists since `.todo/729` (`src/native/java`, `.kb/native-downcalls.md`) and was
+  not applied here: it is one `@InvokeCFunctionPointer` method per SHAPE, and the send table is a
+  generic per-selector shape set that no macOS box in reach can measure.
 - `foreign.upcalls` is the project's first such section. `ObjcClasses` defines a class at run time
   (`objc_allocateClassPair` + `class_addMethod` + `objc_registerClassPair`) whose IMPs are upcall
   stubs from a CLOSED shape set -- `v@:`, `v@:@`, `v@:@@`, `B@:@`, `@@:@`, `q@:@` -- one static

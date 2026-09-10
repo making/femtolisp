@@ -1407,9 +1407,13 @@ Each is a measured decline, and each needs this file's numbers before it is revi
   2.4x ahead of the binary's own lane kernel (152 us) and the constant is unchanged. `--blas`'s
   `MIN_WORK` = 64 encoded a 30 ns floor and made every `vec:matvec` below ~200x200 and every
   `linalg:dot` below 24x24x24 SLOWER under the flag in the binary (7.4 us a gemv call against a 0.6 us
-  lane kernel): it is now 2^15 (gemm) / 2^17 (gemv) inside an image, `.kb/linalg-blas.md`. What would
-  take the floor itself out is SVM's `CFunctionPointer` route, `.todo/729`; the upstream report is
-  `.todo/730`.
+  lane kernel): it was 2^15 (gemm) / 2^17 (gemv) inside an image until `.todo/729` (2026-09-10) put
+  the four CBLAS products on SVM's `@InvokeCFunctionPointer` route (`src/native/java`,
+  `.kb/native-downcalls.md`) and it is 64 again. **The same route was measured for the driver calls
+  and REFUSED**: 11-16 ns a call, which is the JVM's, but the binary's `--gpu` decode forward is the
+  interpreter's -- 0.12 tok/s on Qwen3.5-0.8B, 8.3 s a forward -- so the ~5 ms of driver
+  interpretation is 0.06% of it, and a 63-against-30 us member would become ~44 with the other 30
+  still the interpreter's own Lisp. The thresholds here stay; the upstream report is `.todo/730`.
 - **No per-device collection policy.** It becomes a `GpuDevice` question only if the two backends'
   collection requests ever want different answers.
 - **No Q4_0 / Q4_K weight width** (`.todo/718`, 2026-09-06 -- a refusal, recorded as one). The

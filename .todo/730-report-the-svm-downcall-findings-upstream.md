@@ -23,7 +23,12 @@ returns `true`, so every handle created at run time is interpreted (`LambdaForm.
 reflection accessors, boxed arguments); a `cuLaunchKernel`-shaped call is 6.2 us against 17 ns on
 the JVM and 10.7 ns through `@InvokeCFunctionPointer` in the same image. Ask whether a downcall handle
 -- whose stub already exists at build time from `reachability-metadata.json` -- could get an AOT
-invoker keyed on the registered shape, since the shape set is closed by construction.
+invoker keyed on the registered shape, since the shape set is closed by construction. (Since
+`.todo/729`, 2026-09-10, this project works around it for its CBLAS calls with a `-Pnative`
+substitution issuing `@InvokeCFunctionPointer` calls on the addresses the FFM lookup found --
+`.kb/native-downcalls.md`; ~90 ns a call with three `PinnedObject`s against 6.4-7.2 us through the
+handle. Worth saying in the report: the workaround needs a hand-written interface per shape, which
+the registered-shape table already knows.)
 
 ## What to do
 

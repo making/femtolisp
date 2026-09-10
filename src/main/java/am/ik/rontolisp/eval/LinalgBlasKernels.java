@@ -114,30 +114,20 @@ final class LinalgBlasKernels {
 	private static final String ACCELERATE_MARK = "Accelerate.framework";
 
 	/**
-	 * Below this many multiply-adds a product declines on the JVM: the fixed cost of a
-	 * critical downcall is ~30 ns there, which a plain scalar triple loop beats up to
-	 * about 4x4x4. {@code JvmBlasTemplate} mirrors this value and only this one -- the
-	 * template runs on a JVM by construction, never inside a native image.
+	 * Below this many multiply-adds a product declines: the fixed cost of a critical
+	 * downcall is ~30 ns on the JVM, which a plain scalar triple loop beats up to about
+	 * 4x4x4. ONE number for every runtime. Inside a native image the FFM handle would
+	 * cost 6-7 us a call (SubstrateVM interprets a handle it did not see at build time,
+	 * {@code .todo/727}), and the thresholds were 2^15 / 2^17 there for two days; the
+	 * image now issues the four products through SubstrateVM's own AOT native-call route
+	 * instead ({@code src/native/java}, {@code Target_LinalgBlasKernels},
+	 * {@code .kb/native-downcalls.md}), ~90 ns a call with the three operands pinned, and
+	 * measured against the same binary's {@code --simd} lane kernel the library is within
+	 * 20% at the smallest shapes this admits (8x8, 4x4x4), level at 16x16 / 8x8x8 and
+	 * ahead from there -- the JVM's crossover. {@code JvmBlasTemplate} mirrors this
+	 * value.
 	 */
 	private static final long MIN_WORK = 64;
-
-	/**
-	 * The thresholds inside a NATIVE IMAGE, where the same downcall costs 6-7 us rather
-	 * than 30 ns: SubstrateVM interprets the method-handle chain under every FFM downcall
-	 * it did not see at build time ({@code LambdaForm.interpretName}), at ~1.7 us a call
-	 * plus ~0.4 us per argument -- and a {@code cblas_?gemm} has fourteen. Measured
-	 * against the {@code --simd} lane kernel on the same binary (GB10, OpenBLAS at one
-	 * thread): gemm is level at 24x24x24 and the library is 1.9x ahead at 32x32x32; gemv
-	 * crosses between 192x192 and 256x256 and is 1.5x ahead at 362x362. Both sit where
-	 * the win is unambiguous rather than where it first appears. The floor is
-	 * SubstrateVM's, not this class's, so the fix is the threshold and not the call.
-	 */
-	static final long NATIVE_IMAGE_MIN_GEMM_WORK = 1L << 15;
-
-	static final long NATIVE_IMAGE_MIN_GEMV_WORK = 1L << 17;
-
-	/** Whether this process is a native image, whose downcall floor is 200x the JVM's. */
-	private static final boolean NATIVE_IMAGE = System.getProperty("org.graalvm.nativeimage.imagecode") != null;
 
 	/**
 	 * Above this many flops ({@code 2*n*m*p}) the operands are staged in a confined arena
@@ -206,6 +196,16 @@ final class LinalgBlasKernels {
 
 	private static final @Nullable MethodHandle DGEMM, SGEMM, DGEMV, SGEMV, DGEMM_STAGED, SGEMM_STAGED;
 
+	/**
+	 * The four entry points' ADDRESSES, 0 when nothing is bound. Unread on the JVM: they
+	 * are what {@code Target_LinalgBlasKernels} ({@code src/native/java}, compiled into
+	 * the native image only) issues the four products to, since SubstrateVM's AOT route
+	 * takes a function pointer where the JVM's takes a handle. The handles above are
+	 * still MADE in the image -- which is why every shape stays in
+	 * {@code reachability-metadata.json} -- and never called there.
+	 */
+	private static final long DGEMM_ADDRESS, SGEMM_ADDRESS, DGEMV_ADDRESS, SGEMV_ADDRESS;
+
 	/** What was bound, or why nothing was: the text the CLI reports. */
 	private static final String DESCRIPTION;
 
@@ -227,6 +227,7 @@ final class LinalgBlasKernels {
 
 	static {
 		MethodHandle dgemm = null, sgemm = null, dgemv = null, sgemv = null, dgemmStaged = null, sgemmStaged = null;
+		long dgemmAddress = 0, sgemmAddress = 0, dgemvAddress = 0, sgemvAddress = 0;
 		String description;
 		int threads = 0;
 		String threadLibrary = "", threadVariable = "";
@@ -257,6 +258,10 @@ final class LinalgBlasKernels {
 				sgemmStaged = handles.sgemmStaged();
 				dgemv = handles.dgemv();
 				sgemv = handles.sgemv();
+				dgemmAddress = handles.dgemmAddress();
+				sgemmAddress = handles.sgemmAddress();
+				dgemvAddress = handles.dgemvAddress();
+				sgemvAddress = handles.sgemvAddress();
 				ThreadQuery query = handles.threads();
 				if (query != null) {
 					threads = threadCount(query);
@@ -277,6 +282,10 @@ final class LinalgBlasKernels {
 			sgemv = null;
 			dgemmStaged = null;
 			sgemmStaged = null;
+			dgemmAddress = 0;
+			sgemmAddress = 0;
+			dgemvAddress = 0;
+			sgemvAddress = 0;
 			threads = 0;
 			threadLibrary = "";
 			threadVariable = "";
@@ -288,6 +297,10 @@ final class LinalgBlasKernels {
 		SGEMV = sgemv;
 		DGEMM_STAGED = dgemmStaged;
 		SGEMM_STAGED = sgemmStaged;
+		DGEMM_ADDRESS = dgemmAddress;
+		SGEMM_ADDRESS = sgemmAddress;
+		DGEMV_ADDRESS = dgemvAddress;
+		SGEMV_ADDRESS = sgemvAddress;
 		DESCRIPTION = description;
 		THREADS = threads;
 		THREAD_LIBRARY = threadLibrary;
@@ -315,9 +328,13 @@ final class LinalgBlasKernels {
 	record ThreadQuery(MethodHandle count, String library, String variable) {
 	}
 
-	/** The six handles one tuned CBLAS gives, in the order the fields above take them. */
+	/**
+	 * The six handles one tuned CBLAS gives, in the order the fields above take them, and
+	 * the four entry points' addresses.
+	 */
 	record Bound(MethodHandle dgemm, MethodHandle dgemmStaged, MethodHandle sgemm, MethodHandle sgemmStaged,
-			MethodHandle dgemv, MethodHandle sgemv, @Nullable ThreadQuery threads) {
+			MethodHandle dgemv, MethodHandle sgemv, long dgemmAddress, long sgemmAddress, long dgemvAddress,
+			long sgemvAddress, @Nullable ThreadQuery threads) {
 	}
 
 	/**
@@ -333,11 +350,12 @@ final class LinalgBlasKernels {
 		Linker.Option critical = Linker.Option.critical(true);
 		MemorySegment gemm = lookup.find("cblas_dgemm").orElseThrow();
 		MemorySegment sgemm = lookup.find("cblas_sgemm").orElseThrow();
+		MemorySegment gemv = lookup.find("cblas_dgemv").orElseThrow();
+		MemorySegment sgemv = lookup.find("cblas_sgemv").orElseThrow();
 		return new Bound(handle(linker, gemm, GEMM_D, critical), handle(linker, gemm, GEMM_D),
 				handle(linker, sgemm, GEMM_F, critical), handle(linker, sgemm, GEMM_F),
-				handle(linker, lookup.find("cblas_dgemv").orElseThrow(), GEMV_D, critical),
-				handle(linker, lookup.find("cblas_sgemv").orElseThrow(), GEMV_F, critical),
-				threadQuery(linker, lookup));
+				handle(linker, gemv, GEMV_D, critical), handle(linker, sgemv, GEMV_F, critical), gemm.address(),
+				sgemm.address(), gemv.address(), sgemv.address(), threadQuery(linker, lookup));
 	}
 
 	/**
@@ -410,34 +428,27 @@ final class LinalgBlasKernels {
 
 	/**
 	 * Whether an {@code n x m} by {@code m x p} matrix product is big enough to be worth
-	 * a library call at all, in THIS runtime.
+	 * a library call at all.
 	 */
 	static boolean worth(long n, long m, long p) {
-		return n * m * p >= minWork(NATIVE_IMAGE, false);
+		return n * m * p >= MIN_WORK;
 	}
 
 	/**
 	 * Whether a {@code rows x cols} matrix-by-vector product is big enough to be worth a
-	 * library call at all, in THIS runtime. A separate question from {@link #worth}
-	 * inside a native image: a gemv is memory-bound and the lane kernel is close to
-	 * bandwidth there, so the same fixed cost takes four times the work to amortize.
+	 * library call at all.
 	 */
 	static boolean worthGemv(long rows, long cols) {
-		return rows * cols >= minWork(NATIVE_IMAGE, true);
+		return rows * cols >= MIN_WORK;
 	}
 
 	/**
-	 * The minimum work a library call must carry, by runtime and by product kind. Exposed
-	 * so the pair a native image applies can be pinned from a JVM test.
-	 * @param nativeImage whether the runtime is a native image
-	 * @param gemv {@code true} for a matrix-by-vector product, {@code false} for gemm
+	 * The minimum work a library call must carry, the same for both product kinds and for
+	 * every runtime. Exposed so the test can pin that it IS one number.
 	 * @return the threshold in multiply-adds
 	 */
-	static long minWork(boolean nativeImage, boolean gemv) {
-		if (!nativeImage) {
-			return MIN_WORK;
-		}
-		return gemv ? NATIVE_IMAGE_MIN_GEMV_WORK : NATIVE_IMAGE_MIN_GEMM_WORK;
+	static long minWork() {
+		return MIN_WORK;
 	}
 
 	/** How many threads the bound library reported, or 0 when it would not say. */

@@ -175,6 +175,7 @@ deliberate boundaries the audit must not undo: user-facing operator catalogues l
 - [linalg-blas.md](linalg-blas.md) -- `--blas`: the matrix product on a tuned CBLAS from the OS
 - [simd-parallel.md](simd-parallel.md) -- `--parallel` over the `--simd` matrix products
 - [gpu.md](gpu.md) -- `--gpu` and `am.ik.gpu`, the never-throwing declining device layer
+- [native-downcalls.md](native-downcalls.md) -- `src/native/java`: the binary's downcalls through SubstrateVM's AOT route instead of the interpreted FFM handle; what took it (`--blas`) and what was measured not to (`--gpu`, objc)
 - [vec.md](vec.md) -- the `vec` package, the packed float-array type, and its `--simd`/`--no-gc` acceleration layers
 - [quantized-matrix.md](quantized-matrix.md) -- `rontolisp:quantized-matrix`: ggml's Q8_0 held verbatim, and the integer-dot GEMV that is the defun bit for bit
 - [torch.md](torch.md) -- the `torch` package: tensors + reverse-mode autograd over the linalg kernels

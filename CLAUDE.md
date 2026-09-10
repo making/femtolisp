@@ -217,4 +217,8 @@ Several sessions push to `develop` at once, so what you tested is not what you p
   between): it leaves the web source set in `target/classes`, and a later `./mvnw test`
   without `clean` then fails with `NoClassDefFoundError` on excluded classes, which looks
   like a regression and is not one.
+- Native profile: `./mvnw -Pnative clean package -DskipTests` whenever `src/native/java` or a
+  member it aliases or substitutes changed -- `./mvnw test` does not compile it
+  (`NativeSubstitutionsTest` pins the member NAMES from the JVM lane, not the bodies), and a
+  `--blas` change is verified on the binary it produces (`.kb/native-downcalls.md`).
 - Native E2E (above) whenever `ci-spec.yaml` or cross-backend output changed.

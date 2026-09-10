@@ -29,16 +29,16 @@ WASM has no FFM, so `--blas` with a `.wasm` output is a hard error, not a silent
 - **`linalg:dot`** in its three matrix shapes: matrix x matrix (`cblas_dgemm`/`cblas_sgemm`), matrix x vector and vector x matrix (`cblas_dgemv`/`cblas_sgemv`, the second with `CblasTrans`). `linalg:matmul` at rank <= 2 and `linalg:solve` accelerate TRANSITIVELY.
 - **`vec:matvec`** / **`vec:matvec-into`**: one `cblas_?gemv`, `alpha = 1`, `beta = 0`, `CblasNoTrans` — the half that reaches the shipped numeric examples (`simd-dot`, `simd-gemv`, `tiny-llm`, `llm`).
 - Declined, memory-bound: `linalg:sum`, vector-vector `linalg:dot` / `vec:dot`, `axpy`, every element-wise `vec:` kernel, `vec:mean` / `vec:norm`.
-- **`worth(n, m, p)` = `n*m*p >= 64` on the JVM; inside a NATIVE IMAGE gemm needs 2^15 and gemv
-  (`worthGemv`) 2^17** (`LinalgBlasKernels.minWork`, keyed on `org.graalvm.nativeimage.imagecode`;
-  pinned by `LinalgBlasDeclineTest`). The JVM's 64 is a 30 ns critical-downcall floor; the image's
-  `cblas_dgemv` costs 6.4 us and `cblas_dgemm` 7.2 (SubstrateVM interprets the handle chain,
-  `.kb/gpu.md`, `.todo/727`), and against the same binary's `--simd` lane kernel (GB10, OpenBLAS at
-  one thread, 2026-09-07) gemm is level at 24x24x24 (8.7 against 9.2 us) and 1.9x ahead at 32
-  (19.3 against 10.0); gemv is 2x BEHIND at 128x128 (6.7 against 13.4), crosses between 192 and 256
-  (11.2/12.9, 21.0/15.7) and is 1.5x ahead at 384 (39.1 against 25.8). Before this the binary paid
-  7.4 us for every 8x8 `vec:matvec` the lane kernel did in 0.6 -- the flag as a silent slowdown.
-  Two thresholds because a gemv is memory-bound and the lane kernel is near bandwidth there.
+- **`worth(n, m, p)` = `n*m*p >= 64`, `worthGemv` the same number** (`LinalgBlasKernels.MIN_WORK`,
+  pinned by `LinalgBlasDeclineTest.theWorkThresholdIsOneNumberOnEveryRuntime`) -- ONE number for the
+  JVM and the native binary. The JVM's 64 is a 30 ns critical-downcall floor. Inside the image the
+  FFM handle costs 6.4 us (gemv) / 7.2 us (gemm) -- SubstrateVM interprets the handle chain,
+  `.kb/gpu.md`, `.todo/727` -- and from 2026-09-07 to 09-10 the image carried its own pair
+  (2^15 / 2^17); since `.todo/729` the image issues the four products through
+  `src/native/java/.../Target_LinalgBlasKernels` (SVM's `@InvokeCFunctionPointer`, ~90 ns with the
+  three operands pinned, `.kb/native-downcalls.md`), and measured against the same binary's `--simd`
+  lane kernel (GB10, OpenBLAS at one thread) gemv ties at 8x8 and 16x16, is 1.5x ahead at 64x64
+  and 2.2x from 256x256; gemm is level at 8x8x8 and ahead from 16x16x16 -- the JVM's crossover.
 - The stacked rank-3 product (`linalg::%la-matmul-nd`) is a SEPARATE interception, taken by `--simd` and `--gpu` but not here — see "Unfinished".
 - `Linker.Option.critical(true)` takes heap `MemorySegment`s, so `MemorySegment.ofArray(a).asSlice(off * 8)` costs no copy but reaches no safepoint. **`2*n*m*p <= 2^32` goes critical, above that operands stage in a confined arena**; a gemv is always critical.
 
@@ -64,7 +64,7 @@ A tuned BLAS is multi-threaded and rontolisp is not: one `linalg:matmul` may occ
 
 ## Native image
 
-Three things: the `JvmBlasTemplate.class` entry in `resource-config.json`; `--enable-native-access=ALL-UNNAMED` (the `native` profile and the exec jar's manifest pass it, a compiled `.class` warns without it); and a `foreign.downcalls` entry per SHAPE in `reachability-metadata.json` — six: the gemm shape at both widths both critical and plain, the gemv shape at both widths critical. **An unregistered signature gets no downcall stub, so one missing entry sends the whole static block down its catch and the binary reports "the foreign function API is unavailable" on a machine whose tuned library is right there.** `LinalgBlasKernels.bind` takes the LOOKUP so a machine with no CBLAS binds against a stub, and records the shapes as it binds.
+Four things: the `JvmBlasTemplate.class` entry in `resource-config.json`; `--enable-native-access=ALL-UNNAMED` (the `native` profile and the exec jar's manifest pass it, a compiled `.class` warns without it); a `foreign.downcalls` entry per SHAPE in `reachability-metadata.json` — six: the gemm shape at both widths both critical and plain, the gemv shape at both widths critical. **An unregistered signature gets no downcall stub, so one missing entry sends the whole static block down its catch and the binary reports "the foreign function API is unavailable" on a machine whose tuned library is right there** — and that stays true although the image never CALLS those handles: `src/native/java/.../Target_LinalgBlasKernels` substitutes the four products with `@InvokeCFunctionPointer` calls on the addresses the bind recorded (`DGEMM_ADDRESS` ... `SGEMV_ADDRESS`), which is the fourth thing (`.kb/native-downcalls.md`). `LinalgBlasKernels.bind` takes the LOOKUP so a machine with no CBLAS binds against a stub, and records the shapes as it binds.
 
 ## Unfinished: growing the member set past `dot`
 
@@ -76,7 +76,8 @@ A stacked product IS a batch of gemms and `gemm`/`gemmF` already take element OF
 ## Tests
 
 - `eval/LinalgBlasTest` (both packages) — interpreter, needs a library (`@EnabledIf`).
-- `eval/LinalgBlasDeclineTest` (both packages) — interpreter, must hold on EVERY machine; `theThreadBarrierNoteIsEarnedByTheProgramShapeAndNotByTheFlag` plus the `foreign.downcalls` shape pinning.
+- `eval/LinalgBlasDeclineTest` (both packages) — interpreter, must hold on EVERY machine; `theThreadBarrierNoteIsEarnedByTheProgramShapeAndNotByTheFlag`, the one threshold, plus the `foreign.downcalls` shape pinning.
+- `NativeSubstitutionsTest` — the native-image substitution's members against `LinalgBlasKernels`, from the JVM lane.
 - `codegen/jvm/JvmLinalgBlasAccelCompilerTest` (both packages) — JVM emit gate, accelerated, declined, arg-evaluated-once.
 - `cli/CliOptionsTest`, `cli/RontoLispCliTest` — the flag is value-less (the `--simd` dead-flag lesson).
 

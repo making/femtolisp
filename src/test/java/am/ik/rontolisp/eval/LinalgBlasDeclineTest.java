@@ -49,15 +49,13 @@ class LinalgBlasDeclineTest {
 	}
 
 	@Test
-	void theWorkThresholdIsTheRuntimesAndNotTheJvms() {
-		// A native image pays 6-7 us per downcall where the JVM pays 30 ns, so the
-		// crossover against the lane kernel is not the same number: 4x4x4 on the JVM,
-		// 32x32x32 (gemm) and 362x362 (gemv) in the binary. Both pairs are pinned from
-		// here because only the JVM pair is observable on the machine running this test.
-		assertThat(LinalgBlasKernels.minWork(false, false)).isEqualTo(64);
-		assertThat(LinalgBlasKernels.minWork(false, true)).isEqualTo(64);
-		assertThat(LinalgBlasKernels.minWork(true, false)).isEqualTo(1L << 15);
-		assertThat(LinalgBlasKernels.minWork(true, true)).isEqualTo(1L << 17);
+	void theWorkThresholdIsOneNumberOnEveryRuntime() {
+		// The JVM's critical downcall costs ~30 ns and the native image's route (SVM's
+		// @InvokeCFunctionPointer, src/native/java) ~90 ns, both of which a scalar triple
+		// loop beats only below about 4x4x4. For two days the image carried its own pair
+		// (2^15 / 2^17) to pay for an interpreted FFM handle at 6-7 us a call; that route
+		// is gone from the image, and so is the pair -- one number, pinned here.
+		assertThat(LinalgBlasKernels.minWork()).isEqualTo(64);
 		assertThat(LinalgBlasKernels.worth(4, 4, 4)).isTrue();
 		assertThat(LinalgBlasKernels.worth(3, 4, 4)).isFalse();
 		assertThat(LinalgBlasKernels.worthGemv(8, 8)).isTrue();
