@@ -448,14 +448,15 @@ class JvmLinalgSimdAccelCompilerTest {
 	@Test
 	void unaryUfuncsMatchTheScalarReferenceAtBothSizesWidthsAndRanks() throws Exception {
 		for (String op : new String[] { "sqrt", "abs", "square", "negative", "sign", "reciprocal" }) {
-			String inner = op.equals("sqrt") ? "(linalg:add %v 1)" : "(linalg:sub %v 100)";
+			// Every member runs over a sign-mixed vector, sqrt included: its element
+			// function is the float-domain square root, NaN on negatives on both
+			// the spliced defun and the bridge kernel.
+			assertMatchesScalarReference("(print (linalg:" + op + " (linalg:sub (linalg:arange 7) 100)))");
+			assertMatchesScalarReference("(print (linalg:" + op + " (linalg:sub (linalg:arange 200) 100)))");
 			assertMatchesScalarReference(
-					"(print (linalg:" + op + " " + inner.replace("%v", "(linalg:arange 7)") + "))");
+					"(print (linalg:" + op + " (linalg:sub (linalg:reshape (linalg:arange 12) '(3 4)) 6)))");
 			assertMatchesScalarReference(
-					"(print (linalg:" + op + " " + inner.replace("%v", "(linalg:arange 200)") + "))");
-			assertMatchesScalarReference("(print (linalg:" + op + " (linalg:reshape (linalg:arange 12) '(3 4))))");
-			assertMatchesScalarReference(
-					"(print (linalg:" + op + " (linalg:add (linalg:arange 0 200 :element-type 'single-float) 1)))");
+					"(print (linalg:" + op + " (linalg:sub (linalg:arange 0 200 :element-type 'single-float) 100)))");
 		}
 		// exp over reciprocal's (0, 1] range so the values stay bounded; round because
 		// exp's low digits are not print-stable across sizes.

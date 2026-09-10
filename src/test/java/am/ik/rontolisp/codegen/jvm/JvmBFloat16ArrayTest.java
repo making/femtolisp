@@ -705,16 +705,13 @@ class JvmBFloat16ArrayTest {
 		// Unlike the reductions above the oracle is the DEFUN itself (the f32
 		// intermediate is its answer bit for bit), so all three legs must print one
 		// text. The mixed pairings decline on both and are pinned by
-		// `eval.VecSimdTest`.
-		// sqrt runs over the non-negative half: CL sqrt is complex-extended, so a
-		// negative input takes the defun to a complex the bf16 store signals on -- the
-		// same hole the f32 sqrt lane already has, outside what a narrow kernel can
-		// reproduce.
+		// `eval.VecSimdTest`. sqrt runs over the signed values directly: its element
+		// function is the float-domain square root, NaN on negatives on both paths.
 		for (String body : new String[] { "(vec:add vb vb)", "(vec:sub vb vb)", "(vec:mul vb vb)", "(vec:div vb vb)",
-				"(vec:/ vb vb)", "(vec:sqrt (vec:abs vb))", "(vec:abs vb)", "(vec:negative vb)", "(vec:reciprocal vb)",
+				"(vec:/ vb vb)", "(vec:sqrt vb)", "(vec:abs vb)", "(vec:negative vb)", "(vec:reciprocal vb)",
 				"(vec:add-into (vec:zeros 300 :element-type 'bfloat16) vb vb)",
 				"(vec:div-into (vec:zeros 300 :element-type 'bfloat16) vb vb)",
-				"(vec:sqrt-into (vec:zeros 300 :element-type 'bfloat16) (vec:abs vb))",
+				"(vec:sqrt-into (vec:zeros 300 :element-type 'bfloat16) vb)",
 				"(let ((o (vec:zeros 300 :element-type 'bfloat16))) (vec:mul-into o o vb) o)" }) {
 			String program = bf16Fixture(4, 300, "(print " + body + ")");
 			String expected = interpret(program);

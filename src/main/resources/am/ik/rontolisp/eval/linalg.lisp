@@ -1226,9 +1226,17 @@
   ;; Elementwise hyperbolic cosine (numpy np.cosh).
   (linalg:emap (function cosh) a))
 
+(defun linalg::%la-fsqrt (x)
+  ;; Float-domain square root (numpy np.sqrt): NaN on a negative input. CL sqrt
+  ;; roots negatives into the complex plane, which neither a packed nor a
+  ;; row-major store accepts -- the CL spelling signals on the scalar path
+  ;; while the --simd lane answers NaN, so the element function must not be
+  ;; CL's. Scalar (sqrt x) itself stays complex-extended.
+  (if (< x 0.0) (/ 0.0 0.0) (sqrt x)))
+
 (defun linalg:sqrt (a)
   ;; Elementwise square root (numpy np.sqrt).
-  (linalg:emap (function sqrt) a))
+  (linalg:emap (function linalg::%la-fsqrt) a))
 
 (defun linalg:abs (a)
   ;; Elementwise absolute value (numpy np.abs).

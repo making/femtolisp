@@ -607,15 +607,15 @@ class LinalgSimdTest {
 	@Test
 	void unaryUfuncsMatchTheScalarOracleAtBothSizesWidthsAndRanks() {
 		for (String op : new String[] { "sqrt", "abs", "square", "negative", "sign", "reciprocal" }) {
-			// sqrt gets non-negative inputs; the rest a sign-mixed vector.
-			String inner = op.equals("sqrt") ? "(linalg:add %v 1)" : "(linalg:sub %v 100)";
+			// Every member runs over a sign-mixed vector, sqrt included: its element
+			// function is the float-domain square root, NaN on negatives on both
+			// paths, not CL's complex-extended sqrt.
 			for (String n : new String[] { "7", "200" }) {
-				assertMatchesScalarOracle(
-						"(linalg:" + op + " " + inner.replace("%v", "(linalg:arange " + n + ")") + ")");
+				assertMatchesScalarOracle("(linalg:" + op + " (linalg:sub (linalg:arange " + n + ") 100))");
 			}
-			assertMatchesScalarOracle("(linalg:" + op + " (linalg:reshape (linalg:arange 12) '(3 4)))");
+			assertMatchesScalarOracle("(linalg:" + op + " (linalg:sub (linalg:reshape (linalg:arange 12) '(3 4)) 6))");
 			assertMatchesScalarOracle(
-					"(linalg:" + op + " (linalg:add (linalg:arange 0 200 :element-type 'single-float) 1))");
+					"(linalg:" + op + " (linalg:sub (linalg:arange 0 200 :element-type 'single-float) 100))");
 		}
 		// exp over reciprocal's (0, 1] range so the values stay bounded.
 		assertMatchesScalarOracle("(linalg:exp (linalg:reciprocal (linalg:add (linalg:arange 200) 1)))");

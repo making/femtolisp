@@ -158,7 +158,14 @@
 
 (defun vec:cosh (v) (vec::%map1 #'cosh v))
 
-(defun vec:sqrt (v) (vec::%map1 #'sqrt v))
+(defun vec::%fsqrt (x)
+  ;; Float-domain square root (numpy np.sqrt): NaN on a negative input. CL sqrt
+  ;; roots negatives into the complex plane, and a complex has no packed element
+  ;; store -- the CL spelling signals on the scalar path while the --simd lane
+  ;; answers NaN, so the element function must not be CL's.
+  (if (< x 0.0) (/ 0.0 0.0) (sqrt x)))
+
+(defun vec:sqrt (v) (vec::%map1 #'vec::%fsqrt v))
 
 (defun vec:abs (v) (vec::%map1 #'abs v))
 
@@ -262,7 +269,7 @@
 
 (defun vec:cosh-into (out v) (vec::%map1-into out #'cosh v))
 
-(defun vec:sqrt-into (out v) (vec::%map1-into out #'sqrt v))
+(defun vec:sqrt-into (out v) (vec::%map1-into out #'vec::%fsqrt v))
 
 (defun vec:abs-into (out v) (vec::%map1-into out #'abs v))
 

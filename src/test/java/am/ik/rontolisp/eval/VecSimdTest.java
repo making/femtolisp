@@ -449,13 +449,14 @@ class VecSimdTest {
 	void unaryUfuncsMatchTheScalarOracleAtBothSizesAndWidths() {
 		// mixed signs (arange - 100), sizes on both sides of THRESHOLD, both widths.
 		// exp runs over reciprocal's (0, 1] range so the values stay bounded.
+		// sqrt runs over the signed range too: the element function is the
+		// float-domain square root, NaN on negatives on both paths, not CL's
+		// complex-extended sqrt.
 		for (String op : new String[] { "sqrt", "abs", "square", "negative", "sign", "reciprocal" }) {
 			for (String n : new String[] { "7", "200" }) {
 				String signed = "(vec:%s (vec:sub (vec:arange %s) (vec:scale (vec:ones %s) 100.0)))".formatted(op, n,
 						n);
-				if (!op.equals("sqrt")) {
-					assertMatchesScalarOracle(signed);
-				}
+				assertMatchesScalarOracle(signed);
 				assertMatchesScalarOracle("(vec:%s (vec:add (vec:arange %s) (vec:ones %s)))".formatted(op, n, n));
 			}
 			assertMatchesScalarOracle(
@@ -524,6 +525,31 @@ class VecSimdTest {
 		assertMatchesScalarOracle("(vec:sign #d(-0.0 0.0 -3.5 3.5))");
 		assertThat(eval("(vec:negative #d(0.0))", true).print()).isEqualTo("#d(-0.0)");
 		assertThat(eval("(vec:sign #d(-0.0))", true).print()).isEqualTo("#d(-0.0)");
+	}
+
+	@Test
+	void sqrtOfNegativeInputAnswersNaNOnBothPaths() {
+		// The element function is the float-domain square root, not CL's
+		// complex-extended sqrt: a negative element answers NaN on the scalar
+		// defun and on the --simd kernel alike, at every width and on both sides
+		// of the THRESHOLD lane-loop gate. Scalar (sqrt -1.0) itself stays
+		// complex-extended; only the packed element function is float-domain.
+		for (boolean simd : new boolean[] { false, true }) {
+			assertThat(eval("(vec:sqrt #d(-1.0 4.0 -0.0 0.0))", simd).print()).as("f64 simd=%s", simd)
+				.isEqualTo("#d(NaN 2.0 -0.0 0.0)");
+			assertThat(eval("(vec:sqrt #f(-1.0 4.0))", simd).print()).as("f32 simd=%s", simd).isEqualTo("#f(NaN 2.0)");
+			assertThat(eval("(vec:sqrt #bf16(-1.0 4.0))", simd).print()).as("bf16 simd=%s", simd)
+				.isEqualTo("#bf16(NaN 2.0)");
+			assertThat(eval("(vec:sqrt-into (vec:zeros 2) #d(-9.0 16.0))", simd).print()).as("-into simd=%s", simd)
+				.isEqualTo("#d(NaN 4.0)");
+		}
+		// Above THRESHOLD the --simd kernel runs the lane loop rather than the
+		// scalar tail; both lanes answer NaN, matching the defun element by
+		// element.
+		String negative200 = "(vec:sqrt (vec:scale (vec:ones 200) -1.0))";
+		assertThat(eval("(aref " + negative200 + " 0)", true).print()).isEqualTo("NaN");
+		assertThat(eval("(aref " + negative200 + " 199)", true).print()).isEqualTo("NaN");
+		assertThat(eval(negative200, true).print()).isEqualTo(eval(negative200, false).print());
 	}
 
 	@Test
@@ -789,8 +815,8 @@ class VecSimdTest {
 				"(vec:relu vb)", "(vec:clip vb -0.5 0.5)", "(vec:dot vb vb)", "(vec:dot vf vb)", "(vec:matvec wb vb)",
 				"(vec:matvec wf vb)", "(vec:add-into (vec:zeros 300 :element-type 'bfloat16) vb vf)",
 				"(vec:add-into (vec:zeros 300 :element-type 'single-float) vb vb)",
-				"(vec:sqrt-into (vec:zeros 300 :element-type 'bfloat16) (vec:abs vf))",
-				"(vec:sqrt-into (vec:zeros 300 :element-type 'single-float) (vec:abs vb))" }) {
+				"(vec:sqrt-into (vec:zeros 300 :element-type 'bfloat16) vf)",
+				"(vec:sqrt-into (vec:zeros 300 :element-type 'single-float) vb)" }) {
 			String program = bf16Fixture(4, 300, body);
 			assertThat(eval(program, true).print()).as(body).isEqualTo(eval(program, false).print());
 		}
@@ -805,17 +831,16 @@ class VecSimdTest {
 		// negatives included (the f32 intermediate is the defun's answer over all
 		// 65536 patterns for every one of these members, `.todo/696`'s sweep and the
 		// scratch sweep it cites for the four unary members). sqrt runs over the
-		// non-negative half: CL sqrt is complex-extended, so a negative input takes
-		// the defun to a complex the bf16 store signals on -- the same hole the f32
-		// sqrt lane already has, and outside what a narrow kernel can reproduce.
+		// signed values directly: the element function is the float-domain square
+		// root, NaN on negatives on both paths, so no abs wrapper is needed.
 		for (String body : new String[] { "(vec:add vb vb)", "(vec:sub vb vb)", "(vec:mul vb vb)", "(vec:div vb vb)",
-				"(vec:+ vb vb)", "(vec:- vb vb)", "(vec:* vb vb)", "(vec:/ vb vb)", "(vec:sqrt (vec:abs vb))",
-				"(vec:abs vb)", "(vec:negative vb)", "(vec:reciprocal vb)",
+				"(vec:+ vb vb)", "(vec:- vb vb)", "(vec:* vb vb)", "(vec:/ vb vb)", "(vec:sqrt vb)", "(vec:abs vb)",
+				"(vec:negative vb)", "(vec:reciprocal vb)",
 				"(vec:add-into (vec:zeros 300 :element-type 'bfloat16) vb vb)",
 				"(vec:sub-into (vec:zeros 300 :element-type 'bfloat16) vb vb)",
 				"(vec:mul-into (vec:zeros 300 :element-type 'bfloat16) vb vb)",
 				"(vec:div-into (vec:zeros 300 :element-type 'bfloat16) vb vb)",
-				"(vec:sqrt-into (vec:zeros 300 :element-type 'bfloat16) (vec:abs vb))",
+				"(vec:sqrt-into (vec:zeros 300 :element-type 'bfloat16) vb)",
 				"(vec:abs-into (vec:zeros 300 :element-type 'bfloat16) vb)",
 				"(vec:negative-into (vec:zeros 300 :element-type 'bfloat16) vb)",
 				"(vec:reciprocal-into (vec:zeros 300 :element-type 'bfloat16) vb)",

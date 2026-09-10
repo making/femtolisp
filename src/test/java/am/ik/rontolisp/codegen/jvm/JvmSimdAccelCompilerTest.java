@@ -555,11 +555,12 @@ class JvmSimdAccelCompilerTest {
 	@Test
 	void unaryUfuncsMatchTheScalarReferenceAtBothSizesAndWidths() throws Exception {
 		for (String op : new String[] { "sqrt", "abs", "square", "negative", "sign", "reciprocal" }) {
-			String inner = op.equals("sqrt") ? "(vec:add %v (vec:ones %n))"
-					: "(vec:sub %v (vec:scale (vec:ones %n) 100.0))";
+			// Every member runs over a sign-mixed vector, sqrt included: its element
+			// function is the float-domain square root, NaN on negatives on both
+			// the spliced defun and the bridge kernel.
 			for (String n : new String[] { "7", "200" }) {
-				assertMatchesScalarReference("(print (vec:" + op + " "
-						+ inner.replace("%v", "(vec:arange " + n + ")").replace("%n", n) + "))");
+				assertMatchesScalarReference("(print (vec:" + op + " (vec:sub (vec:arange " + n
+						+ ") (vec:scale (vec:ones " + n + ") 100.0))))");
 			}
 			assertMatchesScalarReference("(print (vec:" + op
 					+ " (vec:add (vec:arange 200 :element-type 'single-float) (vec:ones 200 :element-type 'single-float))))");

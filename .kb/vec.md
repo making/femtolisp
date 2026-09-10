@@ -178,7 +178,13 @@ through the exponent bits -- ~3e-14 relative over the full finite range, with th
   bit-identical to the defun.
 - **Lane forms only where they equal the defun.** Interpreter/JVM and wasm-GC lane-ize sqrt, abs,
   negative and reciprocal only (`VectorOperators.EXP` is not bit-identical to `Math.exp`; gate
-  `JvmSimdVectorTemplate.hasLaneForm`); exp/log/tanh/sin/cos/tan/sign walk element loops over
+  `JvmSimdVectorTemplate.hasLaneForm`); `sqrt`'s element function is the float-domain square root
+  (`vec::%fsqrt`, `linalg::%la-fsqrt` beside it): NaN on a negative input on both paths. CL `sqrt`
+  roots negatives into the complex plane, and a complex has no packed element store, so the CL
+  spelling signalled on the scalar path (a type error on the interpreter/JVM, a trap on wasm-GC)
+  while the lane answered NaN. Scalar `(sqrt x)` itself stays complex-extended; only the packed
+  element functions are float-domain, pinned by `ci-spec.yaml`'s `vec-sqrt-negative-cross-backend`
+  (four backends x scalar/`--simd`, with 200-element lane shapes); exp/log/tanh/sin/cos/tan/sign walk element loops over
   `WasmVecSimdRuntimeBuilder.emitExpF64`/`emitLogF64`/`emitTanhF64`/`emitSinCosF64`/`emitSignumF64`,
   which `NoGcWasmCompiler.compileSimdUnaryF64` reuses, so BOTH `--no-gc` lowerings emit the identical
   loop (no `0xFD`). All f32 lane forms are exact by the `53 >= 2*24+2` bound. The scalar

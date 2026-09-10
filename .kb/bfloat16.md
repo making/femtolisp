@@ -286,9 +286,9 @@ needed"). No `linalg:` acceleration seam takes it: `--simd`, `--blas` and `--gpu
   element. Two findings the work turned up, both recorded because a later reader cannot
   reconstruct them: on an **sNaN input** the packed lanes quiet the source payload while
   the scalar instructions answer the indefinite, so the kernels are pinned at `isNaN`
-  level there rather than by payload; and CL `sqrt` is complex-extended, so a negative
-  input takes the defun to a complex the bf16 store signals on -- the same hole the f32
-  sqrt lane already has, and outside what a narrow kernel can reproduce.
+  level there rather than by payload; and the `sqrt` element function is the
+  float-domain square root -- NaN on a negative input on both paths (`.kb/vec.md`) -- because CL
+  `sqrt` roots negatives into a complex no packed store accepts.
 - **What it costs where it does not pay.** The fused GEMV is BELOW f32 on one thread while the
   matrix is cache-resident and above it once it is not: on a GB10, 1024x1024 loses and 4096x4096
   wins clearly (the numbers, both JITs, in `.todo/488`'s README). The crossover is a cache

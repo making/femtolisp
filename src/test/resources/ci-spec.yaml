@@ -6092,6 +6092,37 @@ cases:
       #f(4.0 6.0)
       #d(17.0 39.0)
       #d(14.0 32.0)
+  # vec:sqrt / linalg:sqrt on negative input (see .kb/vec.md, "Element-wise unary
+  # ufuncs"): the packed element function is the float-domain square root, NaN on
+  # negatives -- not CL's complex-extended sqrt, whose complex has no packed
+  # element store. The CL spelling signalled on the scalar path (a type error on
+  # the interpreter and the JVM, a trap on wasm-GC) while the --simd lane answered
+  # NaN, so both legs of the --simd axis disagreed. Both paths now answer NaN on
+  # every backend with --simd on and off; scalar (sqrt -1.0) itself stays
+  # complex-extended (last line). The 200-element shapes run the lane loop on the
+  # --simd legs (THRESHOLD = 128); the small shapes run the scalar tail.
+  - name: vec-sqrt-negative-cross-backend
+    source: |
+      (defun ci-vec-sqrt-neg ()
+        (print (vec:sqrt #d(-1.0 4.0 -0.0 0.0)))
+        (print (vec:sqrt #f(-1.0 4.0)))
+        (print (vec:sqrt-into (vec:zeros 2) #d(-9.0 16.0)))
+        (let ((neg200 (vec:scale (vec:ones 200) -1.0))
+              (negf200 (vec:scale (vec:ones 200 :element-type 'single-float) -1.0)))
+          (print (list (aref (vec:sqrt neg200) 0) (aref (vec:sqrt neg200) 199)))
+          (print (list (aref (vec:sqrt negf200) 0) (aref (vec:sqrt negf200) 199))))
+        (let ((la (linalg:sqrt (linalg:from-list '(-1.0 4.0)))))
+          (print (list (aref la 0) (aref la 1))))
+        (print (sqrt -1.0)))
+      (ci-vec-sqrt-neg)
+    expected: |
+      #d(NaN 2.0 -0.0 0.0)
+      #f(NaN 2.0)
+      #d(NaN 4.0)
+      (NaN NaN)
+      (NaN NaN)
+      (NaN 2.0)
+      #C(0.0 1.0)
   # The vec: element-wise quotient plus the four CL operator spellings (see
   # .kb/vec.md): vec:+ / vec:- / vec:* / vec:/ are STRICTLY BINARY aliases of
   # vec:add / vec:sub / vec:mul / vec:div, and every acceleration layer maps them
