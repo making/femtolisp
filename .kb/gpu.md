@@ -1400,6 +1400,15 @@ Each is a measured decline, and each needs this file's numbers before it is revi
   no pointer in the heap) makes the image build FAIL in `PolymorphicSignatureWrapperMethod.buildGraph`
   ("unexpected input could not be handled: linkToNative") -- the AOT method-handle inliner has no case
   for a downcall, and it is a crash rather than a fallback.
+  **Upstream (surveyed 2026-09-10, `.todo/730`): the COST is already
+  [oracle/graal#12219](https://github.com/oracle/graal/issues/12219) (GR-75754, "Bad performance of
+  the FFM API", open since 2025-09-23, assigned) with no attribution in the thread** -- so what is
+  above is a comment on it, not a second issue. The build CRASH is not the closed
+  [#9727](https://github.com/oracle/graal/issues/9727) / [#7531](https://github.com/oracle/graal/issues/7531):
+  those are the same `VMError` from an ordinary `DowncallStub.invoke` and #9727 was fixed
+  2025-08-27, while the build-time-constant path still fails on 25.0.4, so that one is a new issue.
+  Both texts are paste-ready in
+  `.todo/artefacts/730-report-the-svm-downcall-findings-upstream/`; posting is a person's action.
 - **The device thresholds HOLD in the binary; `--blas`'s did not** (same date). A 64x64x64 product with
   its result read back is 63 us a call in the binary against 30 on the JVM -- the driver side is the
   same (13.6 against 15.1 us; nsys), the host side 49 against 15, of which the member's 5.65 driver

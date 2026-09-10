@@ -104,7 +104,9 @@ The CUDA route is real at the call (11-16 ns above) and was NOT widened, on thes
 
 **Revisit when the binary's `--gpu` host side is within ~2x of the JVM's per member** -- which
 means the interpreter's own overhead, not the driver's, has moved. The upstream ask that would make
-the substitution unnecessary is `.todo/730`, section 2.
+the substitution unnecessary is an AOT invoker for a REGISTERED downcall shape, asked upstream on
+[oracle/graal#12219](https://github.com/oracle/graal/issues/12219) (GR-75754) -- the text is
+`.todo/730`'s `comment-on-12219.md`.
 
 ## Tests
 
