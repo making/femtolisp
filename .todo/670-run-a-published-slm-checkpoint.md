@@ -256,13 +256,13 @@ wrong.**
 **The current lane was the instrument, then the width's last kernel.** A's box could
 not certify anything until `748` landed; both instrument items have now closed, and
 the suite is green on dorian again (10342 / 0 / 0 / 290 skipped at `ee30f4c20`).
-The lane proceeds at A-3.
+The lane proceeds at A-4.
 
 | # | item | difficulty | why here, why now |
 | --- | --- | --- | --- |
 | A-1 | `748` the corpus's wild-pathname case walks the whole project tree | Low | CLOSED 2026-09-09 (`2f5cafb07`, bounded walk; file removed, history recorded). It was the precondition of the lane, and the instrument is restored |
 | A-2 | `749` `append` recurses once per element on every backend | Medium | CLOSED 2026-09-10 (`ee30f4c20`): the copy is iterative in `Environment.appendTwo`, both `RuntimeBuilder` `_append`s and both mapcan accumulators, plus the mapcon expansion's left fold the census turned up; pinned at 100k in ci-spec and per-backend unit tests |
-| A-3 | `747` the element-wise `bfloat16` `vec:` kernels | High | Third: the one bf16 arm still declined, and the only lane item whose measurement is already DONE (`696`, with the harness and the lane form written out). What is left is design -- which operand pairings are admitted, what width a result takes, which of ~40 members mirror -- so it is High for the decisions, not for the numbers. Directly on the subject: it is how a checkpoint's weights are streamed at the width they are published in |
+| A-3 | `747` the element-wise `bfloat16` `vec:` kernels | High | CLOSED 2026-09-10 (`68e9aad6a`): bf16 x bf16 -> bf16 over exactly the members with an f32 lane loop, mixed pairs and a bf16 `-into` destination with wider sources still declining; the f32 intermediate swept against the defun (all 65536x65536 pairs per binary op, all 65536 patterns per unary one); full suite 10357 / 0 / 0 / 290 skipped on dorian, native E2E 4204 / 0 / 0 |
 | A-4 | `731` the wasmtime landing-pad report and the toolchain floor | Medium | Fourth: on the subject by descent, the argument `722` earned -- a cross-backend pin that an unrelated later case can turn red is not a pin, and the checkpoint path is pinned on four backends. Half of it is a person's action (filing upstream is an external submission), so it is last: the half this lane can finish is the floor, and **the narrowing question is answered by the PIN, never by the version** |
 
 **A's pool for THIS umbrella.** GPU-free and on the subject:
