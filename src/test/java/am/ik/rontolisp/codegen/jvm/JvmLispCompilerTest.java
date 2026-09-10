@@ -25,6 +25,7 @@ import org.junit.jupiter.api.io.TempDir;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
+import static org.assertj.core.api.Assertions.within;
 
 class JvmLispCompilerTest {
 
@@ -7285,13 +7286,24 @@ class JvmLispCompilerTest {
 
 	@Test
 	void compileAndRunComplexExptExpLogTrig() throws Exception {
+		// The float parts are pinned against the interpreter's own Math.exp/sin/cos/log
+		// values, not against a printed spelling: Math.exp(1.0) is 1 ulp apart
+		// between x64 and aarch64 (2.718281828459045 and 2.7182818284590455), so a
+		// literal expected here is the digit string of whichever box took it
+		// (.todo/756). The exact answers keep their literal form.
 		assertThat(compileAndRun("(print (expt #c(1 1) 2))")).isEqualTo("#C(0 2)");
 		assertThat(compileAndRun("(print (expt #c(1 1) -1))")).isEqualTo("#C(1/2 -1/2)");
 		assertThat(compileAndRun("(print (expt #c(0 1) 2))")).isEqualTo("-1");
-		assertThat(compileAndRun("(print (exp #c(0 1)))")).isEqualTo("#C(0.5403023058681398 0.8414709848078965)");
-		assertThat(compileAndRun("(print (log #c(1 1)))")).isEqualTo("#C(0.3465735902799727 0.7853981633974483)");
-		assertThat(compileAndRun("(print (sin #c(1 1)))")).isEqualTo("#C(1.2984575814159773 0.6349639147847361)");
-		assertThat(compileAndRun("(print (exp 1))")).isEqualTo("2.718281828459045");
+		assertThat(compileAndRun("(print (realpart (exp #c(0 1))))")).isEqualTo(Double.toString(Math.cos(1)));
+		assertThat(compileAndRun("(print (imagpart (exp #c(0 1))))")).isEqualTo(Double.toString(Math.sin(1)));
+		assertThat(compileAndRun("(print (realpart (log #c(1 1))))"))
+			.isEqualTo(Double.toString(Math.log(Math.hypot(1, 1))));
+		assertThat(compileAndRun("(print (imagpart (log #c(1 1))))")).isEqualTo(Double.toString(Math.atan2(1, 1)));
+		assertThat(compileAndRun("(print (realpart (sin #c(1 1))))"))
+			.isEqualTo(Double.toString(Math.sin(1) * Math.cosh(1)));
+		assertThat(compileAndRun("(print (imagpart (sin #c(1 1))))"))
+			.isEqualTo(Double.toString(Math.cos(1) * Math.sinh(1)));
+		assertThat(compileAndRun("(print (exp 1))")).isEqualTo(Double.toString(Math.exp(1)));
 		assertThat(compileAndRun("(print (expt 2 3))")).isEqualTo("8");
 	}
 
