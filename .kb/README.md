@@ -127,6 +127,8 @@ deliberate boundaries the audit must not undo: user-facing operator catalogues l
 - [default-run-path.md](default-run-path.md) -- flagless `rontolisp app.lisp` runs the interpreter by decision
 - [measurement-probes.md](measurement-probes.md) -- whether a performance number answers the question that was asked
 - [test-execution.md](test-execution.md) -- how the test suite actually runs (surefire forks, parallelism)
+- [running-backends.md](running-backends.md) -- running a program on all four backends by hand, the native-image E2E leg, the examples suite
+- [adding-primitives.md](adding-primitives.md) -- the per-surface checklists for a new built-in function, macro or special form, and the two silent-failure traps
 - [hot-path-method-size.md](hot-path-method-size.md) -- HotSpot's 8000-bytecode HugeMethodLimit and the splits that stay under it
 
 ## JVM backend

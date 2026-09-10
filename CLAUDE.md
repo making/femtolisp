@@ -116,50 +116,10 @@ together, never one backend in isolation.
 
 ## Development Workflows
 
-### Adding a Built-in Function
-
-1. `LispNames` constant + `PackageRegistry.CL_SYMBOLS` entry (else it is misclassified as a
-   user symbol).
-2. `Environment.createGlobal()`: `env.define("name", new LispFunction(...))` -> `LispEvaluatorTest`
-3. `Jvm<Name>Compiler` + a case in `JvmExprCompiler.compileCons()` -> `JvmLispCompilerTest`.
-   **A `rontolisp:`-package name does NOT go through that switch** -- it never reaches a
-   `cl:` symbol there, since `compileConsLocated` dispatches every `rontolisp:` member
-   through a SEPARATE qualified-name if-chain first (keyed on
-   `PackageRegistry.splitQualified(sym.name())`; every existing `rontolisp:` primitive,
-   e.g. `version`/`tcp-connect`/`bfloat16-bits`, is a case there). Adding a `rontolisp:`
-   name's case to the `compileCons()` switch instead compiles clean and then silently
-   falls through to "undefined function" at the call site -- it never gets a chance to
-   match, since the qualified if-chain already returned.
-4. `Wasm<Name>Compiler` + a case in `WasmExprCompiler.compileCons()` -> `WasmLispCompilerIntegrationTest`
-   (`WasmEmitHelper.castI31GetS()` to unbox, `ref.i31` to re-box). The same split as
-   step 3 applies here: `WasmExprCompiler.compileConsLocated` has its own
-   `PackageRegistry.splitQualified`-keyed if-chain for `rontolisp:` members, separate
-   from the `cl:`-symbol switch.
-5. `BuiltinFunctionWrappers.WRAPPER_DEFS` entry so it works as a first-class value.
-6. A case in `src/test/resources/ci-spec.yaml` if it deserves end-to-end coverage.
-7. Docs: a per-operator page under `reference/{functions,macros,special-forms}/` (H1 = name,
-   signature, one runnable ```lisp example with a `; => value`), a `_catalog.yaml` entry, and
-   a row in that package's function page (`reference/functions/<package>.md` -- `cl.md` for
-   the standard package; see the category's `index_page` in `_catalog.yaml`).
-8. If its trailing arguments are a BODY, an `am.ik.rontolisp.format.IndentRules` entry --
-   without one `rontolisp format` lays the body out as a function call (`.kb/formatter.md`).
-
-### Adding a Macro
-
-Macros expand into existing primitives at the AST level; `LispMacroExpander` is shared by the
-evaluator and both compilers, so no per-compiler class is needed.
-
-1. `LispMacroExpander.expand<Name>(LispCons)`, plus `LispNames` / `PackageRegistry.CL_SYMBOLS`.
-2. `LispEvaluator.evalCons()` case -> `eval(LispMacroExpander.expand<Name>(cons), env)`.
-3. `Jvm`/`WasmExprCompiler` case -> `compileExpr(LispMacroExpander.expand<Name>(cons), ...)`.
-4. To pass it to `map`/`reduce`/`funcall`: register as a `LispFunction` in `Environment` AND
-   add a `BuiltinFunctionWrappers` entry. Both -- omitting `Environment` causes
-   `Undefined symbol` in interpreter / native-image mode.
-
-### Adding a Special Form
-
-`LispEvaluator.evalCons()` case (arguments arrive unevaluated), plus
-`Jvm/Wasm<Form>Compiler` wired into `Jvm/WasmExprCompiler.compileCons()`.
+Adding a built-in function, a macro or a special form: `.kb/adding-primitives.md` -- the
+per-surface checklists, including the two traps that compile clean and then fail silently
+at the call site (a `rontolisp:` name in the wrong dispatch chain; a macro registered in
+one of the two required places).
 
 ### Documentation Site
 
@@ -173,62 +133,8 @@ run `./mvnw -f docs-tool/pom.xml test` after touching `doc/` layout.
 ./mvnw -Dtest=DocExamplesTest test                                            # verify
 ```
 
-### Verifying Output Manually (all four backends)
-
-A program is "verified" only when it has run on **all four**. The component path uses a
-different I/O adapter (and entropy/clock source), so it can diverge from Preview 1.
-Assumes wasmtime 47+, which enables wasm-GC and exception-handling by default.
-
-```bash
-JAR=target/rontolisp-0.1.0-SNAPSHOT-exec.jar
-echo '(print (+ 1 2))' > test.lisp
-
-java -jar $JAR test.lisp                                                    # interpreter
-java -jar $JAR test.lisp -o Prog.class && java Prog                         # JVM (path-free name, or --class-name)
-java -jar $JAR test.lisp -o test.wasm && wasmtime run test.wasm             # WASM preview 1
-java -jar $JAR test.lisp -o test-comp.wasm --component && \
-  wasmtime run test-comp.wasm                                               # WASM component (WASI 0.3)
-```
-
-`handler-case`/`ignore-errors`/`unwind-protect`/`catch`/`throw`, an async component
-(incl. every fetch/serve program), and a cross-lambda `return-from`/`go` all compile in EH
-mode. A fetch component also needs `-S http=y`.
-
-### Native Image E2E (run locally before every push)
-
-`./mvnw test` **skips `CiSpecE2eTest`** (`-Drontolisp.binary` unset), so a stale
-`ci-spec.yaml` expectation only fails in CI. Reproduce it after editing `ci-spec.yaml` or
-changing anything that can shift cross-backend output:
-
-```bash
-./mvnw -Pnative clean package -DskipTests
-./mvnw -Dtest=CiSpecE2eTest -DfailIfNoTests=false -Drontolisp.binary="$PWD/target/rontolisp" test
-```
-
-A failure prints `[case '<name>' on <BACKEND>`; re-run step 2 only unless Java sources changed.
-The corpus runs on each backend TWICE -- default and `--simd`, so the leg is `<BACKEND> --simd` --
-because `--simd` changes the packed-array REPRESENTATION and a matrix counting only backends misses
-half of every accelerated primitive (`.kb/vec.md`, "The E2E `--simd` axis").
-
-### Examples Suite
-
-`ExamplesE2eTest` runs every example in `examples/examples.yaml` on every backend it
-declares. `./mvnw test` skips it, so run it after touching an example or a surface they
-exercise:
-
-```bash
-./mvnw clean package -DskipTests
-./mvnw -Dtest=ExamplesE2eTest -DfailIfNoTests=false -Drontolisp.examples=true test
-# narrow it while iterating: -Drontolisp.examples.only=cloudflare
-# ...but `only=` is a plain SUBSTRING match on the example's path, not a directory name.
-# `only=llm` also matches `ml/tiny-llm.lisp` and `examples/llm-from-scratch/` -- 72 legs
-# instead of 39. Anchor a directory with a trailing slash: `only=llm/`.
-```
-
-It is the longest run in the repo. **Split it with `-Drontolisp.examples.only=` from the
-start** -- one slice per surface -- and run each slice to completion in the foreground. A
-run detached into the background loses its result if the session ends before it finishes,
-which is indistinguishable from never having run it.
+Running a program on all four backends by hand, the native-image E2E leg and the examples
+suite: `.kb/running-backends.md`. A program is "verified" only when it has run on all four.
 
 ### Waiting for a Long Run
 
