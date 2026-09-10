@@ -295,7 +295,8 @@ apparent blocker -- "`v128.load`/`store` address LINEAR memory" -- is FALSE: GC
   **No kernel has a scalar tail**: `array.new_default` zero-initializes and nothing writes past
   `count`, so the padding lanes are zero and every kernel folds them harmlessly -- harmlessly to the
   VALUE. Not to the BITS, and that is where wasm-GC parts company with the other three at a length
-  that is not a multiple of the lane count (`.todo/758`, and the reduction contract above).
+  that is not a multiple of the lane count (`.todo/758`, closed as a contract exception -- see
+  the reduction contract above for both answers).
 - **The one place the zero padding is not free is a WRITE**: a whole-group store reaches up to
   `lanes - 1` past `count`, which an `-into` destination LONGER than its operands has REAL elements
   at. `WasmVecLoops.gcSaveLastGroup`/`gcRestoreLastGroupTail` bracket the group loop and blend the
@@ -355,9 +356,11 @@ examples pinning derived integers (`simd-gemv`, `tiny-llm`, `llm`) are RUN under
 
 ## The f32-reduction precision contract
 
-Every `--simd` backend accumulates an f32 reduction in f32 and promotes ONCE at the value boundary,
-so all four agree; the scalar `vec.lisp` reference stays the more accurate f64-accumulating oracle.
-`#d` is untouched.
+Every `--simd` backend accumulates an f32 reduction in f32 and promotes ONCE at the value boundary.
+At lengths that are multiples of the lane count all four agree; at any other length the two
+folds below may differ in the last bit (`.todo/758`, closed as a contract exception -- unifying
+them is not worth the blast radius). The scalar `vec.lisp` reference stays the more accurate
+f64-accumulating oracle. `#d` is untouched.
 
 - **The lane-count pin.** An f32 reduction's value depends on the lane count (`2^24 + 768` at 4
   lanes, `+ 896` at 8, `+ 960` at 16), so `FSPECIES_REDUCE` is `FloatVector.SPECIES_128`, not
@@ -396,23 +399,34 @@ so all four agree; the scalar `vec.lisp` reference stays the more accurate f64-a
   across 1.0. Numbers, harness and the whole argument:
   `.todo/artefacts/480-the-simd-gemv-row-is-one-accumulator-chain/README.md`.
 
-**A length that is NOT a multiple of the lane count breaks the agreement above (measured
-2026-09-10, `.todo/758`).** The lane COUNT is pinned; the way the LAST, partial group is closed is
-not. The interpreter, the JVM class and `--no-gc` run the lane loop to `loopBound(n)` and add the
-leftover as a scalar tail; wasm-GC has no scalar tail at all (the packed layout below) and folds
-`ceil(n/4)` groups with the padding lanes zeroed. Both are exact-arithmetic equivalents and neither
-is the other's bits: a 1x31 `#f` GEMV with `2^24` at column 29 answers **16777244** on the
-interpreter and the JVM and **16777248** on wasm-GC and the component, and `vec:dot` over 131
-elements with `4096.0` at index 127 answers 16777344 against 16777348. Nothing caught it because
-every cross-backend `--simd` probe uses a multiple of 4 (1024 for the reductions, 16/24/32 for the
-GEMV gate), which is exactly where the two strategies coincide. **Do not read "all four agree" as
-holding at an arbitrary length until `.todo/758` decides which fold is the contract.**
+**A length that is NOT a multiple of the lane count is outside the agreement above (measured
+2026-09-10, `.todo/758`, closed as a contract exception).** The lane COUNT is pinned; the way
+the LAST, partial group is closed is pinned as DIFFERENT BY DESIGN. The interpreter, the JVM
+class and `--no-gc` run the lane loop to `loopBound(n)` and add the leftover as a scalar tail
+in index order; wasm-GC (and the component, which wraps the same core module) has no scalar
+tail at all (the packed layout below) and folds `ceil(n/4)` groups with the padding lanes
+zeroed. Both are exact-arithmetic equivalents and neither is the other's bits: a 1x31 `#f`
+GEMV with `2^24` at column 29 answers **16777244** on the interpreter, the JVM and `--no-gc`
+and **16777248** on wasm-GC and the component, and `vec:dot` over 131 elements with `4096.0`
+at index 127 answers 16777344 against 16777348 (the scalar oracle answers 16777246 and
+16777346 -- exact). Nothing caught it because every cross-backend `--simd` probe uses a
+multiple of 4 (1024 for the reductions, 16/24/32 for the GEMV gate), which is exactly where
+the two strategies coincide. Unifying was considered and rejected: giving wasm-GC a scalar
+tail costs it the property the padded layout was built for (the `+1` sentinel group, the
+shuffle window and `gcSaveLastGroup` all assume the padded shape), giving the other three a
+padded final group means materialising a zeroed group or masking on the hot path -- all to
+move a last bit that has shipped since the wasm-GC kernels landed and has never moved a
+model output (greedy argmax absorbs it, as `.todo/480` re-verified on eight legs).
+`partialFinalGroupFoldsTheScalarTailByDesign` (interpreter, JVM) and
+`wasmGcSimdPartialFinalGroupFoldsTheZeroPaddedGroupByDesign` (wasm-GC, component, `--no-gc`,
+scalar oracle) pin both answers, so a future change to either fold is visible.
 
-The pinning probe: `v = #f(4096.0 1.0 ... 1.0)`, 1024 elements. `dot(v,v) = 4096^2 + 1023 = 16778239`
+The pinning probe: `v = #f(4096.0 1.0 ... 1.0)`, 1024 elements -- a multiple of the lane
+count, so both folds coincide and every `--simd` backend must agree. `dot(v,v) = 4096^2 + 1023 = 16778239`
 exactly; `4096^2` is `2^24`, where the f32 spacing is 2, so the lane holding it swallows every `1.0`
 while the other three lanes fold 256 ones each.
 
-| probe | scalar (all backends) | `--simd` (all backends) |
+| probe | scalar (all backends) | `--simd` (all backends, multiple-of-4 lengths) |
 |---|---|---|
 | `(round (vec:dot v v))`, `v[0] = 4096.0` | 16778239 | **16777984** |
 | `(round (vec:sum v))`, `v[0] = 2^24` | 16778239 | **16777984** |
@@ -421,9 +435,10 @@ while the other three lanes fold 256 ones each.
 
 The GEMV row groups as sixteen lanes (`2^24 + 960`); `vec:dot`/`vec:sum` keep one four-lane chain
 (`2^24 + 768`). **A GEMV row and a `vec:dot` over the same two vectors are the same value
-mathematically and NOT the same bits. Nothing may assume they agree.** NOTHING but the three
-`singleFloatReductionsAccumulateInSinglePrecision*` tests catches a regression here: every other `#f`
-test input stays under `2^24`.
+mathematically and NOT the same bits. Nothing may assume they agree.** The
+`singleFloatReductionsAccumulateInSinglePrecision*` tests catch a regression of the
+multiple-of-4 agreement, and the `partialFinalGroup*` tests catch one of either partial-group
+fold: every other `#f` test input stays under `2^24`.
 
 **This is also the one thing a ci-spec case may not do.** The corpus runs twice, scalar and
 `--simd`, against ONE set of `expected:` lines with no per-pass override, so a case whose `#f`

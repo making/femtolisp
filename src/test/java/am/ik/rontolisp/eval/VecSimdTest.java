@@ -174,6 +174,43 @@ class VecSimdTest {
 	}
 
 	@Test
+	void partialFinalGroupFoldsTheScalarTailByDesign() {
+		// .todo/758, closed as a contract exception rather than a unification: at a
+		// length that is not a multiple of the f32x4 lane count the two folds close
+		// the last, partial group differently -- this side (interpreter, JVM class,
+		// --no-gc) runs the lane loop to loopBound(n) and adds the leftover as a
+		// scalar tail in index order, while wasm-GC folds ceil(n/4) zero-padded
+		// groups with no scalar tail -- so the last bit may differ. Both are exact
+		// in exact arithmetic; the 2^24 probes below make the order legible as
+		// different integers. The wasm-GC answers (16777248 / 16777348) are pinned
+		// beside these in WasmLispCompilerIntegrationTest; the JVM class answers
+		// these same integers in JvmSimdAccelCompilerTest.
+		String gemv = """
+				(let ((m (make-array '(1 31) :element-type 'single-float :initial-element 1.0))
+				      (v (vec:ones 31 :element-type 'single-float)))
+				  (setf (aref m 0 29) 4096.0)
+				  (setf (vec:aref v 29) 4096.0)
+				  (round (vec:aref (vec:matvec m v) 0)))
+				""";
+		assertThat(eval(gemv, true).print()).as("31 columns, 2^24 in the tail: scalar tail").isEqualTo("16777244");
+		assertThat(eval(gemv, false).print()).as("scalar oracle stays exact").isEqualTo("16777246");
+		String dot = """
+				(let ((v (vec:ones 131 :element-type 'single-float)))
+				  (setf (vec:aref v 127) 4096.0)
+				  (round (vec:dot v v)))
+				""";
+		assertThat(eval(dot, true).print()).as("131 elements, 4096.0 at index 127: scalar tail").isEqualTo("16777344");
+		assertThat(eval(dot, false).print()).as("scalar oracle stays exact").isEqualTo("16777346");
+		String sum = """
+				(let ((v (vec:ones 131 :element-type 'single-float)))
+				  (setf (vec:aref v 127) 16777216.0)
+				  (round (vec:sum v)))
+				""";
+		assertThat(eval(sum, true).print()).as("131 elements, 2^24 at index 127: scalar tail").isEqualTo("16777344");
+		assertThat(eval(sum, false).print()).as("scalar oracle stays exact").isEqualTo("16777346");
+	}
+
+	@Test
 	void meanAndNormAreAcceleratedTransitivelyThroughSumAndDot() {
 		// vec:mean / vec:norm keep their scalar bodies; the vec:sum / vec:dot they call
 		// resolve to the installed natives (Lisp-2 global function namespace).
@@ -249,7 +286,9 @@ class VecSimdTest {
 	 * 2^24 + 3*6 = 16777234. Being a multiple of the lane count, it is the one of the
 	 * three that proves agreement: at 31 the wasm-GC lowering has no scalar tail and
 	 * folds the partial group with its padding zeroed, so its answer matches this one
-	 * here by arithmetic luck and not by contract ({@code .todo/758}).
+	 * here by arithmetic luck and not by contract -- the deliberate divergence is pinned
+	 * by {@code partialFinalGroupFoldsTheScalarTailByDesign} here and the wasm-GC mirror
+	 * beside it ({@code .todo/758}, closed as a contract exception).
 	 *
 	 * <p>
 	 * <b>16 and 32 are asserted identically on all four {@code --simd}
