@@ -288,7 +288,7 @@ needed"). No `linalg:` acceleration seam takes it: `--simd`, `--blas` and `--gpu
   the scalar instructions answer the indefinite, so the kernels are pinned at `isNaN`
   level there rather than by payload; and CL `sqrt` is complex-extended, so a negative
   input takes the defun to a complex the bf16 store signals on -- the same hole the f32
-  sqrt lane already has, and outside what a narrow kernel can reproduce.
+  sqrt lane already has (now `.todo/759`), and outside what a narrow kernel can reproduce.
 - **What it costs where it does not pay.** The fused GEMV is BELOW f32 on one thread while the
   matrix is cache-resident and above it once it is not: on a GB10, 1024x1024 loses and 4096x4096
   wins clearly (the numbers, both JITs, in `.todo/488`'s README). The crossover is a cache
@@ -409,8 +409,12 @@ rounds: the spike, both JITs plus the quantized widths, x64). What it decided, a
   conversion and the reader path, `488` the fused kernels, `489` the 1B model, `490` the device;
   then `707` `coerce`/`concatenate`, `687` `linalg:`, `745` the bulk pair, `746` the census, `689`
   `jvm-export`, `696` the element-wise measurement, `747` the element-wise kernels that
-  measurement justified (closed 2026-09-10). Still open and the width's: `.todo/480` (the
-  one-thread 1.6x waits on its accumulator count).
+  measurement justified, and `480` the GEMV's accumulator count, on which the one-thread
+  1.6x turned out to depend -- all three closed 2026-09-10. **The 1.6x has ARRIVED and waits
+  on nothing**: `matvecRowsBf16` carries `MATVEC_ACCUMULATORS` and `MATVEC_ACC_THRESHOLD`
+  with the f32 arm (by contract -- fused equals widen-then-f32-kernel bit for bit, so the two
+  arms cannot carry different counts), and `.todo/488`'s README withdrew its 0.80x / 1.02x
+  parity tables for 1.32-2.00x at 4096x4096 on the GB10 and 1.63-1.85x on x64.
 
 ## Refusing a width: three behaviours
 - **Silent DECLINE** (`null`/`false`, the rung below answers, answer identical): `VecSimd`,

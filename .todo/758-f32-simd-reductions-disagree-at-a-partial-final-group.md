@@ -88,3 +88,12 @@ multiple of the lane count, pinned with an order-sensitive probe (the reproducer
 one), or `.kb/vec.md` states the exception exactly and a test pins both answers so a
 future change to either fold is visible. In both cases the reproducer runs on all four
 backends.
+
+## Related
+
+`.todo/759` is the same SHAPE and a different mechanism: a `--simd` lane form admitted on
+the strength of "it equals the defun", where the equality holds over the inputs every probe
+used and not over the domain. There the divergence is `vec:sqrt` on a negative input (CL
+`sqrt` is complex-extended and the lane form is not); here it is the last bit of an f32
+reduction at a length no probe used. Both were found by asking what the pins did NOT cover,
+and neither is caught by adding cases of the shape already there.

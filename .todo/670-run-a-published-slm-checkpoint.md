@@ -323,13 +323,16 @@ to it and not only to `.kb/error-handling.md`.** B-2's first move edits the file
 its own arm into. Rule 7 decides the order: B says the stale line to A before writing it,
 and whichever lane is IN the file takes the edit.
 
-**Taken, 2026-09-10: B did not write it.** `747` is open, so A is the lane in the file, and
-B-2 closed without touching it. The correction A owes the file, in "The width's account":
-"`.todo/480` (the one-thread 1.6x waits on its accumulator count)" is stale in both halves --
-480 is CLOSED, and the 1.6x has ARRIVED, `matvecRowsBf16` carrying `MATVEC_ACCUMULATORS` and
-`MATVEC_ACC_THRESHOLD` since 2026-09-03 with `.todo/488`'s README withdrawing the 0.80x /
-1.02x tables for 1.32-2.00x at 4096x4096 on GB10 and 1.63-1.85x on x64. What replaces it is
-a sentence about a width that HAS its accumulators, not a dependency.
+**Taken, 2026-09-10, and the rule decided it cleanly.** B held the correction while `747` was
+open -- A was the lane in the file -- said it to A instead of writing it, and wrote it only
+once `747` had closed and released the file. Both halves of the old line were stale: `480` is
+closed, and the 1.6x has ARRIVED rather than waiting, `matvecRowsBf16` having carried
+`MATVEC_ACCUMULATORS` and `MATVEC_ACC_THRESHOLD` since 2026-09-03 (by contract: fused equals
+widen-then-f32-kernel bit for bit, so the two arms cannot carry different counts) with
+`.todo/488`'s README withdrawing its 0.80x / 1.02x parity tables for 1.32-2.00x at 4096x4096
+on the GB10 and 1.63-1.85x on x64. **What the sequencing bought is what rule 7 is for**: the
+stale line named one lane's item and lived in the other's file, and neither lane could see
+both halves alone.
 
 **Not either lane's.** `730` (report the SVM findings upstream) is finished as writing and
 needs a person to post it. `514` (`LinalgGpuTest` never finishes on Apple silicon) and `516`
