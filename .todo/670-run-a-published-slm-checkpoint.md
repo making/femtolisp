@@ -305,14 +305,22 @@ B's previous lane closed `726`, `727` and `728`. What outlived them:
 | # | item | difficulty | why here, why now |
 | --- | --- | --- | --- |
 | B-1 | `729` the binary's downcalls through SubstrateVM's own AOT route | High | The lane, and open-ended: `727` left the measurement done and the COST accepted rather than the design. 10.7 ns against 2-7 us on the same address in the same image, ~5 ms of a decode forward's ~1300 driver calls, and a `--blas` floor that exists only to pay for it. What is unsettled is the SHAPE -- a `-Pnative` source set substituting the binding halves of `am.ik.gpu.CudaDriver`, `eval/LinalgBlasKernels` and `am.ik.objc`, one interface method per shape across 45 CUDA + 6 BLAS + the objc table, against core libraries that import nothing. **The honest first step is deciding whether that seam is payable, and "not worth it" is a close** |
+| B-2 | `480`'s remainder -- the `--simd` GEMV accumulator chain, audited to a close | Medium | Second, and a CLOSE before it is a build: the four independent accumulators landed 2026-09-03 in all four `--simd` implementations, `matvecRowsBf16` carries the same two constants, and `488`'s README withdrew its 0.80x / 1.02x tables -- the 1.6x headline reproduces against the SHIPPED kernels (GB10 1.32-1.49x Graal, 1.81-2.00x C2 at 4096x4096; x64 1.63-1.85x). So `.kb/bfloat16.md`'s "`.todo/480` (the one-thread 1.6x waits on its accumulator count)" is STALE, and correcting it is the first move. What is actually left is the item's own "What this is NOT verified on" list: `Solo.java`'s GB10 numbers, still to be taken; columns 16-31, the single-chain path no example reaches; and a head dimension other than 48 -- **which `489` satisfied on 2026-09-06, when Qwen3.5-0.8B (`head_dim` 128) ran end to end, and nobody noticed. That is rule 11 in its own file rather than someone else's.** GB10 is where every number in the item was taken, which is what puts it here rather than in A's pool |
 
 **The device pool did not refill this time.** Two lanes ago both closers filed a device
 successor and the partition held on that; `728` filed `732`, which was GPU-free and on this
-umbrella's subject, so it went to A and has closed. B's lane is therefore one item. The
+umbrella's subject, so it went to A and has closed. B's second item is therefore drawn from
+the WIDTH's remainder rather than from the device: `480` needs no GPU, but every number in
+it was taken on GB10, and it is the only bf16 item that is not A-3. The
 **aarch64/x64 axis** is what to settle next rather than wait on, and after rule 15 it is
 smaller than it looked: only `747` carries a half of it that this plan is about (the narrow
 width's element-wise kernels, now A-3, whose x64 measurement `696` already took), and
 `684`'s f64 GEMV row belongs to its own track.
+
+**`.kb/bfloat16.md` is named by both lanes at once, so rule 14's per-file exclusion applies
+to it and not only to `.kb/error-handling.md`.** B-2's first move edits the file A-3 writes
+its own arm into. Rule 7 decides the order: B says the stale line to A before writing it,
+and whichever lane is IN the file takes the edit.
 
 **Not either lane's.** `730` (report the SVM findings upstream) is finished as writing and
 needs a person to post it. `514` (`LinalgGpuTest` never finishes on Apple silicon) and `516`

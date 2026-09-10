@@ -218,3 +218,23 @@ The general form of all of this now lives in `.kb/measurement-probes.md`, Rule 5
 - **Models with a head dimension that is not 48.** stories15M is the only checkpoint that
   runs today. The gate is a pure function of the column count, so 64/128/256 take the same
   code path as 48, but no end-to-end run has proved it until `.todo/489`'s ladder does.
+  **That condition fired on 2026-09-06 and nobody read it**: `489` closed with Qwen3.5-0.8B
+  running end to end, `head_dim` 128 (`examples/llm/README.md`), and `728` then ran the same
+  model's seven GEMV shapes on the device against the CPU contract. So this bullet is now an
+  AUDIT of runs that have already happened, not a run to schedule -- an item waiting on an
+  EVENT that no grep for its number could find (`.todo/670`, standing rule 11).
+
+## What is still open here (2026-09-10, from B's lane design)
+
+The item's acceptance is met and its four implementations are verified; what remains is the
+list above, and one correction outside this file:
+
+- `Solo.java`'s GB10 numbers, the ones the harness section says are still to be taken.
+- Columns 16-31, the single-chain path no example reaches.
+- The head-dimension bullet, now an audit (above).
+- **`.kb/bfloat16.md` still records this item as the reason bf16's one-thread 1.6x has not
+  arrived** ("The width's account": "`.todo/480` (the one-thread 1.6x waits on its
+  accumulator count)"). It has arrived: `matvecRowsBf16` carries `MATVEC_ACCUMULATORS` and
+  `MATVEC_ACC_THRESHOLD`, and `.todo/488`'s README withdrew the 0.80x / 1.02x tables for
+  1.32-2.00x at 4096x4096 on GB10 and 1.63-1.85x on x64. That file is also `.todo/747`'s, so
+  the edit follows rule 14's per-file exclusion and rule 7's say-it-first.
