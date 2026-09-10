@@ -789,19 +789,67 @@ class VecSimdTest {
 
 	@Test
 	void aBf16OperandWithoutAFusedKernelDeclinesToTheScalarDefun() {
-		// Only the decode shape -- bf16 weights against f32 activations -- has a fused
-		// kernel. Every other pairing DECLINES: the scalar vec.lisp defun answers, bit
-		// for bit, so --simd stays a speed flag at this width. Note the element-wise
-		// members decline a MIXED bf16/f32 pair rather than signalling the fixed-width
-		// error: the defun computes it happily and --simd may not turn that into an
-		// error.
-		for (String body : new String[] { "(vec:add vb vb)", "(vec:add vf vb)", "(vec:mul vb vf)", "(vec:scale vb 3.0)",
-				"(vec:exp vb)", "(vec:relu vb)", "(vec:clip vb -0.5 0.5)", "(vec:dot vb vb)", "(vec:dot vf vb)",
-				"(vec:matvec wb vb)", "(vec:matvec wf vb)",
-				"(vec:add-into (vec:zeros 300 :element-type 'bfloat16) vb vb)" }) {
+		// Only two shapes have a fused kernel: the decode shape -- bf16 weights
+		// against f32 activations -- and the element-wise bf16 x bf16 -> bf16
+		// pairings (`.todo/747`). Every other pairing DECLINES: the scalar vec.lisp
+		// defun answers, bit for bit, so --simd stays a speed flag at this width.
+		// Note the element-wise members decline a MIXED bf16/f32 pair rather than
+		// signalling the fixed-width error: the defun computes it happily and --simd
+		// may not turn that into an error.
+		for (String body : new String[] { "(vec:add vf vb)", "(vec:mul vb vf)", "(vec:scale vb 3.0)", "(vec:exp vb)",
+				"(vec:relu vb)", "(vec:clip vb -0.5 0.5)", "(vec:dot vb vb)", "(vec:dot vf vb)", "(vec:matvec wb vb)",
+				"(vec:matvec wf vb)", "(vec:add-into (vec:zeros 300 :element-type 'bfloat16) vb vf)",
+				"(vec:add-into (vec:zeros 300 :element-type 'single-float) vb vb)",
+				"(vec:sqrt-into (vec:zeros 300 :element-type 'bfloat16) (vec:abs vf))",
+				"(vec:sqrt-into (vec:zeros 300 :element-type 'single-float) (vec:abs vb))" }) {
 			String program = bf16Fixture(4, 300, body);
 			assertThat(eval(program, true).print()).as(body).isEqualTo(eval(program, false).print());
 		}
+	}
+
+	@Test
+	void theFusedBf16ElementWiseKernelsEqualTheScalarDefun() {
+		// `.todo/747`'s subset: add/sub/mul/div with the four CL operator spellings
+		// and their -into siblings, sqrt/abs/negative/reciprocal with theirs, over
+		// bf16 x bf16 -> bf16. 300 elements, so the lane loop runs rather than only
+		// the scalar tail; the values are a deterministic LCG in [-1, 1], zeros and
+		// negatives included (the f32 intermediate is the defun's answer over all
+		// 65536 patterns for every one of these members, `.todo/696`'s sweep and the
+		// scratch sweep it cites for the four unary members). sqrt runs over the
+		// non-negative half: CL sqrt is complex-extended, so a negative input takes
+		// the defun to a complex the bf16 store signals on -- the same hole the f32
+		// sqrt lane already has, and outside what a narrow kernel can reproduce.
+		for (String body : new String[] { "(vec:add vb vb)", "(vec:sub vb vb)", "(vec:mul vb vb)", "(vec:div vb vb)",
+				"(vec:+ vb vb)", "(vec:- vb vb)", "(vec:* vb vb)", "(vec:/ vb vb)", "(vec:sqrt (vec:abs vb))",
+				"(vec:abs vb)", "(vec:negative vb)", "(vec:reciprocal vb)",
+				"(vec:add-into (vec:zeros 300 :element-type 'bfloat16) vb vb)",
+				"(vec:sub-into (vec:zeros 300 :element-type 'bfloat16) vb vb)",
+				"(vec:mul-into (vec:zeros 300 :element-type 'bfloat16) vb vb)",
+				"(vec:div-into (vec:zeros 300 :element-type 'bfloat16) vb vb)",
+				"(vec:sqrt-into (vec:zeros 300 :element-type 'bfloat16) (vec:abs vb))",
+				"(vec:abs-into (vec:zeros 300 :element-type 'bfloat16) vb)",
+				"(vec:negative-into (vec:zeros 300 :element-type 'bfloat16) vb)",
+				"(vec:reciprocal-into (vec:zeros 300 :element-type 'bfloat16) vb)",
+				"(let ((o (vec:zeros 300 :element-type 'bfloat16))) (vec:add-into o o vb) o)",
+				"(let ((o (vec:zeros 300 :element-type 'bfloat16))) (vec:sqrt-into o o) o)" }) {
+			String program = bf16Fixture(4, 300, body);
+			assertThat(eval(program, true).print()).as(body).isEqualTo(eval(program, false).print());
+		}
+		// Exact values, pinned by text: the result stays in the width.
+		assertThat(eval("(vec:add #bf16(1.0 2.0) #bf16(3.0 4.0))", true).print()).isEqualTo("#bf16(4.0 6.0)");
+		assertThat(eval("(vec:sub #bf16(5.0 1.0) #bf16(3.0 4.0))", true).print()).isEqualTo("#bf16(2.0 -3.0)");
+		assertThat(eval("(vec:mul #bf16(2.0 3.0) #bf16(4.0 2.0))", true).print()).isEqualTo("#bf16(8.0 6.0)");
+		assertThat(eval("(vec:div #bf16(6.0 4.0) #bf16(3.0 2.0))", true).print()).isEqualTo("#bf16(2.0 2.0)");
+		assertThat(eval("(vec:sqrt #bf16(4.0 9.0))", true).print()).isEqualTo("#bf16(2.0 3.0)");
+		assertThat(eval("(vec:abs #bf16(-1.0 2.0))", true).print()).isEqualTo("#bf16(1.0 2.0)");
+		assertThat(eval("(vec:negative #bf16(1.0 -2.0))", true).print()).isEqualTo("#bf16(-1.0 2.0)");
+		assertThat(eval("(vec:reciprocal #bf16(4.0 2.0))", true).print()).isEqualTo("#bf16(0.25 0.5)");
+		assertThat(eval("(vec:* #bf16(2.0) #bf16(3.0))", true).print()).isEqualTo("#bf16(6.0)");
+		assertThat(
+				eval("(let ((o (vec:zeros 2 :element-type 'bfloat16))) (eq o (vec:add-into o #bf16(1.0) #bf16(2.0))))",
+						true)
+					.print())
+			.isEqualTo("T");
 	}
 
 	@Test

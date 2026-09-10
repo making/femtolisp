@@ -5,7 +5,9 @@ import jdk.incubator.vector.DoubleVector;
 import jdk.incubator.vector.FloatVector;
 import jdk.incubator.vector.IntVector;
 import jdk.incubator.vector.ShortVector;
+import jdk.incubator.vector.VectorMask;
 import jdk.incubator.vector.VectorOperators;
+import jdk.incubator.vector.VectorShape;
 import jdk.incubator.vector.VectorShuffle;
 import jdk.incubator.vector.VectorSpecies;
 
@@ -1268,6 +1270,228 @@ final class VecSimdKernels {
 		float[] r = new float[rows];
 		matvecIntoBf16(r, w, rows, cols, x, parallel);
 		return r;
+	}
+
+	// --- bfloat16 (bf16) element-wise kernels ---------------------------------------
+	// bf16 x bf16 -> bf16, the one element-wise pairing `.todo/747` admits: a program
+	// that chose the width stays in it, and the result width is what `vec::%make-like`
+	// gives the defun for two bf16 operands. A mixed bf16/f32 pair in either direction
+	// still declines to the defun -- no caller mixes element-wise (the GEMV is the
+	// mixing point, already fused), and a mixed kernel would carry two decoders for
+	// nothing. The members are exactly the ones with a single-float lane loop
+	// (`add`/`sub`/`mul`/`div` and `sqrt`/`abs`/`negative`/`reciprocal`): `scale`
+	// multiplies by a genuine f64 scalar, the comparison selects are scalar loops, and
+	// the transcendental ufuncs call `java.lang.Math` per element -- none of them has a
+	// lane form to mirror.
+	//
+	// The shape is `.todo/488`'s -- widen, compute in f32, narrow on store, never keep
+	// an intermediate at the narrow width -- with the narrowing as the branch-free lane
+	// form `.todo/696` measured (1.4-3.2x the scalar loop, 0 mismatches over all 2^32
+	// f32 patterns; the composite 2.3-2.7x the scalar route): the bias-add and odd-bit
+	// carry as int lanes, the NaN arm as a second expression, a mask choosing between
+	// them, an `I2S` narrowing store. Bit-exact at any lane count, so
+	// `SPECIES_PREFERRED` like the f32 element-wise kernels. One small method per member
+	// -- the C2 inlining cliff (`.todo/482` round 2) is a rule about method size.
+
+	/**
+	 * The int species the element-wise bit arithmetic runs in: the same shape as
+	 * {@link #FSPECIES}, so one decoded group lines up with exactly one f32 lane group.
+	 */
+	private static final VectorSpecies<Integer> ISPECIES_EW = VectorSpecies.of(int.class, FSPECIES.vectorShape());
+
+	/**
+	 * The short species of half the shape: the same lane count at half the width, so the
+	 * narrowing store is one {@code I2S} shape conversion.
+	 */
+	private static final VectorSpecies<Short> SSPECIES_EW = VectorSpecies.of(short.class,
+			VectorShape.forBitSize(FSPECIES.vectorBitSize() / 2));
+
+	/** The decode at the element-wise lane count. Exact, so the width is free to vary. */
+	private static FloatVector widenBf16Ew(short[] w, int off) {
+		return ((IntVector) ShortVector.fromArray(SSPECIES_EW, w, off)
+			.convertShape(VectorOperators.S2I, ISPECIES_EW, 0)).lanewise(VectorOperators.LSHL, 16)
+			.reinterpretAsFloats();
+	}
+
+	/**
+	 * {@link #floatToBf16} as lanes: both arms computed, the NaN one blended in under a
+	 * mask, then an {@code I2S} narrowing store. Operation for operation the form
+	 * `.todo/696`'s harness sweeps against the scalar over all 2^32 f32 patterns with 0
+	 * mismatches.
+	 */
+	private static ShortVector narrowLanes(FloatVector v) {
+		IntVector bits = v.reinterpretAsInts();
+		IntVector hi = bits.lanewise(VectorOperators.LSHR, 16);
+		IntVector rounded = bits.add(0x7fff).add(hi.and(1)).lanewise(VectorOperators.LSHR, 16);
+		IntVector u = hi.and(0xffff);
+		IntVector nan = u.or(u.and(0x7f).sub(1).lanewise(VectorOperators.LSHR, 31));
+		VectorMask<Integer> isNan = bits.and(0x7f800000)
+			.compare(VectorOperators.EQ, 0x7f800000)
+			.and(bits.and(0x007fffff).compare(VectorOperators.NE, 0));
+		return (ShortVector) rounded.blend(nan, isNan).convertShape(VectorOperators.I2S, SSPECIES_EW, 0);
+	}
+
+	/**
+	 * {@code r[i] = x[i] + y[i]} over bf16 vectors, widened, added in f32, narrowed on
+	 * store -- the defun's answer bit for bit (`.todo/696` sweeps all 65536x65536 operand
+	 * pairs per operation with 0 mismatches).
+	 */
+	static void addIntoBf16(short[] r, short[] x, short[] y) {
+		int n = Math.min(x.length, y.length);
+		int i = 0;
+		if (n >= THRESHOLD) {
+			int bound = FSPECIES.loopBound(n);
+			for (; i < bound; i += FSPECIES.length()) {
+				narrowLanes(widenBf16Ew(x, i).add(widenBf16Ew(y, i))).intoArray(r, i);
+			}
+		}
+		for (; i < n; i++) {
+			r[i] = floatToBf16(bf16ToFloat(x[i]) + bf16ToFloat(y[i]));
+		}
+	}
+
+	/** {@link #addIntoBf16}, into a fresh vector. */
+	static short[] addBf16(short[] x, short[] y) {
+		short[] r = new short[Math.min(x.length, y.length)];
+		addIntoBf16(r, x, y);
+		return r;
+	}
+
+	/** {@code r[i] = x[i] - y[i]} at this width; see {@link #addIntoBf16}. */
+	static void subIntoBf16(short[] r, short[] x, short[] y) {
+		int n = Math.min(x.length, y.length);
+		int i = 0;
+		if (n >= THRESHOLD) {
+			int bound = FSPECIES.loopBound(n);
+			for (; i < bound; i += FSPECIES.length()) {
+				narrowLanes(widenBf16Ew(x, i).sub(widenBf16Ew(y, i))).intoArray(r, i);
+			}
+		}
+		for (; i < n; i++) {
+			r[i] = floatToBf16(bf16ToFloat(x[i]) - bf16ToFloat(y[i]));
+		}
+	}
+
+	/** {@link #subIntoBf16}, into a fresh vector. */
+	static short[] subBf16(short[] x, short[] y) {
+		short[] r = new short[Math.min(x.length, y.length)];
+		subIntoBf16(r, x, y);
+		return r;
+	}
+
+	/** {@code r[i] = x[i] * y[i]} at this width; see {@link #addIntoBf16}. */
+	static void mulIntoBf16(short[] r, short[] x, short[] y) {
+		int n = Math.min(x.length, y.length);
+		int i = 0;
+		if (n >= THRESHOLD) {
+			int bound = FSPECIES.loopBound(n);
+			for (; i < bound; i += FSPECIES.length()) {
+				narrowLanes(widenBf16Ew(x, i).mul(widenBf16Ew(y, i))).intoArray(r, i);
+			}
+		}
+		for (; i < n; i++) {
+			r[i] = floatToBf16(bf16ToFloat(x[i]) * bf16ToFloat(y[i]));
+		}
+	}
+
+	/** {@link #mulIntoBf16}, into a fresh vector. */
+	static short[] mulBf16(short[] x, short[] y) {
+		short[] r = new short[Math.min(x.length, y.length)];
+		mulIntoBf16(r, x, y);
+		return r;
+	}
+
+	/** {@code r[i] = x[i] / y[i]} at this width; see {@link #addIntoBf16}. */
+	static void divIntoBf16(short[] r, short[] x, short[] y) {
+		int n = Math.min(x.length, y.length);
+		int i = 0;
+		if (n >= THRESHOLD) {
+			int bound = FSPECIES.loopBound(n);
+			for (; i < bound; i += FSPECIES.length()) {
+				narrowLanes(widenBf16Ew(x, i).div(widenBf16Ew(y, i))).intoArray(r, i);
+			}
+		}
+		for (; i < n; i++) {
+			r[i] = floatToBf16(bf16ToFloat(x[i]) / bf16ToFloat(y[i]));
+		}
+	}
+
+	/** {@link #divIntoBf16}, into a fresh vector. */
+	static short[] divBf16(short[] x, short[] y) {
+		short[] r = new short[Math.min(x.length, y.length)];
+		divIntoBf16(r, x, y);
+		return r;
+	}
+
+	/**
+	 * {@code r[i] = sqrt(x[i])} at this width. The correctly-rounded `sqrt` composes
+	 * through the f32 intermediate, so the lane loop and the scalar tail below both agree
+	 * with the defun's f64 route (the 53 {@code >=} 2*24+2 bound, `.kb/bfloat16.md`).
+	 */
+	static void sqrtIntoBf16(short[] r, short[] x) {
+		int n = Math.min(r.length, x.length);
+		int i = 0;
+		if (n >= THRESHOLD) {
+			int bound = FSPECIES.loopBound(n);
+			for (; i < bound; i += FSPECIES.length()) {
+				narrowLanes(widenBf16Ew(x, i).lanewise(VectorOperators.SQRT)).intoArray(r, i);
+			}
+		}
+		for (; i < n; i++) {
+			r[i] = floatToBf16((float) Math.sqrt(bf16ToFloat(x[i])));
+		}
+	}
+
+	/**
+	 * {@code r[i] = |x[i]|} at this width. `abs` is exact, so the widen-compute-narrow
+	 * round trip is the identity on every non-NaN pattern and carries NaN payloads
+	 * through the guarded arm.
+	 */
+	static void absIntoBf16(short[] r, short[] x) {
+		int n = Math.min(r.length, x.length);
+		int i = 0;
+		if (n >= THRESHOLD) {
+			int bound = FSPECIES.loopBound(n);
+			for (; i < bound; i += FSPECIES.length()) {
+				narrowLanes(widenBf16Ew(x, i).abs()).intoArray(r, i);
+			}
+		}
+		for (; i < n; i++) {
+			r[i] = floatToBf16(Math.abs(bf16ToFloat(x[i])));
+		}
+	}
+
+	/** {@code r[i] = -x[i]} at this width; exact like {@link #absIntoBf16}. */
+	static void negIntoBf16(short[] r, short[] x) {
+		int n = Math.min(r.length, x.length);
+		int i = 0;
+		if (n >= THRESHOLD) {
+			int bound = FSPECIES.loopBound(n);
+			for (; i < bound; i += FSPECIES.length()) {
+				narrowLanes(widenBf16Ew(x, i).neg()).intoArray(r, i);
+			}
+		}
+		for (; i < n; i++) {
+			r[i] = floatToBf16(-bf16ToFloat(x[i]));
+		}
+	}
+
+	/**
+	 * {@code r[i] = 1/x[i]} at this width. The single division is correctly rounded, so
+	 * the f32 intermediate is the defun's answer like {@link #divIntoBf16}'s.
+	 */
+	static void reciprocalIntoBf16(short[] r, short[] x) {
+		int n = Math.min(r.length, x.length);
+		int i = 0;
+		if (n >= THRESHOLD) {
+			int bound = FSPECIES.loopBound(n);
+			for (; i < bound; i += FSPECIES.length()) {
+				narrowLanes(FloatVector.broadcast(FSPECIES, 1.0f).div(widenBf16Ew(x, i))).intoArray(r, i);
+			}
+		}
+		for (; i < n; i++) {
+			r[i] = floatToBf16(1.0f / bf16ToFloat(x[i]));
+		}
 	}
 
 	// --- Q8_0 quantized-matrix GEMV: the integer dot ----------------------------------

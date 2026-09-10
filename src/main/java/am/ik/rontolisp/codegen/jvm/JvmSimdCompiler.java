@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 import am.ik.rontolisp.LispCons;
 import am.ik.rontolisp.LispNames;
@@ -91,6 +92,24 @@ final class JvmSimdCompiler {
 	 */
 	private static final Map<String, Integer> BF16_OPERAND = Map.of(LispNames.VEC_SUM, 0, LispNames.VEC_DOT, 0,
 			LispNames.VEC_MATVEC, 0, LispNames.VEC_MATVEC_INTO, 1);
+
+	/**
+	 * The members with a FUSED bfloat16 element-wise kernel (`.todo/747`): exactly the
+	 * ones with a single-float lane loop -- {@code add}/{@code sub}/{@code mul}/
+	 * {@code div} with the four CL operator spellings and their {@code -into} siblings,
+	 * {@code sqrt}/{@code abs}/{@code negative}/{@code reciprocal} with theirs. Unlike
+	 * {@link #BF16_OPERAND}'s one narrow position against f32 activations, the admitted
+	 * pairing here is bf16 x bf16 {@code ->} bf16: every ARRAY operand must be a
+	 * {@code short[]}, and a mixed bf16/f32 pair -- or a bf16 {@code -into} destination
+	 * with f32 sources -- declines to the defun. A member absent from both maps declines
+	 * a {@code short[]} in every position, as it did before the width existed.
+	 */
+	private static final Set<String> BF16_ELEMENTWISE = Set.of(LispNames.VEC_ADD, LispNames.VEC_SUB, LispNames.VEC_MUL,
+			LispNames.VEC_DIV, LispNames.VEC_PLUS, LispNames.VEC_MINUS, LispNames.VEC_STAR, LispNames.VEC_SLASH,
+			LispNames.VEC_ADD_INTO, LispNames.VEC_SUB_INTO, LispNames.VEC_MUL_INTO, LispNames.VEC_DIV_INTO,
+			LispNames.VEC_SQRT, LispNames.VEC_ABS, LispNames.VEC_NEGATIVE, LispNames.VEC_RECIPROCAL,
+			LispNames.VEC_SQRT_INTO, LispNames.VEC_ABS_INTO, LispNames.VEC_NEGATIVE_INTO,
+			LispNames.VEC_RECIPROCAL_INTO);
 
 	/**
 	 * The two members with an integer-dot kernel over a Q8_0 quantized matrix
@@ -425,6 +444,14 @@ final class JvmSimdCompiler {
 	 * what it emitted before.
 	 *
 	 * <p>
+	 * The members of {@link #BF16_ELEMENTWISE} carry a third arm ahead of the general
+	 * test: when the FIRST operand is a {@code short[]}, every other array operand must
+	 * be one too (bf16 x bf16 {@code ->} bf16, `.todo/747`); when it is not, the ordinary
+	 * two-width test runs and any {@code short[]} anywhere fails it -- so a mixed
+	 * bf16/f32 pair declines to the defun rather than reaching the bridge. Every
+	 * combination this arm admits has a kernel, and the bridge stays TOTAL the same way.
+	 *
+	 * <p>
 	 * The two GEMV members of {@link #QUANTIZED_OPERAND} have a third arm ahead of those
 	 * two, for a Q8_0 quantized matrix (a {@code byte[]},
 	 * {@code .kb/quantized-matrix.md}) at the weight position: the remaining array
@@ -522,6 +549,31 @@ final class JvmSimdCompiler {
 			ctx.emit(Opcode.GOTO);
 			ctx.emitU2(0);
 			JvmEmitHelper.patchBranch(ctx, general, ctx.code.size());
+		}
+		if (BF16_ELEMENTWISE.contains(member)) {
+			// if (!(slot_0 instanceof short[])) goto general;
+			int shortArrayClass = ctx.cp.addClass(ctx.cp.addUtf8("[S")).index();
+			ctx.emit(Opcode.ALOAD);
+			ctx.emit(slots[0]);
+			ctx.emit(Opcode.INSTANCEOF);
+			ctx.emitU2(shortArrayClass);
+			int generalBf16 = ctx.code.size();
+			ctx.emit(Opcode.IFEQ);
+			ctx.emitU2(0);
+			for (int i = 1; i < arrays; i++) {
+				// if (!(slot_i instanceof short[])) goto fallback
+				ctx.emit(Opcode.ALOAD);
+				ctx.emit(slots[i]);
+				ctx.emit(Opcode.INSTANCEOF);
+				ctx.emitU2(shortArrayClass);
+				fallbackBranches.add(ctx.code.size());
+				ctx.emit(Opcode.IFEQ);
+				ctx.emitU2(0);
+			}
+			skipGenerals.add(ctx.code.size());
+			ctx.emit(Opcode.GOTO);
+			ctx.emitU2(0);
+			JvmEmitHelper.patchBranch(ctx, generalBf16, ctx.code.size());
 		}
 		if (arrays > 0) {
 			// if (slot_0 instanceof double[]) { every array operand double[] }

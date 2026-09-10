@@ -132,6 +132,21 @@ class JvmSimdVectorTemplateBf16Test {
 		return Arrays.copyOfRange(v, 1 + (int) v[0], v.length);
 	}
 
+	/** A fresh rank-1 packed bfloat16 destination {@code [1, n_hi, n_lo, 0...]}. */
+	private static short[] destinationBf16(int n) {
+		short[] r = new short[3 + n];
+		r[0] = 1;
+		r[1] = (short) (n >>> 16);
+		r[2] = (short) n;
+		return r;
+	}
+
+	/** The elements of a rank-1 packed bfloat16 vector, header stripped. */
+	private static short[] elementsBf16(@org.jspecify.annotations.Nullable Object packed) {
+		short[] v = (short[]) java.util.Objects.requireNonNull(packed);
+		return Arrays.copyOfRange(v, 1 + 2 * v[0], v.length);
+	}
+
 	// --- the widening is exact ----------------------------------------------------
 
 	@Test
@@ -260,6 +275,181 @@ class JvmSimdVectorTemplateBf16Test {
 		float[] out = destination(64);
 		JvmSimdVectorTemplate.simdMatvecIntoParallel(out, m, x);
 		assertThat(elements(out)).isEqualTo(elements(JvmSimdVectorTemplate.simdMatvec(m, x)));
+	}
+
+	// --- element-wise bf16 x bf16 -> bf16 (`.todo/747`) ----------------------------
+	// Driven through the BRIDGE ENTRIES over the compiled packed representation, so
+	// the header arithmetic is asserted too -- including the length-1 vector, where a
+	// hard-coded one-slot offset would read the rank word as an element. The oracle
+	// is the scalar composite (widen, compute in f32, narrow through the scalar
+	// `floatToBf16`), which `.todo/696`'s harness pins against the defun; the
+	// interpreter twin is pinned by `eval.VecSimdBf16KernelsTest`.
+
+	/** The scalar composite for one pair, the oracle the lane loop must match. */
+	private static short composite(int op, short a, short b) {
+		float fa = JvmSimdVectorTemplate.bf16ToFloat(a);
+		float fb = JvmSimdVectorTemplate.bf16ToFloat(b);
+		return switch (op) {
+			case 0 -> JvmSimdVectorTemplate.floatToBf16(fa + fb);
+			case 1 -> JvmSimdVectorTemplate.floatToBf16(fa - fb);
+			case 2 -> JvmSimdVectorTemplate.floatToBf16(fa * fb);
+			default -> JvmSimdVectorTemplate.floatToBf16(fa / fb);
+		};
+	}
+
+	private static short[] runBridgeBinary(int op, short[] x, short[] y) {
+		return switch (op) {
+			case 0 -> elementsBf16(JvmSimdVectorTemplate.simdAdd(packedBf16(x), packedBf16(y)));
+			case 1 -> elementsBf16(JvmSimdVectorTemplate.simdSub(packedBf16(x), packedBf16(y)));
+			case 2 -> elementsBf16(JvmSimdVectorTemplate.simdMul(packedBf16(x), packedBf16(y)));
+			default -> elementsBf16(JvmSimdVectorTemplate.simdDiv(packedBf16(x), packedBf16(y)));
+		};
+	}
+
+	private static void runBridgeBinaryInto(int op, short[] r, short[] x, short[] y) {
+		switch (op) {
+			case 0 -> JvmSimdVectorTemplate.simdAddInto(r, packedBf16(x), packedBf16(y));
+			case 1 -> JvmSimdVectorTemplate.simdSubInto(r, packedBf16(x), packedBf16(y));
+			case 2 -> JvmSimdVectorTemplate.simdMulInto(r, packedBf16(x), packedBf16(y));
+			default -> JvmSimdVectorTemplate.simdDivInto(r, packedBf16(x), packedBf16(y));
+		}
+	}
+
+	/**
+	 * Patterns that exercise the lane narrow's arms: ties, quiet NaN payloads,
+	 * infinities, zeros of both signs, subnormals and the overflow edge. Signalling NaNs
+	 * are NOT here: on an sNaN input the packed lanes quiet the source payload while the
+	 * scalar instructions answer the indefinite, so they are pinned separately at
+	 * {@code isNaN} level by {@link #signallingNanInputsAnswerNanOnBothRoutes}.
+	 */
+	private static short[] trickyPatterns() {
+		int[] bits = { 0x3f808000, 0x3f818000, 0x3f807fff, 0x3f808001, 0xbf818000, 0x7fc12345, 0xffc00000, 0x7f800000,
+				0xff800000, 0x00000000, 0x80000000, 0x007fffff, 0x00000001, 0x7f7fffff, 0x4f800000, 0xcf800000 };
+		short[] w = new short[1024];
+		for (int i = 0; i < w.length; i++) {
+			w[i] = JvmSimdVectorTemplate.floatToBf16(Float.intBitsToFloat(bits[i % bits.length]));
+		}
+		return w;
+	}
+
+	/**
+	 * Warms the kernel loops so the assertions below meet the JIT-compiled lane path
+	 * rather than whichever tier happens to be warm: a lane-vs-scalar comparison only
+	 * pins the lanes once they actually run as lanes.
+	 */
+	private static void warm(int op, short[] x, short[] y) {
+		short[] rx = packedBf16(x);
+		short[] ry = packedBf16(y);
+		for (int k = 0; k < 100; k++) {
+			switch (op) {
+				case 0 -> JvmSimdVectorTemplate.simdAdd(rx, ry);
+				case 1 -> JvmSimdVectorTemplate.simdSub(rx, ry);
+				case 2 -> JvmSimdVectorTemplate.simdMul(rx, ry);
+				default -> JvmSimdVectorTemplate.simdDiv(rx, ry);
+			}
+		}
+	}
+
+	@Test
+	void theBridgeElementWiseKernelsMatchTheScalarCompositeOnBothSidesOfTheLaneGate() {
+		for (int op = 0; op < 4; op++) {
+			for (int n : new int[] { 1, 7, 63, THRESHOLD - 1, THRESHOLD, THRESHOLD + 1, 291, 1024 }) {
+				short[] x = weights(n, 1001 + 7L * n + op);
+				short[] y = weights(n, 2002 + 7L * n + op);
+				short[] actual = runBridgeBinary(op, x, y);
+				for (int i = 0; i < n; i++) {
+					assertThat(actual[i]).as("op %d n = %d i = %d", op, n, i).isEqualTo(composite(op, x[i], y[i]));
+				}
+			}
+		}
+	}
+
+	@Test
+	void theBridgeElementWiseKernelsMatchTheScalarCompositeOnTrickyPatterns() {
+		short[] x = trickyPatterns();
+		short[] y = trickyPatterns();
+		for (int i = 0; i < y.length; i++) {
+			y[i] = (short) (y[(i * 7 + 3) % y.length] ^ 0x1234);
+		}
+		for (int op = 0; op < 4; op++) {
+			warm(op, x, y);
+			short[] actual = runBridgeBinary(op, x, y);
+			for (int i = 0; i < x.length; i++) {
+				assertThat(actual[i]).as("op %d i = %d", op, i).isEqualTo(composite(op, x[i], y[i]));
+			}
+		}
+	}
+
+	@Test
+	void signallingNanInputsAnswerNanOnBothRoutes() {
+		// An sNaN input raises the invalid-operation flag, and the hardware answers
+		// differently per instruction shape: the packed lanes quiet the source payload
+		// while the scalar instructions answer the indefinite. Both are quiet NaNs,
+		// so the pin is the CLASS, not the payload -- see the interpreter twin's
+		// `eval.VecSimdBf16KernelsTest#signallingNanInputsAnswerNanOnBothRoutes`.
+		short[] x = { (short) 0x7f81, (short) 0xff81, (short) 0x7fbf, JvmSimdVectorTemplate.floatToBf16(1.5f) };
+		short[] bigX = new short[1024];
+		short[] bigY = new short[1024];
+		for (int i = 0; i < bigX.length; i++) {
+			bigX[i] = x[i % x.length];
+			bigY[i] = x[(i + 1) % x.length];
+		}
+		for (int op = 0; op < 4; op++) {
+			warm(op, bigX, bigY);
+			short[] actual = runBridgeBinary(op, bigX, bigY);
+			for (int i = 0; i < 4; i++) {
+				assertThat(Float.isNaN(JvmSimdVectorTemplate.bf16ToFloat(actual[i]))).as("kernel op %d i = %d", op, i)
+					.isTrue();
+				assertThat(Float.isNaN(JvmSimdVectorTemplate.bf16ToFloat(composite(op, bigX[i], bigY[i]))))
+					.as("composite op %d i = %d", op, i)
+					.isTrue();
+			}
+		}
+	}
+
+	@Test
+	void theBridgeElementWiseIntoWritesWhatTheAllocatingBridgeReturns() {
+		for (int op = 0; op < 4; op++) {
+			short[] x = weights(1024, 6161 + op);
+			short[] y = weights(1024, 6162 + op);
+			short[] out = destinationBf16(1024);
+			runBridgeBinaryInto(op, out, x, y);
+			assertThat(elementsBf16(out)).as("op %d", op).isEqualTo(runBridgeBinary(op, x, y));
+		}
+	}
+
+	@Test
+	void theBridgeUnaryElementWiseKernelsMatchTheScalarComposite() {
+		for (int op = 0; op < 4; op++) {
+			for (int n : new int[] { 1, 7, THRESHOLD - 1, THRESHOLD, THRESHOLD + 1, 1024 }) {
+				short[] x = weights(n, 7007 + 13L * n + op);
+				short[] packed = packedBf16(x);
+				short[] actual = switch (op) {
+					case 0 -> elementsBf16(JvmSimdVectorTemplate.simdSqrt(packed));
+					case 1 -> elementsBf16(JvmSimdVectorTemplate.simdAbs(packed));
+					case 2 -> elementsBf16(JvmSimdVectorTemplate.simdNegative(packed));
+					default -> elementsBf16(JvmSimdVectorTemplate.simdReciprocal(packed));
+				};
+				for (int i = 0; i < n; i++) {
+					float fa = JvmSimdVectorTemplate.bf16ToFloat(x[i]);
+					short expected = switch (op) {
+						case 0 -> JvmSimdVectorTemplate.floatToBf16((float) Math.sqrt(fa));
+						case 1 -> JvmSimdVectorTemplate.floatToBf16(Math.abs(fa));
+						case 2 -> JvmSimdVectorTemplate.floatToBf16(-fa);
+						default -> JvmSimdVectorTemplate.floatToBf16(1.0f / fa);
+					};
+					assertThat(actual[i]).as("op %d n = %d i = %d", op, n, i).isEqualTo(expected);
+				}
+				short[] out = destinationBf16(n);
+				switch (op) {
+					case 0 -> JvmSimdVectorTemplate.simdSqrtInto(out, packed);
+					case 1 -> JvmSimdVectorTemplate.simdAbsInto(out, packed);
+					case 2 -> JvmSimdVectorTemplate.simdNegativeInto(out, packed);
+					default -> JvmSimdVectorTemplate.simdReciprocalInto(out, packed);
+				}
+				assertThat(elementsBf16(out)).as("into op %d n = %d", op, n).isEqualTo(actual);
+			}
+		}
 	}
 
 	private static int[][] shapes() {
