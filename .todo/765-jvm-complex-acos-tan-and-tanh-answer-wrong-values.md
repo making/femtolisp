@@ -78,5 +78,9 @@ existing `compileAndRunComplex*` cases unchanged.
 ## Related
 
 - `[[766-wasm-phase-is-wrong-when-the-real-part-is-a-zero]]` -- the same sweep, the other backend
+- `[[756-exp-1-prints-one-more-digit-on-aarch64-in-the-jvm-backend]]` -- a separate, last-digit
+  defect in the same test method (`compileAndRunComplexExptExpLogTrig`), whose fix is the same
+  rework step 1 asks for: pin the JVM against the interpreter, not against a literal string.
+  That method is red on aarch64 today, so expect it red before touching anything here.
 - `[[764-complex-asin-and-acos-pick-the-wrong-branch-on-the-cut]]` -- blocked on this one
 - `[[037-number-extensions]]`
