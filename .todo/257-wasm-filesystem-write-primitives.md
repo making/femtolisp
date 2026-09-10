@@ -48,6 +48,12 @@ answer YES.
   otherwise runs everywhere.
 - **`uiop:with-temporary-file` in general** -- the whole temporary-file family
   reduces to these two primitives.
+- **`uiop/filesystem`'s mutating side** (`.todo/358`, option 2):
+  `ensure-all-directories-exist`, `rename-file-overwriting-target`,
+  `delete-empty-directory` and `delete-directory-tree` are real Lisp over these
+  same three primitives, so they run on the interpreter and the JVM and signal
+  the primitive's own call-time error on both WASM backends. No ci-spec case
+  touches the write side until this item lands.
 
 ## Preview 1
 
