@@ -8845,6 +8845,20 @@ cases:
       (print (uiop:directory-exists-p "no-such-directory"))
       (print (directory "no-such-directory/*.*"))
       (print (uiop:subdirectories "no-such-directory/"))
+      ;; The uiop/filesystem probing spellings over the same primitives:
+      ;; probe-file* answers the parsed pathname (or its truename with
+      ;; :truename), truename* is the nil-tolerant truename, directory* is
+      ;; directory. The write side (ensure-all-directories-exist and friends)
+      ;; stays out of this case: it signals on both WASM backends until
+      ;; .todo/257 lands the mkdir/unlink/rename imports, so only the
+      ;; interpreter and the JVM pin it (LispEvaluatorTest and
+      ;; JvmLispCompilerTest).
+      (print (uiop:probe-file* "dls-a.txt"))
+      (print (uiop:probe-file* "dls-a.txt" :truename t))
+      (print (uiop:probe-file* "dls-missing.txt"))
+      (print (uiop:truename* "dls-a.txt"))
+      (print (uiop:truename* "dls-missing.txt"))
+      (print (dls-ours (uiop:directory* "./*.txt")))
     expected: |
       (#P"./dls-a.txt" #P"./dls-b.txt")
       (#P"./dls-a.txt" #P"./dls-b.txt")
@@ -8855,6 +8869,12 @@ cases:
       NIL
       NIL
       NIL
+      #P"dls-a.txt"
+      #P"dls-a.txt"
+      NIL
+      #P"dls-a.txt"
+      NIL
+      (#P"./dls-a.txt" #P"./dls-b.txt")
   - name: with-output-to-string-print-family
     source: |
       (print (with-output-to-string (ss-out)

@@ -4511,8 +4511,11 @@ class WasmLispCompilerIntegrationTest {
 		// with (), the arguments are the nil literal and the bug is invisible. The JVM
 		// twin is
 		// JvmLispCompilerTest.compileAndRunUiopUnimplementedMacroDropsItsArgumentForms.
+		// The probe used to be with-current-directory; it grew its own expansion over
+		// call-with-current-directory, so the probe moved to a stream macro nothing
+		// implements yet.
 		assertThat(compileAndRunProgram(am.ik.rontolisp.eval.LispPreludeLibrary.process(LispReader.readAllFromString("""
-				(print (handler-case (uiop:with-current-directory ("/tmp") (defun um-probe () 1))
+				(print (handler-case (uiop:with-input-file (s "/tmp/x") (defun um-probe () 1))
 				         (uiop:not-implemented-error () :signalled)))
 				(print (fboundp 'um-probe))
 				""")))).isEqualTo("""
@@ -11397,6 +11400,82 @@ class WasmLispCompilerIntegrationTest {
 				(print (if (probe-file "sub/dir/x.txt") 'made 'absent))
 				""";
 		assertThat(compileAndRunWithDir(code)).isEqualTo("NIL\nNIL\nABSENT");
+	}
+
+	@Test
+	void uiopFilesystemProbeReadsAndMutationSignals() throws Exception {
+		// The uiop/filesystem read side runs on this backend too -- probe-file* and
+		// truename* over probe-file, directory* over the fd_readdir listing -- while
+		// the write side signals the same not-implemented-error its primitives do
+		// (.todo/257): ensure-all-directories-exist, delete-empty-directory and
+		// rename-file-overwriting-target bottom out in %make-directories /
+		// %delete-file / %rename-file, and safe-file-write-date answers nil where
+		// file-write-date does. with-current-directory inherits chdir's signal. The
+		// component twin runs the same program with the same expectation.
+		String code = """
+				(with-open-file (out "fsp-a.txt" :direction :output) (write-line "a" out))
+				(with-open-file (out "fsp-b.txt" :direction :output) (write-line "b" out))
+				(defun fsp-ours (paths)
+				  (remove-if-not (lambda (p)
+				                   (let ((n (namestring p)))
+				                     (and (> (length n) 6) (string= (subseq n 0 6) "./fsp-"))))
+				                 paths))
+				(print (uiop:probe-file* "fsp-a.txt"))
+				(print (uiop:probe-file* "fsp-a.txt" :truename t))
+				(print (uiop:probe-file* "fsp-missing.txt"))
+				(print (uiop:truename* "fsp-a.txt"))
+				(print (uiop:truename* "fsp-missing.txt"))
+				(print (fsp-ours (uiop:directory* "./*.txt")))
+				(print (fsp-ours (uiop:directory-files ".")))
+				(print (uiop:safe-file-write-date "fsp-a.txt"))
+				(print (uiop:parse-native-namestring "fsp-a.txt"))
+				(print (uiop:split-native-pathnames-string "fsp-a.txt:fsp-b.txt"))
+				(progn (setf (uiop:getenv "WASM_UIOP_FS_TEST") "fsp-a.txt")
+				       (print (uiop:getenv-pathname "WASM_UIOP_FS_TEST")))
+				(print (list uiop:*resolve-symlinks* (uiop:resolve-symlinks "fsp-a.txt")))
+				(print (uiop:lisp-implementation-directory))
+				(print (ignore-errors (uiop:ensure-all-directories-exist (list "fsp-sub/x.txt"))))
+				(print (if (probe-file "fsp-sub/x.txt") 'made 'absent))
+				(print (ignore-errors (uiop:rename-file-overwriting-target "fsp-a.txt" "fsp-c.txt")))
+				(print (ignore-errors (uiop:delete-empty-directory "fsp-sub/")))
+				(print (uiop:with-current-directory () :here))
+				(print (handler-case (uiop:with-current-directory ("fsp") :never)
+				         (uiop:not-implemented-error () :signalled)))
+				""";
+		String expected = """
+				#P"fsp-a.txt"
+				#P"fsp-a.txt"
+				NIL
+				#P"fsp-a.txt"
+				NIL
+				(#P"./fsp-a.txt" #P"./fsp-b.txt")
+				(#P"./fsp-a.txt" #P"./fsp-b.txt")
+				NIL
+				#P"fsp-a.txt"
+				(#P"fsp-a.txt" #P"fsp-b.txt")
+				#P"fsp-a.txt"
+				(NIL #P"fsp-a.txt")
+				NIL
+				NIL
+				ABSENT
+				NIL
+				NIL
+				:HERE
+				:SIGNALLED""";
+		assertThat(compileAndRunWithDir(code)).isEqualTo(expected);
+		// The component twin runs the same program minus the getenv override (that
+		// splice needs EnvironmentLibrary, which compileAndRunComponentWithDirs does
+		// not run -- see compileAndRunComponentWithEnv below for the getenv pin).
+		String componentCode = code.replace("""
+				(progn (setf (uiop:getenv "WASM_UIOP_FS_TEST") "fsp-a.txt")
+				       (print (uiop:getenv-pathname "WASM_UIOP_FS_TEST")))
+				""", "");
+		String componentExpected = expected.replace("#P\"fsp-a.txt\"\n(NIL #P\"fsp-a.txt\")", "(NIL #P\"fsp-a.txt\")");
+		assertThat(compileAndRunComponentWithDirs(componentCode)).isEqualTo(componentExpected);
+		assertThat(compileAndRunComponentWithEnv("""
+				(print (uiop:getenv-pathname "WASM_UIOP_FS_ENV"))
+				(print (uiop:getenv-pathnames "WASM_UIOP_FS_ENVS"))
+				""", "WASM_UIOP_FS_ENV=/tmp")).isEqualTo("#P\"/tmp\"\n(NIL)");
 	}
 
 	/**

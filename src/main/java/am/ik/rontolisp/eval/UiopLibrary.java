@@ -400,7 +400,8 @@ public final class UiopLibrary {
 			// its defvar in.
 			LispNames.WITH_PATHNAME_DEFAULTS, List.of(LispNames.NIL_PATHNAME_VAR), LispNames.WITH_ENOUGH_PATHNAME,
 			List.of(LispNames.CALL_WITH_ENOUGH_PATHNAME), LispNames.WITH_FATAL_CONDITION_HANDLER,
-			List.of(LispNames.CALL_WITH_FATAL_CONDITION_HANDLER));
+			List.of(LispNames.CALL_WITH_FATAL_CONDITION_HANDLER), LispNames.WITH_CURRENT_DIRECTORY,
+			List.of(LispNames.CALL_WITH_CURRENT_DIRECTORY));
 
 	/** Whether a definition the program never NAMES is nonetheless reached from it. */
 	private static boolean reachedBySurfaceForm(String name, Set<String> occurring) {

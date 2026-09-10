@@ -117,13 +117,15 @@ class UiopCoverageTest {
 
 	@Test
 	void anUnimplementedMacroDoesNotEvaluateTheFormsItWasHanded() {
-		// (uiop:with-current-directory (d) (defun f ...)) must not define f before
+		// (uiop:with-input-file (s "x") (defun f ...)) must not define f before
 		// signalling: a macro that does nothing must do nothing with the forms it was
 		// handed. with-upgradability used to be the example here and is a real expansion
-		// now, so the probe moved to a macro of a sub-package nothing implements yet.
+		// now, so the probe moved to a macro of a sub-package nothing implements yet;
+		// with-current-directory was the probe after that, until it grew its own
+		// expansion over call-with-current-directory.
 		LispEvaluator evaluator = new LispEvaluator(new PrintStream(new ByteArrayOutputStream()));
 		for (LispVal form : LispReader.readAllFromString("""
-				(handler-case (uiop:with-current-directory ("/tmp") (defun %uiop-probe () 1))
+				(handler-case (uiop:with-input-file (s "/tmp/x") (defun %uiop-probe () 1))
 				  (uiop:not-implemented-error (c) c))
 				""")) {
 			evaluator.eval(form);

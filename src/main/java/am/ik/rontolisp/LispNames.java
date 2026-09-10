@@ -9162,6 +9162,25 @@ public final class LispNames {
 	public static final String CALL_WITH_ENOUGH_PATHNAME = "CALL-WITH-ENOUGH-PATHNAME";
 
 	/**
+	 * {@code uiop:with-current-directory ([dir]) body...} -- runs the body with the
+	 * working directory changed to {@code dir}, restoring it afterwards. A built-in
+	 * {@code LispMacroExpander} expansion into {@link #CALL_WITH_CURRENT_DIRECTORY}, like
+	 * {@link #WITH_MUFFLED_CONDITIONS} is into its call-with function. The dir form is
+	 * evaluated once, inside the call, exactly as upstream's backquote places it.
+	 */
+	public static final String WITH_CURRENT_DIRECTORY = "WITH-CURRENT-DIRECTORY";
+
+	/**
+	 * {@code uiop:call-with-current-directory dir thunk} -- calls the thunk with
+	 * {@code *default-pathname-defaults*} bound to the directory and the process working
+	 * directory changed to it. Lisp source ({@code uiop-filesystem.lisp}); inherits
+	 * {@code chdir}'s decision, so a non-nil dir signals {@code not-implemented-error} on
+	 * every backend and a nil dir just runs the thunk. Named here because
+	 * {@link #WITH_CURRENT_DIRECTORY} expands into it.
+	 */
+	public static final String CALL_WITH_CURRENT_DIRECTORY = "CALL-WITH-CURRENT-DIRECTORY";
+
+	/**
 	 * {@code uiop:*nil-pathname*} -- the neutral defaults pathname, {@code #P""} here.
 	 * Named because {@link #WITH_PATHNAME_DEFAULTS}'s no-defaults expansion references
 	 * it, which is also what makes {@code UiopLibrary} splice its {@code defvar}.

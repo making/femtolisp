@@ -220,7 +220,7 @@ class DocGenTest {
 	}
 
 	/**
-	 * "The uiop Package" and its four sub-package pages moved under "Functions"
+	 * "The uiop Package" and its five sub-package pages moved under "Functions"
 	 * (2026-08-30) so uiop stopped being its own sidebar row -- they are now nested TWO
 	 * levels deep (Functions -> uiop.md -> uiop/os.md). Every level must still highlight
 	 * the single top-level "Functions" row, while the back link at each level keeps
@@ -240,6 +240,12 @@ class DocGenTest {
 		String osSidebar = os.substring(os.indexOf("<aside class=\"sidebar\""), os.indexOf("</aside>"));
 		assertThat(osSidebar).contains("<a class=\"nav-link active\" href=\"../functions.html\">Functions</a>");
 		assertThat(os).contains("<a class=\"backlink\" href=\"../uiop.html\">&larr; The uiop Package</a>");
+
+		String filesystem = Files.readString(site.resolve("en/reference/uiop/filesystem.html"), StandardCharsets.UTF_8);
+		String filesystemSidebar = filesystem.substring(filesystem.indexOf("<aside class=\"sidebar\""),
+				filesystem.indexOf("</aside>"));
+		assertThat(filesystemSidebar).contains("<a class=\"nav-link active\" href=\"../functions.html\">Functions</a>");
+		assertThat(filesystem).contains("<a class=\"backlink\" href=\"../uiop.html\">&larr; The uiop Package</a>");
 	}
 
 	/**
@@ -262,9 +268,11 @@ class DocGenTest {
 
 		// The uiop category's index_page is reference/uiop.md itself (not a
 		// reference/functions/uiop.md stub), so that page's own table gets the same
-		// auto-linking treatment, and its entries' detail pages back-link there.
+		// auto-linking treatment, and its entries' detail pages back-link there. Rows
+		// that moved to a sub-package page leave the treatment behind with the table
+		// (the uiop/pathname precedent), so the probe names a row that stayed.
 		String uiop = Files.readString(site.resolve("en/reference/uiop.html"), StandardCharsets.UTF_8);
-		assertThat(uiop).contains("<a class=\"fn-link\" href=\"functions/uiop-file-exists-p.html\">");
+		assertThat(uiop).contains("<a class=\"fn-link\" href=\"functions/uiop-read-file-string.html\">");
 
 		String uiopFileExistsP = Files.readString(site.resolve("en/reference/functions/uiop-file-exists-p.html"),
 				StandardCharsets.UTF_8);

@@ -34,7 +34,7 @@
 | `uiop/version` | バージョン比較と非推奨コンディション | 1 / 15 |
 | [`uiop/os`](uiop/os.md) | ホストの識別、環境変数、作業ディレクトリ | 22 / 22 |
 | [`uiop/pathname`](uiop/pathname.md) | パス名の代数 (`subpathname`、`parse-unix-namestring`、`enough-pathname`) | 50 / 50 |
-| `uiop/filesystem` | ファイルシステムの探索・走査・変更 | 8 / 32 |
+| [`uiop/filesystem`](uiop/filesystem.md) | ファイルシステムの探索・走査・変更 | 32 / 32 |
 | `uiop/stream` | ファイル内容、一時ファイル、エンコーディング、標準ストリーム | 3 / 66 |
 | [`uiop/image`](uiop/image.md) | 終了、致命的コンディション、ダンプフック、コマンドライン | 30 / 30 |
 | `uiop/launch-program` | 非同期のサブプロセス | 0 / 19 |
@@ -50,7 +50,7 @@
 
 ## 実装済みのもの
 
-専用のページを持つサブパッケージは 4 つで、いずれも完全に実装済みです。uiop の
+専用のページを持つサブパッケージは 5 つで、いずれも完全に実装済みです。uiop の
 他のすべてがその上に書かれている移植性ヘルパ群 `uiop/utility` の 68 個
 ([uiop/utility](uiop/utility.md))、パス名の代数 `uiop/pathname` の 50 個
 ([uiop/pathname](uiop/pathname.md))、そしてホストの識別・環境変数・作業ディレクトリ
@@ -59,21 +59,18 @@
 [`uiop:quit`](uiop/image.md#exiting) が 4 つのバックエンドすべてでステータスコード
 付きのプロセス終了を行い、[`uiop:command-line-arguments`](uiop/image.md#the-command-line)
 が 4 つすべてで起動時の引数を読みます。致命的コンディション・バックトレース・
-イメージフックの各族もここにあります。残りは以下のとおりです。
+イメージフックの各族もここにあります。5 つめは
+[`uiop/filesystem`](uiop/filesystem.md) で、`probe-file*`・`truename*`・`directory*`
+が 4 つのバックエンドすべてで検査と走査を行い、`getenv-*` 一族が環境変数からパス名を
+読み、シンボリックリンクは正直な恒等関数であり、4 つの変更操作は基本操作のあるところで
+動作します (2 つの WASM バックエンドでは基本操作自身の呼び出し時エラーを通知)。
+残りは以下のとおりです。
 
 | 関数 | 例 | 結果 |
 |----------|---------|--------|
-| `uiop:file-exists-p` | `(uiop:file-exists-p "f.txt")` | ファイルが存在すればそのパス名、存在しなければ `nil` — `probe-file` と同じ契約であり、すべてのバックエンドでその基本操作へ落とされます |
-| `uiop:directory-exists-p` | `(uiop:directory-exists-p "src/")` | ディレクトリが存在すれば（末尾に `/` を付けた）そのパス名、存在しなければ `nil` — `file-exists-p` のディレクトリ版であり、空のディレクトリと存在しないディレクトリを区別できる唯一の手段です |
-| `uiop:directory-files` | `(uiop:directory-files "db/" "*.up.sql")` | ディレクトリのうちディレクトリでないエントリ — `(directory "db/*.*")` からサブディレクトリを除いたものです。UIOP の省略可能な第 2 引数 (名前と型のみのワイルドカードのパス名文字列) は `directory` とまったく同じ規則で絞り込みます。省略するとすべてを一覧し、ディレクトリ部分を含むパターンはエラーです |
-| `uiop:subdirectories` | `(uiop:subdirectories "src/")` | ディレクトリのサブディレクトリを、それぞれ末尾に `/` を付けて返します |
-| `uiop:collect-sub*directories` | `(uiop:collect-sub*directories "src/" (constantly t) (constantly t) #'print)` | ディレクトリツリーを走査します。`collectp` が `collector` へ渡すものを、`recursep` が降りていく先を決めます。渡されるディレクトリはルートも含めてすべてディレクトリ形式です |
 | `uiop:read-file-string` | `(uiop:read-file-string "db/up.sql")` | ファイルの内容全体を 1 つの文字列として返します。ファイルを入力用に開けるすべてのバックエンドで動きます。lite 版: 本家 UIOP の `&rest` キーワードは受け付けて無視します (`:external-format` は rontolisp には存在せず、どのバックエンドも UTF-8 で読みます) |
 | `uiop:compile-file-type` | `(uiop:compile-file-type)` | `nil` — コンパイル済みファイルが持つパス名の型。ここには `compile-file` が存在せずそのような型もないため、「このパスは fasl か?」を問う呼び出し側はソースパスに対して「いいえ」を得ます |
 | `uiop:default-temporary-directory` | `(uiop:default-temporary-directory)` | `$TMPDIR` をディレクトリ形式で。環境変数が空の場合 (`--env` なしの 2 つの WASM バックエンド) は `#P"/tmp/"` |
-| `uiop:delete-file-if-exists` | `(uiop:delete-file-if-exists "scratch.txt")` | ファイルを削除します。存在しない場合はシグナルではなく `nil` を返します — UIOP がこれをエクスポートしている理由そのものです |
-| `uiop:get-pathname-defaults` | `(uiop:get-pathname-defaults)` | 相対名が解決される基準のデフォルト — 絶対なデフォルト引数が与えられない限り `*default-pathname-defaults*` (初期値 `#P""`、ホストの作業ディレクトリを指すパス名) を返します |
-| `uiop:native-namestring` | `(uiop:native-namestring #P"/tmp/x")` | `"/tmp/x"` — パス名のホスト OS の綴り。ここでは名前文字列そのものなので `namestring` と同じです |
 | `uiop:add-package-local-nickname` | `(uiop:add-package-local-nickname '#:j '#:com.example.pkg)` | パッケージ短縮名を登録 (lite: グローバル、パッケージごとのスコープなし)。リテラルなトップレベル呼び出しはコンパイル時ディレクティブなので、すべてのバックエンドで動作します |
 | `uiop:symbol-call` | `(uiop:symbol-call :cl :+ 1 2)` | 実行時にパッケージから名前を引いて適用します — 依存関係に持たないシステムを呼ぶための UIOP の遅延束縛呼び出しです |
 
@@ -83,6 +80,8 @@
 `uiop:define-package` (リテラルなトップレベル呼び出しは `defpackage` と同様に処理されます)。
 `uiop/pathname` の 2 つのマクロ — `uiop:with-pathname-defaults` と
 `uiop:with-enough-pathname` — は[そのページ](uiop/pathname.md)にあります。
+`uiop/filesystem` のマクロ — `uiop:with-current-directory` — は
+[そのページ](uiop/filesystem.md)にあります。
 `uiop/utility` 自身のマクロ — [`uiop:if-let`](macros/uiop-if-let.md)、
 `uiop:nest`、`uiop:while-collecting`、`uiop:with-upgradability` など — は
 [そのページ](uiop/utility.md#macros)にあります。

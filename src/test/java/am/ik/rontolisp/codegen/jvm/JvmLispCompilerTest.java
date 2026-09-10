@@ -2795,9 +2795,12 @@ class JvmLispCompilerTest {
 		// the ordinary call path FINDS it and compiles the argument forms first --
 		// which is why the lowering has to happen in the expression compiler's uiop
 		// branch, ahead of the call path. The spec list here is non-empty on purpose:
-		// with (), the arguments are the nil literal and the bug is invisible.
+		// with (), the arguments are the nil literal and the bug is invisible. The
+		// probe used to be with-current-directory; it grew its own expansion over
+		// call-with-current-directory, so the probe moved to a stream macro nothing
+		// implements yet.
 		assertThat(compileAndRun("""
-				(print (handler-case (uiop:with-current-directory ("/tmp") (defun um-probe () 1))
+				(print (handler-case (uiop:with-input-file (s "/tmp/x") (defun um-probe () 1))
 				         (uiop:not-implemented-error () :signalled)))
 				(print (fboundp 'um-probe))
 				""")).isEqualTo("""
@@ -4247,6 +4250,65 @@ class JvmLispCompilerTest {
 				(print (uiop:file-exists-p "%s"))
 				""".formatted(file, file, missing, file, missing)))
 			.isEqualTo("(#P\"" + tempDir.resolve("fc.txt") + "\" NIL)\n#P\"" + tempDir.resolve("fc.txt") + "\"\nNIL");
+	}
+
+	@Test
+	void compileAndRunUiopFilesystemProbeWalkAndMutate() throws Exception {
+		// The uiop/filesystem read side over probe-file and directory, the getenv
+		// family over the override map, symlinks as the identity, and the write side
+		// for real -- same shape and expectations as the interpreter test
+		// (LispEvaluatorTest#evalUiopFilesystemProbeWalkAndMutate).
+		java.nio.file.Path root = java.nio.file.Files.createDirectory(tempDir.resolve("fs"));
+		String dir = root.toString().replace("\\", "\\\\");
+		java.nio.file.Files.writeString(root.resolve("p.txt"), "p\n");
+		String d = root + "/";
+		assertThat(compileAndRun("""
+				(print (uiop:probe-file* "%1$s/p.txt"))
+				(print (uiop:probe-file* "%1$s/p.txt" :truename t))
+				(print (uiop:probe-file* "%1$s/missing"))
+				(print (uiop:truename* "%1$s/p.txt"))
+				(print (uiop:truename* "%1$s/missing"))
+				(print (uiop:directory* "%1$s/*.txt"))
+				(print (if (uiop:safe-file-write-date "%1$s/p.txt") 'dated 'undated))
+				(print (uiop:safe-file-write-date "%1$s/missing"))
+				(print (uiop:parse-native-namestring "/tmp/x"))
+				(print (string (uiop:inter-directory-separator)))
+				(print (uiop:split-native-pathnames-string "a:b::c"))
+				(progn (setf (uiop:getenv "JVM_UIOP_FS_TEST") "/tmp")
+				       (setf (uiop:getenv "JVM_UIOP_FS_PATHS") "/tmp:/var")
+				       (print (uiop:getenv-pathname "JVM_UIOP_FS_TEST"))
+				       (print (uiop:getenv-absolute-directories "JVM_UIOP_FS_PATHS")))
+				(print (list uiop:*resolve-symlinks* (uiop:resolve-symlinks "/a/b")
+				               (uiop:lisp-implementation-directory)))
+				(let ((base "%1$s/j-"))
+				  (uiop:ensure-all-directories-exist (list (concatenate 'string base "d/sub/f.txt")))
+				  (with-open-file (out (concatenate 'string base "d/sub/f.txt") :direction :output)
+				    (write-line "x" out))
+				  (print (if (uiop:probe-file* (concatenate 'string base "d/sub/f.txt")) 'made 'absent))
+				  (uiop:delete-directory-tree (concatenate 'string base "d/") :validate (constantly t))
+				  (print (uiop:directory-exists-p (concatenate 'string base "d/"))))
+				(print (uiop:with-current-directory () :here))
+				(print (handler-case (uiop:with-current-directory ("/tmp") :never)
+				         (uiop:not-implemented-error () :signalled)))
+				""".formatted(dir))).isEqualTo("""
+				#P"%1$sp.txt"
+				#P"%1$sp.txt"
+				NIL
+				#P"%1$sp.txt"
+				NIL
+				(#P"%1$sp.txt")
+				DATED
+				NIL
+				#P"/tmp/x"
+				":"
+				(#P"a" #P"b" NIL #P"c")
+				#P"/tmp"
+				(#P"/tmp/" #P"/var/")
+				(NIL #P"/a/b" NIL)
+				MADE
+				NIL
+				:HERE
+				:SIGNALLED""".formatted(d));
 	}
 
 	@Test

@@ -9728,7 +9728,7 @@ public final class LispMacroExpander {
 			LispNames.DEFINE_PACKAGE, LispNames.WITH_UPGRADABILITY, LispNames.NEST, LispNames.WHILE_COLLECTING,
 			LispNames.APPENDF, LispNames.LATEST_TIMESTAMP_F, LispNames.WITH_MUFFLED_CONDITIONS, LispNames.UIOP_DEBUG,
 			LispNames.COMPATFMT, LispNames.WITH_PATHNAME_DEFAULTS, LispNames.WITH_ENOUGH_PATHNAME, LispNames.OS_COND,
-			LispNames.WITH_FATAL_CONDITION_HANDLER);
+			LispNames.WITH_CURRENT_DIRECTORY, LispNames.WITH_FATAL_CONDITION_HANDLER);
 
 	/**
 	 * If {@code cons} is a {@code (read-line ...)} call in CL's 2- or 3-argument shape
@@ -10360,6 +10360,36 @@ public final class LispMacroExpander {
 	}
 
 	/**
+	 * Expands {@code (uiop:with-current-directory ([dir]) body...)} into
+	 * {@code (uiop:call-with-current-directory dir (lambda () body...))} -- upstream's
+	 * own shorthand, over the {@code chdir} + {@code *default-pathname-defaults*}
+	 * function in {@code uiop-filesystem.lisp}. The dir form is evaluated ONCE, inside
+	 * the call, exactly as upstream's backquote places it; an absent dir is nil, which
+	 * just runs the thunk.
+	 * @param cons the with-current-directory expression
+	 * @return the expanded expression
+	 */
+	public static LispVal expandUiopWithCurrentDirectory(LispCons cons) {
+		List<LispVal> parts = cons.toList();
+		if (parts.size() < 2 || !(parts.get(1) instanceof LispCons || parts.get(1) instanceof LispNil)) {
+			throw new UnsupportedOperationException(UiopExports.qualified(LispNames.WITH_CURRENT_DIRECTORY)
+					+ " expects (with-current-directory ([dir]) body...): " + cons.print());
+		}
+		List<LispVal> specParts = parts.get(1) instanceof LispCons specCons ? specCons.toList() : List.of();
+		if (specParts.size() > 1) {
+			throw new UnsupportedOperationException(UiopExports.qualified(LispNames.WITH_CURRENT_DIRECTORY)
+					+ " expects at most one directory form: " + cons.print());
+		}
+		LispVal dir = specParts.isEmpty() ? LispNil.INSTANCE : specParts.get(0);
+		List<LispVal> thunk = new java.util.ArrayList<>();
+		thunk.add(new LispSymbol(LispNames.LAMBDA));
+		thunk.add(LispNil.INSTANCE);
+		thunk.addAll(parts.subList(2, parts.size()));
+		return listToCons(List.of(new LispSymbol(UiopExports.qualified(LispNames.CALL_WITH_CURRENT_DIRECTORY)), dir,
+				listToCons(thunk)));
+	}
+
+	/**
 	 * Expands {@code (uiop:uiop-debug key...)} into
 	 * {@code (uiop:load-uiop-debug-utility key...)}. Upstream additionally wraps it in an
 	 * {@code (eval-when (:compile-toplevel :load-toplevel :execute) ...)} so the debug
@@ -10440,6 +10470,7 @@ public final class LispMacroExpander {
 			case LispNames.WITH_FATAL_CONDITION_HANDLER -> expandUiopWithFatalConditionHandler(cons);
 			case LispNames.WITH_PATHNAME_DEFAULTS -> expandUiopWithPathnameDefaults(cons);
 			case LispNames.WITH_ENOUGH_PATHNAME -> expandUiopWithEnoughPathname(cons);
+			case LispNames.WITH_CURRENT_DIRECTORY -> expandUiopWithCurrentDirectory(cons);
 			case LispNames.UIOP_DEBUG -> expandUiopDebug(cons);
 			case LispNames.COMPATFMT -> expandUiopCompatfmt(cons);
 			// define-package is read-time surgery the package resolver performs, not an
