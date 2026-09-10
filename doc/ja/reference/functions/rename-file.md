@@ -22,8 +22,7 @@ CL-USER> (rename-file "db/2026.up.sql" "2026.down.sql")
 
 ## バックエンドサポート
 
-インタプリタと JVM は実際にリネームします。WASM の 2 バックエンドは**呼び出し時**に
-エラーを送出します。ここで取り込んでいる WASI のインポートにリネーム呼び出しがなく、
-「後でファイルが新しい名前になっている」に誠実な代替の答えがないためです。
-[`delete-file`](delete-file.md) や [`ensure-directories-exist`](ensure-directories-exist.md)
-と同じ差異です。
+4つのバックエンドすべてが実際にリネームします。2つのWASMバックエンドは `path_rename`
+というWASIインポートを通じて移動し（Preview 1は直接、`--component` は `wasi:filesystem`
+の `rename-at` 経由）、「そもそも存在しなかった」場合はどこでも
+[`delete-file`](delete-file.md) と同じ `file-error` になります。

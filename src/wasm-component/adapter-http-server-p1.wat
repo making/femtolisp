@@ -1,6 +1,6 @@
 ;; Preview-1 bridge core module for serve components (rontolisp:http-handler +
 ;; --component), on WASI 0.3. Instantiated between the shared memory and the rontolisp
-;; core, it exports the twelve preview1 functions the core imports, implemented over the
+;; core, it exports the fifteen preview1 functions the core imports, implemented over the
 ;; interfaces the wasi:http@0.3 service world provides:
 ;;
 ;;   random_get       -> wasi:random/random@0.3.0 get-random-u64 (8 bytes at a time)
@@ -22,6 +22,10 @@
 ;;                       nonzero open errno, matching the run-variant failure mode)
 ;;   fd_close         -> errno 0
 ;;   fd_readdir       -> errno 76 (no filesystem; %list-directory reads it as nil)
+;;   path_create_directory / path_unlink_file / path_rename -> errno 76 (no
+;;                       filesystem either: %delete-file / %rename-file read it as
+;;                       nil, and %make-directories signals through its call-site
+;;                       error like _open does)
 ;;   fd_filestat_get  -> errno 8 (EBADF): no fd here names a file, so file-length reads
 ;;                       it as "cannot be determined" and answers nil
 ;;   fd_prestat_get / fd_prestat_dir_name -> errno 8 (EBADF): no preopen exists, and
@@ -173,6 +177,24 @@
   (func $fd_filestat_get (param $fd i32) (param $buf i32) (result i32)
     (i32.const 8))
 
+  ;; path_create_directory(fd, path, len) -> errno 76: no filesystem in the service
+  ;; world. The core's _make_directories verifies by opening, which fails here too,
+  ;; so %make-directories signals through its call-site error.
+  (func $path_create_directory (param $fd i32) (param $path i32) (param $plen i32) (result i32)
+    (i32.const 76))
+
+  ;; path_unlink_file(fd, path, len) -> errno 76: no filesystem in the service world.
+  ;; The core reads a nonzero errno as "nothing was removed" and %delete-file answers
+  ;; nil, which the Lisp delete-file above it turns into the file-error.
+  (func $path_unlink_file (param $fd i32) (param $path i32) (param $plen i32) (result i32)
+    (i32.const 76))
+
+  ;; path_rename(old_fd, old_path, old_len, new_fd, new_path, new_len) -> errno 76:
+  ;; no filesystem in the service world. Same nil contract as path_unlink_file.
+  (func $path_rename (param $ofd i32) (param $opath i32) (param $olen i32)
+    (param $nfd i32) (param $npath i32) (param $nlen i32) (result i32)
+    (i32.const 76))
+
   ;; random_get(buf, len) -> errno. Fills buf with wasi:random bytes (8 at a time, like
   ;; adapter.wat).
   (func $random_get (param $buf i32) (param $len i32) (result i32)
@@ -219,4 +241,7 @@
   (export "fd_readdir" (func $fd_readdir))
   (export "fd_prestat_get" (func $fd_prestat_get))
   (export "fd_prestat_dir_name" (func $fd_prestat_dir_name))
-  (export "fd_filestat_get" (func $fd_filestat_get)))
+  (export "fd_filestat_get" (func $fd_filestat_get))
+  (export "path_create_directory" (func $path_create_directory))
+  (export "path_unlink_file" (func $path_unlink_file))
+  (export "path_rename" (func $path_rename)))

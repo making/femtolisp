@@ -3,9 +3,9 @@
 Opt-in: CLI `--component`; `WasmLispCompiler(dynamic, component)`. Default output stays a
 Preview 1 core module (no regression).
 
-**Design**: the core module is emitted UNCHANGED from Preview 1 (still imports the twelve
+**Design**: the core module is emitted UNCHANGED from Preview 1 (still imports the fifteen
 `wasi_snapshot_preview1` functions, all `FUNC_*` indices stable, `FUNC_START` =
-`IMPORT_FUNC_COUNT` = 12); an **adapter** core module implements them over WASI 0.3's
+`IMPORT_FUNC_COUNT` = 15); an **adapter** core module implements them over WASI 0.3's
 `stream<u8>`/`future<T>` + async canonical ABI. The `run` export is a **stackful** async
 `canon lift` (no callback), so the synchronous `stream.*`/`future.*` built-ins block
 cooperatively and the adapter stays straight-line. A SERVE component's `handle` is instead a

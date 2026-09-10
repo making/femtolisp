@@ -20,6 +20,14 @@
   ;; descriptor.stat is an async func with no params; the SYNC (blocking) lowering
   ;; flattens to (self, retptr) and the adapter reads descriptor-stat out of the retptr.
   (import "wasi:filesystem/types@0.3.0" "[method]descriptor.stat" (func (param i32 i32)))
+  ;; create-directory-at / unlink-file-at are async funcs taking one string; the SYNC
+  ;; lowering flattens to (self, path_ptr, path_len, retptr) and the adapter reads the
+  ;; result<_, error-code> discriminant out of the retptr.
+  (import "wasi:filesystem/types@0.3.0" "[method]descriptor.create-directory-at" (func (param i32 i32 i32 i32)))
+  (import "wasi:filesystem/types@0.3.0" "[method]descriptor.unlink-file-at" (func (param i32 i32 i32 i32)))
+  ;; rename-at is an async func taking two strings and a borrowed descriptor; the SYNC
+  ;; lowering flattens to (self, old_ptr, old_len, new_desc, new_ptr, new_len, retptr).
+  (import "wasi:filesystem/types@0.3.0" "[method]descriptor.rename-at" (func (param i32 i32 i32 i32 i32 i32 i32)))
   (import "wasi:filesystem/preopens@0.3.0" "get-directories" (func (param i32)))
   (import "wasi:random/random@0.3.0" "get-random-u64" (func (result i64)))
   (memory (export "memory") 6)

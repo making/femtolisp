@@ -7,13 +7,11 @@
 ファイルがなくても許容したい場合は [`probe-file`](probe-file.md) で先に確認するか、
 呼び出しを `ignore-errors` で包んでください。
 
-**2つのWASMバックエンドは呼び出し時にシグナルを発生させます。** そこでは WASI の
-unlink 呼び出しをインポートしておらず、[`file-write-date`](file-write-date.md) と違って
-この操作の契約には「判定できない」という答えがありません。実行後にファイルが消えている
-かいないかのどちらかなので、エラー以外を返すのは嘘になります。これは
-[`ensure-directories-exist`](ensure-directories-exist.md) と同じ取り決めで、理由も
-同じです。呼び出しを**含む**だけのプログラムはそこでもコンパイルでき、実行したときに
-だけシグナルを発生させます。
+4つのバックエンドすべてで動作します。2つのWASMバックエンドは `path_unlink_file` という
+WASIインポートを通じてunlinkし（Preview 1は直接、`--component` は `wasi:filesystem` の
+`unlink-file-at` 経由）、存在しないファイルはどこでも同じ `file-error` になります。
+ディレクトリの削除はWASMでは引き続き通知します。unlink呼び出しではディレクトリを
+削除できないためです。
 
 ```console
 (with-open-file (out "notes.txt" :direction :output)

@@ -1055,6 +1055,428 @@ final class WasmIoRuntimeBuilder {
 		w.writeHeapType(Type.EQ.code());
 	}
 
+	private static void emitT(WasmWriter w, WasmLispCompiler.StringTable.StringEntry t) {
+		i32(w, t.offset());
+		i32(w, t.length());
+		WasmEmitHelper.emitStrBuildCall(w);
+	}
+
+	/**
+	 * Builds the _make_directories(path) function body: the T symbol when the directory
+	 * exists afterwards, {@code ref.null eq} (nil) otherwise. The path is staged into
+	 * linear scratch and resolved against the preopen table through {@code _path_dirfd}
+	 * exactly as {@link #buildOpenBody()} stages and resolves its own, with the same
+	 * HEAP_PTR advance-and-pop discipline (load-bearing under {@code --component}, where
+	 * the adapter allocates through {@code cabi_realloc} at that cell while a filesystem
+	 * call runs).
+	 *
+	 * <p>
+	 * Preview 1's {@code path_create_directory} creates ONE level, while the interpreter
+	 * ({@code Files.createDirectories}) and the JVM ({@code mkdirs}) make every missing
+	 * parent: the body walks the slash-separated prefixes and creates each through the
+	 * {@code path_create_directory} import, so all three backends answer the same "it
+	 * exists afterwards". Only the FINAL prefix's errno counts -- an intermediate one
+	 * that already exists (or fails for a reason the final answers for) is not the
+	 * answer. A trailing slash is stripped first, so the final prefix never names the
+	 * directory with one.
+	 *
+	 * <p>
+	 * A nonzero final errno is VERIFIED by opening the path as a DIRECTORY (the
+	 * {@code _list_directory} open): a host answers EEXIST for a directory that is
+	 * already there, and the verify turns that into the T the contract promises without
+	 * trusting any one errno number. Anything that is not an openable directory stays
+	 * nil, and the call-site compiler turns nil into the Lisp error
+	 * ({@code ensure-directories-exist} has no "cannot be determined" answer, unlike
+	 * {@code file-length}).
+	 * @param st the string table (for the {@code T} symbol)
+	 * @return the function body bytes
+	 */
+	static byte[] buildMakeDirectoriesBody(WasmLispCompiler.StringTable st) {
+		WasmLispCompiler.StringTable.StringEntry t = st.addBodyString("T");
+		ByteArrayOutputStream body = new ByteArrayOutputStream();
+		WasmWriter w = new WasmWriter(body);
+		// param: PATH=0 (ref) ; i32 locals: OFF=1, PLEN=2, DIRFD=3, BASE=4, N=5,
+		// I=6, J=7, ERR=8
+		w.write(1);
+		w.write(8);
+		w.write(Type.I32);
+		final int PATH = 0, OFF = 1, PLEN = 2, DIRFD = 3, BASE = 4, N = 5, I = 6, J = 7, ERR = 8;
+		final int SLASH = '/';
+
+		// Stage the path bytes into linear scratch exactly as _open does (see there
+		// for why HEAP_PTR stays advanced until every filesystem call has run).
+		loadMem32(w, WasmLispCompiler.HEAP_PTR_ADDR);
+		setLocal(w, OFF);
+		getLocal(w, PATH);
+		getLocal(w, OFF);
+		WasmEmitHelper.emitStrToMemCall(w);
+		i32(w, 2);
+		w.write(Instruction.I32_SUB);
+		setLocal(w, PLEN);
+		// HEAP_PTR = align8(off + plen + 2)
+		i32(w, WasmLispCompiler.HEAP_PTR_ADDR);
+		getLocal(w, OFF);
+		getLocal(w, PLEN);
+		w.write(Instruction.I32_ADD);
+		i32(w, 2 + 7);
+		w.write(Instruction.I32_ADD);
+		i32(w, -8);
+		w.write(Instruction.I32_AND);
+		w.write(Instruction.I32_STORE, 0x02, 0x00);
+		// dirfd = _path_dirfd(off + 1, plen); base = off + 1 + skip; n = plen - skip.
+		getLocal(w, OFF);
+		i32(w, 1);
+		w.write(Instruction.I32_ADD);
+		getLocal(w, PLEN);
+		w.write(Instruction.CALL);
+		w.writeUnsignedLeb128(WasmLispCompiler.FUNC_PATH_DIRFD);
+		setLocal(w, DIRFD);
+		getLocal(w, OFF);
+		i32(w, 1);
+		w.write(Instruction.I32_ADD);
+		loadMem32(w, WasmLispCompiler.PATH_SKIP_ADDR);
+		w.write(Instruction.I32_ADD);
+		setLocal(w, BASE);
+		getLocal(w, PLEN);
+		loadMem32(w, WasmLispCompiler.PATH_SKIP_ADDR);
+		w.write(Instruction.I32_SUB);
+		setLocal(w, N);
+		// Strip trailing slashes: the final prefix must not name the directory with
+		// one.
+		w.write(Instruction.BLOCK);
+		w.write(0x40);
+		w.write(Instruction.LOOP);
+		w.write(0x40);
+		getLocal(w, N);
+		w.write(Instruction.I32_EQZ);
+		w.write(Instruction.BR_IF);
+		w.writeUnsignedLeb128(1);
+		getLocal(w, BASE);
+		getLocal(w, N);
+		w.write(Instruction.I32_ADD);
+		i32(w, 1);
+		w.write(Instruction.I32_SUB);
+		w.write(Instruction.I32_LOAD8_U, 0x00, 0x00);
+		i32(w, SLASH);
+		w.write(Instruction.I32_NE);
+		w.write(Instruction.BR_IF);
+		w.writeUnsignedLeb128(1);
+		getLocal(w, N);
+		i32(w, 1);
+		w.write(Instruction.I32_SUB);
+		setLocal(w, N);
+		w.write(Instruction.BR);
+		w.writeUnsignedLeb128(0);
+		w.write(Instruction.END);
+		w.write(Instruction.END);
+		// An empty remainder names no directory: pop the staging and answer T, which
+		// is what the JVM's mkdirs-unconditional-T answers for it too.
+		getLocal(w, N);
+		w.write(Instruction.I32_EQZ);
+		w.write(Instruction.IF, 0x40);
+		i32(w, WasmLispCompiler.HEAP_PTR_ADDR);
+		getLocal(w, OFF);
+		w.write(Instruction.I32_STORE, 0x02, 0x00);
+		emitT(w, t);
+		w.write(Instruction.RETURN);
+		w.write(Instruction.END);
+		// Create every slash-separated prefix: i scans, j finds the next slash or
+		// the end, and [base, base+j) is created (an empty prefix is skipped).
+		i32(w, 0);
+		setLocal(w, I);
+		i32(w, 0);
+		setLocal(w, ERR);
+		w.write(Instruction.BLOCK);
+		w.write(0x40);
+		w.write(Instruction.LOOP);
+		w.write(0x40);
+		getLocal(w, I);
+		setLocal(w, J);
+		w.write(Instruction.BLOCK);
+		w.write(0x40);
+		w.write(Instruction.LOOP);
+		w.write(0x40);
+		getLocal(w, J);
+		getLocal(w, N);
+		w.write(Instruction.I32_GE_U);
+		w.write(Instruction.BR_IF);
+		w.writeUnsignedLeb128(1);
+		getLocal(w, BASE);
+		getLocal(w, J);
+		w.write(Instruction.I32_ADD);
+		w.write(Instruction.I32_LOAD8_U, 0x00, 0x00);
+		i32(w, SLASH);
+		w.write(Instruction.I32_EQ);
+		w.write(Instruction.BR_IF);
+		w.writeUnsignedLeb128(1);
+		getLocal(w, J);
+		i32(w, 1);
+		w.write(Instruction.I32_ADD);
+		setLocal(w, J);
+		w.write(Instruction.BR);
+		w.writeUnsignedLeb128(0);
+		w.write(Instruction.END);
+		w.write(Instruction.END);
+		// path_create_directory(dirfd, base, j)
+		getLocal(w, J);
+		w.write(Instruction.IF, 0x40);
+		getLocal(w, DIRFD);
+		getLocal(w, BASE);
+		getLocal(w, J);
+		w.write(Instruction.CALL);
+		w.writeUnsignedLeb128(WasmLispCompiler.FUNC_PATH_CREATE_DIRECTORY);
+		setLocal(w, ERR);
+		w.write(Instruction.END);
+		// the end of the path was the final prefix: the walk is over
+		getLocal(w, J);
+		getLocal(w, N);
+		w.write(Instruction.I32_GE_U);
+		w.write(Instruction.BR_IF);
+		w.writeUnsignedLeb128(1);
+		getLocal(w, J);
+		i32(w, 1);
+		w.write(Instruction.I32_ADD);
+		setLocal(w, I);
+		w.write(Instruction.BR);
+		w.writeUnsignedLeb128(0);
+		w.write(Instruction.END);
+		w.write(Instruction.END);
+		// A clean final create answers T.
+		getLocal(w, ERR);
+		w.write(Instruction.I32_EQZ);
+		w.write(Instruction.IF, 0x40);
+		i32(w, WasmLispCompiler.HEAP_PTR_ADDR);
+		getLocal(w, OFF);
+		w.write(Instruction.I32_STORE, 0x02, 0x00);
+		emitT(w, t);
+		w.write(Instruction.RETURN);
+		w.write(Instruction.END);
+		// Otherwise verify: open the path as a DIRECTORY (the _list_directory open),
+		// which turns "already there" into T whatever errno the host used.
+		getLocal(w, DIRFD);
+		i32(w, 0);
+		getLocal(w, BASE);
+		getLocal(w, N);
+		i32(w, 2);
+		w.write(Instruction.I64_CONST);
+		w.writeSignedLeb128(1 << 14);
+		w.write(Instruction.I64_CONST);
+		w.writeSignedLeb128(0);
+		i32(w, 0);
+		i32(w, WasmLispCompiler.OPEN_FD_ADDR);
+		w.write(Instruction.CALL);
+		w.writeUnsignedLeb128(WasmLispCompiler.FUNC_PATH_OPEN);
+		setLocal(w, ERR);
+		// pop the staged path (the open is done with it)
+		i32(w, WasmLispCompiler.HEAP_PTR_ADDR);
+		getLocal(w, OFF);
+		w.write(Instruction.I32_STORE, 0x02, 0x00);
+		// not an openable directory: nil, which the call site signals on
+		getLocal(w, ERR);
+		w.write(Instruction.IF, 0x40);
+		emitNil(w);
+		w.write(Instruction.RETURN);
+		w.write(Instruction.END);
+		loadMem32(w, WasmLispCompiler.OPEN_FD_ADDR);
+		w.write(Instruction.CALL);
+		w.writeUnsignedLeb128(WasmLispCompiler.FUNC_FD_CLOSE);
+		w.write(Instruction.DROP);
+		emitT(w, t);
+		w.write(Instruction.END);
+		return body.toByteArray();
+	}
+
+	/**
+	 * Builds the _delete_file(path) function body: the T symbol when the named file was
+	 * removed, {@code ref.null eq} (nil) when there was nothing to remove or the host
+	 * refused, over the {@code path_unlink_file} import. Same staging and preopen
+	 * resolution as {@link #buildProbeFileBody()}; the "a missing file is a file-error"
+	 * decision lives once in the Lisp {@code delete-file} above this, as on the
+	 * interpreter and the JVM.
+	 * @param st the string table (for the {@code T} symbol)
+	 * @return the function body bytes
+	 */
+	static byte[] buildDeleteFileBody(WasmLispCompiler.StringTable st) {
+		WasmLispCompiler.StringTable.StringEntry t = st.addBodyString("T");
+		ByteArrayOutputStream body = new ByteArrayOutputStream();
+		WasmWriter w = new WasmWriter(body);
+		// param: PATH=0 (ref) ; i32 locals: OFF=1, PLEN=2
+		w.write(1);
+		w.write(2);
+		w.write(Type.I32);
+		final int PATH = 0, OFF = 1, PLEN = 2;
+
+		// Stage the path bytes into linear scratch exactly as _open does.
+		loadMem32(w, WasmLispCompiler.HEAP_PTR_ADDR);
+		setLocal(w, OFF);
+		getLocal(w, PATH);
+		getLocal(w, OFF);
+		WasmEmitHelper.emitStrToMemCall(w);
+		i32(w, 2);
+		w.write(Instruction.I32_SUB);
+		setLocal(w, PLEN);
+		// HEAP_PTR = align8(off + plen + 2)
+		i32(w, WasmLispCompiler.HEAP_PTR_ADDR);
+		getLocal(w, OFF);
+		getLocal(w, PLEN);
+		w.write(Instruction.I32_ADD);
+		i32(w, 2 + 7);
+		w.write(Instruction.I32_ADD);
+		i32(w, -8);
+		w.write(Instruction.I32_AND);
+		w.write(Instruction.I32_STORE, 0x02, 0x00);
+		// path_unlink_file(dirfd, path_ptr, path_len): the dirfd comes from
+		// _path_dirfd over the staged path, the pointer and length skip what the
+		// descriptor already accounts for.
+		getLocal(w, OFF);
+		i32(w, 1);
+		w.write(Instruction.I32_ADD);
+		getLocal(w, PLEN);
+		w.write(Instruction.CALL);
+		w.writeUnsignedLeb128(WasmLispCompiler.FUNC_PATH_DIRFD);
+		getLocal(w, OFF);
+		i32(w, 1);
+		w.write(Instruction.I32_ADD);
+		loadMem32(w, WasmLispCompiler.PATH_SKIP_ADDR);
+		w.write(Instruction.I32_ADD);
+		getLocal(w, PLEN);
+		loadMem32(w, WasmLispCompiler.PATH_SKIP_ADDR);
+		w.write(Instruction.I32_SUB);
+		w.write(Instruction.CALL);
+		w.writeUnsignedLeb128(WasmLispCompiler.FUNC_PATH_UNLINK_FILE);
+		// pop the staged path (PLEN is free now: reuse it for the errno)
+		setLocal(w, PLEN);
+		i32(w, WasmLispCompiler.HEAP_PTR_ADDR);
+		getLocal(w, OFF);
+		w.write(Instruction.I32_STORE, 0x02, 0x00);
+		// a nonzero errno means nothing was removed: nil, like the other backends
+		getLocal(w, PLEN);
+		w.write(Instruction.IF, 0x40);
+		emitNil(w);
+		w.write(Instruction.RETURN);
+		w.write(Instruction.END);
+		emitT(w, t);
+		w.write(Instruction.END);
+		return body.toByteArray();
+	}
+
+	/**
+	 * Builds the _rename_file(from, to) function body: the T symbol when the file was
+	 * renamed, {@code ref.null eq} (nil) when there was nothing to rename or the host
+	 * refused, over the {@code path_rename} import. Both paths are staged and each is
+	 * resolved against the preopen table on its own -- the two may live under different
+	 * preopens -- so the staging of the first survives the resolution of the second
+	 * ({@code _path_dirfd} pops only its own scratch).
+	 * @param st the string table (for the {@code T} symbol)
+	 * @return the function body bytes
+	 */
+	static byte[] buildRenameFileBody(WasmLispCompiler.StringTable st) {
+		WasmLispCompiler.StringTable.StringEntry t = st.addBodyString("T");
+		ByteArrayOutputStream body = new ByteArrayOutputStream();
+		WasmWriter w = new WasmWriter(body);
+		// params: FROM=0 (ref), TO=1 (ref) ; i32 locals: OFF1=2, LEN1=3, OFF2=4,
+		// LEN2=5, D1=6, P1=7, N1=8, D2=9, ERR=10
+		w.write(1);
+		w.write(9);
+		w.write(Type.I32);
+		final int FROM = 0, TO = 1, OFF1 = 2, LEN1 = 3, OFF2 = 4, LEN2 = 5, D1 = 6, P1 = 7, N1 = 8, D2 = 9, ERR = 10;
+
+		// Stage the source path.
+		loadMem32(w, WasmLispCompiler.HEAP_PTR_ADDR);
+		setLocal(w, OFF1);
+		getLocal(w, FROM);
+		getLocal(w, OFF1);
+		WasmEmitHelper.emitStrToMemCall(w);
+		i32(w, 2);
+		w.write(Instruction.I32_SUB);
+		setLocal(w, LEN1);
+		// HEAP_PTR = align8(off1 + len1 + 2)
+		i32(w, WasmLispCompiler.HEAP_PTR_ADDR);
+		getLocal(w, OFF1);
+		getLocal(w, LEN1);
+		w.write(Instruction.I32_ADD);
+		i32(w, 2 + 7);
+		w.write(Instruction.I32_ADD);
+		i32(w, -8);
+		w.write(Instruction.I32_AND);
+		w.write(Instruction.I32_STORE, 0x02, 0x00);
+		// Stage the destination path above it.
+		loadMem32(w, WasmLispCompiler.HEAP_PTR_ADDR);
+		setLocal(w, OFF2);
+		getLocal(w, TO);
+		getLocal(w, OFF2);
+		WasmEmitHelper.emitStrToMemCall(w);
+		i32(w, 2);
+		w.write(Instruction.I32_SUB);
+		setLocal(w, LEN2);
+		// HEAP_PTR = align8(off2 + len2 + 2)
+		i32(w, WasmLispCompiler.HEAP_PTR_ADDR);
+		getLocal(w, OFF2);
+		getLocal(w, LEN2);
+		w.write(Instruction.I32_ADD);
+		i32(w, 2 + 7);
+		w.write(Instruction.I32_ADD);
+		i32(w, -8);
+		w.write(Instruction.I32_AND);
+		w.write(Instruction.I32_STORE, 0x02, 0x00);
+		// Resolve the source: dirfd, then the skip-adjusted pointer and length into
+		// locals (the destination resolution below overwrites PATH_SKIP_ADDR).
+		getLocal(w, OFF1);
+		i32(w, 1);
+		w.write(Instruction.I32_ADD);
+		getLocal(w, LEN1);
+		w.write(Instruction.CALL);
+		w.writeUnsignedLeb128(WasmLispCompiler.FUNC_PATH_DIRFD);
+		setLocal(w, D1);
+		getLocal(w, OFF1);
+		i32(w, 1);
+		w.write(Instruction.I32_ADD);
+		loadMem32(w, WasmLispCompiler.PATH_SKIP_ADDR);
+		w.write(Instruction.I32_ADD);
+		setLocal(w, P1);
+		getLocal(w, LEN1);
+		loadMem32(w, WasmLispCompiler.PATH_SKIP_ADDR);
+		w.write(Instruction.I32_SUB);
+		setLocal(w, N1);
+		// Resolve the destination the same way.
+		getLocal(w, OFF2);
+		i32(w, 1);
+		w.write(Instruction.I32_ADD);
+		getLocal(w, LEN2);
+		w.write(Instruction.CALL);
+		w.writeUnsignedLeb128(WasmLispCompiler.FUNC_PATH_DIRFD);
+		setLocal(w, D2);
+		// path_rename(d1, p1, n1, d2, off2 + 1 + skip, len2 - skip)
+		getLocal(w, D1);
+		getLocal(w, P1);
+		getLocal(w, N1);
+		getLocal(w, D2);
+		getLocal(w, OFF2);
+		i32(w, 1);
+		w.write(Instruction.I32_ADD);
+		loadMem32(w, WasmLispCompiler.PATH_SKIP_ADDR);
+		w.write(Instruction.I32_ADD);
+		getLocal(w, LEN2);
+		loadMem32(w, WasmLispCompiler.PATH_SKIP_ADDR);
+		w.write(Instruction.I32_SUB);
+		w.write(Instruction.CALL);
+		w.writeUnsignedLeb128(WasmLispCompiler.FUNC_PATH_RENAME);
+		setLocal(w, ERR);
+		// pop both stagings
+		i32(w, WasmLispCompiler.HEAP_PTR_ADDR);
+		getLocal(w, OFF1);
+		w.write(Instruction.I32_STORE, 0x02, 0x00);
+		// a nonzero errno means nothing was renamed: nil, like the other backends
+		getLocal(w, ERR);
+		w.write(Instruction.IF, 0x40);
+		emitNil(w);
+		w.write(Instruction.RETURN);
+		w.write(Instruction.END);
+		emitT(w, t);
+		w.write(Instruction.END);
+		return body.toByteArray();
+	}
+
 	/**
 	 * Builds the _close(stream) function body. Closes the file descriptor via WASI
 	 * fd_close and returns the symbol {@code T}.

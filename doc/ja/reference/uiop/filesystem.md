@@ -87,4 +87,4 @@ NIL
 | `uiop:delete-empty-directory` | 空ディレクトリを削除する。同じファイル基本操作の上にある（空ディレクトリもファイルと同様に削除できる） |
 | `uiop:delete-directory-tree` | 可搬な再帰走査による `rm -rf`。ディレクトリは `:validate` 述語を通過しなければならない（述語なしも失敗も `parameter-error`）。存在しないディレクトリは、`:if-does-not-exist` が `:ignore` でない限り通知する |
 
-4 つの変更操作は、基本操作が実在するインタプリタと JVM では実際に動作します。**2 つの WASM バックエンドでは基本操作が通知するのと同じ呼び出し時エラーを通知します** — WASI の取り込み集合には mkdir も unlink もありません — そのため ci-spec のケースはそちらで書き込み側に触れません。書き込み側は `LispEvaluatorTest` と `JvmLispCompilerTest` でインタプリタと JVM を固定しています。
+4 つの変更操作は、基本操作が実在するすべてのバックエンドで実際に動作します。`ensure-all-directories-exist`（`%make-directories` 上）、`rename-file-overwriting-target`（`%rename-file` 上）、`delete-file-if-exists`（`%delete-file` 上）はどこでも動作し、ci-spec の `filesystem-write-create-rename-delete-and-probe` ケースが全バックエンドで固定しています。ディレクトリの削除はWASMでは引き続き通知します — unlink呼び出しではディレクトリを削除できないため、実際のディレクトリに対する `delete-empty-directory` は誠実な `file-error` になります。

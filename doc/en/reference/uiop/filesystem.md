@@ -96,8 +96,9 @@ the API:
 | `uiop:delete-empty-directory` | delete an empty directory, over the same file primitive (it removes an empty directory as well as a file) |
 | `uiop:delete-directory-tree` | `rm -rf` as a portable recursive walk: the directory must pass the `:validate` predicate (a missing one is a `parameter-error`, and so is a failing one), a missing directory signals unless `:if-does-not-exist` is `:ignore` |
 
-The four mutating operations are real on the interpreter and the JVM, where
-their primitives are. **Both WASM backends signal the same call-time error the
-primitive signals** — the WASI import set carries no mkdir and no unlink — so
-no ci-spec case touches the write side there; the interpreter and the JVM pin
-it in `LispEvaluatorTest` and `JvmLispCompilerTest`.
+The four mutating operations are real on all four backends, where their primitives
+are: `ensure-all-directories-exist` over `%make-directories`, `rename-file-overwriting-target`
+over `%rename-file` and `delete-file-if-exists` over `%delete-file` run everywhere, pinned
+by the ci-spec `filesystem-write-create-rename-delete-and-probe` case on every backend.
+Removing a directory still signals on WASM — the unlink call cannot remove directories —
+so `delete-empty-directory` over an actual directory answers the honest `file-error` there.
