@@ -53,6 +53,21 @@ only the decomposition/composition pair is missing.
 > `integer` where SBCL answers `(mod 11)`; variable-carried complex arithmetic
 > on the compiled backends steers syntactically (see `.todo/755` for the one
 > place that steering goes wrong today).
+>
+> **Update 2026-09-10:** a conformance sweep of the whole complex surface
+> against SBCL 2.6.5 filed the rest of the gap as six items --
+> `[[761-cis-asinh-acosh-atanh-are-not-defined]]` (four missing ANSI names),
+> `[[762-atan-and-log-take-only-one-argument]]` (no `atan2`, no log base),
+> `[[763-real-arguments-outside-the-real-domain-answer-nan]]` (the NaN edge
+> above), `[[764-complex-asin-and-acos-pick-the-wrong-branch-on-the-cut]]`,
+> and two backend defects the sweep turned up,
+> `[[765-jvm-complex-acos-tan-and-tanh-answer-wrong-values]]` and
+> `[[766-wasm-phase-is-wrong-when-the-real-part-is-a-zero]]`. Everything else
+> swept -- literals, reader/printer, canonicalization,
+> `+ - * /`, `=`/`/=`/`eql` incl. signed zeros, `abs`/`phase`/`signum`/
+> `conjugate`/`realpart`/`imagpart`, `exp`/`log`/`expt`, `sin`/`cos`/`tan`,
+> `sinh`/`cosh`/`tanh`, `sqrt` incl. its signed-zero branch -- agrees with
+> SBCL on the interpreter.
 
 CL has a full complex number tower. RontoLisp implements it in four steps:
 - 751 (done): `LispComplex` (real + imaginary parts) + reader/printer +
