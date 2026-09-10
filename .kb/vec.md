@@ -243,14 +243,18 @@ degrade**: `_simdInit` CATCHES the `LinkageError`, warns once on stderr, leaves 
 false, and every call site checks `_simdReady()` before falling back to the defun -- the same
 degrade `--blas`/`--gpu` give with no library/device.
 
-**bfloat16 rides layers 0 and 1 only, over ONE pairing**: `sum` / `dot` / `matvec` / `matvec-into`
-fuse a bf16 DECODE into the lane loop when the operand at the weight position is `#bf16` and every
-other array operand is `#f` -- bf16 weights against f32 activations, the only pairing the plan has.
-Every other member and every other pairing DECLINES to the scalar defun, INCLUDING a mixed
-bf16/f32 element-wise call, which `--simd` used to raise the fixed-width error on and which the
-defun computes happily; a flag may not turn an answer into an error. The fused answer is the f32
-kernel's over the widened operand BIT FOR BIT, so the width joins the reduction contract below
-rather than adding one of its own. Mechanics, the decline sites and the cache-resident cost:
+**bfloat16 rides layers 0 and 1 only, over TWO pairings**: `sum` / `dot` / `matvec` /
+`matvec-into` fuse a bf16 DECODE into the lane loop when the operand at the weight position is
+`#bf16` and every other array operand is `#f` -- bf16 weights against f32 activations, the
+pairing the plan has -- and the element-wise members with a single-float lane loop
+(`add` / `sub` / `mul` / `div` with the CL spellings, `sqrt` / `abs` / `negative` /
+`reciprocal`, all with `-into` siblings) fuse over bf16 x bf16 -> bf16 (`.todo/747`). Every
+other member and every other pairing DECLINES to the scalar defun, INCLUDING a mixed bf16/f32
+element-wise call, which `--simd` used to raise the fixed-width error on and which the defun
+computes happily; a flag may not turn an answer into an error. The fused reduction answer is
+the f32 kernel's over the widened operand BIT FOR BIT, so the width joins the reduction
+contract below rather than adding one of its own; the fused element-wise answer is the
+defun's bit for bit. Mechanics, the decline sites and the cache-resident cost:
 `.kb/bfloat16.md`.
 
 **A Q8_0 quantized matrix rides layers 0 and 1 too, in `matvec` / `matvec-into` only**, against an
@@ -354,7 +358,8 @@ so all four agree; the scalar `vec.lisp` reference stays the more accurate f64-a
   Element-wise f32 kernels and f64 reductions keep `SPECIES_PREFERRED`. A `#bf16` operand decodes
   into those same four lanes (`ShortVector.SPECIES_64` -> `IntVector.SPECIES_128`, pinned for the
   same reason) and accumulates in f32, so every probe below transfers verbatim to that width -- 2^24
-  and 1.0 are both exact in bfloat16. The two kernel files mirror
+  and 1.0 are both exact in bfloat16. The element-wise bf16 kernels are bit-exact at any lane
+  count, so they run at `SPECIES_PREFERRED` like the f32 element-wise ones. The two kernel files mirror
   each other operation for operation (`THRESHOLD = 128`, two-rounding mul-then-add, f64-then-narrow
   `scaleF`), so interpreter `--simd` == compiled `.class --simd` bit for bit; the eval copy is NOT
   reused from `codegen.jvm` (`eval` may not depend on it).
@@ -550,14 +555,16 @@ chain, decoded to TEXT so a moved argmax fails loudly rather than shifting a dig
 ## Tests
 
 - `eval/VecSimdTest` (every kernel vs the oracle at both widths, below/above `THRESHOLD`; the bf16
-  fused-equals-widened equivalence at eight shapes, the bf16 lane-count probe, the declined pairings
+  fused-equals-widened equivalence at eight shapes, the bf16 lane-count probe, the fused
+  element-wise kernels vs the defun, the declined pairings
   and the mixed bf16/f32 element-wise VALUES; the
   `LispFunction`-vs-`LispLambda` interception guard (the printed text no longer tells the
   pair apart -- both answer `#<function VEC:DOT>`); `-into` aliasing and alias errors;
   mixed-width and rank errors), `eval/LinalgSimdTest`, `FloatWidthTest`.
 - `JvmSimdAccelCompilerTest`, `JvmLinalgSimdAccelCompilerTest`, `JvmSimdModuleFallbackTest`,
   `JvmBFloat16ArrayTest` (every case on both backends; its `--simd` section pins the fused decode
-  against BOTH the widened-f32 kernel and the interpreter's `--simd`),
+  against BOTH the widened-f32 kernel and the interpreter's `--simd`, and the fused
+  element-wise kernels against the defun on all three legs),
   `JvmSimdParallelCompilerTest` (the bf16 GEMV serial == parallel == widened f32, and past the
   `--gpu` chain), and the kernels themselves in `eval/VecSimdBf16KernelsTest` /
   `codegen/jvm/JvmSimdVectorTemplateBf16Test`.

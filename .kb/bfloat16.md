@@ -177,27 +177,39 @@ needed"). No `linalg:` acceleration seam takes it: `--simd`, `--blas` and `--gpu
   (`.kb/jvm-export.md`, "The packed float array handle"). Before that `checkPacked` refused a
   `short[]` -- a correct refusal, never a wrong number, but a Java caller of a compiled model
   could not pass or receive a bf16 weight matrix.
-- **`--simd` FUSES the decode shape and DECLINES every other pairing** (`.todo/488`). `vec:sum` over
-  a bf16 vector, `vec:dot` with a bf16 FIRST operand, and `vec:matvec` / `matvec-into` over a bf16
-  matrix run kernels that decode inside the lane loop -- provided every OTHER array operand is
-  `single-float`: bf16 weights against f32 activations is the only pairing the plan has
-  (`.todo/670`, `.todo/482`) and the only one with a kernel. The product keeps x's width, as the
-  defun's does. The contract is an EQUIVALENCE and not a tolerance -- widening is exact, so a fused
-  kernel is the f32 kernel over the widened operand BIT FOR BIT -- which is why the width needed no
-  entry of its own in the cross-backend identity contract: it joins the f32 reduction contract
-  instead, four pinned lanes and all (`.kb/vec.md`, "The f32-reduction precision contract",
-  whose lane-count pin this is; the bf16 decode's
-  `ShortVector.SPECIES_64` is pinned for the same reason `FSPECIES_REDUCE` is).
+- **`--simd` FUSES the decode shape and the element-wise narrow pairing, and DECLINES
+  every other pairing** (`.todo/488`, `.todo/747`). `vec:sum` over a bf16 vector, `vec:dot`
+  with a bf16 FIRST operand, and `vec:matvec` / `matvec-into` over a bf16 matrix run kernels
+  that decode inside the lane loop -- provided every OTHER array operand is `single-float`:
+  bf16 weights against f32 activations is the pairing the plan has (`.todo/670`, `.todo/482`).
+  Beside it, `vec:add` / `sub` / `mul` / `div` (and `vec:+` / `-` / `*` / `/`), `vec:sqrt` /
+  `abs` / `negative` / `reciprocal` and their `-into` siblings run element-wise kernels over
+  bf16 x bf16 -> bf16: widen both operands inside the lane loop, compute in f32, narrow on
+  store (`.todo/747`). The reductions' product keeps x's width, as the defun's does; the
+  element-wise result stays in the width, as `vec::%make-like` gives the defun for two bf16
+  operands. The contract is an EQUIVALENCE and not a tolerance -- widening is exact, so a
+  fused kernel is the f32 kernel over the widened operand BIT FOR BIT, and the f32
+  intermediate is the defun's answer bit for bit (swept over all 65536x65536 operand pairs
+  per operation for `+ - * /`, all 65536 patterns for the four unary members) -- which is
+  why the width needed no entry of its own in the cross-backend identity contract: the
+  reductions join the f32 reduction contract instead, four pinned lanes and all
+  (`.kb/vec.md`, "The f32-reduction precision contract", whose lane-count pin this is; the
+  bf16 decode's `ShortVector.SPECIES_64` is pinned for the same reason `FSPECIES_REDUCE`
+  is), while the element-wise kernels are bit-exact at any lane count and run at
+  `SPECIES_PREFERRED` like the f32 ones.
 - **Everything else DECLINES to the scalar defun, and that includes a MIXED bf16/f32 element-wise
   call**, which used to raise the fixed-width error under `--simd` while the defun computed it
   happily -- `--simd` may not turn an answer into an error. Interpreter: `eval/VecSimd`'s `anyBf16`
-  guard, asked BEFORE each member's width switch (the mismatch arms signal). JVM:
+  guard, asked BEFORE each member's width switch (the mismatch arms signal); the members with a
+  fused element-wise kernel test the all-bf16 pairing POSITIVELY first. JVM:
   `JvmSimdCompiler.emitLaneWidthGuard`'s second arm, keyed on `BF16_OPERAND` -- when the designated
   operand is a `short[]` every other array operand must be a `float[]`, otherwise the ordinary
-  two-width test runs over every position. Both arms end at the kernel, so the bridge stays TOTAL:
-  no null-check rung, and a call site that never sees the width emits the bytes it always did.
-  Trap: every test is POSITIVE -- asking "is it the unsupported one?" lets the next representation
-  fall through to the cast.
+  two-width test runs over every position -- and its third arm, keyed on `BF16_ELEMENTWISE`:
+  when the FIRST operand is a `short[]` every other array operand must be one too, otherwise the
+  same ordinary test runs and any `short[]` anywhere declines. Every arm ends at the kernel, so
+  the bridge stays TOTAL: no null-check rung, and a call site that never sees the width emits
+  the bytes it always did. Trap: every test is POSITIVE -- asking "is it the unsupported one?"
+  lets the next representation fall through to the cast.
 - **The guard and the bridge are WIDTH-AGNOSTIC; the PAIRING is what the plan restricts.**
   Asked and answered 2026-09-05/2026-09-08 (`.todo/696` part 2), recorded because a later reader
   cannot reconstruct it and both `.todo/490` (bf16 on the device) and `.todo/672` (Q8_0) brush
@@ -234,11 +246,11 @@ needed"). No `linalg:` acceleration seam takes it: `--simd`, `--blas` and `--gpu
   pair at both widths for it, `.kb/gpu.md`, "The GEMV, and the matrix that stays"). Metal
   declines the width (`GpuDevice.supportsBfloat16()`); every other pairing declines to the rung
   below on either backend. A `short[]` is a residency key like any other host array.
-- **No element-wise bf16 kernel YET, and the reason recorded here until 2026-09-08 was
-  wrong.** The claim was: widening is one shift but NARROWING is not vectorized
-  (round-to-nearest-even with a NaN guard), so an element-wise arm would be a scalar store
-  loop wearing a vector load. Measured on 2026-09-08 (`.todo/696`, x64/AVX2, both JITs,
-  numbers and harness in
+- **The element-wise bf16 kernels, and the measurement that justified them** (`.todo/747`,
+  closed 2026-09-10; the reason recorded here until 2026-09-08 was wrong). The claim was:
+  widening is one shift but NARROWING is not vectorized (round-to-nearest-even with a NaN
+  guard), so an element-wise arm would be a scalar store loop wearing a vector load.
+  Measured on 2026-09-08 (`.todo/696`, x64/AVX2, both JITs, numbers and harness in
   `.todo/artefacts/696-the-narrow-width-element-wise-kernels/README.md`):
   - **The narrowing vectorizes.** A branch-free lane form -- the bias-add and odd-bit carry
     as int lanes, the NaN arm as a second expression, a mask choosing between them, an
@@ -250,19 +262,33 @@ needed"). No `linalg:` acceleration seam takes it: `--simd`, `--blas` and `--gpu
     the wholly scalar loop -- and above 16 M elements it beats the f32 element-wise kernel
     outright, moving half the bytes.
   - The predicted "vector load in front of a scalar store loop" shape IS worthless
-    (0.89-1.07x of plain scalar). The prediction about that shape was right; the inference
+    (0.89-1.07x of plain scalar). The prediction about THAT shape was right; the inference
     that it was the only available shape was not.
   - **And the f32 intermediate is exactly the defun's answer.** An element-wise kernel must
     equal the DEFUN (which reads doubles, computes in f64 and narrows through
     `BFloat16.bits(double)`), not another kernel, so "compute in f32" rounds a third time in
     between. It is harmless, structurally: `bits(double)` itself falls through to
     `bits((float) value)`, and binary64 carries 53 >= 2*24+2 bits, the classical innocuous
-    double-rounding condition for `+ - * /`. Swept over all 65536x65536 operand pairs per
-    operation: **0 mismatches** for add, sub, mul and div.
-  What is NOT decided is the arm's design -- which pairings the guard admits, the result
-  width when operands differ, which of the ~40 members earn the mirror across the two kernel
-  files. That is a plan decision of the same kind as the GEMV's pairing, and it is filed as
-  `.todo/747`.
+    double-rounding condition for `+ - * /`. Theory is not a pin, so the bench sweeps it:
+  - **All 65536 x 65536 operand pairs, `add` / `sub` / `mul` / `div`, f32 intermediate
+    against the defun's f64: 0 mismatches each.** (`bench.sh` runs this once, before the
+    two timing runs; it is JIT-independent and takes about 80 s.) The four unary members
+    were swept the same way over all 65536 patterns during `.todo/747` (a scratch sweep,
+    not a checked-in bench): `sqrt` / `abs` / `negative` / `reciprocal`, 0 mismatches each.
+  The arm's design is the plan decision `.todo/747` took, of the same kind as the GEMV's
+  pairing: **bf16 x bf16 -> bf16 only** (a program that chose the width stays in it; the
+  result is what `vec::%make-like` gives the defun for two bf16 operands), a mixed pair in
+  either direction and a bf16 `-into` destination with wider sources still declining to the
+  defun. **The members are exactly the ones with a single-float lane loop** (`add` / `sub`
+  / `mul` / `div` with the four CL spellings, `sqrt` / `abs` / `negative` / `reciprocal`,
+  all with `-into` siblings): `scale` multiplies by a genuine f64 scalar, the comparison
+  selects are scalar loops, and the transcendental ufuncs call `java.lang.Math` per
+  element. Two findings the work turned up, both recorded because a later reader cannot
+  reconstruct them: on an **sNaN input** the packed lanes quiet the source payload while
+  the scalar instructions answer the indefinite, so the kernels are pinned at `isNaN`
+  level there rather than by payload; and CL `sqrt` is complex-extended, so a negative
+  input takes the defun to a complex the bf16 store signals on -- the same hole the f32
+  sqrt lane already has, and outside what a narrow kernel can reproduce.
 - **What it costs where it does not pay.** The fused GEMV is BELOW f32 on one thread while the
   matrix is cache-resident and above it once it is not: on a GB10, 1024x1024 loses and 4096x4096
   wins clearly (the numbers, both JITs, in `.todo/488`'s README). The crossover is a cache
@@ -382,9 +408,9 @@ rounds: the spike, both JITs plus the quantized widths, x64). What it decided, a
   interpreter array, `485` the JVM array and its two-slot header, `486` the refusals, `487`
   conversion and the reader path, `488` the fused kernels, `489` the 1B model, `490` the device;
   then `707` `coerce`/`concatenate`, `687` `linalg:`, `745` the bulk pair, `746` the census, `689`
-  `jvm-export`, `696` the element-wise measurement. Still open and the width's: `.todo/747` (the
-  element-wise kernels that measurement justified) and `.todo/480` (the one-thread 1.6x waits on
-  its accumulator count).
+  `jvm-export`, `696` the element-wise measurement, `747` the element-wise kernels that
+  measurement justified (closed 2026-09-10). Still open and the width's: `.todo/480` (the
+  one-thread 1.6x waits on its accumulator count).
 
 ## Refusing a width: three behaviours
 - **Silent DECLINE** (`null`/`false`, the rung below answers, answer identical): `VecSimd`,
@@ -411,9 +437,13 @@ there is no WASM mirror because no WASM backend carries the width.
 
 ## Tests
 `BFloat16Test`, `JvmBFloat16ArrayTest` (the `--simd` section: the fused decode shape equals the
-widened-f32 kernel and the interpreter's `--simd`, the declined members equal the defun, and the
-lane-count probe), `eval/VecSimdTest` (the interpreter twin, plus the mixed bf16/f32 element-wise
-values), `eval/VecSimdBf16KernelsTest` / `codegen/jvm/JvmSimdVectorTemplateBf16Test` (the kernels
-themselves), `JvmSimdParallelCompilerTest`, `LispEvaluatorTest`,
-`JvmLispCompilerTest#compileAndRunBfloat16Bits`,
-`WasmLispCompilerIntegrationTest#compileAndRunBfloat16Bits`; ci-spec `bfloat16-bits`.
+widened-f32 kernel and the interpreter's `--simd`, the fused element-wise kernels equal the
+defun on all three legs, the declined members equal the defun, and the lane-count probe),
+`eval/VecSimdTest` (the interpreter twin: the fused element-wise kernels equal the defun, plus
+the mixed bf16/f32 element-wise values), `eval/VecSimdBf16KernelsTest` /
+`codegen/jvm/JvmSimdVectorTemplateBf16Test` (the kernels themselves: each new kernel against
+the scalar composite on both sides of the lane gate and on tricky patterns, the `-into`
+siblings against the allocating ones, aliasing, the sNaN class pin), `JvmSimdParallelCompilerTest`,
+`LispEvaluatorTest`, `JvmLispCompilerTest#compileAndRunBfloat16Bits`,
+`WasmLispCompilerIntegrationTest#compileAndRunBfloat16Bits`; ci-spec `bfloat16-bits`,
+`bfloat16-packed-array` (the fused element-wise kernels over 300 elements on the `--simd` legs).

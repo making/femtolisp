@@ -588,16 +588,18 @@ class JvmBFloat16ArrayTest {
 			""";
 
 	/**
-	 * {@link #VEC_ROUNDING_PROGRAM} without {@code vec:sum}: every member left is one
-	 * {@code --simd} DECLINES at this width, so its answer is the defun's bit for bit.
-	 * {@code vec:sum} over a bf16 vector runs the fused kernel instead and joins the f32
-	 * reduction contract, which accumulates in f32 rather than the defun's f64.
+	 * {@link #VEC_ROUNDING_PROGRAM} without {@code vec:sum} and {@code vec:mul}: every
+	 * member left is one {@code --simd} DECLINES at this width, so its answer is the
+	 * defun's bit for bit. {@code vec:sum} over a bf16 vector runs the fused kernel
+	 * instead and joins the f32 reduction contract, which accumulates in f32 rather than
+	 * the defun's f64; {@code vec:mul} over two bf16 vectors runs the fused element-wise
+	 * kernel (`.todo/747`), which is the defun's answer bit for bit.
 	 */
 	private static final String VEC_ROUNDING_DECLINED_PROGRAM = """
 			(print (vec:exp #bf16(0.0 1.0 -0.5)))
 			(let ((v (vec:zeros 300 :element-type 'bfloat16)) (w (vec:zeros 300 :element-type 'bfloat16)))
 			  (dotimes (i 300) (setf (aref v i) (* i 0.37)) (setf (aref w i) 1.5))
-			  (print (list (vec:dot v w) (aref (vec:mul v w) 299) (vec:scale v 0.1)
+			  (print (list (vec:dot v w) (aref (vec:maximum v w) 299) (vec:scale v 0.1)
 			               (vec:matvec (make-array '(3 300) :element-type 'bfloat16 :initial-element 0.3) v))))
 			""";
 
@@ -617,11 +619,14 @@ class JvmBFloat16ArrayTest {
 
 	@Test
 	void aSimdBuildDeclinesABf16OperandWithNoFusedKernelToTheDefunBitForBit() throws Exception {
-		// The lane kernels carry double[] and float[] only, except for the four members
-		// with a FUSED bf16 kernel (below). Every other bf16 operand takes the spliced
-		// vec.lisp defun over the packed representation, so --simd stays a speed flag
-		// and not a semantics flag at this width. Both programs here are exact at the
-		// width or reach only declined members, so the defun's answer is the answer.
+		// The lane kernels carry double[] and float[] only, except for the members with
+		// a FUSED bf16 kernel: the decode shape (below) and the element-wise bf16 x
+		// bf16 -> bf16 pairings (`.todo/747`). Every other bf16 operand takes the
+		// spliced vec.lisp defun over the packed representation, so --simd stays a
+		// speed flag and not a semantics flag at this width. Both programs here are
+		// exact at the width or reach only declined members -- plus the fused
+		// element-wise members, whose answer IS the defun's bit for bit -- so the
+		// defun's answer is the answer.
 		assertThat(run(compile(VEC_EXACT_PROGRAM, true))).isEqualTo(interpret(VEC_EXACT_PROGRAM));
 		assertThat(run(compile(VEC_ROUNDING_DECLINED_PROGRAM, true)))
 			.isEqualTo(interpret(VEC_ROUNDING_DECLINED_PROGRAM));
@@ -689,6 +694,32 @@ class JvmBFloat16ArrayTest {
 				.isEqualTo(run(compile(widened, true)));
 			assertThat(compiled).as("interpreter --simd == compiled --simd at %dx%d", rows, cols)
 				.isEqualTo(interpretSimd(fused));
+		}
+	}
+
+	@Test
+	void aSimdBuildFusesBf16ElementWiseKernelsToTheDefunsBits() throws Exception {
+		// `.todo/747`'s subset -- add/sub/mul/div with the four CL operator spellings
+		// and their -into siblings, sqrt/abs/negative/reciprocal with theirs -- over
+		// bf16 x bf16 -> bf16, at 300 elements so the lane loop runs on both sides.
+		// Unlike the reductions above the oracle is the DEFUN itself (the f32
+		// intermediate is its answer bit for bit), so all three legs must print one
+		// text. The mixed pairings decline on both and are pinned by
+		// `eval.VecSimdTest`.
+		// sqrt runs over the non-negative half: CL sqrt is complex-extended, so a
+		// negative input takes the defun to a complex the bf16 store signals on -- the
+		// same hole the f32 sqrt lane already has, outside what a narrow kernel can
+		// reproduce.
+		for (String body : new String[] { "(vec:add vb vb)", "(vec:sub vb vb)", "(vec:mul vb vb)", "(vec:div vb vb)",
+				"(vec:/ vb vb)", "(vec:sqrt (vec:abs vb))", "(vec:abs vb)", "(vec:negative vb)", "(vec:reciprocal vb)",
+				"(vec:add-into (vec:zeros 300 :element-type 'bfloat16) vb vb)",
+				"(vec:div-into (vec:zeros 300 :element-type 'bfloat16) vb vb)",
+				"(vec:sqrt-into (vec:zeros 300 :element-type 'bfloat16) (vec:abs vb))",
+				"(let ((o (vec:zeros 300 :element-type 'bfloat16))) (vec:mul-into o o vb) o)" }) {
+			String program = bf16Fixture(4, 300, "(print " + body + ")");
+			String expected = interpret(program);
+			assertThat(interpretSimd(program)).as("interpreter --simd: %s", body).isEqualTo(expected);
+			assertThat(run(compile(program, true))).as("compiled --simd: %s", body).isEqualTo(expected);
 		}
 	}
 

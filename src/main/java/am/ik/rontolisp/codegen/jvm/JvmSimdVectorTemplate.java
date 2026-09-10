@@ -5,7 +5,9 @@ import jdk.incubator.vector.DoubleVector;
 import jdk.incubator.vector.FloatVector;
 import jdk.incubator.vector.IntVector;
 import jdk.incubator.vector.ShortVector;
+import jdk.incubator.vector.VectorMask;
 import jdk.incubator.vector.VectorOperators;
+import jdk.incubator.vector.VectorShape;
 import jdk.incubator.vector.VectorShuffle;
 import jdk.incubator.vector.VectorSpecies;
 
@@ -199,10 +201,16 @@ final class JvmSimdVectorTemplate {
 	// --- element-wise kernels (return a fresh packed simd vector) ----------------
 
 	static @Nullable Object simdAdd(@Nullable Object a, @Nullable Object b) {
+		if (a instanceof short[] bx) {
+			// bf16 x bf16 -> bf16, the one element-wise pairing with a kernel
+			// (`.todo/747`): the call site's width guard admits no other combination
+			// with a short[] operand.
+			return addBf16(bx, asBf16(b));
+		}
 		if (a instanceof float[] fx) {
 			return addF(fx, asFloat(b));
 		}
-		if (b instanceof float[]) {
+		if (b instanceof float[] || b instanceof short[]) {
 			throw mixedWidth();
 		}
 		double[] x = (double[]) java.util.Objects.requireNonNull(a);
@@ -227,10 +235,13 @@ final class JvmSimdVectorTemplate {
 	}
 
 	static @Nullable Object simdSub(@Nullable Object a, @Nullable Object b) {
+		if (a instanceof short[] bx) {
+			return subBf16(bx, asBf16(b));
+		}
 		if (a instanceof float[] fx) {
 			return subF(fx, asFloat(b));
 		}
-		if (b instanceof float[]) {
+		if (b instanceof float[] || b instanceof short[]) {
 			throw mixedWidth();
 		}
 		double[] x = (double[]) java.util.Objects.requireNonNull(a);
@@ -255,10 +266,13 @@ final class JvmSimdVectorTemplate {
 	}
 
 	static @Nullable Object simdMul(@Nullable Object a, @Nullable Object b) {
+		if (a instanceof short[] bx) {
+			return mulBf16(bx, asBf16(b));
+		}
 		if (a instanceof float[] fx) {
 			return mulF(fx, asFloat(b));
 		}
-		if (b instanceof float[]) {
+		if (b instanceof float[] || b instanceof short[]) {
 			throw mixedWidth();
 		}
 		double[] x = (double[]) java.util.Objects.requireNonNull(a);
@@ -283,10 +297,13 @@ final class JvmSimdVectorTemplate {
 	}
 
 	static @Nullable Object simdDiv(@Nullable Object a, @Nullable Object b) {
+		if (a instanceof short[] bx) {
+			return divBf16(bx, asBf16(b));
+		}
 		if (a instanceof float[] fx) {
 			return divF(fx, asFloat(b));
 		}
-		if (b instanceof float[]) {
+		if (b instanceof float[] || b instanceof short[]) {
 			throw mixedWidth();
 		}
 		double[] x = (double[]) java.util.Objects.requireNonNull(a);
@@ -701,6 +718,10 @@ final class JvmSimdVectorTemplate {
 	// (which this call site replaces, so the guard has to be repeated here).
 
 	static @Nullable Object simdAddInto(@Nullable Object out, @Nullable Object a, @Nullable Object b) {
+		if (out instanceof short[] br) {
+			addIntoBf16(br, asBf16(a), asBf16(b));
+			return out;
+		}
 		if (out instanceof float[] fr) {
 			addIntoF(fr, asFloat(a), asFloat(b));
 			return out;
@@ -729,6 +750,10 @@ final class JvmSimdVectorTemplate {
 	}
 
 	static @Nullable Object simdSubInto(@Nullable Object out, @Nullable Object a, @Nullable Object b) {
+		if (out instanceof short[] br) {
+			subIntoBf16(br, asBf16(a), asBf16(b));
+			return out;
+		}
 		if (out instanceof float[] fr) {
 			subIntoF(fr, asFloat(a), asFloat(b));
 			return out;
@@ -757,6 +782,10 @@ final class JvmSimdVectorTemplate {
 	}
 
 	static @Nullable Object simdMulInto(@Nullable Object out, @Nullable Object a, @Nullable Object b) {
+		if (out instanceof short[] br) {
+			mulIntoBf16(br, asBf16(a), asBf16(b));
+			return out;
+		}
 		if (out instanceof float[] fr) {
 			mulIntoF(fr, asFloat(a), asFloat(b));
 			return out;
@@ -785,6 +814,10 @@ final class JvmSimdVectorTemplate {
 	}
 
 	static @Nullable Object simdDivInto(@Nullable Object out, @Nullable Object a, @Nullable Object b) {
+		if (out instanceof short[] br) {
+			divIntoBf16(br, asBf16(a), asBf16(b));
+			return out;
+		}
 		if (out instanceof float[] fr) {
 			divIntoF(fr, asFloat(a), asFloat(b));
 			return out;
@@ -1155,6 +1188,15 @@ final class JvmSimdVectorTemplate {
 	}
 
 	private static @Nullable Object simdUnary(int op, @Nullable Object v) {
+		if (v instanceof short[] bx) {
+			// The four unary members with a bf16 lane loop (`.todo/747`); the call
+			// site's width guard admits a short[] for no other unary member.
+			int o = bf16Off(bx);
+			int n = bx.length - o;
+			short[] r = newVecBf16(n);
+			unaryIntoBf16(op, r, 3, bx, o, n);
+			return r;
+		}
 		if (v instanceof float[] fx) {
 			int o = 1 + (int) fx[0];
 			int n = fx.length - o;
@@ -1171,13 +1213,19 @@ final class JvmSimdVectorTemplate {
 	}
 
 	private static @Nullable Object simdUnaryInto(int op, @Nullable Object out, @Nullable Object v) {
+		if (out instanceof short[] br) {
+			short[] bx = asBf16(v);
+			int ox = bf16Off(bx);
+			unaryIntoBf16(op, br, bf16Off(br), bx, ox, bx.length - ox);
+			return out;
+		}
 		if (out instanceof float[] fr) {
 			float[] fx = asFloat(v);
 			int ox = 1 + (int) fx[0];
 			unaryIntoF(op, fr, 1 + (int) fr[0], fx, ox, fx.length - ox);
 			return out;
 		}
-		if (v instanceof float[]) {
+		if (v instanceof float[] || v instanceof short[]) {
 			throw mixedWidth();
 		}
 		double[] r = (double[]) java.util.Objects.requireNonNull(out);
@@ -3335,7 +3383,7 @@ final class JvmSimdVectorTemplate {
 
 	/** Rejects a single-float operand paired with a double-float destination. */
 	private static void requireDouble(@Nullable Object a, @Nullable Object b) {
-		if (a instanceof float[] || b instanceof float[]) {
+		if (a instanceof float[] || b instanceof float[] || a instanceof short[] || b instanceof short[]) {
 			throw mixedWidth();
 		}
 	}
@@ -3852,6 +3900,27 @@ final class JvmSimdVectorTemplate {
 			return f;
 		}
 		throw mixedWidth();
+	}
+
+	/** Unwraps a short[] (bfloat16) operand, or reports the contract violation. */
+	private static short[] asBf16(@Nullable Object o) {
+		if (o instanceof short[] s) {
+			return s;
+		}
+		throw mixedWidth();
+	}
+
+	/**
+	 * A fresh rank-1 packed bfloat16 vector of length {@code n}: header {@code [1, hi,
+	 * lo]}, the {@code n} element slots left at zero. The two-slot dimension is the one
+	 * place a kernel builds the layout {@link #bf16Off} reads.
+	 */
+	private static short[] newVecBf16(int n) {
+		short[] r = new short[3 + n];
+		r[0] = 1;
+		r[1] = (short) (n >>> 16);
+		r[2] = (short) n;
+		return r;
 	}
 
 	/** The error for mixing single-float and double-float operands in one simd op. */
@@ -4494,6 +4563,241 @@ final class JvmSimdVectorTemplate {
 		float[] r = newVecF(bf16Dim(w, 0));
 		matvecIntoBf16(r, 2, w, x, parallel);
 		return r;
+	}
+
+	// --- bfloat16 (bf16) element-wise kernels ---------------------------------------
+	// bf16 x bf16 -> bf16, the one element-wise pairing `.todo/747` admits, mirrored
+	// operation for operation with `eval.VecSimdKernels`' over its bare-short[]
+	// representation: widen at `SPECIES_PREFERRED`, compute in f32, narrow on store
+	// through the branch-free lane form `.todo/696` measured, the scalar tail in index
+	// order. Only the members with a single-float lane loop are mirrored
+	// (`add`/`sub`/`mul`/`div` and `sqrt`/`abs`/`negative`/`reciprocal` with their
+	// `-into` siblings); the bridge entries above route a `short[]` operand here, and
+	// the call site's width guard admits no other combination with one. Bit-exact at
+	// any lane count. One small method per member -- the C2 inlining cliff
+	// (`.todo/482` round 2) is a rule about method size.
+
+	/**
+	 * The int species the element-wise bit arithmetic runs in: the same shape as
+	 * {@link #FSPECIES}, so one decoded group lines up with exactly one f32 lane group.
+	 */
+	private static final VectorSpecies<Integer> ISPECIES_EW = VectorSpecies.of(int.class, FSPECIES.vectorShape());
+
+	/**
+	 * The short species of half the shape: the same lane count at half the width, so the
+	 * narrowing store is one {@code I2S} shape conversion.
+	 */
+	private static final VectorSpecies<Short> SSPECIES_EW = VectorSpecies.of(short.class,
+			VectorShape.forBitSize(FSPECIES.vectorBitSize() / 2));
+
+	/** The decode at the element-wise lane count. Exact, so the width is free to vary. */
+	private static FloatVector widenBf16Ew(short[] w, int off) {
+		return ((IntVector) ShortVector.fromArray(SSPECIES_EW, w, off)
+			.convertShape(VectorOperators.S2I, ISPECIES_EW, 0)).lanewise(VectorOperators.LSHL, 16)
+			.reinterpretAsFloats();
+	}
+
+	/**
+	 * {@link #floatToBf16} as lanes: both arms computed, the NaN one blended in under a
+	 * mask, then an {@code I2S} narrowing store. Operation for operation the form
+	 * `.todo/696`'s harness sweeps against the scalar over all 2^32 f32 patterns with 0
+	 * mismatches.
+	 */
+	private static ShortVector narrowLanes(FloatVector v) {
+		IntVector bits = v.reinterpretAsInts();
+		IntVector hi = bits.lanewise(VectorOperators.LSHR, 16);
+		IntVector rounded = bits.add(0x7fff).add(hi.and(1)).lanewise(VectorOperators.LSHR, 16);
+		IntVector u = hi.and(0xffff);
+		IntVector nan = u.or(u.and(0x7f).sub(1).lanewise(VectorOperators.LSHR, 31));
+		VectorMask<Integer> isNan = bits.and(0x7f800000)
+			.compare(VectorOperators.EQ, 0x7f800000)
+			.and(bits.and(0x007fffff).compare(VectorOperators.NE, 0));
+		return (ShortVector) rounded.blend(nan, isNan).convertShape(VectorOperators.I2S, SSPECIES_EW, 0);
+	}
+
+	/**
+	 * {@code r[or+i] = x[ox+i] + y[oy+i]} over bf16 vectors, widened, added in f32,
+	 * narrowed on store -- the defun's answer bit for bit (`.todo/696` sweeps all
+	 * 65536x65536 operand pairs per operation with 0 mismatches).
+	 */
+	private static void addIntoBf16(short[] r, short[] x, short[] y) {
+		int or = bf16Off(r);
+		int ox = bf16Off(x);
+		int oy = bf16Off(y);
+		int n = Math.min(x.length - ox, y.length - oy);
+		int i = 0;
+		if (n >= THRESHOLD) {
+			int bound = FSPECIES.loopBound(n);
+			for (; i < bound; i += FSPECIES.length()) {
+				narrowLanes(widenBf16Ew(x, ox + i).add(widenBf16Ew(y, oy + i))).intoArray(r, or + i);
+			}
+		}
+		for (; i < n; i++) {
+			r[or + i] = floatToBf16(bf16ToFloat(x[ox + i]) + bf16ToFloat(y[oy + i]));
+		}
+	}
+
+	/** {@link #addIntoBf16}, into a fresh packed vector. */
+	private static short[] addBf16(short[] x, short[] y) {
+		int ox = bf16Off(x);
+		int oy = bf16Off(y);
+		int n = Math.min(x.length - ox, y.length - oy);
+		short[] r = newVecBf16(n);
+		int i = 0;
+		if (n >= THRESHOLD) {
+			int bound = FSPECIES.loopBound(n);
+			for (; i < bound; i += FSPECIES.length()) {
+				narrowLanes(widenBf16Ew(x, ox + i).add(widenBf16Ew(y, oy + i))).intoArray(r, 3 + i);
+			}
+		}
+		for (; i < n; i++) {
+			r[3 + i] = floatToBf16(bf16ToFloat(x[ox + i]) + bf16ToFloat(y[oy + i]));
+		}
+		return r;
+	}
+
+	/** {@code r[or+i] = x[ox+i] - y[oy+i]} at this width; see {@link #addIntoBf16}. */
+	private static void subIntoBf16(short[] r, short[] x, short[] y) {
+		int or = bf16Off(r);
+		int ox = bf16Off(x);
+		int oy = bf16Off(y);
+		int n = Math.min(x.length - ox, y.length - oy);
+		int i = 0;
+		if (n >= THRESHOLD) {
+			int bound = FSPECIES.loopBound(n);
+			for (; i < bound; i += FSPECIES.length()) {
+				narrowLanes(widenBf16Ew(x, ox + i).sub(widenBf16Ew(y, oy + i))).intoArray(r, or + i);
+			}
+		}
+		for (; i < n; i++) {
+			r[or + i] = floatToBf16(bf16ToFloat(x[ox + i]) - bf16ToFloat(y[oy + i]));
+		}
+	}
+
+	/** {@link #subIntoBf16}, into a fresh packed vector. */
+	private static short[] subBf16(short[] x, short[] y) {
+		int ox = bf16Off(x);
+		int oy = bf16Off(y);
+		int n = Math.min(x.length - ox, y.length - oy);
+		short[] r = newVecBf16(n);
+		int i = 0;
+		if (n >= THRESHOLD) {
+			int bound = FSPECIES.loopBound(n);
+			for (; i < bound; i += FSPECIES.length()) {
+				narrowLanes(widenBf16Ew(x, ox + i).sub(widenBf16Ew(y, oy + i))).intoArray(r, 3 + i);
+			}
+		}
+		for (; i < n; i++) {
+			r[3 + i] = floatToBf16(bf16ToFloat(x[ox + i]) - bf16ToFloat(y[oy + i]));
+		}
+		return r;
+	}
+
+	/** {@code r[or+i] = x[ox+i] * y[oy+i]} at this width; see {@link #addIntoBf16}. */
+	private static void mulIntoBf16(short[] r, short[] x, short[] y) {
+		int or = bf16Off(r);
+		int ox = bf16Off(x);
+		int oy = bf16Off(y);
+		int n = Math.min(x.length - ox, y.length - oy);
+		int i = 0;
+		if (n >= THRESHOLD) {
+			int bound = FSPECIES.loopBound(n);
+			for (; i < bound; i += FSPECIES.length()) {
+				narrowLanes(widenBf16Ew(x, ox + i).mul(widenBf16Ew(y, oy + i))).intoArray(r, or + i);
+			}
+		}
+		for (; i < n; i++) {
+			r[or + i] = floatToBf16(bf16ToFloat(x[ox + i]) * bf16ToFloat(y[oy + i]));
+		}
+	}
+
+	/** {@link #mulIntoBf16}, into a fresh packed vector. */
+	private static short[] mulBf16(short[] x, short[] y) {
+		int ox = bf16Off(x);
+		int oy = bf16Off(y);
+		int n = Math.min(x.length - ox, y.length - oy);
+		short[] r = newVecBf16(n);
+		int i = 0;
+		if (n >= THRESHOLD) {
+			int bound = FSPECIES.loopBound(n);
+			for (; i < bound; i += FSPECIES.length()) {
+				narrowLanes(widenBf16Ew(x, ox + i).mul(widenBf16Ew(y, oy + i))).intoArray(r, 3 + i);
+			}
+		}
+		for (; i < n; i++) {
+			r[3 + i] = floatToBf16(bf16ToFloat(x[ox + i]) * bf16ToFloat(y[oy + i]));
+		}
+		return r;
+	}
+
+	/** {@code r[or+i] = x[ox+i] / y[oy+i]} at this width; see {@link #addIntoBf16}. */
+	private static void divIntoBf16(short[] r, short[] x, short[] y) {
+		int or = bf16Off(r);
+		int ox = bf16Off(x);
+		int oy = bf16Off(y);
+		int n = Math.min(x.length - ox, y.length - oy);
+		int i = 0;
+		if (n >= THRESHOLD) {
+			int bound = FSPECIES.loopBound(n);
+			for (; i < bound; i += FSPECIES.length()) {
+				narrowLanes(widenBf16Ew(x, ox + i).div(widenBf16Ew(y, oy + i))).intoArray(r, or + i);
+			}
+		}
+		for (; i < n; i++) {
+			r[or + i] = floatToBf16(bf16ToFloat(x[ox + i]) / bf16ToFloat(y[oy + i]));
+		}
+	}
+
+	/** {@link #divIntoBf16}, into a fresh packed vector. */
+	private static short[] divBf16(short[] x, short[] y) {
+		int ox = bf16Off(x);
+		int oy = bf16Off(y);
+		int n = Math.min(x.length - ox, y.length - oy);
+		short[] r = newVecBf16(n);
+		int i = 0;
+		if (n >= THRESHOLD) {
+			int bound = FSPECIES.loopBound(n);
+			for (; i < bound; i += FSPECIES.length()) {
+				narrowLanes(widenBf16Ew(x, ox + i).div(widenBf16Ew(y, oy + i))).intoArray(r, 3 + i);
+			}
+		}
+		for (; i < n; i++) {
+			r[3 + i] = floatToBf16(bf16ToFloat(x[ox + i]) / bf16ToFloat(y[oy + i]));
+		}
+		return r;
+	}
+
+	/**
+	 * {@code r[or+i] = op(x[ox+i])} over {@code n} bf16 elements, lanes where the member
+	 * has one. The call site's width guard admits a {@code short[]} operand only for
+	 * `sqrt` / `abs` / `negative` / `reciprocal`, so every other code takes the scalar
+	 * tail's `applyUnary` -- unreachable, kept so the dispatch stays total.
+	 */
+	private static void unaryIntoBf16(int op, short[] r, int or, short[] x, int ox, int n) {
+		int i = 0;
+		if (n >= THRESHOLD && (op == UOP_SQRT || op == UOP_ABS || op == UOP_NEG || op == UOP_RECIP)) {
+			int bound = FSPECIES.loopBound(n);
+			for (; i < bound; i += FSPECIES.length()) {
+				FloatVector v = widenBf16Ew(x, ox + i);
+				FloatVector w;
+				if (op == UOP_SQRT) {
+					w = v.lanewise(VectorOperators.SQRT);
+				}
+				else if (op == UOP_ABS) {
+					w = v.abs();
+				}
+				else if (op == UOP_NEG) {
+					w = v.neg();
+				}
+				else {
+					w = FloatVector.broadcast(FSPECIES, 1.0f).div(v);
+				}
+				narrowLanes(w).intoArray(r, or + i);
+			}
+		}
+		for (; i < n; i++) {
+			r[or + i] = floatToBf16((float) applyUnary(op, bf16ToFloat(x[ox + i])));
+		}
 	}
 
 	// --- Q8_0 quantized-matrix GEMV: the integer dot ----------------------------------

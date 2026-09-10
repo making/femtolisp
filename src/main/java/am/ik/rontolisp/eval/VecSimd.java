@@ -73,16 +73,24 @@ public final class VecSimd {
 	 * ({@link SimdParallel}) -- the same row chains, so the same bits
 	 */
 	public static void install(Environment globalEnv, LispEvaluator evaluator, boolean parallel) {
-		define(globalEnv, evaluator, LispNames.VEC_ADD, VecSimdKernels::add, VecSimdKernels::addF);
-		define(globalEnv, evaluator, LispNames.VEC_SUB, VecSimdKernels::sub, VecSimdKernels::subF);
-		define(globalEnv, evaluator, LispNames.VEC_MUL, VecSimdKernels::mul, VecSimdKernels::mulF);
-		define(globalEnv, evaluator, LispNames.VEC_DIV, VecSimdKernels::div, VecSimdKernels::divF);
+		define(globalEnv, evaluator, LispNames.VEC_ADD, VecSimdKernels::add, VecSimdKernels::addF,
+				VecSimdKernels::addBf16);
+		define(globalEnv, evaluator, LispNames.VEC_SUB, VecSimdKernels::sub, VecSimdKernels::subF,
+				VecSimdKernels::subBf16);
+		define(globalEnv, evaluator, LispNames.VEC_MUL, VecSimdKernels::mul, VecSimdKernels::mulF,
+				VecSimdKernels::mulBf16);
+		define(globalEnv, evaluator, LispNames.VEC_DIV, VecSimdKernels::div, VecSimdKernels::divF,
+				VecSimdKernels::divBf16);
 		// The CL operator spellings bind the very kernels their named siblings bind, so
 		// an accelerated build never runs the one-line alias defun from vec.lisp.
-		define(globalEnv, evaluator, LispNames.VEC_PLUS, VecSimdKernels::add, VecSimdKernels::addF);
-		define(globalEnv, evaluator, LispNames.VEC_MINUS, VecSimdKernels::sub, VecSimdKernels::subF);
-		define(globalEnv, evaluator, LispNames.VEC_STAR, VecSimdKernels::mul, VecSimdKernels::mulF);
-		define(globalEnv, evaluator, LispNames.VEC_SLASH, VecSimdKernels::div, VecSimdKernels::divF);
+		define(globalEnv, evaluator, LispNames.VEC_PLUS, VecSimdKernels::add, VecSimdKernels::addF,
+				VecSimdKernels::addBf16);
+		define(globalEnv, evaluator, LispNames.VEC_MINUS, VecSimdKernels::sub, VecSimdKernels::subF,
+				VecSimdKernels::subBf16);
+		define(globalEnv, evaluator, LispNames.VEC_STAR, VecSimdKernels::mul, VecSimdKernels::mulF,
+				VecSimdKernels::mulBf16);
+		define(globalEnv, evaluator, LispNames.VEC_SLASH, VecSimdKernels::div, VecSimdKernels::divF,
+				VecSimdKernels::divBf16);
 		defineFn(globalEnv, evaluator, LispNames.VEC_SCALE, 2, (name, args) -> {
 			LispFloatArray v = array(name, args.get(0));
 			double s = scalar(name, args.get(1));
@@ -279,12 +287,15 @@ public final class VecSimd {
 		defineUnary(globalEnv, evaluator, LispNames.VEC_ATAN, VecSimdKernels::atanInto, VecSimdKernels::atanIntoF);
 		defineUnary(globalEnv, evaluator, LispNames.VEC_SINH, VecSimdKernels::sinhInto, VecSimdKernels::sinhIntoF);
 		defineUnary(globalEnv, evaluator, LispNames.VEC_COSH, VecSimdKernels::coshInto, VecSimdKernels::coshIntoF);
-		defineUnary(globalEnv, evaluator, LispNames.VEC_SQRT, VecSimdKernels::sqrtInto, VecSimdKernels::sqrtIntoF);
-		defineUnary(globalEnv, evaluator, LispNames.VEC_ABS, VecSimdKernels::absInto, VecSimdKernels::absIntoF);
-		defineUnary(globalEnv, evaluator, LispNames.VEC_NEGATIVE, VecSimdKernels::negInto, VecSimdKernels::negIntoF);
+		defineUnary(globalEnv, evaluator, LispNames.VEC_SQRT, VecSimdKernels::sqrtInto, VecSimdKernels::sqrtIntoF,
+				VecSimdKernels::sqrtIntoBf16);
+		defineUnary(globalEnv, evaluator, LispNames.VEC_ABS, VecSimdKernels::absInto, VecSimdKernels::absIntoF,
+				VecSimdKernels::absIntoBf16);
+		defineUnary(globalEnv, evaluator, LispNames.VEC_NEGATIVE, VecSimdKernels::negInto, VecSimdKernels::negIntoF,
+				VecSimdKernels::negIntoBf16);
 		defineUnary(globalEnv, evaluator, LispNames.VEC_SIGN, VecSimdKernels::signInto, VecSimdKernels::signIntoF);
 		defineUnary(globalEnv, evaluator, LispNames.VEC_RECIPROCAL, VecSimdKernels::reciprocalInto,
-				VecSimdKernels::reciprocalIntoF);
+				VecSimdKernels::reciprocalIntoF, VecSimdKernels::reciprocalIntoBf16);
 		defineUnaryInto(globalEnv, evaluator, LispNames.VEC_EXP_INTO, VecSimdKernels::expInto,
 				VecSimdKernels::expIntoF);
 		defineUnaryInto(globalEnv, evaluator, LispNames.VEC_LOG_INTO, VecSimdKernels::logInto,
@@ -308,15 +319,15 @@ public final class VecSimd {
 		defineUnaryInto(globalEnv, evaluator, LispNames.VEC_COSH_INTO, VecSimdKernels::coshInto,
 				VecSimdKernels::coshIntoF);
 		defineUnaryInto(globalEnv, evaluator, LispNames.VEC_SQRT_INTO, VecSimdKernels::sqrtInto,
-				VecSimdKernels::sqrtIntoF);
-		defineUnaryInto(globalEnv, evaluator, LispNames.VEC_ABS_INTO, VecSimdKernels::absInto,
-				VecSimdKernels::absIntoF);
+				VecSimdKernels::sqrtIntoF, VecSimdKernels::sqrtIntoBf16);
+		defineUnaryInto(globalEnv, evaluator, LispNames.VEC_ABS_INTO, VecSimdKernels::absInto, VecSimdKernels::absIntoF,
+				VecSimdKernels::absIntoBf16);
 		defineUnaryInto(globalEnv, evaluator, LispNames.VEC_NEGATIVE_INTO, VecSimdKernels::negInto,
-				VecSimdKernels::negIntoF);
+				VecSimdKernels::negIntoF, VecSimdKernels::negIntoBf16);
 		defineUnaryInto(globalEnv, evaluator, LispNames.VEC_SIGN_INTO, VecSimdKernels::signInto,
 				VecSimdKernels::signIntoF);
 		defineUnaryInto(globalEnv, evaluator, LispNames.VEC_RECIPROCAL_INTO, VecSimdKernels::reciprocalInto,
-				VecSimdKernels::reciprocalIntoF);
+				VecSimdKernels::reciprocalIntoF, VecSimdKernels::reciprocalIntoBf16);
 	}
 
 	/**
@@ -330,10 +341,14 @@ public final class VecSimd {
 	 * {@code vec:matvec-into} alias guard written there has to be repeated here.
 	 */
 	private static void installInto(Environment globalEnv, LispEvaluator evaluator, boolean parallel) {
-		defineInto(globalEnv, evaluator, LispNames.VEC_ADD_INTO, VecSimdKernels::addInto, VecSimdKernels::addIntoF);
-		defineInto(globalEnv, evaluator, LispNames.VEC_SUB_INTO, VecSimdKernels::subInto, VecSimdKernels::subIntoF);
-		defineInto(globalEnv, evaluator, LispNames.VEC_MUL_INTO, VecSimdKernels::mulInto, VecSimdKernels::mulIntoF);
-		defineInto(globalEnv, evaluator, LispNames.VEC_DIV_INTO, VecSimdKernels::divInto, VecSimdKernels::divIntoF);
+		defineInto(globalEnv, evaluator, LispNames.VEC_ADD_INTO, VecSimdKernels::addInto, VecSimdKernels::addIntoF,
+				VecSimdKernels::addIntoBf16);
+		defineInto(globalEnv, evaluator, LispNames.VEC_SUB_INTO, VecSimdKernels::subInto, VecSimdKernels::subIntoF,
+				VecSimdKernels::subIntoBf16);
+		defineInto(globalEnv, evaluator, LispNames.VEC_MUL_INTO, VecSimdKernels::mulInto, VecSimdKernels::mulIntoF,
+				VecSimdKernels::mulIntoBf16);
+		defineInto(globalEnv, evaluator, LispNames.VEC_DIV_INTO, VecSimdKernels::divInto, VecSimdKernels::divIntoF,
+				VecSimdKernels::divIntoBf16);
 		defineFn(globalEnv, evaluator, LispNames.VEC_SCALE_INTO, 3, (name, args) -> {
 			LispFloatArray out = array(name, args.get(0));
 			LispFloatArray v = array(name, args.get(1));
@@ -443,6 +458,38 @@ public final class VecSimd {
 		});
 	}
 
+	/**
+	 * {@link #defineUnary} over a member with a fused bfloat16 element-wise kernel
+	 * (`.todo/747`): a bf16 operand runs the narrow kernel into a fresh bf16 vector,
+	 * every other width as above, and a MIXED pair declines to the defun.
+	 */
+	private static void defineUnary(Environment globalEnv, LispEvaluator evaluator, String name, DoubleKernel1Into f64,
+			FloatKernel1Into f32, Bf16Kernel1Into bf16) {
+		defineFn(globalEnv, evaluator, name, 1, (fnName, args) -> {
+			LispFloatArray v = array(fnName, args.get(0));
+			if (v instanceof LispBFloat16Array x) {
+				short[] r = new short[x.data().length];
+				bf16.apply(r, x.data());
+				return bf16Vector(r);
+			}
+			return switch (v) {
+				case LispDoubleFloatArray x -> {
+					double[] r = new double[x.data().length];
+					f64.apply(r, x.data());
+					yield vector(r);
+				}
+				case LispSingleFloatArray x -> {
+					float[] r = new float[x.data().length];
+					f32.apply(r, x.data());
+					yield vector(r);
+				}
+				// Unreachable: a bf16 operand was answered above. The arm is what
+				// keeps the switch exhaustive over the sealed umbrella (.kb/vec.md).
+				case LispBFloat16Array ignored -> null;
+			};
+		});
+	}
+
 	/** A unary element-wise -into kernel pair; returns the destination it was given. */
 	private static void defineUnaryInto(Environment globalEnv, LispEvaluator evaluator, String name,
 			DoubleKernel1Into f64, FloatKernel1Into f32) {
@@ -468,6 +515,50 @@ public final class VecSimd {
 					FloatArrayAccessHook.written(r.storage());
 				}
 				// No lane kernel reads this width; the scalar defun answers.
+				case LispBFloat16Array ignored -> {
+					return null;
+				}
+			}
+			return args.get(0);
+		});
+	}
+
+	/**
+	 * {@link #defineUnaryInto} over a member with a fused bfloat16 element-wise kernel: a
+	 * bf16 destination with a bf16 source runs the narrow kernel in place, and every
+	 * other combination with a bf16 operand -- including a bf16 destination with f32
+	 * sources -- declines to the defun.
+	 */
+	private static void defineUnaryInto(Environment globalEnv, LispEvaluator evaluator, String name,
+			DoubleKernel1Into f64, FloatKernel1Into f32, Bf16Kernel1Into bf16) {
+		defineFn(globalEnv, evaluator, name, 2, (fnName, args) -> {
+			LispFloatArray out = array(fnName, args.get(0));
+			LispFloatArray v = array(fnName, args.get(1));
+			if (out instanceof LispBFloat16Array r && v instanceof LispBFloat16Array x) {
+				bf16.apply(r.data(), x.data());
+				FloatArrayAccessHook.written(r.storage());
+				return args.get(0);
+			}
+			if (anyBf16(out, v)) {
+				return null;
+			}
+			switch (out) {
+				case LispDoubleFloatArray r -> {
+					if (!(v instanceof LispDoubleFloatArray x)) {
+						return null;
+					}
+					f64.apply(r.data(), x.data());
+					FloatArrayAccessHook.written(r.storage());
+				}
+				case LispSingleFloatArray r -> {
+					if (!(v instanceof LispSingleFloatArray x)) {
+						return null;
+					}
+					f32.apply(r.data(), x.data());
+					FloatArrayAccessHook.written(r.storage());
+				}
+				// Unreachable: a bf16 operand was answered or declined above. The
+				// arm is what keeps the switch exhaustive over the sealed umbrella.
 				case LispBFloat16Array ignored -> {
 					return null;
 				}
@@ -512,6 +603,52 @@ public final class VecSimd {
 		});
 	}
 
+	/**
+	 * {@link #defineInto} over a member with a fused bfloat16 element-wise kernel: all
+	 * three operands bf16 runs the narrow kernel in place (which tolerates the
+	 * destination aliasing a source, the add-into rule), and every other combination with
+	 * a bf16 operand declines to the defun.
+	 */
+	private static void defineInto(Environment globalEnv, LispEvaluator evaluator, String name, DoubleKernel2Into f64,
+			FloatKernel2Into f32, Bf16Kernel2Into bf16) {
+		defineFn(globalEnv, evaluator, name, 3, (fnName, args) -> {
+			LispFloatArray out = array(fnName, args.get(0));
+			LispFloatArray a = array(fnName, args.get(1));
+			LispFloatArray b = array(fnName, args.get(2));
+			if (out instanceof LispBFloat16Array r && a instanceof LispBFloat16Array x
+					&& b instanceof LispBFloat16Array y) {
+				bf16.apply(r.data(), x.data(), y.data());
+				FloatArrayAccessHook.written(r.storage());
+				return args.get(0);
+			}
+			if (anyBf16(out, a, b)) {
+				return null;
+			}
+			switch (out) {
+				case LispDoubleFloatArray r -> {
+					if (!(a instanceof LispDoubleFloatArray x) || !(b instanceof LispDoubleFloatArray y)) {
+						return null;
+					}
+					f64.apply(r.data(), x.data(), y.data());
+					FloatArrayAccessHook.written(r.storage());
+				}
+				case LispSingleFloatArray r -> {
+					if (!(a instanceof LispSingleFloatArray x) || !(b instanceof LispSingleFloatArray y)) {
+						return null;
+					}
+					f32.apply(r.data(), x.data(), y.data());
+					FloatArrayAccessHook.written(r.storage());
+				}
+				// Unreachable: a bf16 operand was answered or declined above. The
+				// arm is what keeps the switch exhaustive over the sealed umbrella.
+				case LispBFloat16Array ignored -> {
+					return null;
+				}
+			}
+			return args.get(0);
+		});
+	}
+
 	/** An element-wise kernel pair (the f64 and f32 lane loops of one operation). */
 	private static void define(Environment globalEnv, LispEvaluator evaluator, String name, DoubleKernel2 f64,
 			FloatKernel2 f32) {
@@ -535,6 +672,43 @@ public final class VecSimd {
 					yield vector(f32.apply(x.data(), y.data()));
 				}
 				// No lane kernel reads this width; the scalar defun answers.
+				case LispBFloat16Array ignored -> null;
+			};
+		});
+	}
+
+	/**
+	 * {@link #define} over a member with a fused bfloat16 element-wise kernel: two bf16
+	 * operands run the narrow kernel into a fresh bf16 vector (the width
+	 * {@code vec::%make-like} gives the defun for this pairing), and a MIXED pair
+	 * declines to the defun.
+	 */
+	private static void define(Environment globalEnv, LispEvaluator evaluator, String name, DoubleKernel2 f64,
+			FloatKernel2 f32, Bf16Kernel2 bf16) {
+		defineFn(globalEnv, evaluator, name, 2, (fnName, args) -> {
+			LispFloatArray a = array(fnName, args.get(0));
+			LispFloatArray b = array(fnName, args.get(1));
+			if (a instanceof LispBFloat16Array x && b instanceof LispBFloat16Array y) {
+				return bf16Vector(bf16.apply(x.data(), y.data()));
+			}
+			if (anyBf16(a, b)) {
+				return null;
+			}
+			return switch (a) {
+				case LispDoubleFloatArray x -> {
+					if (!(b instanceof LispDoubleFloatArray y)) {
+						yield null;
+					}
+					yield vector(f64.apply(x.data(), y.data()));
+				}
+				case LispSingleFloatArray x -> {
+					if (!(b instanceof LispSingleFloatArray y)) {
+						yield null;
+					}
+					yield vector(f32.apply(x.data(), y.data()));
+				}
+				// Unreachable: a bf16 operand was answered or declined above. The
+				// arm is what keeps the switch exhaustive over the sealed umbrella.
 				case LispBFloat16Array ignored -> null;
 			};
 		});
@@ -628,15 +802,14 @@ public final class VecSimd {
 	}
 
 	/**
-	 * Whether any operand is a packed bfloat16 array. The element-wise members have no
-	 * fused bf16 kernel -- an intermediate at 8 mantissa bits compounds fast, so this
-	 * width is for STORAGE, and the element-wise route would be widen, compute in f32 and
-	 * narrow on store ({@code .todo}'s follow-up) -- so they DECLINE the width, and the
-	 * scalar {@code vec.lisp} defun answers. Checked as its own early-out purely to keep
-	 * the width switch below free of a bf16 arm; the mismatch arms below decline the very
-	 * same way (a {@code null} kernel answer), since a bf16 operand beside an f32 one is
-	 * a shape the oracle computes happily and {@code --simd} may not turn it into an
-	 * error -- nor may any other mixed-width pairing it happily computes.
+	 * Whether any operand is a packed bfloat16 array. The members WITHOUT a fused bf16
+	 * kernel -- everything but the reductions' decode shape and the element-wise narrow
+	 * pairings (`.todo/747`) -- DECLINE the width, and the scalar {@code vec.lisp} defun
+	 * answers. Checked as its own early-out purely to keep the width switch below free of
+	 * a bf16 arm; the mismatch arms below decline the very same way (a {@code null}
+	 * kernel answer), since a bf16 operand beside an f32 one is a shape the oracle
+	 * computes happily and {@code --simd} may not turn it into an error -- nor may any
+	 * other mixed-width pairing it happily computes.
 	 * @param arrays the member's array operands
 	 * @return {@code true} when at least one is a bfloat16 array
 	 */
@@ -687,6 +860,10 @@ public final class VecSimd {
 
 	private static LispVal vector(float[] data) {
 		return new LispSingleFloatArray(data, new int[] { data.length });
+	}
+
+	private static LispVal bf16Vector(short[] data) {
+		return new LispBFloat16Array(data, new int[] { data.length });
 	}
 
 	@FunctionalInterface
@@ -745,6 +922,27 @@ public final class VecSimd {
 	private interface FloatKernel2Into {
 
 		void apply(float[] out, float[] a, float[] b);
+
+	}
+
+	@FunctionalInterface
+	private interface Bf16Kernel2 {
+
+		short[] apply(short[] a, short[] b);
+
+	}
+
+	@FunctionalInterface
+	private interface Bf16Kernel1Into {
+
+		void apply(short[] r, short[] x);
+
+	}
+
+	@FunctionalInterface
+	private interface Bf16Kernel2Into {
+
+		void apply(short[] out, short[] a, short[] b);
 
 	}
 

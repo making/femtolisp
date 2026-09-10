@@ -214,6 +214,232 @@ class VecSimdBf16KernelsTest {
 		assertThat(out).isEqualTo(VecSimdKernels.matvecBf16(w, 64, 1024, x, false));
 	}
 
+	// --- element-wise bf16 x bf16 -> bf16 (`.todo/747`) ------------------------------
+	// The oracle here is the SCALAR composite -- widen each operand, compute in f32,
+	// narrow on store through the scalar `floatToBf16` -- which `.todo/696`'s harness
+	// already swept against the `vec.lisp` DEFUN's f64 route over all 65536x65536
+	// operand pairs per operation with 0 mismatches. So kernel == composite pins the
+	// lane loop (and the lane narrow) against the defun transitively, and
+	// `eval.VecSimdTest` pins kernel == defun directly through the evaluator.
+
+	/** The scalar composite for one pair, the oracle the lane loop must match. */
+	private static short composite(int op, short a, short b) {
+		float fa = VecSimdKernels.bf16ToFloat(a);
+		float fb = VecSimdKernels.bf16ToFloat(b);
+		return switch (op) {
+			case 0 -> VecSimdKernels.floatToBf16(fa + fb);
+			case 1 -> VecSimdKernels.floatToBf16(fa - fb);
+			case 2 -> VecSimdKernels.floatToBf16(fa * fb);
+			default -> VecSimdKernels.floatToBf16(fa / fb);
+		};
+	}
+
+	private static short[] runBinary(int op, short[] x, short[] y) {
+		return runBinary(op, new short[Math.min(x.length, y.length)], x, y);
+	}
+
+	/** The scalar composite for one element, the unary oracle. */
+	private static short compositeUnary(int op, short a) {
+		float fa = VecSimdKernels.bf16ToFloat(a);
+		return switch (op) {
+			case 0 -> VecSimdKernels.floatToBf16((float) Math.sqrt(fa));
+			case 1 -> VecSimdKernels.floatToBf16(Math.abs(fa));
+			case 2 -> VecSimdKernels.floatToBf16(-fa);
+			default -> VecSimdKernels.floatToBf16(1.0f / fa);
+		};
+	}
+
+	private static void runUnaryInto(int op, short[] r, short[] x) {
+		switch (op) {
+			case 0 -> VecSimdKernels.sqrtIntoBf16(r, x);
+			case 1 -> VecSimdKernels.absIntoBf16(r, x);
+			case 2 -> VecSimdKernels.negIntoBf16(r, x);
+			default -> VecSimdKernels.reciprocalIntoBf16(r, x);
+		}
+	}
+
+	/**
+	 * Patterns that exercise the lane narrow's arms: ties (low 16 bits exactly
+	 * {@code 0x8000}, where truncation would go down and the carry must pick even), quiet
+	 * NaNs with payloads, infinities, zeros of both signs, subnormals and the overflow
+	 * edge. Signalling NaNs are NOT here: on an sNaN input the lane arithmetic (quieted
+	 * source payload) and the scalar arithmetic (indefinite) disagree the way the
+	 * hardware scalar and packed instructions do, so they are pinned separately at
+	 * {@code isNaN} level by {@link #signallingNanInputsAnswerNanOnBothRoutes}.
+	 */
+	private static short[] trickyPatterns() {
+		int[] bits = { 0x3f808000, 0x3f818000, 0x3f807fff, 0x3f808001, 0xbf818000, 0x7fc12345, 0xffc00000, 0x7f800000,
+				0xff800000, 0x00000000, 0x80000000, 0x007fffff, 0x00000001, 0x7f7fffff, 0x4f800000, 0xcf800000 };
+		short[] w = new short[1024];
+		for (int i = 0; i < w.length; i++) {
+			w[i] = VecSimdKernels.floatToBf16(Float.intBitsToFloat(bits[i % bits.length]));
+		}
+		return w;
+	}
+
+	/**
+	 * Warms the kernel loops so the assertions below meet the JIT-compiled lane path
+	 * rather than whichever tier happens to be warm: a lane-vs-scalar comparison only
+	 * pins the lanes once they actually run as lanes.
+	 */
+	private static void warm(int op, short[] x, short[] y) {
+		short[] r = new short[x.length];
+		for (int k = 0; k < 100; k++) {
+			runBinary(op, r, x, y);
+		}
+	}
+
+	private static short[] runBinary(int op, short[] r, short[] x, short[] y) {
+		switch (op) {
+			case 0 -> VecSimdKernels.addIntoBf16(r, x, y);
+			case 1 -> VecSimdKernels.subIntoBf16(r, x, y);
+			case 2 -> VecSimdKernels.mulIntoBf16(r, x, y);
+			default -> VecSimdKernels.divIntoBf16(r, x, y);
+		}
+		return r;
+	}
+
+	@Test
+	void theElementWiseKernelsMatchTheScalarCompositeOnBothSidesOfTheLaneGate() {
+		for (int op = 0; op < 4; op++) {
+			for (int n : new int[] { 1, 7, 63, THRESHOLD - 1, THRESHOLD, THRESHOLD + 1, 291, 1024, 4096 }) {
+				short[] x = weights(n, 1001 + 7L * n + op);
+				short[] y = weights(n, 2002 + 7L * n + op);
+				short[] actual = runBinary(op, x, y);
+				for (int i = 0; i < n; i++) {
+					assertThat(actual[i]).as("op %d n = %d i = %d", op, n, i).isEqualTo(composite(op, x[i], y[i]));
+				}
+			}
+		}
+	}
+
+	@Test
+	void theElementWiseKernelsMatchTheScalarCompositeOnTrickyPatterns() {
+		// 1024 elements, so the lane loop -- including the lane narrow's NaN arm and
+		// tie carry -- runs, not just the scalar tail.
+		short[] x = trickyPatterns();
+		short[] y = trickyPatterns();
+		for (int i = 0; i < y.length; i++) {
+			y[i] = (short) (y[(i * 7 + 3) % y.length] ^ 0x1234);
+		}
+		for (int op = 0; op < 4; op++) {
+			warm(op, x, y);
+			short[] actual = runBinary(op, x, y);
+			for (int i = 0; i < x.length; i++) {
+				assertThat(actual[i]).as("op %d i = %d", op, i).isEqualTo(composite(op, x[i], y[i]));
+			}
+		}
+	}
+
+	@Test
+	void signallingNanInputsAnswerNanOnBothRoutes() {
+		// An sNaN input raises the invalid-operation flag, and the hardware answers
+		// differently per instruction shape: the packed lanes quiet the source payload
+		// while the scalar instructions answer the indefinite. Both are quiet NaNs,
+		// so the pin is the CLASS, not the payload -- and the defun agrees with the
+		// scalar route's class (`.todo/696`'s pair sweep covers sNaN patterns with 0
+		// mismatches against it at the payload level, which the lanes cannot keep).
+		short[] x = { (short) 0x7f81, (short) 0xff81, (short) 0x7fbf, VecSimdKernels.floatToBf16(1.5f) };
+		short[] bigX = new short[1024];
+		short[] bigY = new short[1024];
+		for (int i = 0; i < bigX.length; i++) {
+			bigX[i] = x[i % x.length];
+			bigY[i] = x[(i + 1) % x.length];
+		}
+		for (int op = 0; op < 4; op++) {
+			warm(op, bigX, bigY);
+			short[] actual = runBinary(op, bigX, bigY);
+			for (int i = 0; i < 4; i++) {
+				assertThat(Float.isNaN(VecSimdKernels.bf16ToFloat(actual[i]))).as("kernel op %d i = %d", op, i)
+					.isTrue();
+				assertThat(Float.isNaN(VecSimdKernels.bf16ToFloat(composite(op, bigX[i], bigY[i]))))
+					.as("composite op %d i = %d", op, i)
+					.isTrue();
+			}
+		}
+		short[] sq = new short[1024];
+		for (int i = 0; i < sq.length; i++) {
+			sq[i] = x[i % x.length];
+		}
+		short[] sqOut = new short[1024];
+		for (int k = 0; k < 100; k++) {
+			VecSimdKernels.sqrtIntoBf16(sqOut, sq);
+		}
+		VecSimdKernels.sqrtIntoBf16(sqOut, sq);
+		for (int i = 0; i < 3; i++) {
+			assertThat(Float.isNaN(VecSimdKernels.bf16ToFloat(sqOut[i]))).as("sqrt i = %d", i).isTrue();
+		}
+		assertThat(sqOut[3]).as("sqrt of 1.5").isEqualTo(compositeUnary(0, sq[3]));
+	}
+
+	@Test
+	void everyBf16PatternRoundTripsThroughTheElementWiseScalarTail() {
+		// Single-element vectors take the scalar tail unconditionally: all 65536
+		// patterns through each operation against a fixed operand, pinning the tail
+		// the lane loop must agree with.
+		short[] one = new short[1];
+		short[] two = new short[1];
+		two[0] = VecSimdKernels.floatToBf16(1.5f);
+		for (int op = 0; op < 4; op++) {
+			for (int p = 0; p < 1 << 16; p++) {
+				one[0] = (short) p;
+				assertThat(runBinary(op, one, two)[0]).as("op %d pattern 0x%04x", op, p)
+					.isEqualTo(composite(op, one[0], two[0]));
+			}
+		}
+	}
+
+	@Test
+	void theAllocatingElementWiseKernelsWriteWhatTheIntoKernelsWrite() {
+		short[] x = weights(1024, 31337);
+		short[] y = weights(1024, 31338);
+		assertThat(VecSimdKernels.addBf16(x, y)).isEqualTo(runBinary(0, x, y));
+		assertThat(VecSimdKernels.subBf16(x, y)).isEqualTo(runBinary(1, x, y));
+		assertThat(VecSimdKernels.mulBf16(x, y)).isEqualTo(runBinary(2, x, y));
+		assertThat(VecSimdKernels.divBf16(x, y)).isEqualTo(runBinary(3, x, y));
+	}
+
+	@Test
+	void theElementWiseIntoKernelsTolerateAliasing() {
+		// out[i] depends only on x[i] and y[i], so in-place accumulation is
+		// well-defined (the add-into rule): aliasing must answer what a fresh
+		// destination does.
+		short[] x = weights(1024, 41414);
+		short[] y = weights(1024, 41415);
+		short[] acc = x.clone();
+		VecSimdKernels.addIntoBf16(acc, acc, y);
+		assertThat(acc).isEqualTo(VecSimdKernels.addBf16(x, y));
+		short[] sq = x.clone();
+		VecSimdKernels.mulIntoBf16(sq, sq, sq);
+		assertThat(sq).isEqualTo(VecSimdKernels.mulBf16(x, x));
+	}
+
+	@Test
+	void theUnaryElementWiseKernelsMatchTheScalarCompositeOnBothSidesOfTheLaneGate() {
+		for (int op = 0; op < 4; op++) {
+			for (int n : new int[] { 1, 7, 63, THRESHOLD - 1, THRESHOLD, THRESHOLD + 1, 291, 1024, 4096 }) {
+				short[] x = weights(n, 5005 + 11L * n + op);
+				short[] actual = new short[n];
+				runUnaryInto(op, actual, x);
+				for (int i = 0; i < n; i++) {
+					assertThat(actual[i]).as("op %d n = %d i = %d", op, n, i).isEqualTo(compositeUnary(op, x[i]));
+				}
+			}
+		}
+	}
+
+	@Test
+	void theUnaryElementWiseKernelsMatchTheScalarCompositeOnTrickyPatterns() {
+		short[] x = trickyPatterns();
+		for (int op = 0; op < 4; op++) {
+			short[] actual = new short[x.length];
+			runUnaryInto(op, actual, x);
+			for (int i = 0; i < x.length; i++) {
+				assertThat(actual[i]).as("op %d i = %d", op, i).isEqualTo(compositeUnary(op, x[i]));
+			}
+		}
+	}
+
 	/**
 	 * Ranks and shapes that straddle both gates, and one (64x1024 = 2^16 multiply-adds)
 	 * above {@code SimdParallel.MIN_WORK} so the parallel case really splits.

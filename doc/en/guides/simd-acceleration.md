@@ -173,18 +173,21 @@ Single-float reductions carry one more caveat. Under `--simd`, an `#f` reduction
 
 ## The bfloat16 width under `--simd`
 
-`#bf16` is a *storage* width, and `--simd` treats it as one: it accelerates the shapes a checkpoint's weights are actually read in, and leaves everything else to the portable `vec.lisp` definition -- the same answer, just not faster. Three members, on the interpreter and the JVM (the WASM backends have no bfloat16 array to begin with):
+`#bf16` is a *storage* width, and `--simd` treats it as one: it accelerates the shapes a checkpoint's weights are actually read in, and leaves everything else to the portable `vec.lisp` definition -- the same answer, just not faster. Two shapes, on the interpreter and the JVM (the WASM backends have no bfloat16 array to begin with):
 
 | call | accelerated |
 |---|---|
 | `vec:sum` over a `#bf16` vector | yes |
 | `vec:dot` of a `#bf16` vector with a `#f` vector | yes |
 | `vec:matvec` / `vec:matvec-into`, a `#bf16` matrix times a `#f` vector | yes |
+| element-wise `vec:add` / `vec:sub` / `vec:mul` / `vec:div` (and `vec:+` / `vec:-` / `vec:*` / `vec:/`), `vec:sqrt` / `vec:abs` / `vec:negative` / `vec:reciprocal`, and their `-into` siblings, over two `#bf16` vectors | yes |
 | anything else with a `#bf16` operand | portable definition |
 
 The matrix-by-vector row is the point: a GEMV over a weight matrix is what a decode loop spends its time in, and at this width it streams half the bytes. Each of the three kernels widens the stored patterns *inside* its lane loop -- the decode is one shift -- and is otherwise the single-float kernel, so its answer is the single-float kernel's over the widened operand **bit for bit**. Widening a bfloat16 pattern is exact, so the width adds no precision story of its own; the [single-float reduction rule](#hardware-acceleration-optional) above is the whole story, and `vec:matvec`'s product follows `x`'s width exactly as the portable definition's does.
 
-The pairing is deliberately narrow -- bfloat16 weights against single-float activations, which is how a published checkpoint is decoded and the only combination with a kernel. Every other operand mix runs the portable definition instead: two `#bf16` vectors, `#bf16` against `#d`, and every element-wise call at this width (`vec:add`, `vec:mul`, `vec:relu`, the `-into` siblings, all of them). A mixed-width element-wise call is computed, not refused -- `--simd` never turns an answer into an error.
+The element-wise row is the same idea at a smaller scale: widen both operands inside the lane loop, compute in single float, narrow on store -- never keeping an intermediate at the narrow width. The narrowing is a branch-free lane form (the composite measures 2.3-2.7x the scalar route), and the single-float intermediate is the portable definition's answer bit for bit. Only the members with a single-float lane loop are mirrored: `vec:scale` multiplies by a genuine double scalar, the comparison selects are scalar loops, and the transcendental ufuncs call `java.lang.Math` per element -- none of them has a lane form to mirror.
+
+The pairings are deliberately narrow: bfloat16 weights against single-float activations for the reductions -- which is how a published checkpoint is decoded -- and bfloat16 against bfloat16 for the element-wise members, whose result stays in the width exactly as the portable definition's does. Every other operand mix runs the portable definition instead: a `#bf16` operand beside `#f` or `#d` in an element-wise call, a `#bf16` `-into` destination with wider sources, and `vec:scale`, the comparison selects and the transcendental ufuncs at this width. A mixed-width element-wise call is computed, not refused -- `--simd` never turns an answer into an error.
 
 Whether the fused GEMV is faster than the same weights at single float depends on how big they are. Below roughly 4 MB of weights the matrix is cache-resident, there is no bandwidth to save, and the decode costs a little: on one thread it measured 0.7-0.8x of the single-float kernel on one machine and about parity on another. Above it the halved bytes show up as speed -- 1.3-2.0x at 4096x4096 on both -- and more under [`--parallel`](#using-more-than-one-core---parallel), where the arm is at or above parity from 1024x1024 up. There is no size gate -- the answer must not depend on the matrix size -- so a program that chooses `#bf16` for a small matrix pays that little, and gets half the memory at every size.
 

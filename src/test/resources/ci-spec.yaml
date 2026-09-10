@@ -15765,6 +15765,16 @@ standalone:
           (unless (= i (rontolisp:bfloat16-bits (aref v i))) (incf bad)))
         (print bad))
       (print (vec:add #bf16(1.0 2.0) #bf16(3.0 4.0)))
+      ;; The fused element-wise kernels (`.todo/747`): bf16 x bf16 -> bf16, 300
+      ;; elements so the lane loop runs on the --simd legs. Every value is exact at
+      ;; the width or a shortest round-tripping print, so the interpreter, the JVM
+      ;; and their --simd legs print this one list.
+      (let ((a (make-array 300 :element-type 'bfloat16 :initial-element 0.0))
+            (b (make-array 300 :element-type 'bfloat16 :initial-element 0.0)))
+        (dotimes (i 300) (setf (aref a i) (* i 0.37)) (setf (aref b i) 1.5))
+        (print (list (length (vec:add a b)) (aref (vec:add a b) 299) (aref (vec:sub b a) 0)
+                     (aref (vec:mul a b) 299) (aref (vec:div b a) 10) (aref (vec:sqrt (vec:abs a)) 100)
+                     (aref (vec:reciprocal b) 0))))
     stdout: |
       #bf16(1.0 2.0 3.0)
       7.0
@@ -15773,6 +15783,7 @@ standalone:
       (#bf16((0.5 0.5 0.5) (0.5 0.5 500.0)) 500.0 (2 3))
       0
       #bf16(4.0 6.0)
+      (300 112.0 1.5 166.0 0.404296875 6.09375 0.66796875)
     refusedOn: [wasm, wasm_component]
     refusal: "bfloat16 arrays are supported on the interpreter and the JVM only"
   - name: quantized-matrix
