@@ -1601,45 +1601,103 @@ final class JvmRuntimeBuilder {
 
 	/**
 	 * Builds bytecode for _append(Object a, Object b). If a is null, returns b.
-	 * Otherwise, creates new Object[]{a[0], _append(a[1], b)}.
+	 * Otherwise, copies a's spine iteratively and patches the last cdr to b.
+	 *
+	 * <p>
+	 * The recursive spelling allocated its result by recursing once per element, so a
+	 * long first argument was a StackOverflowError rather than a slow call (.todo/749).
+	 * The result is unchanged (a fresh spine, the tail shared) and an improper first
+	 * argument still fails at the same CHECKCAST.
 	 */
-	static List<Integer> buildAppendBody(ClassConstant objectArrayClass, ClassConstant objectClass,
-			MethodrefConstant appendMethod) {
+	static List<Integer> buildAppendBody(ClassConstant objectArrayClass, ClassConstant objectClass) {
 		List<Integer> code = new ArrayList<>();
-		// if (a == null) return b;
+		// cursor = a; head = null; tail = null
 		code.add(Opcode.ALOAD_0);
-		int ifNonnullPos = code.size();
-		code.add(Opcode.IFNONNULL);
-		emitU2(code, 0);
-		code.add(Opcode.ALOAD_1);
-		code.add(Opcode.ARETURN);
-		// a is non-null: cast to Object[]
-		patchBranch(code, ifNonnullPos, code.size());
-		code.add(Opcode.ALOAD_0);
-		code.add(Opcode.CHECKCAST);
-		emitU2(code, objectArrayClass.index());
+		code.add(Opcode.ASTORE);
+		code.add(4);
+		code.add(Opcode.ACONST_NULL);
 		code.add(Opcode.ASTORE_2);
-		// new Object[2]
+		code.add(Opcode.ACONST_NULL);
+		code.add(Opcode.ASTORE);
+		code.add(3);
+		int loopPos = code.size();
+		// if (cursor == null) goto end
+		code.add(Opcode.ALOAD);
+		code.add(4);
+		int endPos = code.size();
+		code.add(Opcode.IFNULL);
+		emitU2(code, 0);
+		// fresh = new Object[]{((Object[]) cursor)[0], null}
 		code.add(Opcode.ICONST_2);
 		code.add(Opcode.ANEWARRAY);
 		emitU2(code, objectClass.index());
-		// arr[0] = a[0]
 		code.add(Opcode.DUP);
 		code.add(Opcode.ICONST_0);
-		code.add(Opcode.ALOAD_2);
+		code.add(Opcode.ALOAD);
+		code.add(4);
+		code.add(Opcode.CHECKCAST);
+		emitU2(code, objectArrayClass.index());
 		code.add(Opcode.ICONST_0);
 		code.add(Opcode.AALOAD);
 		code.add(Opcode.AASTORE);
-		// arr[1] = _append(a[1], b)
-		code.add(Opcode.DUP);
-		code.add(Opcode.ICONST_1);
+		code.add(Opcode.ASTORE);
+		code.add(5);
+		// if (head == null) head = fresh; else ((Object[]) tail)[1] = fresh
 		code.add(Opcode.ALOAD_2);
+		int headNullPos = code.size();
+		code.add(Opcode.IFNULL);
+		emitU2(code, 0);
+		code.add(Opcode.ALOAD);
+		code.add(3);
+		code.add(Opcode.CHECKCAST);
+		emitU2(code, objectArrayClass.index());
+		code.add(Opcode.ICONST_1);
+		code.add(Opcode.ALOAD);
+		code.add(5);
+		code.add(Opcode.AASTORE);
+		int tailSetPos = code.size();
+		code.add(Opcode.GOTO);
+		emitU2(code, 0);
+		patchBranch(code, headNullPos, code.size());
+		code.add(Opcode.ALOAD);
+		code.add(5);
+		code.add(Opcode.ASTORE_2);
+		patchBranch(code, tailSetPos, code.size());
+		// tail = fresh; cursor = ((Object[]) cursor)[1]; goto loop
+		code.add(Opcode.ALOAD);
+		code.add(5);
+		code.add(Opcode.ASTORE);
+		code.add(3);
+		code.add(Opcode.ALOAD);
+		code.add(4);
+		code.add(Opcode.CHECKCAST);
+		emitU2(code, objectArrayClass.index());
 		code.add(Opcode.ICONST_1);
 		code.add(Opcode.AALOAD);
+		code.add(Opcode.ASTORE);
+		code.add(4);
+		int againPos = code.size();
+		code.add(Opcode.GOTO);
+		emitU2(code, 0);
+		patchBranch(code, againPos, loopPos);
+		patchBranch(code, endPos, code.size());
+		// if (head == null) return b
+		code.add(Opcode.ALOAD_2);
+		int nullHeadPos = code.size();
+		code.add(Opcode.IFNULL);
+		emitU2(code, 0);
+		// ((Object[]) tail)[1] = b; return head
+		code.add(Opcode.ALOAD);
+		code.add(3);
+		code.add(Opcode.CHECKCAST);
+		emitU2(code, objectArrayClass.index());
+		code.add(Opcode.ICONST_1);
 		code.add(Opcode.ALOAD_1);
-		code.add(Opcode.INVOKESTATIC);
-		emitU2(code, appendMethod.index());
 		code.add(Opcode.AASTORE);
+		code.add(Opcode.ALOAD_2);
+		code.add(Opcode.ARETURN);
+		patchBranch(code, nullHeadPos, code.size());
+		code.add(Opcode.ALOAD_1);
 		code.add(Opcode.ARETURN);
 		return code;
 	}

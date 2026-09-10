@@ -26,51 +26,98 @@ final class WasmRuntimeBuilder {
 
 	/**
 	 * Builds the _append helper function body. Takes two (ref null eq) args, returns (ref
-	 * null eq). If a is null, returns b. Otherwise, creates struct.new cons(a.car,
-	 * _append(a.cdr, b)).
+	 * null eq). If a is null, returns b. Otherwise, copies a's spine iteratively and
+	 * patches the last cdr to b.
+	 *
+	 * <p>
+	 * The recursive spelling allocated its result by recursing once per element, so a
+	 * long first argument exhausted the wasm stack rather than answering slowly
+	 * (.todo/749). The result is unchanged (a fresh spine, the tail shared) and an
+	 * improper first argument still traps at the same {@code ref.cast}.
 	 */
 	static byte[] buildAppendBody() {
 		ByteArrayOutputStream body = new ByteArrayOutputStream();
 		WasmWriter w = new WasmWriter(body);
 
-		w.write(0); // 0 extra locals
+		// 4 extra locals, all (ref null eq): 2=head, 3=tail, 4=cursor, 5=fresh.
+		w.write(1);
+		w.write(4);
+		w.writeRefType(true, Type.EQ.code());
 
-		// if a is null, return b
-		w.write(Instruction.GET_LOCAL);
-		w.writeUnsignedLeb128(0); // a
+		// cursor = a; head = null; tail = null
+		getLocal(w, 0);
+		setLocal(w, 4);
+		w.write(Instruction.REF_NULL);
+		w.writeHeapType(Type.EQ.code());
+		setLocal(w, 2);
+		w.write(Instruction.REF_NULL);
+		w.writeHeapType(Type.EQ.code());
+		setLocal(w, 3);
+
+		w.write(Instruction.BLOCK, 0x40); // $out
+		w.write(Instruction.LOOP, 0x40); // $in
+		// if cursor is null, break to $out
+		getLocal(w, 4);
+		w.write(Instruction.REF_IS_NULL);
+		w.write(Instruction.BR_IF, 1);
+		// fresh = cons(cursor.car, null)
+		getLocal(w, 4);
+		w.write(Instruction.GC_PREFIX, Instruction.REF_CAST);
+		w.writeHeapType(WasmLispCompiler.TYPE_CONS);
+		w.write(Instruction.GC_PREFIX, Instruction.STRUCT_GET);
+		w.writeUnsignedLeb128(WasmLispCompiler.TYPE_CONS);
+		w.writeUnsignedLeb128(0); // field 0: car
+		w.write(Instruction.REF_NULL);
+		w.writeHeapType(Type.EQ.code());
+		w.write(Instruction.GC_PREFIX, Instruction.STRUCT_NEW);
+		w.writeUnsignedLeb128(WasmLispCompiler.TYPE_CONS);
+		setLocal(w, 5);
+		// if head is null, head = fresh; else tail.cdr = fresh
+		getLocal(w, 2);
+		w.write(Instruction.REF_IS_NULL);
+		w.write(Instruction.IF, 0x40);
+		getLocal(w, 5);
+		setLocal(w, 2);
+		w.write(Instruction.ELSE);
+		getLocal(w, 3);
+		w.write(Instruction.GC_PREFIX, Instruction.REF_CAST);
+		w.writeHeapType(WasmLispCompiler.TYPE_CONS);
+		getLocal(w, 5);
+		w.write(Instruction.GC_PREFIX, Instruction.STRUCT_SET);
+		w.writeUnsignedLeb128(WasmLispCompiler.TYPE_CONS);
+		w.writeUnsignedLeb128(1); // field 1: cdr
+		w.write(Instruction.END);
+		// tail = fresh; cursor = cursor.cdr
+		getLocal(w, 5);
+		setLocal(w, 3);
+		getLocal(w, 4);
+		w.write(Instruction.GC_PREFIX, Instruction.REF_CAST);
+		w.writeHeapType(WasmLispCompiler.TYPE_CONS);
+		w.write(Instruction.GC_PREFIX, Instruction.STRUCT_GET);
+		w.writeUnsignedLeb128(WasmLispCompiler.TYPE_CONS);
+		w.writeUnsignedLeb128(1); // field 1: cdr
+		setLocal(w, 4);
+		w.write(Instruction.BR, 0); // continue $in
+		w.write(Instruction.END); // end loop $in
+		w.write(Instruction.END); // end block $out
+
+		// if head is null, return b; else tail.cdr = b and return head
+		getLocal(w, 2);
 		w.write(Instruction.REF_IS_NULL);
 		w.write(Instruction.IF);
 		w.writeRefType(true, Type.EQ.code());
 		w.write(Instruction.GET_LOCAL);
 		w.writeUnsignedLeb128(1); // b
 		w.write(Instruction.ELSE);
-
-		// a.car
-		w.write(Instruction.GET_LOCAL);
-		w.writeUnsignedLeb128(0);
+		getLocal(w, 3);
 		w.write(Instruction.GC_PREFIX, Instruction.REF_CAST);
 		w.writeHeapType(WasmLispCompiler.TYPE_CONS);
-		w.write(Instruction.GC_PREFIX, Instruction.STRUCT_GET);
-		w.writeUnsignedLeb128(WasmLispCompiler.TYPE_CONS);
-		w.writeUnsignedLeb128(0); // field 0: car
-
-		// _append(a.cdr, b)
-		w.write(Instruction.GET_LOCAL);
-		w.writeUnsignedLeb128(0);
-		w.write(Instruction.GC_PREFIX, Instruction.REF_CAST);
-		w.writeHeapType(WasmLispCompiler.TYPE_CONS);
-		w.write(Instruction.GC_PREFIX, Instruction.STRUCT_GET);
-		w.writeUnsignedLeb128(WasmLispCompiler.TYPE_CONS);
-		w.writeUnsignedLeb128(1); // field 1: cdr
 		w.write(Instruction.GET_LOCAL);
 		w.writeUnsignedLeb128(1); // b
-		w.write(Instruction.CALL);
-		w.writeUnsignedLeb128(WasmLispCompiler.FUNC_APPEND);
-
-		// struct.new cons(car, result)
-		w.write(Instruction.GC_PREFIX, Instruction.STRUCT_NEW);
+		w.write(Instruction.GC_PREFIX, Instruction.STRUCT_SET);
 		w.writeUnsignedLeb128(WasmLispCompiler.TYPE_CONS);
-
+		w.writeUnsignedLeb128(1); // field 1: cdr
+		getLocal(w, 2);
 		w.write(Instruction.END); // end if
 
 		w.write(Instruction.END); // end function

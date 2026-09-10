@@ -4080,6 +4080,36 @@ class WasmLispCompilerIntegrationTest {
 		assertThat(compileComponentAndRun(defs + "(print (sort (list 3 1 2) (car (list 'lt))))")).isEqualTo("(1 2 3)");
 	}
 
+	// The _append copy is built iteratively (.todo/749): a first argument far
+	// past any plausible stack answers instead of trapping, on the Preview 1
+	// module and on the component twin.
+	@Test
+	void appendLongFirstArgument() throws Exception {
+		assertThat(compileAndRun("(print (length (append (make-list 100000) nil)))")).isEqualTo("100000");
+		assertThat(compileComponentAndRun("(print (length (append (make-list 100000) nil)))")).isEqualTo("100000");
+		assertThat(compileAndRun("(print (car (nthcdr 99999 (append (make-list 100000 :initial-element 7) nil))))"))
+			.isEqualTo("7");
+	}
+
+	// mapcan/mapcon accumulate through a tail pointer (.todo/749): a long input
+	// list is linear rather than a stack exhaustion, on both WASM backends.
+	@Test
+	void mapcanMapconLongInput() throws Exception {
+		assertThat(compileAndRun("(print (length (mapcan #'list (make-list 100000 :initial-element 9))))"))
+			.isEqualTo("100000");
+		assertThat(compileComponentAndRun("(print (length (mapcan #'list (make-list 100000 :initial-element 9))))"))
+			.isEqualTo("100000");
+		assertThat(
+				compileAndRun("(print (length (mapcan (lambda (x) (list x x)) (make-list 50000 :initial-element 9))))"))
+			.isEqualTo("100000");
+		assertThat(compileAndRun("""
+				(print (length (let ((n 0))
+				                (mapcon (lambda (tail)
+				                          (setq n (1+ n))
+				                          (if (evenp n) (list (car tail)) nil))
+				                        (make-list 100000 :initial-element 9)))))""")).isEqualTo("50000");
+	}
+
 	@Test
 	void mapFamilyTrapsOnNonList() throws Exception {
 		// The map* family operates on lists; a non-list (e.g. a string) traps rather than

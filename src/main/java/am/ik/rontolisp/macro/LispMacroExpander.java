@@ -25429,6 +25429,9 @@ public final class LispMacroExpander {
 		String prefix = "__" + name.toLowerCase(java.util.Locale.ROOT) + "_";
 		LispSymbol fn = new LispSymbol(prefix + "fn");
 		LispSymbol acc = new LispSymbol(prefix + "acc");
+		LispSymbol tail = new LispSymbol(prefix + "tail");
+		LispSymbol piece = new LispSymbol(prefix + "piece");
+		LispSymbol copy = new LispSymbol(prefix + "copy");
 		List<LispSymbol> lists = new java.util.ArrayList<>();
 		List<LispSymbol> cursors = new java.util.ArrayList<>();
 		for (int i = 0; i < nLists; i++) {
@@ -25436,10 +25439,16 @@ public final class LispMacroExpander {
 			cursors.add(new LispSymbol(prefix + "c" + i));
 		}
 
-		// (do ((#acc nil)? (#ci #li (cdr #ci))...) ((or (atom #ci)...) RESULT) BODY)
+		// (do ((#acc nil)? (#tail nil)? (#piece nil)? (#copy nil)?
+		// (#ci #li (cdr #ci))...) ((or (atom #ci)...) RESULT) BODY)
 		List<LispVal> bindings = new java.util.ArrayList<>();
 		if (accumulation != MapAccumulation.DISCARD) {
 			bindings.add(listToCons(List.of(acc, LispNil.INSTANCE)));
+		}
+		if (accumulation == MapAccumulation.CONCATENATE) {
+			bindings.add(listToCons(List.of(tail, LispNil.INSTANCE)));
+			bindings.add(listToCons(List.of(piece, LispNil.INSTANCE)));
+			bindings.add(listToCons(List.of(copy, LispNil.INSTANCE)));
 		}
 		List<LispVal> exhausted = new java.util.ArrayList<>();
 		List<LispVal> callArgs = new java.util.ArrayList<>(List.of(new LispSymbol(LispNames.FUNCALL), fn));
@@ -25464,8 +25473,25 @@ public final class LispMacroExpander {
 		LispVal body = switch (accumulation) {
 			case COLLECT -> listToCons(List.of(new LispSymbol(LispNames.SETQ), acc,
 					listToCons(List.of(new LispSymbol(LispNames.CONS), call, acc))));
-			case CONCATENATE -> listToCons(List.of(new LispSymbol(LispNames.SETQ), acc,
-					listToCons(List.of(new LispSymbol(LispNames.APPEND), acc, call))));
+			// A tail-pointer splice of a fresh copy of each piece, not a left fold
+			// over append: folding copied the whole accumulator per piece
+			// (quadratic) through a call that itself recursed per element (linear
+			// stack depth), so a long walk was a slow crash rather than a slow call
+			// (.todo/749). The result is fully fresh, matching the first-class
+			// path's right fold piece for piece; a non-list piece signals through
+			// the family's guard idiom where the fold silently spliced it as a
+			// dotted tail.
+			case CONCATENATE -> listToCons(List.of(new LispSymbol(LispNames.PROGN),
+					listToCons(List.of(new LispSymbol(LispNames.SETQ), piece, call)),
+					makeIf(listToCons(List.of(new LispSymbol(LispNames.CONSP), piece)), listToCons(List.of(
+							new LispSymbol(LispNames.PROGN),
+							listToCons(List.of(new LispSymbol(LispNames.SETQ), copy,
+									listToCons(List.of(new LispSymbol(LispNames.APPEND), piece, LispNil.INSTANCE)))),
+							makeIf(acc, listToCons(List.of(new LispSymbol(LispNames.RPLACD), tail, copy)),
+									listToCons(List.of(new LispSymbol(LispNames.SETQ), acc, copy))),
+							listToCons(List.of(new LispSymbol(LispNames.SETQ), tail,
+									listToCons(List.of(new LispSymbol(LispNames.LAST), copy)))))),
+							listToCons(List.of(new LispSymbol(LispNames.IF), piece, mapNotAListError(name, piece))))));
 			case DISCARD -> call;
 		};
 		LispVal loop = expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), listToCons(bindings),

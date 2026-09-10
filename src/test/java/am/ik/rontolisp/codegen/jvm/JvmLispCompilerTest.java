@@ -10239,6 +10239,33 @@ class JvmLispCompilerTest {
 		assertThat(compileAndRun("(print (funcall #'mapcan (lambda (x) (list x)) '(1 2 3)))")).isEqualTo("(1 2 3)");
 	}
 
+	// The _append copy is built iteratively (.todo/749): a first argument far past
+	// any plausible stack answers instead of overflowing.
+	@Test
+	void compileAndRunAppendLongFirstArgument() throws Exception {
+		assertThat(compileAndRun("(print (length (append (make-list 100000) nil)))")).isEqualTo("100000");
+		assertThat(compileAndRun("(print (length (append (make-list 100000) '(a b c))))")).isEqualTo("100003");
+		assertThat(compileAndRun("(print (car (nthcdr 99999 (append (make-list 100000 :initial-element 7) nil))))"))
+			.isEqualTo("7");
+	}
+
+	// mapcan/mapcon accumulate through a tail pointer (.todo/749): a long input
+	// list is linear rather than a stack overflow (and rather than quadratic).
+	@Test
+	void compileAndRunMapcanMapconLongInput() throws Exception {
+		assertThat(compileAndRun("(print (length (mapcan #'list (make-list 100000 :initial-element 9))))"))
+			.isEqualTo("100000");
+		assertThat(
+				compileAndRun("(print (length (mapcan (lambda (x) (list x x)) (make-list 50000 :initial-element 9))))"))
+			.isEqualTo("100000");
+		assertThat(compileAndRun("""
+				(print (length (let ((n 0))
+				                (mapcon (lambda (tail)
+				                          (setq n (1+ n))
+				                          (if (evenp n) (list (car tail)) nil))
+				                        (make-list 100000 :initial-element 9)))))""")).isEqualTo("50000");
+	}
+
 	@Test
 	void compileAndRunSort() throws Exception {
 		assertThat(compileAndRun("(print (sort '(3 1 4 1 5 9 2 6) #'<))")).isEqualTo("(1 1 2 3 4 5 6 9)");

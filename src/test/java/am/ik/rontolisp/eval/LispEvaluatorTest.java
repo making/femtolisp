@@ -2217,6 +2217,31 @@ class LispEvaluatorTest {
 		assertThat(eval("(append '(1 2) 3)").print()).isEqualTo("(1 2 . 3)");
 	}
 
+	// The copy is built iteratively (.todo/749): a first argument far past any
+	// plausible stack answers instead of overflowing.
+	@Test
+	void evalAppendLongFirstArgument() {
+		assertThat(eval("(length (append (make-list 100000) nil))").print()).isEqualTo("100000");
+		assertThat(eval("(length (append (make-list 100000) '(a b c)))").print()).isEqualTo("100003");
+		assertThat(eval("(car (nthcdr 99999 (append (make-list 100000 :initial-element 7) nil)))").print())
+			.isEqualTo("7");
+	}
+
+	// mapcan/mapcon concatenate right-folded through the same iterative copy, so a
+	// long input list is linear rather than a stack overflow (.todo/749).
+	@Test
+	void evalMapcanMapconLongInput() {
+		assertThat(eval("(length (mapcan #'list (make-list 100000 :initial-element 9)))").print()).isEqualTo("100000");
+		assertThat(eval("(length (mapcan (lambda (x) (list x x)) (make-list 50000 :initial-element 9)))").print())
+			.isEqualTo("100000");
+		assertThat(eval("""
+				(length (let ((n 0))
+				         (mapcon (lambda (tail)
+				                   (setq n (1+ n))
+				                   (if (evenp n) (list (car tail)) nil))
+				                 (make-list 100000 :initial-element 9))))""").print()).isEqualTo("50000");
+	}
+
 	@Test
 	void evalDoubleLiteral() {
 		assertThat(eval("3.14")).isEqualTo(new LispDouble(3.14));

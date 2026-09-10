@@ -2792,7 +2792,7 @@ public final class JvmLispCompiler implements LispCompiler {
 		List<Integer> ctdsCode = JvmRuntimeBuilder.buildConsToDisplayStringBody(objectArrayClass, stringBuilderClass,
 				sbInitStr, sbAppendStr, sbToString, lispToDisplayStringMethod, openParenStr, closeParenStr, spaceStr,
 				dotStr, ratioArrayClass, renderGuard, quoteAbbrev);
-		List<Integer> appendCode = JvmRuntimeBuilder.buildAppendBody(objectArrayClass, objectClass, appendMethod);
+		List<Integer> appendCode = JvmRuntimeBuilder.buildAppendBody(objectArrayClass, objectClass);
 		ConstantPool.StringConstant quoteStr = cp.addString("\"");
 		List<Integer> readLineCode = JvmRuntimeBuilder.buildReadLineBody(bufferedReaderClass, inputStreamReaderClass,
 				brInit, brReadLine, isrInit, systemIn, stdinReaderField, quoteStr, stringConcat);
@@ -3731,7 +3731,7 @@ public final class JvmLispCompiler implements LispCompiler {
 				methods.add(AccessFlag.ACC_PRIVATE | AccessFlag.ACC_STATIC, appendName, appendDescUtf,
 						method -> method.writeAttributes(attrs -> attrs.add(codeUtf8, attr -> {
 							attr.writeU2(5)
-								.writeU2(3)
+								.writeU2(6)
 								.writeCode((Object[]) appendCode.toArray(new Integer[0]))
 								.writeU2(0)
 								.writeU2(0);

@@ -11,8 +11,14 @@ import am.ik.jvm.Opcode;
 /**
  * Compiles the {@code mapcan} built-in function. Generates an inline loop that applies a
  * function to the parallel elements of one or more lists and concatenates the resulting
- * lists; with multiple lists the loop stops at the shortest one. The concatenation reuses
- * the shared {@code _append} runtime helper (non-destructive append rather than nconc).
+ * lists; with multiple lists the loop stops at the shortest one.
+ *
+ * <p>
+ * The concatenation is a tail-pointer splice of a FRESH copy of each piece, not a left
+ * fold over the shared {@code _append} helper: folding copied the whole accumulator per
+ * piece (quadratic) through a call that itself recursed per element (linear stack depth),
+ * so a long input list was a slow crash rather than a slow call (.todo/749). The result
+ * is fully fresh, matching the interpreter's right fold piece for piece.
  */
 final class JvmMapcanCompiler {
 
@@ -52,11 +58,21 @@ final class JvmMapcanCompiler {
 			listSlots.add(listSlot);
 		}
 
-		// result = null
-		int resultSlot = ctx.allocTemp();
-		ctx.emit(Opcode.ACONST_NULL);
+		// Sentinel head and its tail: every piece's fresh copy is linked here, so
+		// the walk is linear in the total output rather than quadratic in it.
+		ctx.emit(Opcode.ICONST_2);
+		ctx.emit(Opcode.ANEWARRAY);
+		ctx.emitU2(ctx.objectClass.index());
+		int headSlot = ctx.allocTemp();
 		ctx.emit(Opcode.ASTORE);
-		ctx.emit(resultSlot);
+		ctx.emit(headSlot);
+		ctx.emit(Opcode.ALOAD);
+		ctx.emit(headSlot);
+		int tailSlot = ctx.allocTemp();
+		ctx.emit(Opcode.ASTORE);
+		ctx.emit(tailSlot);
+		int cursorSlot = ctx.allocTemp();
+		int freshSlot = ctx.allocTemp();
 
 		// loop:
 		int loopPos = ctx.code.size();
@@ -80,15 +96,69 @@ final class JvmMapcanCompiler {
 		ctx.emit(Opcode.ASTORE);
 		ctx.emit(mappedSlot);
 
-		// result = _append(result, mapped)
-		ctx.emit(Opcode.ALOAD);
-		ctx.emit(resultSlot);
+		// A nil piece contributes nothing; anything else is spliced in as a fresh
+		// copy below. A non-list piece fails the copy's CHECKCAST, signalling like
+		// the interpreter's append over it does.
 		ctx.emit(Opcode.ALOAD);
 		ctx.emit(mappedSlot);
-		ctx.emit(Opcode.INVOKESTATIC);
-		ctx.emitU2(ctx.appendMethod.index());
+		int skipPiecePos = ctx.code.size();
+		ctx.emit(Opcode.IFNULL);
+		ctx.emitU2(0);
+		// cursor = mapped
+		ctx.emit(Opcode.ALOAD);
+		ctx.emit(mappedSlot);
 		ctx.emit(Opcode.ASTORE);
-		ctx.emit(resultSlot);
+		ctx.emit(cursorSlot);
+		// piece loop: fresh = {car(cursor), null}; tail[1] = fresh; tail = fresh
+		int piecePos = ctx.code.size();
+		ctx.emit(Opcode.ALOAD);
+		ctx.emit(cursorSlot);
+		int pieceDonePos = ctx.code.size();
+		ctx.emit(Opcode.IFNULL);
+		ctx.emitU2(0);
+		ctx.emit(Opcode.ICONST_2);
+		ctx.emit(Opcode.ANEWARRAY);
+		ctx.emitU2(ctx.objectClass.index());
+		ctx.emit(Opcode.DUP);
+		ctx.emit(Opcode.ICONST_0);
+		ctx.emit(Opcode.ALOAD);
+		ctx.emit(cursorSlot);
+		ctx.emit(Opcode.CHECKCAST);
+		ctx.emitU2(ctx.objectArrayClass.index());
+		ctx.emit(Opcode.ICONST_0);
+		ctx.emit(Opcode.AALOAD);
+		ctx.emit(Opcode.AASTORE);
+		ctx.emit(Opcode.ASTORE);
+		ctx.emit(freshSlot);
+		ctx.emit(Opcode.ALOAD);
+		ctx.emit(tailSlot);
+		ctx.emit(Opcode.CHECKCAST);
+		ctx.emitU2(ctx.objectArrayClass.index());
+		ctx.emit(Opcode.ICONST_1);
+		ctx.emit(Opcode.ALOAD);
+		ctx.emit(freshSlot);
+		ctx.emit(Opcode.AASTORE);
+		ctx.emit(Opcode.ALOAD);
+		ctx.emit(freshSlot);
+		ctx.emit(Opcode.ASTORE);
+		ctx.emit(tailSlot);
+		// cursor = cdr(cursor); goto piece loop
+		ctx.emit(Opcode.ALOAD);
+		ctx.emit(cursorSlot);
+		ctx.emit(Opcode.CHECKCAST);
+		ctx.emitU2(ctx.objectArrayClass.index());
+		ctx.emit(Opcode.ICONST_1);
+		ctx.emit(Opcode.AALOAD);
+		ctx.emit(Opcode.ASTORE);
+		ctx.emit(cursorSlot);
+		int pieceAgainPos = ctx.code.size();
+		ctx.emit(Opcode.GOTO);
+		int pieceOffset = piecePos - pieceAgainPos;
+		ctx.emitU2(pieceOffset & 0xFFFF);
+		int pieceDoneTarget = ctx.code.size();
+		JvmEmitHelper.patchBranch(ctx, pieceDonePos, pieceDoneTarget);
+		int advancePos = ctx.code.size();
+		JvmEmitHelper.patchBranch(ctx, skipPiecePos, advancePos);
 
 		// advance each list: list = cdr(list) = ((Object[]) list)[1]
 		for (int listSlot : listSlots) {
@@ -108,13 +178,17 @@ final class JvmMapcanCompiler {
 		int offset = loopPos - gotoPos;
 		ctx.emitU2(offset & 0xFFFF);
 
-		// exit: load result
+		// exit: load head[1] (cdr of sentinel = first real cons or null)
 		int exitPos = ctx.code.size();
 		for (int branchPos : exitBranches) {
 			JvmEmitHelper.patchBranch(ctx, branchPos, exitPos);
 		}
 		ctx.emit(Opcode.ALOAD);
-		ctx.emit(resultSlot);
+		ctx.emit(headSlot);
+		ctx.emit(Opcode.CHECKCAST);
+		ctx.emitU2(ctx.objectArrayClass.index());
+		ctx.emit(Opcode.ICONST_1);
+		ctx.emit(Opcode.AALOAD);
 	}
 
 	// car(list) = ((Object[]) list)[0]
