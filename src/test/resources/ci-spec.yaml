@@ -1239,6 +1239,29 @@ cases:
       (1 2)
       (1 2)
       (1 2 3)
+  - name: append-long-first-argument
+    source: |
+      ;; A first argument far past any plausible stack: the copy is built
+      ;; iteratively on all four backends (.todo/749), so this answers instead
+      ;; of overflowing. mapcan/mapcon accumulate through a tail pointer for
+      ;; the same reason -- a left fold over the copy would be quadratic.
+      (print (length (append (make-list 100000) nil)))
+      (print (length (append (make-list 100000) '(a b c))))
+      (print (car (nthcdr 99999 (append (make-list 100000 :initial-element 7) nil))))
+      (print (length (mapcan #'list (make-list 100000 :initial-element 9))))
+      (print (length (mapcan (lambda (x) (list x x)) (make-list 50000 :initial-element 9))))
+      (print (length (let ((n 0))
+                       (mapcon (lambda (tail)
+                                 (setq n (1+ n))
+                                 (if (evenp n) (list (car tail)) nil))
+                               (make-list 100000 :initial-element 9)))))
+    expected: |
+      100000
+      100003
+      7
+      100000
+      100000
+      50000
   - name: convenience-macros-1-1
     source: |
       (print (1+ 5))

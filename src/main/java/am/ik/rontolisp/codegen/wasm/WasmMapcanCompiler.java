@@ -12,8 +12,14 @@ import am.ik.wasm.Type;
 /**
  * Compiles the {@code mapcan} built-in function. Generates a block/loop that applies a
  * function to the parallel elements of one or more lists and concatenates the resulting
- * lists using the shared {@code _append} runtime helper (non-destructive append rather
- * than nconc). With multiple lists the loop stops at the shortest one.
+ * lists. With multiple lists the loop stops at the shortest one.
+ *
+ * <p>
+ * The concatenation is a tail-pointer splice of a FRESH copy of each piece, not a left
+ * fold over the shared {@code _append} helper: folding copied the whole accumulator per
+ * piece (quadratic) through a call that itself recursed per element (linear stack depth),
+ * so a long input list was a slow crash rather than a slow call (.todo/749). The result
+ * is fully fresh, matching the interpreter's right fold piece for piece.
  */
 final class WasmMapcanCompiler {
 
@@ -45,12 +51,24 @@ final class WasmMapcanCompiler {
 			listSlots.add(listSlot);
 		}
 
-		// result = null
-		int resultSlot = ctx.allocTemp();
+		// Sentinel head and its tail: every piece's fresh copy is linked here, so
+		// the walk is linear in the total output rather than quadratic in it.
 		ctx.writer.write(Instruction.REF_NULL);
 		ctx.writer.writeHeapType(Type.EQ.code());
+		ctx.writer.write(Instruction.REF_NULL);
+		ctx.writer.writeHeapType(Type.EQ.code());
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.STRUCT_NEW);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TYPE_CONS);
+		int headSlot = ctx.allocTemp();
 		ctx.writer.write(Instruction.SET_LOCAL);
-		ctx.writer.writeUnsignedLeb128(resultSlot);
+		ctx.writer.writeUnsignedLeb128(headSlot);
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(headSlot);
+		int tailSlot = ctx.allocTemp();
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(tailSlot);
+		int cursorSlot = ctx.allocTemp();
+		int freshSlot = ctx.allocTemp();
 
 		int mappedSlot = ctx.allocTemp();
 
@@ -77,15 +95,66 @@ final class WasmMapcanCompiler {
 		ctx.writer.write(Instruction.SET_LOCAL);
 		ctx.writer.writeUnsignedLeb128(mappedSlot);
 
-		// result = _append(result, mapped)
-		ctx.writer.write(Instruction.GET_LOCAL);
-		ctx.writer.writeUnsignedLeb128(resultSlot);
+		// A nil piece contributes nothing; anything else is spliced in as a fresh
+		// copy below. A non-list piece fails the copy's ref.cast, trapping like the
+		// interpreter's append over it signals.
 		ctx.writer.write(Instruction.GET_LOCAL);
 		ctx.writer.writeUnsignedLeb128(mappedSlot);
-		ctx.writer.write(Instruction.CALL);
-		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.FUNC_APPEND);
+		ctx.writer.write(Instruction.REF_IS_NULL);
+		ctx.writer.write(Instruction.IF, 0x40);
+		ctx.writer.write(Instruction.ELSE);
+		// cursor = mapped
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(mappedSlot);
 		ctx.writer.write(Instruction.SET_LOCAL);
-		ctx.writer.writeUnsignedLeb128(resultSlot);
+		ctx.writer.writeUnsignedLeb128(cursorSlot);
+		// block $piece / loop $copy: fresh = cons(cursor.car, null);
+		// tail.cdr = fresh; tail = fresh; cursor = cursor.cdr
+		ctx.writer.write(Instruction.BLOCK, 0x40); // $piece
+		ctx.writer.write(Instruction.LOOP, 0x40); // $copy
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(cursorSlot);
+		ctx.writer.write(Instruction.REF_IS_NULL);
+		ctx.writer.write(Instruction.BR_IF, 1); // break to $piece
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(cursorSlot);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.REF_CAST);
+		ctx.writer.writeHeapType(WasmLispCompiler.TYPE_CONS);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.STRUCT_GET);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TYPE_CONS);
+		ctx.writer.writeUnsignedLeb128(0); // car
+		ctx.writer.write(Instruction.REF_NULL);
+		ctx.writer.writeHeapType(Type.EQ.code());
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.STRUCT_NEW);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TYPE_CONS);
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(freshSlot);
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(tailSlot);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.REF_CAST);
+		ctx.writer.writeHeapType(WasmLispCompiler.TYPE_CONS);
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(freshSlot);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.STRUCT_SET);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TYPE_CONS);
+		ctx.writer.writeUnsignedLeb128(1); // cdr
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(freshSlot);
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(tailSlot);
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(cursorSlot);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.REF_CAST);
+		ctx.writer.writeHeapType(WasmLispCompiler.TYPE_CONS);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.STRUCT_GET);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TYPE_CONS);
+		ctx.writer.writeUnsignedLeb128(1); // cdr
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(cursorSlot);
+		ctx.writer.write(Instruction.BR, 0); // continue $copy
+		ctx.writer.write(Instruction.END); // end loop $copy
+		ctx.writer.write(Instruction.END); // end block $piece
+		ctx.writer.write(Instruction.END); // end if (nil piece)
 
 		// advance each list: list = cdr(list)
 		for (int listSlot : listSlots) {
@@ -105,9 +174,14 @@ final class WasmMapcanCompiler {
 		ctx.writer.write(Instruction.END); // end loop
 		ctx.writer.write(Instruction.END); // end block
 
-		// Result
+		// Result: head.cdr (cdr of sentinel)
 		ctx.writer.write(Instruction.GET_LOCAL);
-		ctx.writer.writeUnsignedLeb128(resultSlot);
+		ctx.writer.writeUnsignedLeb128(headSlot);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.REF_CAST);
+		ctx.writer.writeHeapType(WasmLispCompiler.TYPE_CONS);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.STRUCT_GET);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TYPE_CONS);
+		ctx.writer.writeUnsignedLeb128(1); // cdr
 	}
 
 	private static void emitCar(WasmLispCompiler.Ctx ctx, int slot) {

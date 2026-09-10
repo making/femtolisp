@@ -7126,10 +7126,29 @@ public final class Environment implements Scope {
 		if (list instanceof LispNil) {
 			return tail;
 		}
-		if (list instanceof LispCons cons) {
-			return new LispCons(cons.car(), appendTwo(cons.cdr(), tail));
+		if (!(list instanceof LispCons head)) {
+			throw new LispEvalException("append expects a list, got: " + list.print());
 		}
-		throw new LispEvalException("append expects a list, got: " + list.print());
+		// Iterative (.todo/749): the recursive spelling allocated its result by
+		// recursing once per element, so a long first argument was a
+		// StackOverflowError rather than a slow call. Walk forward, cons as you go,
+		// and patch the last cdr to the shared tail; the result is unchanged (a
+		// fresh spine, the tail shared) and an improper first argument still
+		// signals with the same message.
+		LispCons result = new LispCons(head.car(), LispNil.INSTANCE);
+		LispCons last = result;
+		LispVal cursor = head.cdr();
+		while (cursor instanceof LispCons cell) {
+			LispCons fresh = new LispCons(cell.car(), LispNil.INSTANCE);
+			last.setCdr(fresh);
+			last = fresh;
+			cursor = cell.cdr();
+		}
+		if (!(cursor instanceof LispNil)) {
+			throw new LispEvalException("append expects a list, got: " + list.print());
+		}
+		last.setCdr(tail);
+		return result;
 	}
 
 	/**
