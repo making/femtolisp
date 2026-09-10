@@ -44,8 +44,16 @@ Why cuts are safe:
   every form's value is dropped and `_start` returns nothing.
 - **`GlobalVarCollector` collects assignments nested at any depth**, not only head
   position, and is deliberately blind to lexical scope. Without this, one nested `setq`
-  anywhere disables chunking entirely — `WasmToplevelEmit` stops cutting the moment a
-  chunk allocates a named local, the correctness backstop.
+  anywhere would bind a chunk-local a later chunk cannot see.
+- **A cut waits while a chunk-bound name is still read later.** `WasmToplevelEmit` cuts
+  only where no name bound since the chunk opened occurs again in a later form -- every
+  non-quoted symbol counts as a read, so the check can only refuse a cut, never allow a
+  bad one. The previous backstop was a latch: the first allocating form disabled every
+  later cut, rebuilding the one unbounded body the chunker exists to prevent (.todo/455;
+  measured 2026-09-10, no reachable program trips it anymore -- every binder restores,
+  and every backend-time expansion that assigns is let-wrapped -- but one future escape
+  would have OOM-killed the runner again). A pinning form now only delays cuts past its
+  last reader, then cutting resumes.
 - `Ctx.definedGlobals` is SHARED by `WasmAsyncEmit.freshCtx`; a per-`Ctx` copy would let
   two chunks initialise one name.
 - Chunks are registered during Pass 2b: Pass 2c picks up entries appended while it runs;

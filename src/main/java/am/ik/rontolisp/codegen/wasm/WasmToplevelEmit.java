@@ -1,9 +1,13 @@
 package am.ik.rontolisp.codegen.wasm;
 
 import java.io.ByteArrayOutputStream;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+import am.ik.rontolisp.LispCons;
+import am.ik.rontolisp.LispNames;
+import am.ik.rontolisp.LispSymbol;
 import am.ik.rontolisp.LispVal;
 import am.ik.rontolisp.compiler.ToplevelStatements;
 import am.ik.wasm.Instruction;
@@ -71,18 +75,20 @@ final class WasmToplevelEmit {
 	static void emit(List<LispVal> exprs, WasmLispCompiler.Ctx start, @Nullable Set<String> boxedVars,
 			boolean guarded) {
 		Chunk chunk = null;
-		// A named local allocated in a chunk cannot be read from the next one. Every
-		// top-level assignment is backed by a module global instead -- GlobalVarCollector
-		// collects nested assignments precisely so the top level allocates none -- so
-		// this should never trip; if it does, stop cutting rather than outline a reader
-		// away from its variable. A program that trips it merely compiles as one chunk,
-		// the way the whole top level used to.
-		boolean pinnedByLocals = false;
-		for (LispVal expr : exprs) {
+		// A named local allocated in a chunk cannot be read from the next one: every
+		// chunk compiles under a fresh context, so a cut between the allocating form
+		// and a form that reads the name would outline the reader away from its
+		// variable. Every top-level assignment is backed by a module global instead
+		// -- GlobalVarCollector collects nested assignments precisely so the top
+		// level allocates none -- so a cut is refused only while a name bound since
+		// the chunk opened is still read by a later form. Once past the last such
+		// reader the chunk closes and cutting resumes; a pinning form delays cuts,
+		// it no longer disables them for the rest of the program.
+		for (int i = 0; i < exprs.size(); i++) {
+			LispVal expr = exprs.get(i);
 			if (chunk == null) {
 				chunk = openChunk(start, boxedVars);
 			}
-			int localsBefore = chunk.ctx.locals.size();
 			// Statement position: the chunk drops whatever the form returns, so a definer
 			// that returns nothing but the name it just bound is offered the chance to
 			// emit no name at all rather than push the symbol only to pop it
@@ -100,10 +106,7 @@ final class WasmToplevelEmit {
 			if (!taken) {
 				chunk.writer.write(Instruction.DROP);
 			}
-			if (chunk.ctx.locals.size() > localsBefore) {
-				pinnedByLocals = true;
-			}
-			if (!pinnedByLocals && chunk.body.size() >= CHUNK_TARGET_BYTES) {
+			if (chunk.body.size() >= CHUNK_TARGET_BYTES && !readsChunkLocal(exprs, i, chunk.ctx)) {
 				closeChunk(chunk, start, guarded);
 				chunk = null;
 			}
@@ -111,6 +114,67 @@ final class WasmToplevelEmit {
 		if (chunk != null) {
 			closeChunk(chunk, start, guarded);
 		}
+	}
+
+	/**
+	 * Returns the names bound in the chunk's scoped maps: every chunk compiles under a
+	 * fresh context, so any entry here was allocated by a form of the current chunk and
+	 * dies with it. The maps are keyed by name and restored together on scope exit
+	 * ({@code WasmLetCompiler}); what matters is the name, never the slot.
+	 */
+	private static Set<String> chunkBoundNames(WasmLispCompiler.Ctx ctx) {
+		if (ctx.locals.isEmpty() && ctx.rawLocals.isEmpty() && ctx.localIntLambdas.isEmpty()
+				&& ctx.declaredArrays.isEmpty() && ctx.arrayLocals.isEmpty()) {
+			return Set.of();
+		}
+		Set<String> names = new HashSet<>(ctx.locals.keySet());
+		names.addAll(ctx.rawLocals.keySet());
+		names.addAll(ctx.localIntLambdas.keySet());
+		names.addAll(ctx.declaredArrays.keySet());
+		names.addAll(ctx.arrayLocals);
+		return names;
+	}
+
+	/**
+	 * Whether any form after {@code index} may read a name bound in the current chunk.
+	 * Cutting there would outline the reader away from its variable, so the cut waits for
+	 * a boundary past the last such reader.
+	 * <p>
+	 * Deliberately over-approximate: every non-quoted symbol occurrence counts as a read,
+	 * whatever position it holds. That can only refuse a cut, never allow a bad one --
+	 * and a quoted symbol can never name a chunk local (a read evaluates; quote
+	 * suppresses evaluation, and the runtime name operators read globals, never locals).
+	 * The common case costs nothing: no bound name means no scan.
+	 * @param exprs the run being chunked
+	 * @param index the form just compiled
+	 * @param ctx the chunk's context
+	 * @return {@code true} when the cut must wait
+	 */
+	static boolean readsChunkLocal(List<LispVal> exprs, int index, WasmLispCompiler.Ctx ctx) {
+		Set<String> bound = chunkBoundNames(ctx);
+		if (bound.isEmpty()) {
+			return false;
+		}
+		for (int j = index + 1; j < exprs.size(); j++) {
+			if (mentions(exprs.get(j), bound)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** Whether the form mentions any of the names outside of quoted data. */
+	private static boolean mentions(LispVal form, Set<String> names) {
+		if (form instanceof LispSymbol s) {
+			return names.contains(s.name());
+		}
+		if (form instanceof LispCons cons) {
+			if (cons.car() instanceof LispSymbol head && LispNames.QUOTE.equals(head.name())) {
+				return false;
+			}
+			return mentions(cons.car(), names) || mentions(cons.cdr(), names);
+		}
+		return false;
 	}
 
 	private record Chunk(WasmLispCompiler.Ctx ctx, WasmWriter writer, ByteArrayOutputStream body, int lambdaIdx,
