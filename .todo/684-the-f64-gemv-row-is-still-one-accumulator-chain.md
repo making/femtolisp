@@ -24,8 +24,10 @@ measured, and the f32 numbers do not carry over unexamined:
 
 ## Do
 
-1. Extend `.todo/480-.../Acc.java` -- or a `DoubleVector` sibling of it -- to the f64 row
-   at 288x288, 1024x1024 and 4096x4096, 1/2/4/8 accumulators, under BOTH JITs (Graal and
+1. Extend `.todo/artefacts/480-the-simd-gemv-row-is-one-accumulator-chain/Acc.java` -- or a
+   `DoubleVector` sibling of it, or `Solo.java` beside it, which is the harness that ended
+   up trusted -- to the f64 row at 288x288, 1024x1024 and 4096x4096, 1/2/4/8 accumulators,
+   under BOTH JITs (Graal and
    `-XX:-UseJVMCICompiler`). Keep the harness's structure: dispatch ONCE per GEMV with the
    row loop inside the timed method. `.todo/480`'s first probe dispatched per row through
    a five-implementation interface, went megamorphic, stopped inlining the Vector API and

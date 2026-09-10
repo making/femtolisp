@@ -92,3 +92,66 @@ attention `V^T . att` is a GEMV whose COLUMNS are the sequence length, so one ca
 crosses the gate during a run, and the gate may depend on the column count and nothing
 else or the four `--simd` implementations stop agreeing bit for bit. Correctness over
 optimality, on purpose.
+
+## `Solo.java` on the GB10, and what it settles (2026-09-10)
+
+The numbers the harness section above said were still to be taken. Nine `one`-mode process
+pairs per shape per JIT (one kernel per process, so neither ever sees the other's profile),
+medians, GB10 idle at load 0.4-1.2, Oracle GraalVM 25.0.4. The ratio is
+1-accumulator ns over 4-accumulator ns, so above 1.00 the four chains win:
+
+| rows x cols | 256x16 | 256x24 | 256x31 | 256x32 | 256x48 | 256x64 | 256x96 | 256x128 | 256x256 | 288x288 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Graal | 1.74x | 1.34x | 1.05x | 1.35x | **0.96x** | 1.12x | 1.37x | 1.32x | 1.75x | 1.77x |
+| C2 | 0.83x | 0.56x | 0.62x | 0.87x | **0.89x** | 0.98x | 1.12x | 1.24x | 1.55x | 1.73x |
+
+Read three things off it.
+
+- **The clean instrument reproduces dorian's sign at 48 columns**: 0.96x / 0.89x here
+  against dorian's 0.88-0.97x / 0.74-0.93x. `Gate.java` reported 1.21x / 1.15x for the same
+  shape. So the disagreement between the two harnesses is a property of `Gate.java`, not of
+  the box, and the section above is right about which one to believe.
+- **From 96 columns up both JITs agree with `Gate.java`'s direction** and the win is
+  larger than it reported (1.12-1.77x against 1.26-1.78x). Every column count a real model
+  uses for its big GEMVs is here.
+- **Below the gate the two JITs disagree with each other**, which is the other half of why
+  the gate is derived rather than fitted: Graal wins at 16 and 24 columns where C2 loses
+  0.83x / 0.56x. A gate fitted to either JIT's crossover would be wrong on the other, and
+  the shipped one (32) is on the safe side of C2's.
+
+**And the model says the difference between the gate at 32 and the gate at 96 is a wash.**
+Twelve alternating triples of `examples/llm/llm.lisp` compiled to a `.class` with `--simd`,
+stories15M, `-t 0 -i "Once upon a time"`, 256 tokens, one thread, GB10 idle; three builds of
+the same tree differing only in `JvmSimdVectorTemplate.MATVEC_ACC_THRESHOLD` (`Integer.MAX_VALUE`
+= the pre-`480` single chain, 32 = shipped, 96 = the drafted threshold, which puts
+stories15M's 48-column attention GEMVs back on the single chain):
+
+| build | median tok/s | paired median ratio against the shipped 32 |
+| --- | --- | --- |
+| single chain (gate off) | 343.9 | 0.88x -- i.e. **the shipped gate is 1.13x**, all twelve pairs above 1.0 (1.05-1.21) |
+| gate 32 (shipped) | 393.1 | -- |
+| gate 96 | 402.6 | 1.001x, the twelve pairs spread 0.91-1.10 across 1.0 |
+
+So the 48-column loss the clean probe reports is real at the kernel and invisible at the
+model, on the box where every number in this item was taken -- the same conclusion dorian
+reached from the opposite direction (a 1.062x model win where its solo probe said 0.74-0.97x).
+**The gate stays at 32**: 96 is not measurably better on a model, and 32 is derived from the
+kernel's shape rather than fitted to a crossover that the two JITs do not even agree on.
+
+The 256-token story is byte-identical across all three builds, which is what the greedy
+argmax is expected to do with a moved fold order and is worth re-stating: the gate changes
+bits, not text.
+
+## The head-dimension bullet, audited (2026-09-10)
+
+The item's last unverified condition -- "no end-to-end run has proved a head dimension other
+than 48" -- fired on 2026-09-06 and was never read back (`.todo/670`, standing rule 11). The
+audit, from runs that have already happened:
+
+- `.todo/489` closed with Qwen3.5-0.8B running end to end, `head_dim` 128
+  (`examples/llm/README.md`), on the four backends.
+- `.todo/728` then ran that model's seven GEMV shapes on the device against the CPU contract.
+- TinyLlama-1.1B and SmolLM2 (64), Qwen3-0.6B and Qwen3.5's Gated DeltaNet product (128) and
+  LFM2.5-1.2B have all decoded since.
+
+Nothing needed to be scheduled; the bullet was an audit, and it closes green.
