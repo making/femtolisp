@@ -271,8 +271,9 @@ the shapes measured here* until someone widens it.
   machine 2026-09-05 at 32 threads: TinyLlama-1.1B 39 GB/s, Qwen3.5-0.8B 29, Qwen3-0.6B
   22 -- and the ordering was predicted from access shape (plain-llama's big matvecs above
   Gated DeltaNet's 576 small 128x128 GEMVs per token) before those numbers were taken.
-  `.todo/670`'s "two independent models on one ceiling" is being corrected on the strength
-  of it. That is a different box and a whole-model measurement rather than a kernel one,
+  The umbrella's then-claim (`.todo/670`, 2026-09-05: "two independent models on one
+  ceiling") was corrected on the strength of it; the correction stands in
+  `.kb/simd-parallel.md`. That is a different box and a whole-model measurement rather than a kernel one,
   so it does not transfer -- but it removes the prior that a parallel GEMV rate measured
   on one workload is a property of the machine.
 

@@ -145,7 +145,7 @@ bits, not text.
 ## The head-dimension bullet, audited (2026-09-10)
 
 The item's last unverified condition -- "no end-to-end run has proved a head dimension other
-than 48" -- fired on 2026-09-06 and was never read back (`.todo/670`, standing rule 11). The
+than 48" -- fired on 2026-09-06 and was never read back (`.kb/lanes-and-certification.md`, standing rule 11). The
 audit, from runs that have already happened:
 
 - `.todo/489` closed with Qwen3.5-0.8B running end to end, `head_dim` 128

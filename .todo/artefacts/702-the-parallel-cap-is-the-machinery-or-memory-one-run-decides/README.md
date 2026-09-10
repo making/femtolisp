@@ -113,11 +113,11 @@ serial column already shows.
   parallel is a **small, undersubscribed** shape like 256x256, where dispatch overhead
   dominates regardless of what is being multiplied -- a machinery cap, but a local one,
   not a global one.
-- **`dorian`'s per-model scaling curves (`.todo/670`) are not explained away by this
+- **`dorian`'s per-model scaling curves (`examples/llm/README.md`, the per-width table) are not explained away by this
   result.** This sweep is one kernel at one box; it shows the parallel rate is
   shape-dependent even within ONE box's cache hierarchy, which if anything makes it more
   plausible (not less) that dorian's differing 1->32 thread scaling per model
-  (`.todo/670`) reflects real differences in how each model's matvec shapes interact
+  (the same table) reflects real differences in how each model's matvec shapes interact
   with dorian's own cache/thread-count arithmetic, rather than one property of "how the
   model streams" or one property of "how the work was cut up" -- both are live, and
   which dominates for a given model's shape is exactly as answerable as this item's

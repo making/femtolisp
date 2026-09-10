@@ -349,7 +349,7 @@ BF16; `TinyLlama/TinyLlama-1.1B-Chat-v1.0` 201 tensors, all BF16 (`lm_head.weigh
 the same models as BF16 / F16 / Q8_0 / Q4_K_M, with the tokenizer and the hyperparameters
 in the same file; the GGUF already in this box's Hugging Face cache is a Q4_K_XL model
 with a BF16 `mmproj` beside it (BF16 weights, F32 biases). That is the input side of
-`.todo/670`.
+`.todo/670` (closed 2026-09-10: it runs, in three formats).
 
 ## 7. The one-thread ratios are conditional on the accumulator count (2026-09-03)
 

@@ -2,7 +2,8 @@
 
 Taken 2026-09-06 on **GB10** (aarch64 Cortex-X925, 20 cores, 121 GB, CUDA, GraalVM 25.0.4,
 load average 0.00 at the start), base commit `d18b0d6d5` -- `.todo/723` and `.todo/725`
-both already in, which is the denominator `.todo/670`'s B-3 row said had to move first.
+both already in, which is the denominator the umbrella's lane plan (`.todo/670`, closed 2026-09-10) said
+had to move first.
 
 **The verdict: the change was refused.** `am.ik.gpu.CudaDriver`'s handles stay `private
 final` INSTANCE fields. What the item saw in a profile is 0.7-1.2 ns per downcall in
