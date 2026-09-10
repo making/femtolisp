@@ -2,8 +2,8 @@
 
 Difficulty: Medium
 
-Needs a macOS box: neither Linux calibration box (`.kb/lanes-and-certification.md`) can reach
-`objc:`, so it is parked there rather than deferred -- no lane on them can even fail it.
+Needs a macOS box: neither Linux calibration box (dorian, x86-64; GB10, aarch64) can reach
+`objc:`, so it is parked rather than deferred -- no lane on them can even fail it.
 
 `objc:send` promises that a wrong selector, arity or operand type is an `ObjcException` ->
 a Lisp `error`, never a crash (`.kb/objc.md`). A VARIADIC selector breaks that promise.

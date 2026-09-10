@@ -246,8 +246,7 @@ rather than by location. The `examples/wit/` group is four, with two more under
 The second one decayed while this card was being written. 708 cited the two certification
 rows above as "`.todo/670` line 186" and "line 159" -- correct when written, and by
 2026-09-06 both the line numbers and the rows themselves were gone, 670 having been
-compacted twice to the record plus pointers (and on 2026-09-10 closed, its rules moved to
-`.kb/lanes-and-certification.md`). The durable copies are 708's own quotation of
+compacted twice to the record plus pointers, and closed on 2026-09-10. The durable copies are 708's own quotation of
 them and `3506e227`'s commit message, which is why item 4 cites those instead.
 
 An off-by-one nobody can act on is harmless, and a stale line number costs a minute. They

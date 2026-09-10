@@ -2,8 +2,9 @@
 
 Difficulty: Low
 
-Filed 2026-09-10 by `.todo/729`'s certification run on GB10 (aarch64, GraalVM 25.0.4). Rule 4 of
-`.kb/lanes-and-certification.md`: this red is invisible from the x64 lane, which certifies `JvmLispCompilerTest` green.
+Filed 2026-09-10 by `.todo/729`'s certification run on GB10 (aarch64, GraalVM 25.0.4). The x64 box runs
+the full suite and only the aarch64 box runs the device legs, so this red is invisible from the
+x64 lane, which certifies `JvmLispCompilerTest` green.
 
 ## The red
 

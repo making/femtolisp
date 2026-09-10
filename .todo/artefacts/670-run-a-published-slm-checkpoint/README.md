@@ -1,8 +1,7 @@
 # The certifying report SETS, so the next run can diff the LIST
 
-`.todo/670` said twice (closed 2026-09-10; the rule now stands in
-`.kb/lanes-and-certification.md`, "Certification") that **what a run certifies is failures,
-errors and the report-file COUNT, never the totals**, and twice that the count has never closed to the unit because no
+`.todo/670` (closed 2026-09-10) said twice that **what a run certifies is failures, errors
+and the report-file COUNT, never the totals**, and twice that the count has never closed to the unit because no
 prior report SET survived to diff against. This directory is that set.
 
 One file per certification, `report-classes-<box>-<commit>.txt`: the basenames of
@@ -60,5 +59,7 @@ the two boxes.
 whose single error is in a class present on both boxes cannot be a dropped class, a renamed
 class or a skipped leg -- the three things a count alone cannot separate. It leaves one
 candidate, which turned out to be the box's own working directory (`.todo/748`, `.todo/749`;
-`.kb/lanes-and-certification.md` rule 16). **The set diff did not find the bug, but it eliminated every
+found only by a bisect that held the TREE constant and varied the commit alone -- four probes
+in four fresh worktrees had moved the working directory with the commit and named an innocent
+culprit). **The set diff did not find the bug, but it eliminated every
 explanation that was cheaper than looking.**

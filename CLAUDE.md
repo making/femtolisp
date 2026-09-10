@@ -180,8 +180,6 @@ Several sessions push to `develop` at once, so what you tested is not what you p
 - A semantic conflict passes `git merge` cleanly. When both sides touched one mechanism,
   read the other side's diff before pushing -- two changes to the same representation can
   each be correct alone and emit nonsense together.
-- Lane discipline for a session driving workers, the certification run and the standing
-  rules items cite by number: `.kb/lanes-and-certification.md`.
 - **Claim a `.todo/NNN` number, never pick one**: run
   `.todo/claim-number.sh "<why>" [count]` and use what it prints. Reading `.todo/` for
   the highest number cannot work however fresh the fetch is -- two differently-named
