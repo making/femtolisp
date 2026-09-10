@@ -30,6 +30,33 @@ final class JvmComplexCompiler {
 	}
 
 	/**
+	 * The holder-presence probe's field reference (.todo/757, minted in
+	 * {@code JvmLispCompiler}): every holder test below consults it before resolving the
+	 * travelling class. Created on demand like {@link #complexOp} -- only a site that
+	 * emits the probe names the field.
+	 */
+	static FieldrefConstant hasComplexField(JvmLispCompiler.Ctx ctx, String className) {
+		return ctx.cp.addFieldref(ctx.cp.addClass(ctx.cp.addUtf8(className)),
+				ctx.cp.addNameAndType(ctx.cp.addUtf8("_hasComplex"), ctx.cp.addUtf8("Z")));
+	}
+
+	/**
+	 * Emits the holder-presence probe: falls through when a holder instance can exist,
+	 * and returns the branch position the caller patches to the arm's end otherwise --
+	 * then the holder-less shape that follows is exact, because no holder instance can
+	 * exist without its class (.todo/757). Net zero on the operand stack (the flag is
+	 * pushed and popped above whatever is live).
+	 */
+	static int emitNoHolderJump(JvmLispCompiler.Ctx ctx, String className) {
+		ctx.emit(Opcode.GETSTATIC);
+		ctx.emitU2(hasComplexField(ctx, className).index());
+		int pos = ctx.code.size();
+		ctx.emit(Opcode.IFEQ);
+		ctx.emitU2(0);
+		return pos;
+	}
+
+	/**
 	 * A reference to a gated {@code _c*} helper, created on demand: the helper may be
 	 * emitted later (or on a retry with the group forced on), so call sites must not look
 	 * it up in the always-present map -- the same reason every other gated runtime builds
@@ -93,9 +120,20 @@ final class JvmComplexCompiler {
 			return;
 		}
 		JvmExprCompiler.compileExpr(args.get(1), ctx, className);
+		// The presence probe first: a lone class run without the travelling file
+		// answers nil without resolving the holder class it then never touches
+		// (.todo/757) -- exact, since no holder can exist then.
+		int noHolderPos = emitNoHolderJump(ctx, className);
 		ctx.emit(Opcode.INSTANCEOF);
 		ctx.emitU2(complexClass(ctx).index());
 		JvmEmitHelper.emitBoolFromInt(ctx);
+		int donePos = ctx.code.size();
+		ctx.emit(Opcode.GOTO);
+		ctx.emitU2(0);
+		JvmEmitHelper.patchBranch(ctx, noHolderPos, ctx.code.size());
+		ctx.emit(Opcode.POP);
+		ctx.emit(Opcode.ACONST_NULL);
+		JvmEmitHelper.patchBranch(ctx, donePos, ctx.code.size());
 	}
 
 	/** Compiles {@code (realp x)}: true for integers, ratios and floats. */
@@ -147,6 +185,10 @@ final class JvmComplexCompiler {
 		ctx.emit(Opcode.ASTORE);
 		ctx.emit(temp);
 		if (ctx.usesComplex) {
+			// The presence probe first: without the travelling file no holder
+			// can exist, so the real funnel below is the whole answer
+			// (.todo/757).
+			int noHolderPos = emitNoHolderJump(ctx, className);
 			ctx.emit(Opcode.ALOAD);
 			ctx.emit(temp);
 			ctx.emit(Opcode.INSTANCEOF);
@@ -163,7 +205,9 @@ final class JvmComplexCompiler {
 			int donePos = ctx.code.size();
 			ctx.emit(Opcode.GOTO);
 			ctx.emitU2(0);
-			JvmEmitHelper.patchBranch(ctx, ifRealPos, ctx.code.size());
+			int realPos = ctx.code.size();
+			JvmEmitHelper.patchBranch(ctx, ifRealPos, realPos);
+			JvmEmitHelper.patchBranch(ctx, noHolderPos, realPos);
 			emitRealCheck(ctx, temp);
 			JvmEmitHelper.patchBranch(ctx, donePos, ctx.code.size());
 		}
@@ -203,6 +247,10 @@ final class JvmComplexCompiler {
 		ctx.emit(Opcode.ASTORE);
 		ctx.emit(temp);
 		if (ctx.usesComplex) {
+			// The presence probe first: without the travelling file no holder
+			// can exist, so the real zero below is the whole answer
+			// (.todo/757).
+			int noHolderPos = emitNoHolderJump(ctx, className);
 			ctx.emit(Opcode.ALOAD);
 			ctx.emit(temp);
 			ctx.emit(Opcode.INSTANCEOF);
@@ -219,7 +267,9 @@ final class JvmComplexCompiler {
 			int donePos = ctx.code.size();
 			ctx.emit(Opcode.GOTO);
 			ctx.emitU2(0);
-			JvmEmitHelper.patchBranch(ctx, ifRealPos, ctx.code.size());
+			int realPos = ctx.code.size();
+			JvmEmitHelper.patchBranch(ctx, ifRealPos, realPos);
+			JvmEmitHelper.patchBranch(ctx, noHolderPos, realPos);
 			emitZeroForReal(ctx, temp);
 			JvmEmitHelper.patchBranch(ctx, donePos, ctx.code.size());
 		}

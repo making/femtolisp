@@ -46,6 +46,24 @@ created only under the gate (nullable holder refs, `ctx.usesComplex`
 emissions, nullable print refs); helper calls use on-demand refs plus the
 force-on retry.
 
+## The holder-presence probe (`.todo/757`, 2026-09-10)
+
+The gate over-approximates: dead `sqrt` arms in an unpruned splice keep it
+open, and callers the dispatchers keep alive defeat a reachability re-check,
+so a gate-on class can still run where its `RontoComplex.class` file is
+absent. Every holder TEST (the `numberp`/`complexp`/`realpart`/`imagpart`
+inline shapes, the `_cmpb`/`_abs`/`_signum`/`_min`/`_max`/`_dbl` arms, the
+printer dispatch, the `_eval` self-eval arm) therefore consults the `static
+final boolean _hasComplex` probe first -- set once in `<clinit>` by a
+`Class.forName` that catches `ClassNotFoundException` -- and takes its
+holder-less shape when the class did not load. Exact, not heuristic: no
+holder instance can exist without its class. Only the constructor paths (the
+`_c*` helpers) keep hard links: building a complex without its class is a
+genuinely missing file. Pinning test:
+`JvmLispCompilerTest#aComplexFreeArangeProgramRunsStandaloneWithoutTheHolder`
+(the lone-class run; the device-gated twin is
+`JvmLinalgGpuAccelCompilerTest#aLazyResultAllocatesNoHostArrayOnTheCompiledBackend`).
+
 ## Call-site rules (`JvmComplexCompiler`, per-op gates)
 
 - `complex`/`conjugate`/`sqrt`/`phase` always call their helper (`sqrt`

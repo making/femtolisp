@@ -7167,6 +7167,29 @@ class JvmLispCompilerTest {
 	}
 
 	@Test
+	void aComplexFreeArangeProgramRunsStandaloneWithoutTheHolder() throws Exception {
+		// .todo/757: the spliced linalg.lisp mentions sqrt in defuns this program never
+		// calls (%la-fsqrt and friends), which opens the complex gate for a program
+		// that can never observe a complex. The lone class still carries the pool
+		// reference, but no executed path may resolve it: the holder-presence probe
+		// steers every type test to its holder-less shape when the travelling
+		// RontoComplex.class file is absent. The device-gated twin is
+		// JvmLinalgGpuAccelCompilerTest#aLazyResultAllocatesNoHostArrayOnTheCompiledBackend.
+		List<LispVal> program = am.ik.rontolisp.eval.LinalgLibrary
+			.process(LispReader.readAllFromString("(print (linalg:arange 1 5 :element-type 'single-float))"));
+		byte[] classBytes = new JvmLispCompiler("Test").compile(program);
+		Path dir = Files.createDirectories(this.tempDir.resolve("standalone-757"));
+		Files.write(dir.resolve("Test.class"), classBytes);
+		Process process = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java").toString(), "-cp",
+				dir.toString(), "Test")
+			.redirectErrorStream(true)
+			.start();
+		String out = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+		assertThat(process.waitFor()).as("standalone run:%n%s", out).isZero();
+		assertThat(out.trim()).isEqualTo("#f(1.0 2.0 3.0 4.0)");
+	}
+
+	@Test
 	void compileAndRunComplexOrderingSignalsCatchableTypeErrors() throws Exception {
 		assertThat(compileAndRun("""
 				(defun te-print (thunk)

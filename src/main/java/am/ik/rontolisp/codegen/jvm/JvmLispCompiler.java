@@ -1721,6 +1721,30 @@ public final class JvmLispCompiler implements LispCompiler {
 				|| referencesFunctionDesignator(program, closRegistry, LispNames.PHASE)
 				|| forcedGroups.contains(GROUP_COMPLEX);
 		this.needsComplexRuntime = usesComplex;
+		// The holder-presence probe (.todo/757): a class the gate opened can still
+		// run where its travelling RontoComplex.class file is absent (a lone
+		// .class in a bare directory) when the program never observes a complex --
+		// the gate over-approximates (dead sqrt arms in an unpruned splice keep it
+		// open, and callers the dispatchers keep alive defeat a reachability
+		// re-check), so every holder TEST consults this flag first and takes its
+		// holder-less shape when the class did not load. Exact, not heuristic: no
+		// holder instance can exist without its class. Only the constructor paths
+		// (the _c* helpers) keep hard links -- building a complex without its
+		// class is a genuinely missing file. Minted here, ahead of the constant
+		// pool write, so every site below shares the deduplicated entries.
+		final Utf8Constant hasComplexName = usesComplex ? cp.addUtf8("_hasComplex") : null;
+		final Utf8Constant hasComplexDesc = usesComplex ? cp.addUtf8("Z") : null;
+		final ConstantPool.FieldrefConstant hasComplexField = usesComplex ? cp.addFieldref(thisClass,
+				cp.addNameAndType(Objects.requireNonNull(hasComplexName), Objects.requireNonNull(hasComplexDesc)))
+				: null;
+		final ConstantPool.MethodrefConstant hasComplexProbe = usesComplex
+				? cp.addMethodref(cp.addClass(cp.addUtf8("java/lang/Class")),
+						cp.addNameAndType(cp.addUtf8("forName"), cp.addUtf8("(Ljava/lang/String;)Ljava/lang/Class;")))
+				: null;
+		final ConstantPool.StringConstant hasComplexTarget = usesComplex
+				? cp.addString("am.ik.rontolisp.runtime.RontoComplex") : null;
+		final ClassConstant hasComplexAbsent = usesComplex ? cp.addClass(cp.addUtf8("java/lang/ClassNotFoundException"))
+				: null;
 		JvmNumericRuntimeBuilder.NumericRuntime numericRuntime = JvmNumericRuntimeBuilder.build(cp, thisClass,
 				strvMethod, instanceLayoutClass, usesComplex);
 		final JvmComplexRuntimeBuilder.@Nullable ComplexRuntime complexRuntime = usesComplex
@@ -2411,6 +2435,7 @@ public final class JvmLispCompiler implements LispCompiler {
 				.invokeSpread(invokeSpread)
 				.functions(functions)
 				.complexValues(usesComplex)
+				.hasComplexField(hasComplexField)
 				.build();
 			if (usesEval) {
 				evalCode = JvmEvalRuntimeBuilder.buildEval(ec);
@@ -2757,11 +2782,11 @@ public final class JvmLispCompiler implements LispCompiler {
 				cp.addNameAndType(cp.addUtf8("imag"), cp.addUtf8("Ljava/lang/Object;"))) : null;
 		JvmRuntimeBuilder.@Nullable ComplexPrintRefs prin1Complex = usesComplex
 				? new JvmRuntimeBuilder.ComplexPrintRefs(rcClass, rcReal, rcImag, lispToStringMethod,
-						cp.addString("#C("), spaceStr, cp.addString(")"))
+						cp.addString("#C("), spaceStr, cp.addString(")"), hasComplexField)
 				: null;
 		JvmRuntimeBuilder.@Nullable ComplexPrintRefs princComplex = usesComplex
 				? new JvmRuntimeBuilder.ComplexPrintRefs(rcClass, rcReal, rcImag, lispToDisplayStringMethod,
-						cp.addString("#C("), spaceStr, cp.addString(")"))
+						cp.addString("#C("), spaceStr, cp.addString(")"), hasComplexField)
 				: null;
 		List<Integer> ltsCode = JvmRuntimeBuilder.buildLispToStringBody(longClass, doubleClass, stringClass,
 				objectArrayClass, integerClass, longToString, doubleToString, floatPrint, objectToString,
@@ -3050,7 +3075,7 @@ public final class JvmLispCompiler implements LispCompiler {
 				? cp.addFieldref(thisClass, cp.addNameAndType(streamsFieldName, streamsFieldDesc)) : null;
 		final @Nullable FieldrefConstant streamCountFieldRef = usesErrorOutput
 				? cp.addFieldref(thisClass, cp.addNameAndType(streamCountFieldName, streamCountFieldDesc)) : null;
-		final boolean initsClinit = seedsStandardStream || usesErrorOutput || topLevelInClinit;
+		final boolean initsClinit = seedsStandardStream || usesErrorOutput || topLevelInClinit || usesComplex;
 		final Utf8Constant standardOutputClinitName = initsClinit ? cp.addUtf8("<clinit>") : null;
 		final Utf8Constant standardOutputClinitDesc = initsClinit ? cp.addUtf8("()V") : null;
 
@@ -3117,6 +3142,18 @@ public final class JvmLispCompiler implements LispCompiler {
 					.writeU2(stdinReaderFieldName)
 					.writeU2(stdinReaderFieldDesc)
 					.writeU2(0));
+				if (usesComplex) {
+					// The holder-presence probe (.todo/757): whether the travelling
+					// RontoComplex class resolved, set once in <clinit> below.
+					// Final (a JIT constant after class init), and attribute-free
+					// like every other field -- JvmClassShaker rejects field
+					// attributes. The <clinit> store keeps the field alive for the
+					// shaker exactly when the class needs it.
+					f.add(w -> w.writeU2(AccessFlag.ACC_PRIVATE | AccessFlag.ACC_STATIC | AccessFlag.ACC_FINAL)
+						.writeU2(java.util.Objects.requireNonNull(hasComplexName))
+						.writeU2(java.util.Objects.requireNonNull(hasComplexDesc))
+						.writeU2(0));
+				}
 				if (secureRandomRuntime != null) {
 					f.add(w -> w.writeU2(JvmSecureRandomRuntimeBuilder.fieldAccessFlags())
 						.writeU2(secureRandomRuntime.fieldName())
@@ -3515,6 +3552,43 @@ public final class JvmLispCompiler implements LispCompiler {
 						tlFields.add(curThreadTlFieldRef);
 					}
 					List<Integer> clinitCode = new java.util.ArrayList<>();
+					// The holder-presence probe's single initialization (.todo/757):
+					// _hasComplex is true when the travelling RontoComplex class
+					// loads, false when a lone class runs without it beside it (then
+					// every holder test takes its holder-less shape, which is exact
+					// because no holder can exist). First, so the top level a
+					// <clinit> may run already sees the settled value. Peaks at one
+					// stack slot, under every declared clinit maximum.
+					final List<ByteCodeWriter.ExceptionTableEntry> clinitProbeTable;
+					if (usesComplex) {
+						List<Integer> probe = new java.util.ArrayList<>();
+						int tryStart = probe.size();
+						probe.add(Opcode.LDC_W);
+						JvmRuntimeBuilder.emitU2(probe, java.util.Objects.requireNonNull(hasComplexTarget).index());
+						probe.add(Opcode.INVOKESTATIC);
+						JvmRuntimeBuilder.emitU2(probe, java.util.Objects.requireNonNull(hasComplexProbe).index());
+						probe.add(Opcode.POP);
+						probe.add(Opcode.ICONST_1);
+						probe.add(Opcode.PUTSTATIC);
+						JvmRuntimeBuilder.emitU2(probe, java.util.Objects.requireNonNull(hasComplexField).index());
+						int toDone = probe.size();
+						probe.add(Opcode.GOTO);
+						JvmRuntimeBuilder.emitU2(probe, 0);
+						int handler = probe.size();
+						// The caught exception is on the stack on handler entry.
+						probe.add(Opcode.POP);
+						probe.add(Opcode.ICONST_0);
+						probe.add(Opcode.PUTSTATIC);
+						JvmRuntimeBuilder.emitU2(probe, java.util.Objects.requireNonNull(hasComplexField).index());
+						int done = probe.size();
+						JvmRuntimeBuilder.patchBranch(probe, toDone, done);
+						clinitCode.addAll(probe);
+						clinitProbeTable = List.of(new ByteCodeWriter.ExceptionTableEntry(tryStart, toDone, handler,
+								java.util.Objects.requireNonNull(hasComplexAbsent).index()));
+					}
+					else {
+						clinitProbeTable = List.of();
+					}
 					for (FieldrefConstant tlField : tlFields) {
 						clinitCode.add(Opcode.NEW);
 						JvmRuntimeBuilder.emitU2(clinitCode,
@@ -3643,7 +3717,7 @@ public final class JvmLispCompiler implements LispCompiler {
 								attr.writeU2(clinitMaxStack)
 									.writeU2(0)
 									.writeCode((Object[]) clinitCode.toArray(new Integer[0]))
-									.writeU2(0)
+									.writeExceptionTable(clinitProbeTable)
 									.writeU2(0);
 							})));
 				}

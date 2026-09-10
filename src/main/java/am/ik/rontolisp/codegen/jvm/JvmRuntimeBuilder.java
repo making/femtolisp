@@ -1070,6 +1070,14 @@ final class JvmRuntimeBuilder {
 		ClassConstant rcClass = java.util.Objects.requireNonNull(cplx.rcClass());
 		FieldrefConstant rcReal = java.util.Objects.requireNonNull(cplx.rcReal());
 		FieldrefConstant rcImag = java.util.Objects.requireNonNull(cplx.rcImag());
+		// The presence probe first: a lone class run without the travelling file
+		// falls through to the checks below without resolving the holder class
+		// (.todo/757) -- exact, since no holder can exist then.
+		code.add(Opcode.GETSTATIC);
+		emitU2(code, java.util.Objects.requireNonNull(cplx.hasComplex()).index());
+		int ifNoHolderPos = code.size();
+		code.add(Opcode.IFEQ);
+		emitU2(code, 0);
 		code.add(Opcode.ALOAD_0);
 		code.add(Opcode.INSTANCEOF);
 		emitU2(code, rcClass.index());
@@ -1102,6 +1110,7 @@ final class JvmRuntimeBuilder {
 		code.add(Opcode.INVOKEVIRTUAL);
 		emitU2(code, stringConcat.index());
 		code.add(Opcode.ARETURN);
+		patchBranch(code, ifNoHolderPos, code.size());
 		return ifNotComplexPos;
 	}
 
@@ -1869,7 +1878,7 @@ final class JvmRuntimeBuilder {
 			@org.jspecify.annotations.Nullable FieldrefConstant rcReal,
 			@org.jspecify.annotations.Nullable FieldrefConstant rcImag, MethodrefConstant selfStr,
 			ConstantPool.StringConstant openStr, ConstantPool.StringConstant spaceStr,
-			ConstantPool.StringConstant closeStr) {
+			ConstantPool.StringConstant closeStr, @org.jspecify.annotations.Nullable FieldrefConstant hasComplex) {
 	}
 
 	record PackedPrint(ClassConstant doubleArrayClass, ClassConstant floatArrayClass, ClassConstant shortArrayClass,

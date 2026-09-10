@@ -387,6 +387,12 @@ final class JvmNumericRuntimeBuilder {
 				? cp.addMethodref(thisClass, cp.addNameAndType(cp.addUtf8(JvmComplexRuntimeBuilder.SIGNUM),
 						cp.addUtf8(JvmComplexRuntimeBuilder.descFor(JvmComplexRuntimeBuilder.SIGNUM))))
 				: null;
+		// The holder-presence probe (.todo/757, minted in JvmLispCompiler): every
+		// holder arm below consults it before resolving the travelling class, so a
+		// lone class run without the file beside it takes the holder-less shape.
+		// Null exactly when the gate is off, like rcClass.
+		FieldrefConstant hasComplex = usesComplex
+				? cp.addFieldref(thisClass, cp.addNameAndType(cp.addUtf8("_hasComplex"), cp.addUtf8("Z"))) : null;
 		MethodrefConstant biShiftLeft = cp.addMethodref(bigClass,
 				cp.addNameAndType(cp.addUtf8("shiftLeft"), cp.addUtf8("(I)" + BIG)));
 		MethodrefConstant biTestBit = cp.addMethodref(bigClass,
@@ -581,20 +587,21 @@ final class JvmNumericRuntimeBuilder {
 		methods.add(buildCmp(nCmp, dCmp, longClass, longValue, rBig, biCompareTo, ratArrClass, rRatNum, rRatDen, biMul,
 				doubleClass, rDbl, numberClass, numDoubleValue));
 		methods.add(buildCmpBits(nCmpb, dCmp, doubleClass, rDbl, numberClass, numDoubleValue, rCmp, intSignum, rcClass,
-				rcReal, rcImag, longValueOf));
+				rcReal, rcImag, longValueOf, hasComplex));
 		methods.add(buildAbs(nAbs, dUnary, longClass, bigClass, longValue, longValueOf, absLong, biValueOf, biNeg,
 				biAbs, rNorm, cMin, ratArrClass, rRatNum, rRatDen, rRat, doubleClass, rDbl, numberClass, numDoubleValue,
-				doubleValueOf, absDouble, rBig, rcClass, rcReal, rcImag, mathHypot));
+				doubleValueOf, absDouble, rBig, rcClass, rcReal, rcImag, mathHypot, hasComplex));
 		methods.add(buildSignum(nSignum, dUnary, doubleClass, rDbl, numberClass, numDoubleValue, doubleValueOf,
-				signumDouble, rRatNum, biSignum, longValueOf, rcClass, rCsignum));
+				signumDouble, rRatNum, biSignum, longValueOf, rcClass, rCsignum, hasComplex));
 		methods.add(buildRandom(nRandom, dUnary, doubleClass, rDbl, numberClass, numDoubleValue, doubleValueOf,
 				longValueOf, tlrCurrent, tlrNextDouble));
-		methods.add(buildSelect(nMin, dBinary, rCmpb, CMPB_LT | CMPB_EQ, rcClass, typeErrRefs));
-		methods.add(buildSelect(nMax, dBinary, rCmpb, CMPB_GT | CMPB_EQ, rcClass, typeErrRefs));
+		methods.add(buildSelect(nMin, dBinary, rCmpb, CMPB_LT | CMPB_EQ, rcClass, typeErrRefs, hasComplex));
+		methods.add(buildSelect(nMax, dBinary, rCmpb, CMPB_GT | CMPB_EQ, rcClass, typeErrRefs, hasComplex));
 		methods.add(buildFloatSelect(nFmin, dFmod, Opcode.DCMPG, Opcode.IFLE));
 		methods.add(buildFloatSelect(nFmax, dFmod, Opcode.DCMPL, Opcode.IFGE));
 		methods.add(buildDbl(nDbl, dUnary, ratArrClass, doubleClass, numberClass, bigDecClass, bdInit, bdDivide,
-				bdDoubleValue, mcDecimal64, doubleValueOf, numDoubleValue, rRatNum, rRatDen, typeErrRefs, rcClass));
+				bdDoubleValue, mcDecimal64, doubleValueOf, numDoubleValue, rRatNum, rRatDen, typeErrRefs, rcClass,
+				hasComplex));
 		methods.add(buildPow(nPow, dBinary, rRatNum, rRatDen, rRat, biPow, doubleClass, longClass, longValue,
 				numberClass, numDoubleValue, doubleValueOf, mathPow, rDbl));
 		methods.add(buildEqv(nEqv, dCmp, ratArrClass, intArrClass, objEquals, strvMethod));
@@ -1260,7 +1267,7 @@ final class JvmNumericRuntimeBuilder {
 	private static NumericMethod buildCmpBits(Utf8Constant name, Utf8Constant desc, ClassConstant doubleClass,
 			MethodrefConstant rDbl, ClassConstant numberClass, MethodrefConstant numDoubleValue, MethodrefConstant rCmp,
 			MethodrefConstant intSignum, @Nullable ClassConstant rcClass, @Nullable FieldrefConstant rcReal,
-			@Nullable FieldrefConstant rcImag, MethodrefConstant longValueOf) {
+			@Nullable FieldrefConstant rcImag, MethodrefConstant longValueOf, @Nullable FieldrefConstant hasComplex) {
 		List<Integer> c = new ArrayList<>();
 		if (rcClass != null) {
 			// A complex operand compares part-wise: equal exactly when both part
@@ -1268,7 +1275,10 @@ final class JvmNumericRuntimeBuilder {
 			// (= 2.0 #C(2.0 0.0)) is true); anything else answers unordered, which
 			// fails every operator. Ordering over a complex never reaches here --
 			// the gated call sites use _ccmpb, which signals. Like the _abs arm,
-			// emitted only for a complex-capable program.
+			// emitted only for a complex-capable program. The presence probe first:
+			// a lone class run without the travelling file must not resolve the
+			// holder class it then never touches (.todo/757).
+			int noHolder = emitNoHolderJump(c, hasComplex);
 			ClassConstant complexClass = Objects.requireNonNull(rcClass);
 			FieldrefConstant complexReal = Objects.requireNonNull(rcReal);
 			FieldrefConstant complexImag = Objects.requireNonNull(rcImag);
@@ -1322,6 +1332,7 @@ final class JvmNumericRuntimeBuilder {
 			c.add(Opcode.ICONST_0);
 			c.add(Opcode.IRETURN);
 			JvmRuntimeBuilder.patchBranch(c, ifNotComplex, c.size());
+			JvmRuntimeBuilder.patchBranch(c, noHolder, c.size());
 		}
 		c.add(Opcode.ALOAD_0);
 		c.add(Opcode.INSTANCEOF);
@@ -1442,6 +1453,21 @@ final class JvmNumericRuntimeBuilder {
 	}
 
 	/**
+	 * Emits the holder-presence probe for a holder arm: falls through when a holder
+	 * instance can exist (the travelling class loaded), and returns the branch position
+	 * to patch to the arm's end otherwise -- then the holder-less shape that follows is
+	 * exact, because no holder instance can exist without its class (.todo/757).
+	 */
+	private static int emitNoHolderJump(List<Integer> c, @Nullable FieldrefConstant hasComplex) {
+		c.add(Opcode.GETSTATIC);
+		JvmRuntimeBuilder.emitU2(c, Objects.requireNonNull(hasComplex).index());
+		int pos = c.size();
+		c.add(Opcode.IFEQ);
+		JvmRuntimeBuilder.emitU2(c, 0);
+		return pos;
+	}
+
+	/**
 	 * Emits the imaginary part of the value loaded by {@code loadOpcode}: the holder's
 	 * field, or an integer zero (float contagion is decided by the real parts in every
 	 * caller, so the zero's own kind never matters).
@@ -1481,14 +1507,17 @@ final class JvmNumericRuntimeBuilder {
 			MethodrefConstant rRatDen, MethodrefConstant rRat, ClassConstant doubleClass, MethodrefConstant rDbl,
 			ClassConstant numberClass, MethodrefConstant numDoubleValue, MethodrefConstant doubleValueOf,
 			MethodrefConstant absDouble, MethodrefConstant rBig, @Nullable ClassConstant rcClass,
-			@Nullable FieldrefConstant rcReal, @Nullable FieldrefConstant rcImag,
-			@Nullable MethodrefConstant mathHypot) {
+			@Nullable FieldrefConstant rcReal, @Nullable FieldrefConstant rcImag, @Nullable MethodrefConstant mathHypot,
+			@Nullable FieldrefConstant hasComplex) {
 		List<Integer> c = new ArrayList<>();
 		if (rcClass != null) {
 			// A complex operand answers its float modulus -- hypot over the double
 			// parts, a real even for exact parts like the interpreter. Emitted
 			// only for a complex-capable program, so the holder class the test
-			// resolves stays out of every other constant pool.
+			// resolves stays out of every other constant pool. The presence probe
+			// first, so a lone class without the file never resolves it
+			// (.todo/757).
+			int noHolder = emitNoHolderJump(c, hasComplex);
 			ClassConstant complexClass = Objects.requireNonNull(rcClass);
 			FieldrefConstant complexReal = Objects.requireNonNull(rcReal);
 			FieldrefConstant complexImag = Objects.requireNonNull(rcImag);
@@ -1527,6 +1556,7 @@ final class JvmNumericRuntimeBuilder {
 			JvmRuntimeBuilder.emitU2(c, doubleValueOf.index());
 			c.add(Opcode.ARETURN);
 			JvmRuntimeBuilder.patchBranch(c, ifNotComplex, c.size());
+			JvmRuntimeBuilder.patchBranch(c, noHolder, c.size());
 		}
 		// Double fast path: Math.abs((double) a) when a is a Double.
 		c.add(Opcode.ALOAD_0);
@@ -1616,13 +1646,15 @@ final class JvmNumericRuntimeBuilder {
 			MethodrefConstant rDbl, ClassConstant numberClass, MethodrefConstant numDoubleValue,
 			MethodrefConstant doubleValueOf, MethodrefConstant signumDouble, MethodrefConstant rRatNum,
 			MethodrefConstant biSignum, MethodrefConstant longValueOf, @Nullable ClassConstant rcClass,
-			@Nullable MethodrefConstant rCsignum) {
+			@Nullable MethodrefConstant rCsignum, @Nullable FieldrefConstant hasComplex) {
 		List<Integer> c = new ArrayList<>();
 		if (rcClass != null) {
 			// A complex operand answers the gated _csignum unit vector, like the
 			// interpreter. Emitted only for a complex-capable program, so the
 			// holder class the test resolves stays out of every other constant
-			// pool (the _abs arm pattern).
+			// pool (the _abs arm pattern). The presence probe first, so a lone
+			// class without the file never resolves it (.todo/757).
+			int noHolder = emitNoHolderJump(c, hasComplex);
 			c.add(Opcode.ALOAD_0);
 			c.add(Opcode.INSTANCEOF);
 			JvmRuntimeBuilder.emitU2(c, rcClass.index());
@@ -1634,6 +1666,7 @@ final class JvmNumericRuntimeBuilder {
 			JvmRuntimeBuilder.emitU2(c, java.util.Objects.requireNonNull(rCsignum).index());
 			c.add(Opcode.ARETURN);
 			JvmRuntimeBuilder.patchBranch(c, ifNotComplex, c.size());
+			JvmRuntimeBuilder.patchBranch(c, noHolder, c.size());
 		}
 		// Double fast path: Math.signum((double) a).
 		c.add(Opcode.ALOAD_0);
@@ -1714,13 +1747,17 @@ final class JvmNumericRuntimeBuilder {
 	// in neither, so a NaN operand always yields b. Both match upstream Common Lisp,
 	// checked against SBCL over every ordered pair of {-0.0, 0.0, +/-1.0, NaN, +/-inf}.
 	private static NumericMethod buildSelect(Utf8Constant name, Utf8Constant desc, MethodrefConstant rCmpb,
-			int acceptMask, @Nullable ClassConstant rcClass, TypeErrRefs typeErrRefs) {
+			int acceptMask, @Nullable ClassConstant rcClass, TypeErrRefs typeErrRefs,
+			@Nullable FieldrefConstant hasComplex) {
 		List<Integer> c = new ArrayList<>();
 		if (rcClass != null) {
 			// Ordering over a complex signals the interpreter's "Expected real
 			// number" text, like the interpreter (min and max select over an
 			// ordering, so both throw here). Emitted only for a
-			// complex-capable program, like the _abs arm.
+			// complex-capable program, like the _abs arm. The presence probe
+			// first, so a lone class without the file never resolves it
+			// (.todo/757).
+			int noHolder = emitNoHolderJump(c, hasComplex);
 			ClassConstant complexClass = Objects.requireNonNull(rcClass);
 			c.add(Opcode.ALOAD_0);
 			c.add(Opcode.INSTANCEOF);
@@ -1738,6 +1775,7 @@ final class JvmNumericRuntimeBuilder {
 			JvmRuntimeBuilder.emitU2(c, 0);
 			emitRealErrThrow(c, typeErrRefs, Opcode.ALOAD_1);
 			JvmRuntimeBuilder.patchBranch(c, ifBReal, c.size());
+			JvmRuntimeBuilder.patchBranch(c, noHolder, c.size());
 		}
 		c.add(Opcode.ALOAD_0);
 		c.add(Opcode.ALOAD_1);
@@ -1797,13 +1835,17 @@ final class JvmNumericRuntimeBuilder {
 			ClassConstant doubleClass, ClassConstant numberClass, ClassConstant bigDecClass, MethodrefConstant bdInit,
 			MethodrefConstant bdDivide, MethodrefConstant bdDoubleValue, FieldrefConstant mcDecimal64,
 			MethodrefConstant doubleValueOf, MethodrefConstant numDoubleValue, MethodrefConstant rRatNum,
-			MethodrefConstant rRatDen, TypeErrRefs typeErrRefs, @Nullable ClassConstant rcClass) {
+			MethodrefConstant rRatDen, TypeErrRefs typeErrRefs, @Nullable ClassConstant rcClass,
+			@Nullable FieldrefConstant hasComplex) {
 		List<Integer> c = new ArrayList<>();
 		if (rcClass != null) {
 			// A complex reaching the f64 coercion is not silently reduced to its
 			// real part: it throws the interpreter's "Expected real number" text.
 			// Emitted only for a complex-capable program, so the holder class stays
-			// out of every other constant pool (the _abs arm pattern).
+			// out of every other constant pool (the _abs arm pattern). The presence
+			// probe first, so a lone class without the file never resolves it
+			// (.todo/757).
+			int noHolder = emitNoHolderJump(c, hasComplex);
 			c.add(Opcode.ALOAD_0);
 			c.add(Opcode.INSTANCEOF);
 			JvmRuntimeBuilder.emitU2(c, rcClass.index());
@@ -1812,6 +1854,7 @@ final class JvmNumericRuntimeBuilder {
 			JvmRuntimeBuilder.emitU2(c, 0);
 			emitRealErrThrow(c, typeErrRefs);
 			JvmRuntimeBuilder.patchBranch(c, ifNotComplex, c.size());
+			JvmRuntimeBuilder.patchBranch(c, noHolder, c.size());
 		}
 		c.add(Opcode.ALOAD_0);
 		c.add(Opcode.INSTANCEOF);

@@ -99,6 +99,8 @@ final class JvmEvalRuntimeBuilder {
 
 		private final boolean complexValues;
 
+		private final @Nullable FieldrefConstant hasComplexField;
+
 		private EvalConstants(Builder b) {
 			this.cp = Objects.requireNonNull(b.cp);
 			this.objectClass = Objects.requireNonNull(b.objectClass);
@@ -125,6 +127,7 @@ final class JvmEvalRuntimeBuilder {
 			this.invokeSpread = Objects.requireNonNull(b.invokeSpread);
 			this.functions = Objects.requireNonNull(b.functions);
 			this.complexValues = b.complexValues;
+			this.hasComplexField = b.hasComplexField;
 		}
 
 		ConstantPool cp() {
@@ -227,6 +230,10 @@ final class JvmEvalRuntimeBuilder {
 			return this.complexValues;
 		}
 
+		@Nullable FieldrefConstant hasComplexField() {
+			return this.hasComplexField;
+		}
+
 		static Builder builder() {
 			return new Builder();
 		}
@@ -282,6 +289,8 @@ final class JvmEvalRuntimeBuilder {
 			private @Nullable Map<String, JvmLispCompiler.FunctionInfo> functions;
 
 			private boolean complexValues;
+
+			private @Nullable FieldrefConstant hasComplexField;
 
 			Builder cp(ConstantPool cp) {
 				this.cp = cp;
@@ -405,6 +414,11 @@ final class JvmEvalRuntimeBuilder {
 
 			Builder complexValues(boolean complexValues) {
 				this.complexValues = complexValues;
+				return this;
+			}
+
+			Builder hasComplexField(@Nullable FieldrefConstant hasComplexField) {
+				this.hasComplexField = hasComplexField;
 				return this;
 			}
 
@@ -1676,10 +1690,16 @@ final class JvmEvalRuntimeBuilder {
 
 		// --- complex values (RontoComplex) are self-evaluating, like ratios --
 		// emitted only for a complex-capable program, so the travelling class
-		// stays out of every other constant pool.
+		// stays out of every other constant pool. The presence probe first: a
+		// lone class run without the file beside it skips the test without
+		// resolving the holder class (.todo/757) -- exact, since no holder can
+		// exist then.
 		if (this.k.complexValues()) {
 			ClassConstant complexClass = this.k.cp()
 				.addClass(this.k.cp().addUtf8("am/ik/rontolisp/runtime/RontoComplex"));
+			int noHolder = a.label();
+			a.getstatic(Objects.requireNonNull(this.k.hasComplexField()));
+			a.branch(Opcode.IFEQ, noHolder);
 			int notComplex = a.label();
 			a.aload(VAL);
 			a.instanceOf(complexClass);
@@ -1687,6 +1707,7 @@ final class JvmEvalRuntimeBuilder {
 			a.aload(VAL);
 			a.areturn();
 			a.bind(notComplex);
+			a.bind(noHolder);
 		}
 
 		// --- strings: string literal (self-eval) or symbol (variable reference) ---

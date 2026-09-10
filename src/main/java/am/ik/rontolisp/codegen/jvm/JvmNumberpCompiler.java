@@ -32,12 +32,17 @@ final class JvmNumberpCompiler {
 		if (ctx.usesComplex) {
 			// A complex value is a number too -- but the holder test names the
 			// travelling class, so it is emitted only for a complex-capable
-			// program (`.kb/jvm-complex.md`).
+			// program (`.kb/jvm-complex.md`). The presence probe first: a lone
+			// class run without the file beside it must not resolve the holder
+			// class it then never touches (.todo/757) -- exact, since no holder
+			// can exist then.
+			int noHolderPos = JvmComplexCompiler.emitNoHolderJump(ctx, className);
 			ctx.emit(Opcode.ALOAD);
 			ctx.emit(temp);
 			ctx.emit(Opcode.INSTANCEOF);
 			ctx.emitU2(JvmComplexCompiler.complexClass(ctx).index());
 			ctx.emit(Opcode.IOR);
+			JvmEmitHelper.patchBranch(ctx, noHolderPos, ctx.code.size());
 		}
 		JvmEmitHelper.emitBoolFromInt(ctx);
 	}
