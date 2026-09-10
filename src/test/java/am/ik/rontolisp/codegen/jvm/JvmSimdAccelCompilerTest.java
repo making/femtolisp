@@ -288,15 +288,24 @@ class JvmSimdAccelCompilerTest {
 	 * and nowhere else.
 	 *
 	 * <p>
-	 * 31 columns is here too, and only on the JVM and the interpreter, which share a
-	 * scalar tail: it pins the gate's DIRECTION as {@code >=} rather than {@code >} (7
-	 * lane groups plus a 3-element tail, still the single chain, {@code 2^24 + 24}). The
-	 * wasm backends fold a row's leftover elements as a zero-padded lane group instead,
-	 * so they answer differently there for reasons that predate this gate.
+	 * 31 columns pins the gate's DIRECTION as {@code >=} rather than {@code >}: 7 lane
+	 * groups plus a 3-element scalar tail, still the single chain, {@code 2^24 + 24}. All
+	 * four implementations answer that, but only for this probe's data -- wasm-GC has no
+	 * scalar tail and folds the partial group with its padding zeroed, which reaches the
+	 * same neighbour here and a different one when the {@code 2^24} sits in the tail
+	 * region ({@code .todo/758}).
+	 *
+	 * <p>
+	 * 24 columns is the middle of the region between {@code MATVEC_ROW_THRESHOLD} and
+	 * this gate -- lanes, one chain, 6 groups and no tail, {@code 2^24 + 3*6 = 16777234}
+	 * -- and is asserted on all four implementations for the same reason 16 and 32 are.
+	 * That region is what the gate left untested end to end, so it is also a corpus case
+	 * now ({@code simd-gemv-below-the-accumulator-gate-cross-backend}).
 	 */
 	@Test
 	void theMultiAccumulatorGateFiresAtTheSameColumnCountAsEveryOtherSimdBackend() throws Exception {
 		assertThat(accel(gateProbe(16))).as("16 columns: one chain").isEqualTo("16777228");
+		assertThat(accel(gateProbe(24))).as("24 columns: still one chain").isEqualTo("16777234");
 		assertThat(accel(gateProbe(31))).as("31 columns: still one chain").isEqualTo("16777240");
 		assertThat(accel(gateProbe(32))).as("32 columns: four chains").isEqualTo("16777246");
 	}

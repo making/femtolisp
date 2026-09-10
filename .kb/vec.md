@@ -293,7 +293,9 @@ apparent blocker -- "`v128.load`/`store` address LINEAR memory" -- is FALSE: GC
   tag replacing `ref.test $f32arr`. `groups` length is `ceil(count / lanes) + 1`; the `+1` is a ZERO
   SENTINEL GROUP so `matvec`'s shuffle window can always `array.get g+1` without a bounds trap.
   **No kernel has a scalar tail**: `array.new_default` zero-initializes and nothing writes past
-  `count`, so the padding lanes are zero and every kernel folds them harmlessly.
+  `count`, so the padding lanes are zero and every kernel folds them harmlessly -- harmlessly to the
+  VALUE. Not to the BITS, and that is where wasm-GC parts company with the other three at a length
+  that is not a multiple of the lane count (`.todo/758`, and the reduction contract above).
 - **The one place the zero padding is not free is a WRITE**: a whole-group store reaches up to
   `lanes - 1` past `count`, which an `-into` destination LONGER than its operands has REAL elements
   at. `WasmVecLoops.gcSaveLastGroup`/`gcRestoreLastGroupTail` bracket the group loop and blend the
@@ -378,6 +380,33 @@ so all four agree; the scalar `vec.lisp` reference stays the more accurate f64-a
   call for call. Do not "improve" this with the row count. 32 is a PERFORMANCE number,
   machine-dependent (aarch64); the lane-count pin is a CORRECTNESS one. The f64 `matvecRows` still
   has one chain and is UNMEASURED.
+- **The region BETWEEN the two gates -- 16 to 31 columns, lanes and one chain -- is pinned on all
+  four implementations and in the corpus**, because nothing else reaches it: every other `vec:` case
+  is 2 to 6 elements, the greedy-decode cases are 128 and 64 columns, and an example touches 16-31
+  only transiently, as an attention `V^T . att`'s sequence length grows through it. The unit pin is
+  the 2^24 probe at 24 columns (six whole lane groups, `2^24 + 3*6 = 16777234` everywhere); the E2E
+  pin is `simd-gemv-below-the-accumulator-gate-cross-backend`, integer-exact so both corpus passes
+  check one set of lines. 31 columns is pinned too, and answers `2^24 + 24` on all four -- but that
+  agreement is arithmetic luck at a PARTIAL group, not the contract; see the bullet below.
+- **Whether the gate belongs at 32 or higher was re-taken on a model, and it is a wash.** The clean
+  per-process probe says four chains LOSE at 48 columns (0.96x Graal / 0.89x C2 on the GB10, and
+  0.74-0.97x on x64), so stories15M's attention GEMVs would rather have the single chain; three
+  builds of one tree differing only in this constant decode stories15M at 343.9 (gate off) / 393.1
+  (32) / 402.6 (96) tok/s, so the gate is worth 1.13x and moving it to 96 is 1.001x with the spread
+  across 1.0. Numbers, harness and the whole argument:
+  `.todo/artefacts/480-the-simd-gemv-row-is-one-accumulator-chain/README.md`.
+
+**A length that is NOT a multiple of the lane count breaks the agreement above (measured
+2026-09-10, `.todo/758`).** The lane COUNT is pinned; the way the LAST, partial group is closed is
+not. The interpreter, the JVM class and `--no-gc` run the lane loop to `loopBound(n)` and add the
+leftover as a scalar tail; wasm-GC has no scalar tail at all (the packed layout below) and folds
+`ceil(n/4)` groups with the padding lanes zeroed. Both are exact-arithmetic equivalents and neither
+is the other's bits: a 1x31 `#f` GEMV with `2^24` at column 29 answers **16777244** on the
+interpreter and the JVM and **16777248** on wasm-GC and the component, and `vec:dot` over 131
+elements with `4096.0` at index 127 answers 16777344 against 16777348. Nothing caught it because
+every cross-backend `--simd` probe uses a multiple of 4 (1024 for the reductions, 16/24/32 for the
+GEMV gate), which is exactly where the two strategies coincide. **Do not read "all four agree" as
+holding at an arbitrary length until `.todo/758` decides which fold is the contract.**
 
 The pinning probe: `v = #f(4096.0 1.0 ... 1.0)`, 1024 elements. `dot(v,v) = 4096^2 + 1023 = 16778239`
 exactly; `4096^2` is `2^24`, where the f32 spacing is 2, so the lane holding it swallows every `1.0`
@@ -595,7 +624,8 @@ chain, decoded to TEXT so a moved argmax fails loudly rather than shifting a dig
 - ci-spec: the whole corpus runs on four backends x {default, `--simd`} (the axis above), plus
   `vec-kernels-cross-backend` (four backends byte-identical; f64-exact inputs so
   `mean`/`norm` land on exact doubles, plus a square and a non-square `vec:matvec`),
-  `vec-destination-passing-kernels`, `comparison-select-ufuncs-cross-backend-cases`,
+  `vec-destination-passing-kernels`, `simd-gemv-below-the-accumulator-gate-cross-backend` (the
+  16-31 column region above), `comparison-select-ufuncs-cross-backend-cases`,
   `log-tanh-exact-cross-backend-cases`, `sin-cos-tan-exact-cross-backend-cases`. Run the native
   `CiSpecE2eTest` after editing any of them. `examples/ml/nn-vec.lisp` runs via `ExamplesE2eTest`.
   Manual `--no-gc`: `wasmtime run --invoke <fn> module.wasm <args>` (result on stderr).

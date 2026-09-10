@@ -6056,6 +6056,41 @@ cases:
       10.0
       #d(17.0 39.0)
       #d(14.0 32.0)
+  # The GEMV row BELOW the four-accumulator gate. A row of 16 to 31 columns is at or
+  # above VecSimdKernels' MATVEC_ROW_THRESHOLD (16), so every --simd backend takes the
+  # lane path, and below MATVEC_ACC_THRESHOLD (32), so that path is the single
+  # accumulator chain it had before .todo/480. Nothing else in the suite reaches that
+  # region: every other vec: case here is 2 to 6 elements, the two greedy-decode cases
+  # are 128 and 64 columns (above the gate), and no example touches 16-31 except
+  # transiently, as an attention V^T . att's sequence length grows through it.
+  #
+  # 24 columns is six whole lane groups; 31 leaves a leftover the four implementations
+  # are ALLOWED to close differently (a scalar tail on three of them, a zero-padded lane
+  # group on wasm-GC -- WasmLispCompilerIntegrationTest writes both down). The values
+  # here are small integers, exact under every fold order, so the two passes check the
+  # same lines: an f32 reduction crossing 2^24 is the one thing a case in this file may
+  # not do (.kb/vec.md). What it catches is an element DROPPED or counted twice by the
+  # wide/leftover/tail split -- row 1 doubles the last weight and row 2 the first, so a
+  # lost tail and a lost head each move a printed integer.
+  - name: simd-gemv-below-the-accumulator-gate-cross-backend
+    source: |
+      (defun ci-gate-ramp (n)
+        (let ((x (vec:ones n :element-type 'single-float)))
+          (dotimes (j n x) (setf (vec:aref x j) (+ 1.0 j)))))
+
+      (defun ci-gate-rows (cols)
+        (let ((w (linalg:zeros (list 3 cols) :element-type 'single-float)))
+          (dotimes (i 3) (dotimes (j cols) (setf (aref w i j) 1.0)))
+          (setf (aref w 1 (- cols 1)) 2.0)
+          (setf (aref w 2 0) 2.0)
+          (let ((y (vec:matvec w (ci-gate-ramp cols))))
+            (print (list cols (round (vec:aref y 0)) (round (vec:aref y 1)) (round (vec:aref y 2)))))))
+
+      (ci-gate-rows 24)
+      (ci-gate-rows 31)
+    expected: |
+      (24 300 324 301)
+      (31 496 527 497)
   # Destination-passing vec: kernels (see .kb/vec.md): the -into siblings write into a
   # caller-supplied vector and return it, so a loop allocates nothing. Semantics must be
   # identical to the allocating kernels on every backend, including in-place aliasing

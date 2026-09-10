@@ -18932,14 +18932,44 @@ class WasmLispCompilerIntegrationTest {
 	 * or 6 columns, far below the gate, so before this the new code was emitted and never
 	 * executed. The {@code --no-gc} scalar lowering answers {@code 16777216} at both
 	 * widths: it has no lanes at all, so its single f32 accumulator swallows every one.
+	 *
+	 * <p>
+	 * 24 and 31 columns cover the region BETWEEN {@code MATVEC_ROW_THRESHOLD = 16} and
+	 * this gate -- lanes, one chain -- which is the region the gate left untested: no
+	 * example reaches it, and the corpus case
+	 * {@code simd-gemv-below-the-accumulator-gate-cross-backend} now does. 24 is 6 whole
+	 * lane groups with no leftover, so all four implementations must answer
+	 * {@code 2^24 + 3*6 = 16777234}.
+	 *
+	 * <p>
+	 * 31 columns is a PARTIAL group, and the four close one differently: the interpreter,
+	 * the JVM and {@code --no-gc} run the lane loop to {@code loopBound} and add the
+	 * leftover as a scalar tail, while wasm-GC folds the {@code ceil(n/4)}th group with
+	 * its padding lanes zeroed ({@code .kb/vec.md}, "No kernel has a scalar tail"). They
+	 * agree here -- {@code 2^24 + 24} on all four -- but the agreement is arithmetic
+	 * luck, not the contract: the two folds reach different intermediate sums and both
+	 * tie to even onto the same neighbour for THIS probe's data. Move the {@code 2^24}
+	 * into the tail region and they part company, 16777244 against 16777248, which is
+	 * {@code .todo/758}. So this assertion pins what the backends do at a partial row,
+	 * and is not evidence that a partial row folds identically.
 	 */
 	@Test
 	void theMultiAccumulatorGateFiresAtTheSameColumnCountOnBothWasmBackends() throws Exception {
 		assertThat(compileAndRunVec(gateProbe(16), true)).as("wasm-GC, 16 columns: one chain").isEqualTo("16777228");
+		assertThat(compileAndRunVec(gateProbe(24), true)).as("wasm-GC, 24 columns: still one chain")
+			.isEqualTo("16777234");
+		assertThat(compileAndRunVec(gateProbe(31), true)).as("wasm-GC, 31 columns: still one chain")
+			.isEqualTo("16777240");
 		assertThat(compileAndRunVec(gateProbe(32), true)).as("wasm-GC, 32 columns: four chains").isEqualTo("16777246");
 		assertThat(compileNoGcAndInvoke(OptimizeLevel.NONE, true, noGcGateProbe(16), "gate", ""))
 			.as("--no-gc --simd, 16 columns: one chain")
 			.isEqualTo("16777228");
+		assertThat(compileNoGcAndInvoke(OptimizeLevel.NONE, true, noGcGateProbe(24), "gate", ""))
+			.as("--no-gc --simd, 24 columns: still one chain")
+			.isEqualTo("16777234");
+		assertThat(compileNoGcAndInvoke(OptimizeLevel.NONE, true, noGcGateProbe(31), "gate", ""))
+			.as("--no-gc --simd, 31 columns: one chain and a scalar tail")
+			.isEqualTo("16777240");
 		assertThat(compileNoGcAndInvoke(OptimizeLevel.NONE, true, noGcGateProbe(32), "gate", ""))
 			.as("--no-gc --simd, 32 columns: four chains")
 			.isEqualTo("16777246");

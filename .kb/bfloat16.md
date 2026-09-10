@@ -409,8 +409,12 @@ rounds: the spike, both JITs plus the quantized widths, x64). What it decided, a
   conversion and the reader path, `488` the fused kernels, `489` the 1B model, `490` the device;
   then `707` `coerce`/`concatenate`, `687` `linalg:`, `745` the bulk pair, `746` the census, `689`
   `jvm-export`, `696` the element-wise measurement, `747` the element-wise kernels that
-  measurement justified (closed 2026-09-10). Still open and the width's: `.todo/480` (the
-  one-thread 1.6x waits on its accumulator count).
+  measurement justified, and `480` the GEMV's accumulator count, on which the one-thread
+  1.6x turned out to depend -- all three closed 2026-09-10. **The 1.6x has ARRIVED and waits
+  on nothing**: `matvecRowsBf16` carries `MATVEC_ACCUMULATORS` and `MATVEC_ACC_THRESHOLD`
+  with the f32 arm (by contract -- fused equals widen-then-f32-kernel bit for bit, so the two
+  arms cannot carry different counts), and `.todo/488`'s README withdrew its 0.80x / 1.02x
+  parity tables for 1.32-2.00x at 4096x4096 on the GB10 and 1.63-1.85x on x64.
 
 ## Refusing a width: three behaviours
 - **Silent DECLINE** (`null`/`false`, the rung below answers, answer identical): `VecSimd`,

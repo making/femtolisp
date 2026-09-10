@@ -242,6 +242,16 @@ class VecSimdTest {
 	 * = 16777240.
 	 *
 	 * <p>
+	 * 24 columns is the MIDDLE of the region between the two gates, and is here because
+	 * that region was the one this gate left untested end to end: a row of 16 to 31
+	 * columns takes lanes (it is at or above {@code MATVEC_ROW_THRESHOLD}) and takes the
+	 * single chain, and no example or corpus case reached it -- 6 lane groups, no tail,
+	 * 2^24 + 3*6 = 16777234. Being a multiple of the lane count, it is the one of the
+	 * three that proves agreement: at 31 the wasm-GC lowering has no scalar tail and
+	 * folds the partial group with its padding zeroed, so its answer matches this one
+	 * here by arithmetic luck and not by contract ({@code .todo/758}).
+	 *
+	 * <p>
 	 * <b>16 and 32 are asserted identically on all four {@code --simd}
 	 * implementations</b> -- here, {@code codegen/jvm/JvmSimdAccelCompilerTest},
 	 * {@code codegen/wasm/WasmLispCompilerIntegrationTest} for wasm-GC and for
@@ -254,6 +264,7 @@ class VecSimdTest {
 	@Test
 	void theMultiAccumulatorGateFiresAtTheSameColumnCountAsEveryOtherSimdBackend() {
 		assertThat(eval(gateProbe(16), true).print()).as("16 columns: one chain").isEqualTo("16777228");
+		assertThat(eval(gateProbe(24), true).print()).as("24 columns: still one chain").isEqualTo("16777234");
 		assertThat(eval(gateProbe(31), true).print()).as("31 columns: still one chain").isEqualTo("16777240");
 		assertThat(eval(gateProbe(32), true).print()).as("32 columns: four chains").isEqualTo("16777246");
 	}
