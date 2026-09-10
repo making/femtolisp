@@ -18,7 +18,7 @@ import static am.ik.rontolisp.e2e.LackE2eSupport.LACK_EXPECTED;
 import static am.ik.rontolisp.e2e.LackE2eSupport.SERVED_BODY_EXERCISE;
 import static am.ik.rontolisp.e2e.LackE2eSupport.SERVED_BODY_EXPECTED;
 import static am.ik.rontolisp.e2e.LackE2eSupport.SUBSTRATE_EXERCISE;
-import static am.ik.rontolisp.e2e.LackE2eSupport.SUBSTRATE_EXPECTED_NO_FILESYSTEM;
+import static am.ik.rontolisp.e2e.LackE2eSupport.SUBSTRATE_EXPECTED_SPILLING;
 import static am.ik.rontolisp.e2e.LackE2eSupport.runCli;
 import static am.ik.rontolisp.e2e.LackE2eSupport.writeProgram;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -30,10 +30,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * a machine without Docker skips only these.
  *
  * <p>
- * The smart-buffer spill is interpreter/JVM only: both WASM backends signal the standard
- * {@code ensure-directories-exist} message at CALL time, the documented divergence
- * ({@code .kb/directory-listing.md}), which the program catches and prints -- hence the
- * separate expectation here.
+ * The smart-buffer spill runs for real here too: both WASM backends create the temporary
+ * file's directory through the {@code path_create_directory} import (.todo/257), so the
+ * legs share the spilling expectation with the interpreter and the JVM.
  *
  * <p>
  * Opt-in ({@code RONTOLISP_LACK_E2E=1}): it needs Docker (the pinned wasmtime image) and,
@@ -74,13 +73,13 @@ class LackEcosystemWasmE2eTest {
 	@Test
 	void smartBufferSubstrateOnWasmPreview1(@TempDir Path workDir) throws Exception {
 		assertThat(runWasm(workDir, SUBSTRATE_EXERCISE, "substrate-p1.wasm", List.of()))
-			.isEqualToNormalizingWhitespace(SUBSTRATE_EXPECTED_NO_FILESYSTEM);
+			.isEqualToNormalizingWhitespace(SUBSTRATE_EXPECTED_SPILLING);
 	}
 
 	@Test
 	void smartBufferSubstrateOnWasmComponent(@TempDir Path workDir) throws Exception {
 		assertThat(runWasm(workDir, SUBSTRATE_EXERCISE, "substrate-comp.wasm", List.of("--component")))
-			.isEqualToNormalizingWhitespace(SUBSTRATE_EXPECTED_NO_FILESYSTEM);
+			.isEqualToNormalizingWhitespace(SUBSTRATE_EXPECTED_SPILLING);
 	}
 
 	// Compiles the given exercise to WASM and runs it in the pinned wasmtime

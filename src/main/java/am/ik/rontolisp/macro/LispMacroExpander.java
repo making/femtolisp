@@ -29018,50 +29018,6 @@ public final class LispMacroExpander {
 	}
 
 	/**
-	 * The call-time stub both WASM backends lower {@code %make-directories} -- and
-	 * therefore {@code ensure-directories-exist} -- to. WASI's import set here carries no
-	 * directory-creation call, and unlike {@code file-length} / {@code file-write-date}
-	 * this primitive has no "cannot be determined" answer in its contract: either the
-	 * directory exists afterwards or it does not, so answering anything but an error
-	 * would be a lie. Like the other stubs it keeps a library defun merely CONTAINING the
-	 * form compilable and signals only if it is actually called.
-	 * @return the signaling expression
-	 */
-	public static LispVal makeDirectoriesStub() {
-		return listToCons(List.of(new LispSymbol(LispNames.ERROR),
-				new LispString("ensure-directories-exist is not supported on the WASM backends")));
-	}
-
-	/**
-	 * The call-time stub both WASM backends lower {@code %delete-file} -- and therefore
-	 * {@code delete-file} -- to, for the same reason as {@link #makeDirectoriesStub()}:
-	 * WASI's import set here carries no unlink call, and "the file is gone afterwards"
-	 * has no honest non-answer, so anything but an error would be a lie. Like the other
-	 * stubs it keeps a library defun merely CONTAINING the form compilable and signals
-	 * only if it is actually called -- which is what lets mito's
-	 * {@code generate-migrations} compile on the WASM backends even though its
-	 * delete-superseded-files branch cannot run there.
-	 * @return the signaling expression
-	 */
-	public static LispVal deleteFileStub() {
-		return listToCons(List.of(new LispSymbol(LispNames.ERROR),
-				new LispString("delete-file is not supported on the WASM backends")));
-	}
-
-	/**
-	 * The call-time stub both WASM backends lower {@code %rename-file} -- and therefore
-	 * {@code rename-file} -- to, for the same reason as {@link #deleteFileStub()}: WASI's
-	 * import set here carries no rename call, and "the file is at the new name
-	 * afterwards" has no honest non-answer. Like the other stubs it keeps a library defun
-	 * merely CONTAINING the form compilable and signals only if it is actually called.
-	 * @return the signaling expression
-	 */
-	public static LispVal renameFileStub() {
-		return listToCons(List.of(new LispSymbol(LispNames.ERROR),
-				new LispString("rename-file is not supported on the WASM backends")));
-	}
-
-	/**
 	 * The call-time stub the compiled backends lower {@code handler-bind} to: an
 	 * unconditional {@code error}. Its handlers would have to run at the signal point
 	 * without unwinding, which no backend's condition machinery models; the stub keeps a

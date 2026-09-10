@@ -28,11 +28,12 @@ each name BARE with a trailing `/` when itself a directory.
 | WASM `--component` | same core runtime; `adapter.wat`'s `$fd_readdir` over wasi:filesystem `read-directory` |
 
 ## Traps
-- **Adding a preview1 import** (the count is now 12, `.kb/read-load-streams.md`):
+- **Adding a preview1 import** (the count is now 15, `.kb/read-load-streams.md`):
   `IMPORT_FUNC_COUNT` and `FUNC_START` rise so every emitted function index shifts; `--no-wasi`
   needs a matching trap stub; `adapter.wat` must export the name and `adapter-http-server-p1.wat`
-  export it as errno 76 (`%list-directory` reads nonzero errno as `nil`); append the type AFTER the
-  last fixed type (`TYPE_FD_READDIR`, `IARR_TYPE_LAST` re-based) so no type index moves.
+  export it as a nonzero errno (a reader maps it to nil, a writer to its call-site
+  error); append the type AFTER the
+  last fixed type (`TYPE_FD_READDIR`, `TYPE_PATH_RENAME`, `IARR_TYPE_LAST` re-based) so no type index moves.
 - `read-directory` is a `stream<directory-entry>` with its own `stream.read` /
   `stream.drop-readable`; the read carries `realloc`. Lowered element is 24 bytes:
   `descriptor-type` at 0, name pointer at 16, length at 20.
@@ -76,8 +77,9 @@ definition; `cli/CompileTimePathnameFolder` is the compile-time literal-shape ha
 `WasmLispCompilerIntegrationTest#directoryListsEntriesOverFdReaddir`,
 `#directoryListingResumesPastOneReaddirRound`, `#componentDirectoryListing[WithoutAPreopenAnswersNil]`,
 `#wildDirectoryComponentsDriveTheRecursiveWalk`; ci-spec `directory-listing-and-uiop-walkers`,
-`wild-pathnames`. Trees are built with `mkdir` in the CONTAINER -- neither WASM backend can create
-a directory. `wild-pathnames`' walk is the zero-level branch over a HARNESS-STAGED `./wpc-sub/`
+`wild-pathnames`. Trees are built with `mkdir` in the CONTAINER -- kept harness-staged
+even though both WASM backends can create directories since `.todo/257` (the walk pins
+LISTING over a known tree, not creation). `wild-pathnames`' walk is the zero-level branch over a HARNESS-STAGED `./wpc-sub/`
 (`testsupport/CorpusFixtures`, driven by `CiSpecE2eTest` and `JvmClassShakerCorpusTest`): a corpus
 walk is BOUNDED BY CONSTRUCTION, because a `**/` anchored at the run directory reads EVERYTHING
 below the process CWD -- the project root for an in-process corpus run, and a filter fixes the

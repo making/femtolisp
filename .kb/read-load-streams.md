@@ -156,8 +156,9 @@ descriptor a staged path opens relative to and leaves the bytes it accounts for 
   COPY on purpose: `get-directories` and its name strings lift through `cabi_realloc` at the CORE's
   `HEAP_PTR`, which the core pops back after every resolution. A preopen name over 256 bytes is
   recorded with length 0, not truncated.
-- **Not reached**: `file-write-date` nil on both WASM backends; `%delete-file`/`%rename-file`/
-  `%make-directories` signal.
+- **Not reached**: `file-write-date` nil on both WASM backends. Removing a DIRECTORY
+  still signals there -- preview1's `path_unlink_file` cannot remove directories
+  (that needs the `path_remove_directory` import, out of `.todo/257`'s scope).
 
 Pinned by `WasmLispCompilerIntegrationTest#absoluteRuntimePathResolvesAgainstThePreopenThatCoversIt`
 + its `component` twin, ci-spec `runtime-absolute-path-open-probe-and-load`.
@@ -352,14 +353,35 @@ paths (`.todo/212`).
 
 - `ensure-directories-exist` over `%make-directories` (the "directory component is everything up to
   and including the last slash" rule has one definition in `LispPreludeLibrary`): interpreter/JVM
-  `Files.createDirectories`/`File.mkdirs`, both WASM backends a call-time error. It SIGNALS on WASM
-  where `file-length` answers nil, because its contract has no "cannot be determined" answer.
+  `Files.createDirectories`/`File.mkdirs`, both WASM backends `_make_directories`
+  (`FUNC_MAKE_DIRECTORIES` after `FUNC_C_SIGNUM`, called by `WasmMakeDirectoriesCompiler`)
+  over the THIRTEENTH preview1 import, `path_create_directory`. Preview 1 creates ONE
+  level per call, so the body walks the slash-separated prefixes and creates each --
+  the recursive answer the other two give. It SIGNALS on WASM where `file-length`
+  answers nil, because its contract has no "cannot be determined" answer: the runtime
+  answers T-or-nil and the call-site compiler raises the error on nil (the `_open`
+  precedent, catchable in EH mode). A nonzero final errno is VERIFIED by opening the
+  path as a directory, which turns "already there" into T whatever errno the host used.
 - `delete-file` over `%delete-file`, which answers nil rather than signalling when the file is absent
   or the host refused, so "a missing file is a `file-error`" lives once in the Lisp above it. Both
-  WASM backends stub; the preview1 `path_unlink_file` import is `.todo/257`. mito's
-  `generate-migrations` is the caller, so that branch is interpreter/JVM-only.
+  WASM backends unlink for real now (`_delete_file` over the FOURTEENTH preview1 import,
+  `path_unlink_file`, called by `WasmDeleteFileCompiler`). mito's `generate-migrations`
+  deletes superseded migration files on all four. Removing a DIRECTORY still signals:
+  unlink cannot rmdir (above).
 - `rename-file` over `%rename-file` (same nil-not-signal rule); the new name is MERGED with the old
-  one, so a bare file name keeps the directory. Same `.todo/257`, one import wider (`path_rename`).
+  one, so a bare file name keeps the directory. Both WASM backends move for real
+  (`_rename_file` over the FIFTEENTH preview1 import, `path_rename` -- the one new
+  six-`i32` type, `TYPE_PATH_RENAME` -- called by `WasmRenameFileCompiler`; both paths
+  stage and resolve against the preopen table on their own).
+- **Import surface**: `IMPORT_FUNC_COUNT` went 12 -> 15 and `FUNC_START` with it, so
+  every emitted WASM function index shifted (the `fd_readdir` precedent). In step:
+  `--no-wasi` defines three more errno stubs (same type indexes as the imports);
+  `adapter.wat` implements all three over `wasi:filesystem@0.3.0`
+  (`create-directory-at` / `unlink-file-at` / `rename-at`, SYNC-lowered like `open-at`,
+  sharing its `0x50050` result cell); `adapter-http-server-p1.wat` exports them as
+  errno 76 -- the serve world has no filesystem, and `%delete-file`/`%rename-file`
+  read a nonzero errno as nil while `%make-directories` signals through its call-site
+  error.
 
 **`uiop:read-file-string` must NOT size its buffer from `file-length`**: prelude Lisp over
 `with-open-file` + a CHUNKED `read-sequence` loop, both properties load-bearing. **The loop stops on
@@ -370,9 +392,11 @@ loop hits it. **Trigger**: the adapter answering 0 bytes/EOF idempotently.
 
 Pinned by `LispEvaluatorTest#evalFileWriteDateAndFileLength`/`#fileLengthOverEveryStreamKind`,
 `#renameFileMovesTheFileAndSignalsWhenItIsNotThere`, their JVM twins,
-`WasmLispCompilerIntegrationTest#fileMetadataAnswersNilAndDirectoryCreationSignals`/
-`#fileLengthAnswersTheSizeOfARealFile`/`#componentFileLength`, ci-spec
-`file-length-of-a-file-of-a-known-size`.
+`WasmLispCompilerIntegrationTest#fileWriteDateAnswersNilAndFilesystemWritesRunForReal`/
+`#fileLengthAnswersTheSizeOfARealFile`/`#componentFileLength`/
+`#uiopFilesystemProbeReadsAndMutations`, ci-spec
+`file-length-of-a-file-of-a-known-size` and
+`filesystem-write-create-rename-delete-and-probe`.
 
 ## A stream is a VALUE, not a handle
 **Every OPEN stream is an instance of the fixed `LispLayout.STREAM` layout** — tag `%STREAM`,

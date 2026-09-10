@@ -6,7 +6,7 @@ Creates the directory component of `pathspec`, including every missing parent, a
 
 Lite: Common Lisp returns `(values pathspec created)` and this returns the pathspec only — a second value would not survive the function boundary on the compiled backends, so promising one would be misleading.
 
-**Both WASM backends signal at call time.** No WASI directory-creation call is imported there, and unlike [`file-write-date`](file-write-date.md) this operation has no "cannot be determined" answer in its contract: either the directory exists afterwards or it does not, so answering anything but an error would be a lie.
+Works on all four backends. Both WASM backends create every missing level through the `path_create_directory` WASI import (Preview 1 directly, `--component` through `wasi:filesystem`'s `create-directory-at`), and signal when the directory could not be created — unlike [`file-write-date`](file-write-date.md) this operation has no "cannot be determined" answer in its contract: either the directory exists afterwards or it does not.
 
 ```console
 (ensure-directories-exist "logs/2026/app.log")

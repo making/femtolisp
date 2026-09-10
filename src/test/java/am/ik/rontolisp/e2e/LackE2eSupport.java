@@ -100,8 +100,9 @@ final class LackE2eSupport {
 
 	/**
 	 * The substrate exercise, compilable on every backend: the in-memory octet stream
-	 * first, then the disk spill inside a {@code handler-case} so the two WASM backends
-	 * report their documented call-time error instead of trapping.
+	 * first, then the disk spill inside a {@code handler-case} so a backend that cannot
+	 * spill reports the error instead of trapping. All four backends spill for real (the
+	 * WASM pair through the {@code path_create_directory} import, .todo/257).
 	 */
 	static final String SUBSTRATE_EXERCISE = """
 			(ql:quickload "smart-buffer")
@@ -139,16 +140,6 @@ final class LackE2eSupport {
 			:EOF
 			7
 			(NIL 65 84)
-			""";
-
-	static final String SUBSTRATE_EXPECTED_NO_FILESYSTEM = """
-			T
-			7
-			2
-			:EOF
-			7
-			ensure-directories-exist is not supported on the WASM backends
-			:SIGNALLED
 			""";
 
 	/**

@@ -173,14 +173,18 @@ the passthrough it is where `logical-pathname-p` is nil, `safe-file-write-date` 
 where the date itself is nil). `parse-native-namestring` is `parse-unix-namestring` plus
 the `ensure-pathname` constraints (`os-unix-p` is t outright, so native IS Unix and the
 separator `#\:`); the `getenv-*` family reads `uiop/os:getenvp` through it. **The write
-side is option 2 of `.todo/358`**: `ensure-all-directories-exist`,
-`rename-file-overwriting-target`, `delete-empty-directory` and `delete-directory-tree`
-are real Lisp over the one primitive each matching CL operator already bottoms out in
-(`%make-directories` via `ensure-directories-exist`, `%rename-file` via `rename-file`,
-`%delete-file` via `delete-file`), so they run on the interpreter and the JVM and signal
-the SAME call-time error the primitive signals on both WASM backends -- no second code
-path, no silent no-op. **Re-evaluation trigger: `.todo/257`** (the preview1
-mkdir/unlink/rename imports); until then no ci-spec case touches the write side.
+side is option 2 of `.todo/358`, landed by `.todo/257`**:
+`ensure-all-directories-exist`, `rename-file-overwriting-target` and
+`delete-file-if-exists` are real Lisp over the one primitive each matching CL operator
+already bottoms out in (`%make-directories` via `ensure-directories-exist`, `%rename-file`
+via `rename-file`, `%delete-file` via `delete-file`), real on all four backends -- the
+ci-spec `filesystem-write-create-rename-delete-and-probe` case and
+`WasmLispCompilerIntegrationTest#uiopFilesystemProbeReadsAndMutations` pin both WASM
+legs. **One deliberate remainder: removing a DIRECTORY still signals on WASM** --
+preview1's `path_unlink_file` cannot remove directories (that needs the
+`path_remove_directory` import, out of `.todo/257`'s scope), so
+`delete-empty-directory` over an actual directory, and `delete-directory-tree` past its
+file deletions, answer the honest `file-error` rather than a silent no-op.
 `delete-directory-tree` takes the portable recursive walk only (no `run-program`
 branch -- there is no backend that spawns one); an explicit `:validate nil` fails the
 first check rather than the second, both the same `parameter-error`. **Symlinks are the

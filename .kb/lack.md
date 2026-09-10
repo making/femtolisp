@@ -26,9 +26,10 @@ in-memory streams as real Gray streams (`.kb/gray-streams.md`); KEYWORD `:conc-n
   the LAST definition (duplicates are a load-time `ClassFormatError`); WASM reserves funcIndexes
   from `Ctx.numDefuns`, not the deduplicating name map.
 - DISK SPILL past `smart-buffer:*default-memory-limit*` uses a `uiop:with-temporary-file`
-  temporary each further chunk APPENDS to. Interpreter and JVM spill for real; both WASM backends
-  signal the standard `ensure-directories-exist` message at CALL time, through `handler-case`
-  (`.kb/directory-listing.md`). Not lifted.
+  temporary each further chunk APPENDS to, and spills for real on all four backends --
+  both WASM backends create the temporary directory through the `path_create_directory`
+  import (.todo/257). Pinned by `LackEcosystemWasmE2eTest`'s substrate legs sharing the
+  spilling expectation with the interpreter and the JVM.
 - A program quickloading a Clack server AND `lack-request` is a PLACEMENT problem:
   `HttpServerLibrary` prepends `http-server.lisp` at index 0 while the Gray protocol arrives
   mid-program at the trivial-gray-streams splice site (`.kb/gray-streams.md`).

@@ -119,15 +119,19 @@ class WasmLispCompilerIntegrationTest {
 	// Emptied rather than just created: unlike the container, which was new every run,
 	// the
 	// host directory outlives the JVM, and a stale file left by an earlier run is exactly
-	// the kind of thing a `--dir .` test would happily open.
+	// the kind of thing a `--dir .` test would happily open. Recursive: a guest program
+	// may create directory trees (ensure-directories-exist), which a flat delete would
+	// choke on.
 	private static String workDir() {
 		return WORK_DIRS.computeIfAbsent(Thread.currentThread().threadId(), id -> {
 			Path dir = Path.of(System.getProperty("java.io.tmpdir"), "rontolisp-wasmtime", "w" + id);
 			try {
 				if (Files.isDirectory(dir)) {
-					try (Stream<Path> stale = Files.list(dir)) {
-						for (Path file : stale.toList()) {
-							Files.deleteIfExists(file);
+					try (Stream<Path> stale = Files.walk(dir)) {
+						for (Path file : stale.sorted(java.util.Comparator.reverseOrder()).toList()) {
+							if (!file.equals(dir)) {
+								Files.deleteIfExists(file);
+							}
 						}
 					}
 				}
@@ -11323,9 +11327,10 @@ class WasmLispCompilerIntegrationTest {
 	void pathnameAlgebraOverTheFlatNamestring() throws Exception {
 		// Everything here is namestring computation shared with the interpreter and the
 		// JVM through one prelude definition, so a divergence would mean the shared
-		// definition stopped being shared. rename-file is the one WASM divergence: the
-		// import set carries no rename call, so %rename-file is a call-time signal (the
-		// %delete-file rule).
+		// definition stopped being shared. The closing rename-file over a missing
+		// source answers :NO-RENAME on all four backends -- %rename-file answers nil
+		// when there is nothing to rename (real through the path_rename import since
+		// .todo/257) and the Lisp above it raises the file-error.
 		assertThat(compileAndRunPrelude(PATHNAME_ALGEBRA_PROGRAM)).isEqualTo(PATHNAME_ALGEBRA_EXPECTED);
 	}
 
@@ -11385,33 +11390,56 @@ class WasmLispCompilerIntegrationTest {
 	}
 
 	@Test
-	void fileMetadataAnswersNilAndDirectoryCreationSignals() throws Exception {
+	void fileWriteDateAnswersNilAndFilesystemWritesRunForReal() throws Exception {
 		// The remaining WASM divergence (.kb/read-load-streams.md): no timestamp call is
 		// imported, and "cannot be determined" IS Common Lisp's answer for
 		// file-write-date -- so it answers nil here while the interpreter and the JVM
 		// answer for real. file-length is REAL on all four since the fd_filestat_get
-		// import landed (fileLengthAnswersTheSizeOfARealFile below).
-		// ensure-directories-exist has no such escape in its contract, so it SIGNALS
-		// rather than pretending the directory is there.
+		// import landed (fileLengthAnswersTheSizeOfARealFile below), and so are the
+		// three write-side operators since the path_create_directory /
+		// path_unlink_file / path_rename imports landed (.todo/257): the directory is
+		// created for real below, then a file in it is written, renamed, deleted and
+		// probed gone.
 		String code = """
 				(with-open-file (out "meta.txt" :direction :output) (write-line "hello" out))
 				(print (file-write-date "meta.txt"))
-				(print (ignore-errors (ensure-directories-exist "sub/dir/x.txt")))
-				(print (if (probe-file "sub/dir/x.txt") 'made 'absent))
+				(print (ensure-directories-exist "sub/dir/x.txt"))
+				(with-open-file (out "sub/dir/x.txt" :direction :output) (write-line "hello" out))
+				(print (probe-file "sub/dir/x.txt"))
+				(print (rename-file "sub/dir/x.txt" "y.txt"))
+				(print (probe-file "sub/dir/x.txt"))
+				(print (probe-file "sub/dir/y.txt"))
+				(print (delete-file "sub/dir/y.txt"))
+				(print (probe-file "sub/dir/y.txt"))
+				(print (ignore-errors (delete-file "sub/dir/y.txt")))
 				""";
-		assertThat(compileAndRunWithDir(code)).isEqualTo("NIL\nNIL\nABSENT");
+		String expected = """
+				NIL
+				"sub/dir/x.txt"
+				#P"sub/dir/x.txt"
+				#P"sub/dir/y.txt"
+				NIL
+				#P"sub/dir/y.txt"
+				T
+				NIL
+				NIL""";
+		assertThat(compileAndRunWithDir(code)).isEqualTo(expected);
+		assertThat(compileAndRunComponentWithDir(code)).isEqualTo(expected);
 	}
 
 	@Test
-	void uiopFilesystemProbeReadsAndMutationSignals() throws Exception {
+	void uiopFilesystemProbeReadsAndMutations() throws Exception {
 		// The uiop/filesystem read side runs on this backend too -- probe-file* and
-		// truename* over probe-file, directory* over the fd_readdir listing -- while
-		// the write side signals the same not-implemented-error its primitives do
-		// (.todo/257): ensure-all-directories-exist, delete-empty-directory and
-		// rename-file-overwriting-target bottom out in %make-directories /
-		// %delete-file / %rename-file, and safe-file-write-date answers nil where
-		// file-write-date does. with-current-directory inherits chdir's signal. The
-		// component twin runs the same program with the same expectation.
+		// truename* over probe-file, directory* over the fd_readdir listing -- and so
+		// does the mutating side now (.todo/257): ensure-all-directories-exist over
+		// %make-directories, rename-file-overwriting-target over %rename-file and
+		// delete-file-if-exists over %delete-file, while safe-file-write-date answers
+		// nil where file-write-date does. with-current-directory inherits chdir's
+		// signal. One deliberate remainder: delete-empty-directory over a DIRECTORY
+		// still signals -- preview1's path_unlink_file cannot remove directories
+		// (that needs the path_remove_directory import, out of .todo/257's scope),
+		// so the file-error below is the honest "could not remove it", caught here.
+		// The component twin runs the same program with the same expectation.
 		String code = """
 				(with-open-file (out "fsp-a.txt" :direction :output) (write-line "a" out))
 				(with-open-file (out "fsp-b.txt" :direction :output) (write-line "b" out))
@@ -11435,8 +11463,11 @@ class WasmLispCompilerIntegrationTest {
 				(print (list uiop:*resolve-symlinks* (uiop:resolve-symlinks "fsp-a.txt")))
 				(print (uiop:lisp-implementation-directory))
 				(print (ignore-errors (uiop:ensure-all-directories-exist (list "fsp-sub/x.txt"))))
-				(print (if (probe-file "fsp-sub/x.txt") 'made 'absent))
+				(print (if (probe-file "fsp-sub/") 'made 'absent))
 				(print (ignore-errors (uiop:rename-file-overwriting-target "fsp-a.txt" "fsp-c.txt")))
+				(print (probe-file "fsp-a.txt"))
+				(print (uiop:delete-file-if-exists "fsp-c.txt"))
+				(print (uiop:delete-file-if-exists "fsp-c.txt"))
 				(print (ignore-errors (uiop:delete-empty-directory "fsp-sub/")))
 				(print (uiop:with-current-directory () :here))
 				(print (handler-case (uiop:with-current-directory ("fsp") :never)
@@ -11457,7 +11488,10 @@ class WasmLispCompilerIntegrationTest {
 				(NIL #P"fsp-a.txt")
 				NIL
 				NIL
-				ABSENT
+				MADE
+				#P"fsp-c.txt"
+				NIL
+				T
 				NIL
 				NIL
 				:HERE
@@ -21663,7 +21697,7 @@ class WasmLispCompilerIntegrationTest {
 		return c.toByteArray();
 	}
 
-	// The twelve wasi_snapshot_preview1 imports of a component-mode core, as trap stubs:
+	// The fifteen wasi_snapshot_preview1 imports of a component-mode core, as trap stubs:
 	// the probe never does I/O, so reaching one is a probe bug worth trapping on.
 	private static byte[] probePreview1Stub() {
 		java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
@@ -21690,7 +21724,13 @@ class WasmLispCompilerIntegrationTest {
 						new am.ik.wasm.Type[] { am.ik.wasm.Type.I32 }); // 5 fd_readdir
 			types.addFunc(new am.ik.wasm.Type[] { am.ik.wasm.Type.I32, am.ik.wasm.Type.I32, am.ik.wasm.Type.I32 },
 					new am.ik.wasm.Type[] { am.ik.wasm.Type.I32 }); // 6
-																	// fd_prestat_dir_name
+																	// fd_prestat_dir_name,
+																	// path_create_directory,
+																	// path_unlink_file
+			types.addFunc(
+					new am.ik.wasm.Type[] { am.ik.wasm.Type.I32, am.ik.wasm.Type.I32, am.ik.wasm.Type.I32,
+							am.ik.wasm.Type.I32, am.ik.wasm.Type.I32, am.ik.wasm.Type.I32 },
+					new am.ik.wasm.Type[] { am.ik.wasm.Type.I32 }); // 7 path_rename
 		});
 		w.writeFunction(f -> f.addFunction(0) // fd_write
 			.addFunction(0) // fd_read
@@ -21703,7 +21743,10 @@ class WasmLispCompilerIntegrationTest {
 			.addFunction(5) // fd_readdir
 			.addFunction(3) // fd_prestat_get
 			.addFunction(6) // fd_prestat_dir_name
-			.addFunction(3)); // fd_filestat_get
+			.addFunction(3) // fd_filestat_get
+			.addFunction(6) // path_create_directory
+			.addFunction(6) // path_unlink_file
+			.addFunction(7)); // path_rename
 		w.writeExport(e -> e.addExport("fd_write", am.ik.wasm.ExternalKind.FUNCTION, 0)
 			.addExport("fd_read", am.ik.wasm.ExternalKind.FUNCTION, 1)
 			.addExport("path_open", am.ik.wasm.ExternalKind.FUNCTION, 2)
@@ -21715,9 +21758,12 @@ class WasmLispCompilerIntegrationTest {
 			.addExport("fd_readdir", am.ik.wasm.ExternalKind.FUNCTION, 8)
 			.addExport("fd_prestat_get", am.ik.wasm.ExternalKind.FUNCTION, 9)
 			.addExport("fd_prestat_dir_name", am.ik.wasm.ExternalKind.FUNCTION, 10)
-			.addExport("fd_filestat_get", am.ik.wasm.ExternalKind.FUNCTION, 11));
+			.addExport("fd_filestat_get", am.ik.wasm.ExternalKind.FUNCTION, 11)
+			.addExport("path_create_directory", am.ik.wasm.ExternalKind.FUNCTION, 12)
+			.addExport("path_unlink_file", am.ik.wasm.ExternalKind.FUNCTION, 13)
+			.addExport("path_rename", am.ik.wasm.ExternalKind.FUNCTION, 14));
 		w.writeCode(codes -> {
-			for (int i = 0; i < 12; i++) {
+			for (int i = 0; i < 15; i++) {
 				codes.addFunction(new byte[] { 0x00, 0x00, 0x0b }); // unreachable
 			}
 		});
