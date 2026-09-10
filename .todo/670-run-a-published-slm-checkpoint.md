@@ -196,8 +196,9 @@ Pointers, not records -- the home is where it gets updated.
 
 **Each orchestrator drives ONE lane at a time, serialized: an item completes, is committed
 and pushed, and only then does the next start.** What that buys is the thing two lanes cost
--- the surface-accounting overhead in `.todo/709` exists entirely because two lanes on one
-box can touch one mechanism without either seeing the other. **Documentation-only items are
+-- the surface-accounting overhead `.todo/709` was written about (cut 2026-09-10) exists
+entirely because two lanes on one box can touch one mechanism without either seeing the
+other. **Documentation-only items are
 the stated exception and run BESIDE the lane** -- rule 14.
 
 Model by difficulty, `effort=high` throughout: **High -> Fable, Medium -> Opus, Low ->
@@ -336,13 +337,15 @@ needs a person to post it. `514` (`LinalgGpuTest` never finishes on Apple silico
 neither dorian nor GB10 is -- parking those is not a deferral under rule 3, since no box in
 this plan can even fail them.
 
-**The one decision still open, and not either lane's to take alone: `.todo/709` is an
-explicit DRAFT and needs co-signing or cutting by both orchestrators.** It is process, so
-one side adopting it unilaterally is the failure it is written about. It has now outlived
-seven full lanes, which is evidence about the item rather than about its subject. It is also
-where the general reading disciplines belong -- diff the lists rather than reasoning about
-which terms ought to differ; a sum that closes is not evidence about its terms; relay a
-census with its total AND its class count -- **there or nowhere**.
+**That decision was taken on 2026-09-10, above both lanes: `.todo/709` is CUT.** The draft
+asked to be co-signed into `.kb` or cut, and it had outlived seven full lanes without either
+happening -- which was already evidence about the item rather than about its subject. Cut is
+the honest reading of that: a process card nobody reached for in seven lanes is not a
+practice, and landing it late on one orchestrator's say-so is the exact failure it was
+written about. What it held stays where it already worked: Part 3's three practices were in
+use on both sides before the draft existed and are unaffected, and the mis-record procedure
+and the reading disciplines go **nowhere** rather than into `.kb` -- the alternative the
+draft itself named. The text is recoverable in full from the commit that removed it.
 
 ## Standing rules this run earned, in the order they cost the most
 

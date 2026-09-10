@@ -3,35 +3,36 @@
 Difficulty: Low
 
 Filed 2026-09-07 by `.todo/727`. Both reproducers are minimal, standalone and checked in under
-`.todo/artefacts/727-an-ffm-downcall-costs-2-1-us-inside-a-native-image/`; the report is written
-below, and posting it is a public action for a person to take.
+`.todo/artefacts/727-an-ffm-downcall-costs-2-1-us-inside-a-native-image/`. **Surveyed and written
+2026-09-10: the two texts are finished and paste-ready in
+`.todo/artefacts/730-report-the-svm-downcall-findings-upstream/`. All that is left is a person
+pressing post, and recording the two numbers afterwards.**
 
-## 1. A downcall handle created at build time crashes the image build (bug)
+## What the survey changed
 
-`BuildTimeHandle.java`: a holder class initialised under `--initialize-at-build-time` holding
-`Linker.nativeLinker().downcallHandle(FunctionDescriptor)` (address-first, no native pointer in the
-heap). GraalVM 25.0.4 native-image fails in analysis with
-`VMError$HostedError: should not reach here: unexpected input could not be handled: linkToNative` at
-`PolymorphicSignatureWrapperMethod.buildGraph(PolymorphicSignatureWrapperMethod.java:170)`. Expected:
-either the handle is compiled like any other constant method handle, or it falls back to the
-interpreter -- not a crash. Log excerpt: `build-time-handle.error.txt`.
+This item assumed two new issues. It is one comment and one issue:
 
-## 2. A run-time downcall handle costs ~1.7 us + ~0.4 us per argument (performance)
-
-`DowncallFloor.java` / `ShapeFloor.java`: `Target_java_lang_invoke_LambdaForm.forceInterpretation()`
-returns `true`, so every handle created at run time is interpreted (`LambdaForm.interpretName`,
-reflection accessors, boxed arguments); a `cuLaunchKernel`-shaped call is 6.2 us against 17 ns on
-the JVM and 10.7 ns through `@InvokeCFunctionPointer` in the same image. Ask whether a downcall handle
--- whose stub already exists at build time from `reachability-metadata.json` -- could get an AOT
-invoker keyed on the registered shape, since the shape set is closed by construction. (Since
-`.todo/729`, 2026-09-10, this project works around it for its CBLAS calls with a `-Pnative`
-substitution issuing `@InvokeCFunctionPointer` calls on the addresses the FFM lookup found --
-`.kb/native-downcalls.md`; ~90 ns a call with three `PinnedObject`s against 6.4-7.2 us through the
-handle. Worth saying in the report: the workaround needs a hand-written interface per shape, which
-the registered-shape table already knows.)
+- **The performance half is already open upstream** --
+  [oracle/graal#12219](https://github.com/oracle/graal/issues/12219) (GR-75754, "[Native Image] Bad
+  performance of FFM API"), filed 2025-09-23 from a Java/SDL engine seeing 20x, assigned, still
+  open, and with no attribution in the thread. `.todo/727` has exactly what it lacks: the cause
+  named in SVM's own source (`Target_java_lang_invoke_LambdaForm.forceInterpretation()`), a `perf`
+  profile, the ~1.7 us + ~0.4 us/argument model, and the same-image `@InvokeCFunctionPointer`
+  comparison at 10.7 ns. A second issue would split the evidence, so it goes in as a COMMENT:
+  `comment-on-12219.md`.
+- **The build crash is not the closed issue it resembles.**
+  [#9727](https://github.com/oracle/graal/issues/9727) (closed completed 2025-08-27) and
+  [#7531](https://github.com/oracle/graal/issues/7531) carry the same `VMError` text from an
+  ordinary `DowncallStub.invoke` (Quarkus / jline, Windows). Ours is a handle held by a
+  BUILD-TIME-initialised class, failing in `PolymorphicSignatureWrapperMethod.buildGraph` during
+  inlining, and it still reproduces on 25.0.4. New issue: `issue-build-time-handle.md`, which cites
+  both closed ones so triage sees the difference at once.
 
 ## What to do
 
-Open the two issues on github.com/oracle/graal with the files above (the `perf` table and the
-per-shape table are in the artefact README), and record the issue numbers in `.kb/gpu.md` next to
-"An FFM downcall inside a native image costs".
+1. Post `comment-on-12219.md` on https://github.com/oracle/graal/issues/12219 .
+2. Open `issue-build-time-handle.md` at https://github.com/oracle/graal/issues/new (title is its
+   first heading; labels are triage's). Attach `BuildTimeHandle.java`,
+   `build-time-handle.error.txt` and `meta/` from the 727 artefacts.
+3. Record the two numbers in `.kb/gpu.md` beside "An FFM downcall inside a native image costs" --
+   the survey's half of that note is written there already -- and close this item.
