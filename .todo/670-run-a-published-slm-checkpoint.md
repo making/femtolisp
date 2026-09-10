@@ -252,15 +252,15 @@ wrong.**
   fifth alias of `float` instead of a fourth subtype (Findings above). **An umbrella's own
   specification is the one thing none of its children tests.**
 
-**The current lane is the instrument, then the width's last kernel.** A's box cannot certify
-anything until `748` lands: every later item's verification would be read out of a suite
-that is red for a reason unrelated to it, which is rule 13's failure seen from the other
-side.
+**The current lane was the instrument, then the width's last kernel.** A's box could
+not certify anything until `748` landed; both instrument items have now closed, and
+the suite is green on dorian again (10342 / 0 / 0 / 290 skipped at `ee30f4c20`).
+The lane proceeds at A-3.
 
 | # | item | difficulty | why here, why now |
 | --- | --- | --- | --- |
-| A-1 | `748` the corpus's wild-pathname case walks the whole project tree | Low | FIRST, because it is the precondition of the lane: `JvmClassShakerCorpusTest` is how the checkpoint path's own pass pipeline is pinned on this box, and it errors on dorian for a reason that lives in the BOX. Cheapest item here and the one that restores the instrument. Its trap is stated in the file: the `**/`-matches-zero-levels branch is what the case exists to pin, and no WASM backend can create a directory to scope it into |
-| A-2 | `749` `append` recurses once per element on every backend | Medium | Second, immediately after, because it is `748`'s MECHANISM and the more general defect: `748` bounds one walk, `749` is why any long list is a crash rather than a slow call. Taking it first would make the red disappear and leave the unbounded walk, which `748` says explicitly is not `748` being done. Four spellings of one shape (`Environment.appendTwo`, both `RuntimeBuilder` `_append`s, the two mapcan accumulators), and the sibling census belongs with the fix |
+| A-1 | `748` the corpus's wild-pathname case walks the whole project tree | Low | CLOSED 2026-09-09 (`2f5cafb07`, bounded walk; file removed, history recorded). It was the precondition of the lane, and the instrument is restored |
+| A-2 | `749` `append` recurses once per element on every backend | Medium | CLOSED 2026-09-10 (`ee30f4c20`): the copy is iterative in `Environment.appendTwo`, both `RuntimeBuilder` `_append`s and both mapcan accumulators, plus the mapcon expansion's left fold the census turned up; pinned at 100k in ci-spec and per-backend unit tests |
 | A-3 | `747` the element-wise `bfloat16` `vec:` kernels | High | Third: the one bf16 arm still declined, and the only lane item whose measurement is already DONE (`696`, with the harness and the lane form written out). What is left is design -- which operand pairings are admitted, what width a result takes, which of ~40 members mirror -- so it is High for the decisions, not for the numbers. Directly on the subject: it is how a checkpoint's weights are streamed at the width they are published in |
 | A-4 | `731` the wasmtime landing-pad report and the toolchain floor | Medium | Fourth: on the subject by descent, the argument `722` earned -- a cross-backend pin that an unrelated later case can turn red is not a pin, and the checkpoint path is pinned on four backends. Half of it is a person's action (filing upstream is an external submission), so it is last: the half this lane can finish is the floor, and **the narrowing question is answered by the PIN, never by the version** |
 
