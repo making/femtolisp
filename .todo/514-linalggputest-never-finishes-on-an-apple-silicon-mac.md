@@ -2,6 +2,9 @@
 
 Difficulty: Medium
 
+Needs a macOS box with Metal: neither Linux calibration box (`.kb/lanes-and-certification.md`)
+can run this class, so it is parked there rather than deferred -- no lane on them can even fail it.
+
 Seen 2026-08-25 on this M-series Mac (macOS 26.3, Metal), in a full
 `./mvnw spring-javaformat:apply test`: 178 test classes reported, every one of them green
 (0 failures, 0 errors) and exactly ONE class started and never reported --

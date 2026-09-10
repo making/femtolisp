@@ -2,6 +2,10 @@
 
 Difficulty: Medium
 
+Passed over by two checkpoint lanes in a row (it is adjacent to that path, not on it: the
+checkpoint readers use the byte and packed transfers). It wants a quiet box and does not decay,
+so it can wait; that it keeps being the item dropped is evidence about the item, not the lanes.
+
 Found 2026-09-06 while closing `.todo/704`. With the accumulate fixed, reading a file
 into a string is still dominated by the CHARACTER read itself, and the BYTE path over the
 same file is 2x to 23x faster on the same 2,668,890-character file (`.kb/string-accumulate-cost.md`):

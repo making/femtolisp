@@ -77,6 +77,14 @@ which row cannot change a bit** and every byte-identity statement in `.kb/linalg
   box's CURRENT default** (`.todo/697` halved the default to 10 the same day, after
   `.todo/702`'s own measurement) -- see
   `.todo/artefacts/713-the-3072x3072-parallel-gemv-dip-todo-702-left-open/README.md`.
+  Two consequences the checkpoint lanes carried out of this: **a parallel GEMV rate is a
+  property of how the work was cut up, not of the machine and not of the weights** (Qwen3.5's
+  Gated DeltaNet does 576 small 128x128 GEMVs a token against LFM2.5's ~30 big matvecs, so the
+  one paying more dispatch saturates earlier; the signature is a per-model saturation point,
+  tok/s over tok/s within one model, and `examples/llm/README.md`'s knee did not move when
+  `.todo/489` halved the bytes); and **a cross-model GB/s comparison is NOT evidence about the
+  cap**, because it divides by an activation-blind parameter-count estimate that omits exactly
+  the recurrent state Qwen3.5 streams.
 - **`--gpu --simd --parallel` is slower than either alone on llm** -- correct and pinned,
   documented as not a win. The interpreter gains nothing on llm either.
 - GEMM: the row split buys 5.6-7.6x, but a tuned threaded BLAS still wins 1.3-3.8x, so `--blas`

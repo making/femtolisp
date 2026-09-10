@@ -3,7 +3,7 @@
 Difficulty: Low
 
 Filed 2026-09-10 by `.todo/729`'s certification run on GB10 (aarch64, GraalVM 25.0.4). Rule 4 of
-`.todo/670`: this red is invisible from the x64 lane, which certifies `JvmLispCompilerTest` green.
+`.kb/lanes-and-certification.md`: this red is invisible from the x64 lane, which certifies `JvmLispCompilerTest` green.
 
 ## The red
 

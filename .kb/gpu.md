@@ -1426,7 +1426,8 @@ Each is a measured decline, and each needs this file's numbers before it is revi
 - **No per-device collection policy.** It becomes a `GpuDevice` question only if the two backends'
   collection requests ever want different answers.
 - **No Q4_0 / Q4_K weight width** (`.todo/718`, 2026-09-06 -- a refusal, recorded as one). The
-  8.5%-error width was ruled off the CPU by its nibble unpack (`.todo/670`'s table) and was to be
+  8.5%-error width was ruled off the CPU by its nibble unpack -- ALU-bound, 1.1-1.35x f32 for 8.5%
+  error (`.todo/artefacts/482-bfloat16-a-narrow-width-that-pays/README.md`, "The integer widths") -- and was to be
   "a device width"; on the one model that exercises the device GEMV the arm's whole bf16 GEMV time
   is 6.8 ms of a 45 ms forward ("The GEMV, and the matrix that stays"), and a Q4_0 matrix is 0.28
   of a bf16 matrix's bytes, so the width's CEILING is 4-5 ms a forward -- under 10% -- on an arm
@@ -1471,4 +1472,4 @@ Each is a measured decline, and each needs this file's numbers before it is revi
   one's is 40%; the rest is the Gated DeltaNet host loops and 157 launch round trips), or on
   trigger (b) -- a discrete card with its own memory joining the two calibration machines, where
   the upload IS the cost and residency the win, and this paragraph is unified-memory arithmetic.
-  The CPU half stays where `.todo/670` left it.
+  The CPU half stays refused on the nibble unpack above.

@@ -2,7 +2,7 @@
 
 Difficulty: Medium
 
-Filed 2026-09-10 by `.todo/729`'s certification run on GB10. Rule 4 of `.todo/670`: the test is
+Filed 2026-09-10 by `.todo/729`'s certification run on GB10. Rule 4 of `.kb/lanes-and-certification.md`: the test is
 `@EnabledIf("aDeviceIsAvailable")`, so only the device lane can see it, and it is red there.
 
 ## The red

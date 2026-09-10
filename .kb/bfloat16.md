@@ -73,8 +73,8 @@ width and direction.
 
 ## The conversion arithmetic census (2026-09-08, `.todo/746`)
 
-`.todo/670`'s findings line ("Seven sites hand-write the bf16 conversion arithmetic") named no
-sites and no owner. A grep for a file touching both `bf16` and 16-bit shift arithmetic answers
+`.todo/746` was filed on a findings line reading "Seven sites hand-write the bf16 conversion
+arithmetic" that named no sites and no owner. A grep for a file touching both `bf16` and 16-bit shift arithmetic answers
 twelve files; sorted into what each actually is:
 
 - **The authority**: `BFloat16.java`.
@@ -181,7 +181,8 @@ needed"). No `linalg:` acceleration seam takes it: `--simd`, `--blas` and `--gpu
   every other pairing** (`.todo/488`, `.todo/747`). `vec:sum` over a bf16 vector, `vec:dot`
   with a bf16 FIRST operand, and `vec:matvec` / `matvec-into` over a bf16 matrix run kernels
   that decode inside the lane loop -- provided every OTHER array operand is `single-float`:
-  bf16 weights against f32 activations is the pairing the plan has (`.todo/670`, `.todo/482`).
+  bf16 weights against f32 activations is the pairing the width was built for (`.todo/482`, and
+  the plan decision below).
   Beside it, `vec:add` / `sub` / `mul` / `div` (and `vec:+` / `-` / `*` / `/`), `vec:sqrt` /
   `abs` / `negative` / `reciprocal` and their `-into` siblings run element-wise kernels over
   bf16 x bf16 -> bf16: widen both operands inside the lane loop, compute in f32, narrow on
@@ -214,7 +215,9 @@ needed"). No `linalg:` acceleration seam takes it: `--simd`, `--blas` and `--gpu
   Asked and answered 2026-09-05/2026-09-08 (`.todo/696` part 2), recorded because a later reader
   cannot reconstruct it and both `.todo/490` (bf16 on the device) and `.todo/672` (Q8_0) brush
   against it. Today every fused kernel is narrow WEIGHTS against f32 ACTIVATIONS -- a plan
-  decision, not an artefact (`.todo/670` line 259, `.todo/488`'s table, `.todo/482`'s record and
+  decision, not an artefact: the checkpoint umbrella (`.todo/670`, closed 2026-09-10) ruled
+  mixed precision out -- `torch:` stays f32/f64, bf16 is a storage width for WEIGHTS and
+  nothing in it changes what an activation is -- and `.todo/488`'s table, `.todo/482`'s record and
   `.todo/672`'s Q8_0 rows all measure f32 activations; 490 closed without a pairing, the device
   taking exactly the CPU's). A NARROW x NARROW pairing would be an EXTENSION, not a rewrite:
   - The TOTAL-bridge property does not depend on exactly one operand being narrow. It depends on

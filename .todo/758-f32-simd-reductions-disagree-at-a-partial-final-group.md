@@ -51,8 +51,8 @@ JVM `--simd` answer 16777344, wasm-GC answers 16777348.
 
 Every cross-backend `--simd` probe uses a length that is a MULTIPLE of the lane count --
 1024 for the reduction pins, 16 / 24 / 32 for `.todo/480`'s gate pins -- where the two
-strategies coincide exactly because there is no partial group. `.todo/670`'s standing rule
-6 in its general form: every case sits on one side of the condition.
+strategies coincide exactly because there is no partial group. `.kb/lanes-and-certification.md`'s standing
+rule 6 in its general form: every case sits on one side of the condition.
 
 `.todo/480` asserts 31 columns on all four (`2^24 + 24` everywhere) and that agreement is
 REAL but accidental: the two folds reach different intermediate sums and both tie to even
