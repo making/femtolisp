@@ -293,7 +293,9 @@ class JvmSimdAccelCompilerTest {
 	 * four implementations answer that, but only for this probe's data -- wasm-GC has no
 	 * scalar tail and folds the partial group with its padding zeroed, which reaches the
 	 * same neighbour here and a different one when the {@code 2^24} sits in the tail
-	 * region ({@code .todo/758}).
+	 * region (the deliberate divergence pinned by
+	 * {@code partialFinalGroupFoldsTheScalarTailByDesign} and its wasm-GC mirror,
+	 * {@code .todo/758} closed as a contract exception).
 	 *
 	 * <p>
 	 * 24 columns is the middle of the region between {@code MATVEC_ROW_THRESHOLD} and
@@ -355,6 +357,31 @@ class JvmSimdAccelCompilerTest {
 		String d = "(let ((v (vec:ones 1024))) (setf (aref v 0) 4096.0) (print (round (vec:dot v v))))";
 		assertThat(accel(d)).isEqualTo("16778239");
 		assertThat(scalar(d)).isEqualTo("16778239");
+	}
+
+	@Test
+	void partialFinalGroupFoldsTheScalarTailByDesign() throws Exception {
+		// .todo/758, closed as a contract exception: at a length that is not a
+		// multiple of the f32x4 lane count this side folds loopBound(n) lanes plus
+		// a scalar tail in index order, while wasm-GC folds ceil(n/4) zero-padded
+		// groups -- same value in exact arithmetic, different last bit at a
+		// rounding boundary. The mirror image (16777248 / 16777348) is pinned in
+		// WasmLispCompilerIntegrationTest; the interpreter answers these same
+		// integers in eval/VecSimdTest.
+		String gemv = "(let ((m (make-array '(1 31) :element-type 'single-float :initial-element 1.0))"
+				+ " (v (vec:ones 31 :element-type 'single-float)))"
+				+ " (setf (aref m 0 29) 4096.0) (setf (vec:aref v 29) 4096.0)"
+				+ " (print (round (vec:aref (vec:matvec m v) 0))))";
+		assertThat(accel(gemv)).as("31 columns, 2^24 in the tail: scalar tail").isEqualTo("16777244");
+		assertThat(scalar(gemv)).as("scalar oracle stays exact").isEqualTo("16777246");
+		String dot = "(let ((v (vec:ones 131 :element-type 'single-float))) (setf (vec:aref v 127) 4096.0)"
+				+ " (print (round (vec:dot v v))))";
+		assertThat(accel(dot)).as("131 elements, 4096.0 at index 127: scalar tail").isEqualTo("16777344");
+		assertThat(scalar(dot)).as("scalar oracle stays exact").isEqualTo("16777346");
+		String sum = "(let ((v (vec:ones 131 :element-type 'single-float))) (setf (vec:aref v 127) 16777216.0)"
+				+ " (print (round (vec:sum v))))";
+		assertThat(accel(sum)).as("131 elements, 2^24 at index 127: scalar tail").isEqualTo("16777344");
+		assertThat(scalar(sum)).as("scalar oracle stays exact").isEqualTo("16777346");
 	}
 
 	@Test

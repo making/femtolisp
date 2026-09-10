@@ -18949,9 +18949,12 @@ class WasmLispCompilerIntegrationTest {
 	 * agree here -- {@code 2^24 + 24} on all four -- but the agreement is arithmetic
 	 * luck, not the contract: the two folds reach different intermediate sums and both
 	 * tie to even onto the same neighbour for THIS probe's data. Move the {@code 2^24}
-	 * into the tail region and they part company, 16777244 against 16777248, which is
-	 * {@code .todo/758}. So this assertion pins what the backends do at a partial row,
-	 * and is not evidence that a partial row folds identically.
+	 * into the tail region and they part company, 16777244 against 16777248 -- the
+	 * deliberate divergence pinned by
+	 * {@code wasmGcSimdPartialFinalGroupFoldsTheZeroPaddedGroupByDesign} and its
+	 * scalar-tail mirror ({@code .todo/758}, closed as a contract exception). So this
+	 * assertion pins what the backends do at a partial row, and is not evidence that a
+	 * partial row folds identically.
 	 */
 	@Test
 	void theMultiAccumulatorGateFiresAtTheSameColumnCountOnBothWasmBackends() throws Exception {
@@ -19036,6 +19039,80 @@ class WasmLispCompilerIntegrationTest {
 		String d = "(let ((v (vec:ones 1024))) (setf (aref v 0) 4096.0) (print (round (vec:dot v v))))";
 		assertThat(compileAndRunVec(d, true)).isEqualTo("16778239");
 		assertThat(compileAndRunVec(d, false)).isEqualTo("16778239");
+	}
+
+	@Test
+	void wasmGcSimdPartialFinalGroupFoldsTheZeroPaddedGroupByDesign() throws Exception {
+		// .todo/758, closed as a contract exception rather than a unification: at a
+		// length that is not a multiple of the f32x4 lane count wasm-GC folds
+		// ceil(n/4) zero-padded groups with no scalar tail, while the interpreter,
+		// the JVM class and --no-gc run the lane loop to loopBound(n) and add the
+		// leftover as a scalar tail in index order. Both are exact in exact
+		// arithmetic; the 2^24 probes below make the order legible as different
+		// integers. The scalar-tail answers (16777244 / 16777344) are pinned beside
+		// these in eval/VecSimdTest and JvmSimdAccelCompilerTest, and --no-gc
+		// answers them here too.
+		String gemv = "(let ((m (make-array '(1 31) :element-type 'single-float :initial-element 1.0))"
+				+ " (v (vec:ones 31 :element-type 'single-float)))"
+				+ " (setf (aref m 0 29) 4096.0) (setf (vec:aref v 29) 4096.0)"
+				+ " (print (round (vec:aref (vec:matvec m v) 0))))";
+		assertThat(compileAndRunVec(gemv, true)).as("wasm-GC, 31 columns, 2^24 in the tail: padded group")
+			.isEqualTo("16777248");
+		assertThat(compileAndRunVec(gemv, false)).as("scalar oracle stays exact").isEqualTo("16777246");
+		assertThat(compileComponentAndRunVec(gemv, true)).as("component, 31 columns, 2^24 in the tail: padded group")
+			.isEqualTo("16777248");
+		assertThat(compileComponentAndRunVec(gemv, false)).as("component scalar stays exact").isEqualTo("16777246");
+		String dot = "(let ((v (vec:ones 131 :element-type 'single-float))) (setf (vec:aref v 127) 4096.0)"
+				+ " (print (round (vec:dot v v))))";
+		assertThat(compileAndRunVec(dot, true)).as("wasm-GC, 131 elements: padded group").isEqualTo("16777348");
+		assertThat(compileAndRunVec(dot, false)).as("scalar oracle stays exact").isEqualTo("16777346");
+		assertThat(compileComponentAndRunVec(dot, true)).as("component, 131 elements: padded group")
+			.isEqualTo("16777348");
+		String sum = "(let ((v (vec:ones 131 :element-type 'single-float))) (setf (vec:aref v 127) 16777216.0)"
+				+ " (print (round (vec:sum v))))";
+		assertThat(compileAndRunVec(sum, true)).as("wasm-GC sum, 131 elements: padded group").isEqualTo("16777348");
+		assertThat(compileAndRunVec(sum, false)).as("scalar oracle stays exact").isEqualTo("16777346");
+		// --no-gc folds the scalar-tail side, like the interpreter and the JVM.
+		assertThat(compileNoGcAndInvoke(OptimizeLevel.NONE, true, noGcPartialGemv(), "gate", ""))
+			.as("--no-gc --simd, 31 columns: scalar tail")
+			.isEqualTo("16777244");
+		assertThat(compileNoGcAndInvoke(OptimizeLevel.NONE, true, noGcPartialDot(), "pdot", ""))
+			.as("--no-gc --simd, 131 elements: scalar tail")
+			.isEqualTo("16777344");
+	}
+
+	private static String noGcPartialGemv() {
+		return """
+				(defun gate ()
+				  (let ((w (make-array '(1 31) :element-type 'single-float :initial-element 1.0))
+				        (v (vec:ones 31 :element-type 'single-float)))
+				    (setf (aref w 0 29) 4096.0)
+				    (setf (vec:aref v 29) 4096.0)
+				    (truncate (vec:aref (vec:matvec w v) 0))))
+				(rontolisp:wasm-export 'gate :params '() :returns :int)
+				""";
+	}
+
+	private static String noGcPartialDot() {
+		return """
+				(defun pdot ()
+				  (let ((v (vec:ones 131 :element-type 'single-float)))
+				    (setf (vec:aref v 127) 4096.0)
+				    (truncate (vec:dot v v))))
+				(rontolisp:wasm-export 'pdot :params '() :returns :int)
+				""";
+	}
+
+	private static String compileComponentAndRunVec(String lispCode, boolean simd) throws Exception {
+		List<LispVal> program = am.ik.rontolisp.eval.VecLibrary
+			.process(am.ik.rontolisp.eval.LinalgLibrary.process(LispReader.readAllFromString(lispCode)));
+		byte[] component = new WasmLispCompiler(false, true, false, OptimizeLevel.NONE, false, simd).compile(program);
+		wasmtime.copyFileToContainer(Transferable.of(component), path("test.wasm"));
+		ExecResult result = wasmtime.execInContainer("wasmtime", "run", "-W", "gc=y", path("test.wasm"));
+		assertThat(result.getExitCode())
+			.as("exit code (component simd=%s): %s\nstderr: %s", simd, lispCode, result.getStderr())
+			.isZero();
+		return result.getStdout().trim();
 	}
 
 	@Test
