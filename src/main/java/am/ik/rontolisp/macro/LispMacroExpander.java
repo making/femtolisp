@@ -10,6 +10,7 @@ import am.ik.rontolisp.ArrayElementTypes;
 import am.ik.rontolisp.LispCons;
 import am.ik.rontolisp.LispDouble;
 import am.ik.rontolisp.LispFloatArray;
+import am.ik.rontolisp.LispHashTable;
 import am.ik.rontolisp.LispInstance;
 import am.ik.rontolisp.LispInteger;
 import am.ik.rontolisp.LispLayout;
@@ -20955,6 +20956,67 @@ public final class LispMacroExpander {
 	}
 
 	/**
+	 * Whether the program can build a hash table whose aggregates key by identity, i.e.
+	 * whether any {@code (make-hash-table ... :test 'eq ...)} or {@code :test 'eql} form
+	 * is written in it. The gate both compiled backends switch the identity comparison
+	 * and placement on with, beside {@link #programMakesEqualpHashTable}: a program with
+	 * no such form is emitted exactly as it was before identity tables existed.
+	 * @param forms the program to scan
+	 * @return whether an {@code eq} or {@code eql} table can exist in this program
+	 */
+	public static boolean programMakesIdentityHashTable(List<LispVal> forms) {
+		for (LispVal form : forms) {
+			if (makesIdentityHashTable(form)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static boolean makesIdentityHashTable(LispVal form) {
+		if (!(form instanceof LispCons cons)) {
+			return false;
+		}
+		if (cons.car() instanceof LispSymbol head && LispNames.MAKE_HASH_TABLE.equals(head.name())) {
+			int testCode = hashTableTestCode(cons);
+			if (testCode == LispHashTable.TEST_EQ || testCode == LispHashTable.TEST_EQL) {
+				return true;
+			}
+		}
+		return makesIdentityHashTable(cons.car()) || makesIdentityHashTable(cons.cdr());
+	}
+
+	/**
+	 * Answers the test code ({@link LispHashTable#TEST_EQUAL} and friends) one
+	 * {@code (make-hash-table ...)} form asks for, read from the SOURCE: the
+	 * {@code :test} argument must be written literally ({@code 'eq} or {@code #'eq} and
+	 * the same for the other three tests) because the compiled backends never evaluate
+	 * {@code make-hash-table}'s arguments; a computed test places as {@code equal}, as it
+	 * did before identity tables existed.
+	 * @param form the {@code make-hash-table} call
+	 * @return the test code
+	 */
+	public static int hashTableTestCode(LispCons form) {
+		List<LispVal> parts = form.toList();
+		for (int i = 1; i + 1 < parts.size(); i += 2) {
+			if (parts.get(i) instanceof LispSymbol keyword && LispNames.TEST_KEYWORD.equals(keyword.name())) {
+				return LispHashTable.testCodeFor(designatedTestName(parts.get(i + 1)));
+			}
+		}
+		return LispHashTable.TEST_EQUAL;
+	}
+
+	private static String designatedTestName(LispVal test) {
+		LispVal named = test;
+		if (test instanceof LispCons quoted && quoted.car() instanceof LispSymbol head
+				&& (LispNames.QUOTE.equals(head.name()) || LispNames.FUNCTION.equals(head.name()))
+				&& quoted.cdr() instanceof LispCons rest) {
+			named = rest.car();
+		}
+		return named instanceof LispSymbol test0 ? test0.name() : "";
+	}
+
+	/**
 	 * Whether one {@code (make-hash-table ...)} form asks for the {@code equalp} test,
 	 * written as {@code 'equalp} or {@code #'equalp} -- the per-site half of
 	 * {@link #programMakesEqualpHashTable}, read by both backends' {@code make} compiler
@@ -20963,24 +21025,11 @@ public final class LispMacroExpander {
 	 * @return whether its {@code :test} argument names {@code equalp}
 	 */
 	public static boolean isEqualpHashTableMake(LispCons form) {
-		List<LispVal> parts = form.toList();
-		for (int i = 1; i + 1 < parts.size(); i += 2) {
-			if (parts.get(i) instanceof LispSymbol keyword && LispNames.TEST_KEYWORD.equals(keyword.name())
-					&& namesEqualp(parts.get(i + 1))) {
-				return true;
-			}
-		}
-		return false;
+		return hashTableTestCode(form) == LispHashTable.TEST_EQUALP;
 	}
 
 	private static boolean namesEqualp(LispVal test) {
-		LispVal named = test;
-		if (test instanceof LispCons quoted && quoted.car() instanceof LispSymbol head
-				&& (LispNames.QUOTE.equals(head.name()) || LispNames.FUNCTION.equals(head.name()))
-				&& quoted.cdr() instanceof LispCons rest) {
-			named = rest.car();
-		}
-		return named instanceof LispSymbol test0 && LispNames.EQUALP.equals(test0.name());
+		return LispNames.EQUALP.equals(designatedTestName(test));
 	}
 
 	private static boolean usesGeneralArrayOp(LispVal form) {
@@ -29129,9 +29178,10 @@ public final class LispMacroExpander {
 	 */
 	/**
 	 * Expands {@code (hash-table-test h)} to {@code (progn h 'equal)}: the table argument
-	 * is still evaluated, the answer is the constant {@code equal}. Every backend keys
-	 * its tables structurally, so {@code equal} is the test the lookups implement
-	 * whatever {@code :test} the table was created with.
+	 * is still evaluated, the answer is the constant {@code equal}. Only the fallback for
+	 * a program that builds no non-equal table -- a module whose gate is off can hold no
+	 * {@code equalp}, {@code eql} or {@code eq} table, so {@code equal} is the only true
+	 * answer there.
 	 * @param cons the hash-table-test expression
 	 * @return the expanded expression
 	 */

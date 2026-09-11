@@ -1,8 +1,29 @@
 # Hash tables
 
-A table separates PLACEMENT (structural hash) from COMPARISON (real `equal` within the bucket) on
-every backend. Nothing prints the key — keying on the key's `prin1` TEXT cost the whole printed
-graph per lookup and never terminated on a cyclic key.
+A table separates PLACEMENT (a hash agreeing with the test) from COMPARISON (the
+test's predicate within the bucket) on every backend. Nothing prints the key —
+keying on the key's `prin1` TEXT cost the whole printed graph per lookup and never
+terminated on a cyclic key.
+
+## The four tests
+
+`LispHashTable.TEST_*` codes (0 equal, 1 equalp, 2 eql, 3 eq) are what every
+backend agrees on; `LispMacroExpander.hashTableTestCode` reads a literal `:test`
+(`'eq` or `#'eq`, and the same for the other three) off a `make-hash-table` form,
+and `programMakesIdentityHashTable` gates the identity machinery beside
+`programMakesEqualpHashTable`'s fold gate. A computed `:test` places as `equal`,
+like an unwritten one.
+
+- `equal`: the structural hash plus real `equal` in the bucket.
+- `equalp`: the `equalp` key fold below, then the same pair.
+- `eql`/`eq`: the `eql`/`eq` predicate (`LispEquality.eql`/`eq`) in the bucket.
+  Aggregates (conses, instances) hash by identity (`System.identityHashCode` on
+  the interpreter/JVM, the shared bucket 0 on WASM), so a key mutated after
+  insertion keeps its bucket; every other value hashes structurally exactly as an
+  `equal` table hashes it, which the value-compared `eql`/`eq` on
+  numbers/symbols/strings agrees with. Only the performance characteristic differs
+  on WASM (one shared bucket for aggregates, i.e. a `ref.eq` scan); the semantics
+  are identical on all four backends.
 
 ## `equalp` is a KEY FOLD, on all four backends
 `equalp` on two values is `equal` on their folds, so one structural table carries both tests.
@@ -15,21 +36,28 @@ does not fold to the ratio it equals (WASM `TYPE_RATIO` holds two **i32** compon
 
 - interpreter `LispHashTable` via `LispEquality.equalpKey`.
 - JVM `runtime/RontoHashTable.equalpKey`, so that class TRAVELS beside a compiled program making an
-  `equalp` table (`.kb/jvm-export.md`). Flag = reserved String key `#equalp` beside `#order`;
-  `_hashKey` folds and `_hashGet`/`_hashPut`/`_hashRem` run every key through it. **Trap**:
-  `_hashClr` must read the marker before the clear and hang it back.
+  `equalp` table (`.kb/jvm-export.md`). Marker = reserved String key `#equalp` beside `#order`
+  (`#eql`/`#eq` for identity tables); `_hashKey` folds and `_hashGet`/`_hashPut`/`_hashRem`
+  run every key through it, then compare and hash by `_hashTest`. **Trap**:
+  `_hashClr` must read the markers before the clear and hang them back.
 - WASM `_equalp_key` (`WasmEqualpKeyRuntimeBuilder`, `FUNC_EQUALP_KEY`, appended after the last
-  fixed helper so no index shifts). The flag rides in the LOW BIT of the header count, stored as
-  `entries * 2 + fold`, so the header car stays an i31; every count read shifts past it.
+  fixed helper so no index shifts). The tag rides in the LOW TWO BITS of the header count, stored as
+  `entries * 4 + test` (0 equal, 1 equalp, 2 eql, 3 eq), so the header car stays an i31; every
+  count read shifts past it. An eql/eq aggregate key hashes to the shared bucket 0 and is
+  compared with the eql/eq comparison inlined at the bucket scan (no new `FUNC_*`
+  index); `_hash_resize` reads the tag off the header it already takes.
 
 **Gate: `LispMacroExpander.programMakesEqualpHashTable`**, one scan shared by both compiled
 backends. `:test` must be written LITERALLY (`'equalp`/`#'equalp`) — the compile paths read it from
 the source; the interpreter evaluates it. **Every count in a WASM module must agree about whether
-the flag is there**, so the gate is carried into each top-level CHUNK context
-(`WasmAsyncEmit.freshCtx`). The narrowing half of the `:test` story is an `eql` table still placing
-structurally, which is why `hash-table-test` answers `EQUAL`, not `EQL`. Pinned by the
+the tag is there**, so the gate is carried into each top-level CHUNK context
+(`WasmAsyncEmit.freshCtx`). The identity half rides beside it:
+`programMakesIdentityHashTable` (`'eq`/`'eql`, same literal rule), and a tagged
+WASM count carries the two-bit code (`entries * 4 + test`) while an untagged one
+stays the plain entry count. Pinned by the
 `*EqualpHashTable*` tests in `LispEvaluatorTest`/`JvmLispCompilerTest`/
-`WasmLispCompilerIntegrationTest`, ci-spec `equalp-hash-table-key-fold`, and
+`WasmLispCompilerIntegrationTest`, ci-spec `equalp-hash-table-key-fold` and
+`hash-table-identity-test`, and
 `RontoHashTableEqualpKeyTest`.
 
 ## The two caps
@@ -85,23 +113,25 @@ share the box, so `hash-table-p` is `ref.test TYPE_CELL` PLUS the header-car tes
   (`.kb/json.md`); constant-0 fallback for identity-compared values. The depth global is emitted
   only for a hash-using program (+31 bytes; other modules stay BYTE-IDENTICAL).
 - An INSTANCE key folds layout + slot hashes (layout TAG / interned layout array identity / layout
-  address), so two separately built instances with equal slots find each other (ci-spec
-  `instance-print-syntax-and-identity`) — and a BACK-REFERENCE makes it the WORST CASE for the work
-  budget. A GENERAL ARRAY key is the opposite: `equal` is identity, hash is an identity hash.
+  address), so two separately built instances with equal slots find each other in an
+  `equal` table (ci-spec `instance-print-syntax-and-identity`) -- and a BACK-REFERENCE
+  makes it the WORST CASE for the work budget. In an `eql`/`eq` table the same key
+  hashes by identity instead, so the two instances are two keys. A GENERAL ARRAY key
+  is the opposite: `equal` is identity, hash is an identity hash.
 - `puthash` doubles (`FUNC_HASH_RESIZE`) past load factor 0.75; both funcs sit just before
   `FUNC_USER_BASE` in Preview 1 and `--component`. `maphash` order is unspecified: interpreter and
   JVM walk insertion order (JVM through `#order`, which is why the bucket index may reorder
   freely), WASM bucket order.
 
 ## Printing
-`#<HASH-TABLE :TEST EQUAL :COUNT n>` (`EQUALP` for a folding table) on all four backends through
+`#<HASH-TABLE :TEST EQUAL :COUNT n>` (`EQUALP`/`EQL`/`EQ` for those tables) on all four backends through
 `print`/`princ`/`prin1`/`princ-to-string`/`format ~A`/`~S`, nested included (ci-spec
-`hash-table-print-syntax`). No entry content; SBCL's trailing identity hash is deliberately absent
+`hash-table-print-syntax`, `hash-table-identity-test`). No entry content; SBCL's trailing identity hash is deliberately absent
 (`.kb/emitted-output-determinism.md`).
 
 - `:TEST` is the test LOOKUP IMPLEMENTS, from the same place per backend as `hash-table-test`:
-  `LispHashTable.equalpTest()`, `_hashEqp`, the header count's low bit. Two whole constants
-  (`LispHashTable.HASH_TABLE_PREFIX`, `HASH_TABLE_PREFIX_EQUALP`), not one assembled at run time.
+  `LispHashTable.testCode()`, `_hashTest`, the header count's low two bits. One whole constant
+  per test, not one assembled at run time.
 - `:COUNT` is the O(1) live count (`_hashSize` on the JVM — the map's own `size()` counts BUCKETS).
 - JVM: the printer arm is keyed on `JvmHashRuntimeBuilder.MAP_CLASS` = `java.util.LinkedHashMap`,
   deliberately NOT the plain `HashMap` a `java:` call can hand back — that class is the

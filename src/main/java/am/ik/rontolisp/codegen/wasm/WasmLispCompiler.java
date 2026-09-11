@@ -579,6 +579,15 @@ public final class WasmLispCompiler implements LispCompiler {
 	private boolean usesEqualpHashTables;
 
 	/**
+	 * Whether the program writes {@code (make-hash-table :test 'eq)} or
+	 * {@code (make-hash-table :test 'eql)} somewhere. Beside
+	 * {@link #usesEqualpHashTables}: a program with neither keeps its exact bytes -- the
+	 * header count is the plain entry count and no site emits a test -- while a program
+	 * with either tags the count with the two-bit test code every count read agrees on.
+	 */
+	private boolean usesIdentityHashTables;
+
+	/**
 	 * Whether the degenerate (non-asyncMode) tier's first-class stream value can exist in
 	 * this module: the program names {@code rontolisp::%stream-new}, its one producer.
 	 * Adds ONE type entry ({@code TYPE_P1_STREAM}) and the two-function
@@ -2807,6 +2816,10 @@ public final class WasmLispCompiler implements LispCompiler {
 		// has to agree about whether the flag is there. One program-wide answer is what
 		// makes that agreement structural rather than a convention.
 		this.usesEqualpHashTables = LispMacroExpander.programMakesEqualpHashTable(program);
+		// The identity tables, decided on the same snapshot for the same reason: a
+		// table whose aggregates key by identity carries its test in the header
+		// count, so every count read in the module has to agree about the tag.
+		this.usesIdentityHashTables = LispMacroExpander.programMakesIdentityHashTable(program);
 		// The stream-value gate is decided on the SAME program snapshot, because
 		// mayCreateInstances above already answers for it: read them apart and a later
 		// desugaring could turn one on without the other, which is a %obj-new with no
@@ -3470,7 +3483,7 @@ public final class WasmLispCompiler implements LispCompiler {
 		// memory, so it keeps the Preview 1 base and stops reserving 384 KB of address
 		// space per instance.
 		int dataBase = this.component && !this.noWasi ? COMPONENT_DATA_BASE_OFFSET : DATA_BASE_OFFSET;
-		StringTable stringTable = new StringTable(dataBase, this.usesEqualpHashTables);
+		StringTable stringTable = new StringTable(dataBase, this.usesEqualpHashTables, this.usesIdentityHashTables);
 		StringTable.StringEntry tSymEntry = stringTable.addBodyString("T");
 		// The _type_err_int/_type_err_num/_type_err_real message prefixes, interned
 		// HERE -- before any body compiles -- because a string added during code
@@ -3683,6 +3696,7 @@ public final class WasmLispCompiler implements LispCompiler {
 			.instanceTypeIndex(this.usesInstances ? instanceTypeBase() : -1)
 			.usesSynonymStreams(programUsesSymbol(program, LispNames.MAKE_SYNONYM_STREAM))
 			.usesEqualpHashTables(this.usesEqualpHashTables)
+			.usesIdentityHashTables(this.usesIdentityHashTables)
 			.usesStreamValues(usesStreamValues)
 			.typedArrayCodes(LispMacroExpander.makeArrayElementTypeCodes(program, closRegistry))
 			.layoutAddresses(layoutAddresses)
@@ -6703,7 +6717,8 @@ public final class WasmLispCompiler implements LispCompiler {
 				// Hash-table runtime helper bodies (FUNC_HASH, FUNC_HASH_RESIZE)
 				code.addFunction(WasmRuntimeBuilder.buildHashBody(this.usesInstances ? instanceTypeBase() : -1,
 						hashDepthGlobalIndex, hashGasGlobalIndex));
-				code.addFunction(WasmRuntimeBuilder.buildHashResizeBody());
+				code.addFunction(WasmRuntimeBuilder.buildHashResizeBody(this.usesIdentityHashTables,
+						this.usesInstances ? instanceTypeBase() : -1));
 				// Modulo / remainder runtime helper bodies (FUNC_RAT_REM, FUNC_RAT_MOD)
 				code.addFunction(WasmRatioRuntimeBuilder.buildRatRemBody(false));
 				code.addFunction(WasmRatioRuntimeBuilder.buildRatRemBody(true));
@@ -8357,6 +8372,15 @@ public final class WasmLispCompiler implements LispCompiler {
 		boolean usesEqualpHashTables = false;
 
 		/**
+		 * True when the program writes {@code (make-hash-table :test 'eq)} or
+		 * {@code (make-hash-table :test 'eql)} somewhere, so a table can carry the
+		 * two-bit TEST TAG in its header count and the table primitives compare and place
+		 * by it. Carried into each top-level chunk context like the fold flag above, for
+		 * the same agreement reason; a program with neither keeps its exact bytes.
+		 */
+		boolean usesIdentityHashTables = false;
+
+		/**
 		 * True when an OPEN stream VALUE ({@code LispLayout.STREAM}) can exist in this
 		 * module -- the program spells a stream constructor, or names
 		 * {@code *error-output*} whose seeded default is one
@@ -8813,6 +8837,7 @@ public final class WasmLispCompiler implements LispCompiler {
 			this.printControlVariables = builder.printControlVariables;
 			this.usesSynonymStreams = builder.usesSynonymStreams;
 			this.usesEqualpHashTables = builder.usesEqualpHashTables;
+			this.usesIdentityHashTables = builder.usesIdentityHashTables;
 			this.usesStreamValues = builder.usesStreamValues;
 			this.typedArrayCodes = builder.typedArrayCodes;
 			this.usesSeqString = builder.usesSeqString;
@@ -8936,6 +8961,8 @@ public final class WasmLispCompiler implements LispCompiler {
 			private boolean usesSynonymStreams = false;
 
 			private boolean usesEqualpHashTables = false;
+
+			private boolean usesIdentityHashTables = false;
 
 			private boolean usesStreamValues = false;
 
@@ -9216,6 +9243,11 @@ public final class WasmLispCompiler implements LispCompiler {
 
 			Builder usesEqualpHashTables(boolean usesEqualpHashTables) {
 				this.usesEqualpHashTables = usesEqualpHashTables;
+				return this;
+			}
+
+			Builder usesIdentityHashTables(boolean usesIdentityHashTables) {
+				this.usesIdentityHashTables = usesIdentityHashTables;
 				return this;
 			}
 
@@ -9666,6 +9698,13 @@ public final class WasmLispCompiler implements LispCompiler {
 		// did, and carries these bytes no more than it carries the fold.
 		final @Nullable StringEntry hashTableEqualpStr;
 
+		// The same tags for tables whose aggregates key by identity, interned only by
+		// a module that can build one -- beside the fold tag above, for the same
+		// byte-identical reason.
+		final @Nullable StringEntry hashTableEqlStr;
+
+		final @Nullable StringEntry hashTableEqStr;
+
 		final StringEntry hashTableEnd;
 
 		// Vector/array literal printing: the "#(" prefix for rank-1; a rank-n array
@@ -9723,7 +9762,7 @@ public final class WasmLispCompiler implements LispCompiler {
 
 		final StringEntry charRubout;
 
-		StringTable(int baseOffset, boolean equalpTables) {
+		StringTable(int baseOffset, boolean equalpTables, boolean identityTables) {
 			this.nextOffset = baseOffset;
 			// The printer prologue. Every entry below is read by a RUNTIME body -- the
 			// generic printer arms (_print_val / _princ_val), the float printer, the
@@ -9747,6 +9786,8 @@ public final class WasmLispCompiler implements LispCompiler {
 			this.functionMark = addBodyString("#'");
 			this.hashTableStr = addBodyString(LispHashTable.HASH_TABLE_PREFIX);
 			this.hashTableEqualpStr = equalpTables ? addBodyString(LispHashTable.HASH_TABLE_PREFIX_EQUALP) : null;
+			this.hashTableEqlStr = identityTables ? addBodyString(LispHashTable.HASH_TABLE_PREFIX_EQL) : null;
+			this.hashTableEqStr = identityTables ? addBodyString(LispHashTable.HASH_TABLE_PREFIX_EQ) : null;
 			this.hashTableEnd = addBodyString(">");
 			this.vecPrefix = addBodyString("#(");
 			this.hashPrefix = addBodyString("#");

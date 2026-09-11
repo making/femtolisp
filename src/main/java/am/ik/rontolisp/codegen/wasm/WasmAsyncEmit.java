@@ -791,12 +791,13 @@ final class WasmAsyncEmit {
 			// built or written through at the SYNCHRONOUS top level must resolve like
 			// the same form inside a defun.
 			.usesSynonymStreams(proto.usesSynonymStreams)
-			// NOT optional either: the fold flag rides in a table's header COUNT, so a
+			// NOT optional either: the test tag rides in a table's header COUNT, so a
 			// chunk that reads or writes a count has to agree with the rest of the
-			// module about whether the flag is there -- a table made at the synchronous
+			// module about whether the tag is there -- a table made at the synchronous
 			// top level would otherwise be counted in units of one and printed in units
-			// of two.
+			// of four.
 			.usesEqualpHashTables(proto.usesEqualpHashTables)
+			.usesIdentityHashTables(proto.usesIdentityHashTables)
 			.usesStreamValues(proto.usesStreamValues)
 			// NOT optional: freshCtx builds the synchronous top level, and
 			// array-element-type's general arm is emitted only for the element type

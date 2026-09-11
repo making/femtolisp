@@ -16319,6 +16319,63 @@ class WasmLispCompilerIntegrationTest {
 	}
 
 	@Test
+	// An eq table keys aggregates by identity: two instances with equal slots are two
+	// keys, a key mutated after insertion still finds its entry, and growing past the
+	// load factor keeps every identity key findable -- on every backend (.todo/444).
+	void compileEqHashTableKeysAggregatesByIdentity() throws Exception {
+		assertThat(compileAndRun("""
+				(defstruct wpt x y)
+				(let ((h (make-hash-table :test 'eq)))
+				  (let ((p (make-wpt :x 1 :y 2))
+				        (r (make-wpt :x 1 :y 2)))
+				    (setf (gethash p h) 'pee)
+				    (setf (gethash r h) 'arr)
+				    (setf (wpt-x p) 99)
+				    (print (list (gethash p h) (gethash r h) (gethash (make-wpt :x 99 :y 2) h nil)
+				                 (hash-table-count h) (hash-table-test h)))))
+				(let ((h (make-hash-table :test 'eq)))
+				  (setf (gethash 1 h) :one)
+				  (setf (gethash 'sym h) :sym)
+				  (print (list (gethash 1 h) (gethash 'sym h) (hash-table-test h)))
+				  (princ h)
+				  (terpri))
+				(let ((h (make-hash-table :test 'eq)) (objs nil))
+				  (dotimes (i 10)
+				    (let ((o (make-wpt :x i :y i)))
+				      (push o objs)
+				      (setf (gethash o h) i)))
+				  (let ((sum 0))
+				    (dolist (o objs) (setq sum (+ sum (gethash o h -1))))
+				    (print (list sum (hash-table-count h)))))
+				""")).isEqualTo("(PEE ARR NIL 2 EQ)\n(:ONE :SYM EQ)\n#<HASH-TABLE :TEST EQ :COUNT 2>\n(45 10)");
+	}
+
+	@Test
+	// An eql table compares numbers by type and value but aggregates by identity: a
+	// freshly built cons with equal contents is a MISS -- on every backend
+	// (.todo/444).
+	void compileEqlHashTableKeysNumbersByValueButAggregatesByIdentity() throws Exception {
+		assertThat(compileAndRun("""
+				(let ((h (make-hash-table :test 'eql)))
+				  (setf (gethash 1.5 h) 'one-half)
+				  (setf (gethash 1 h) 'one)
+				  (let ((a (list 1)) (b (list 1)))
+				    (setf (gethash a h) 'ay)
+				    (print (list (gethash 1.5 h) (gethash 1 h) (gethash a h) (gethash b h nil)
+				                 (hash-table-count h) (hash-table-test h)))))
+				(let ((h (make-hash-table :test 'eql)))
+				  (setf (gethash "k" h) 1)
+				  (remhash "k" h)
+				  (print (list (hash-table-count h) (gethash "k" h nil)))
+				  (setf (gethash "k" h) 2)
+				  (clrhash h)
+				  (setf (gethash "K" h) 3)
+				  (print (list (gethash "k" h nil) (gethash "K" h) (hash-table-test h)))
+				  (princ h))
+				""")).isEqualTo("(ONE-HALF ONE AY NIL 3 EQL)\n(0 NIL)\n(NIL 3 EQL)\n#<HASH-TABLE :TEST EQL :COUNT 1>");
+	}
+
+	@Test
 	void compileHashTableMaphashRemhashAndClrhash() throws Exception {
 		assertThat(compileAndRun("""
 				(defun sum-values (h)

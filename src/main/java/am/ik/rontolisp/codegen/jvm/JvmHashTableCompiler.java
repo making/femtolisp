@@ -5,6 +5,7 @@ import java.util.List;
 import am.ik.jvm.ConstantPool.MethodrefConstant;
 import am.ik.jvm.Opcode;
 import am.ik.rontolisp.LispCons;
+import am.ik.rontolisp.LispHashTable;
 import am.ik.rontolisp.LispNames;
 import am.ik.rontolisp.LispVal;
 import am.ik.rontolisp.compiler.FunctionDesignators;
@@ -22,43 +23,101 @@ final class JvmHashTableCompiler {
 	}
 
 	static void compileMake(LispCons cons, JvmLispCompiler.Ctx ctx, String className) {
-		// The arguments are read from the SOURCE, never evaluated: :test 'equalp marks
-		// the table so its keys are folded before they are placed, and every other
-		// keyword (:size and friends) is accepted and ignored.
+		// The arguments are read from the SOURCE, never evaluated: a literal :test
+		// marks the table so its lookups compare and hash by that test, and every
+		// other keyword (:size and friends) is accepted and ignored.
 		if (ctx.usesEqualpHashTables && LispMacroExpander.isEqualpHashTableMake(cons)) {
 			invokeHelper(ctx, className, JvmHashRuntimeBuilder.MAKE_EQUALP, JvmHashRuntimeBuilder.MAKE_EQUALP_DESC);
 			return;
+		}
+		if (ctx.usesIdentityHashTables) {
+			int testCode = LispMacroExpander.hashTableTestCode(cons);
+			if (testCode == LispHashTable.TEST_EQ) {
+				invokeHelper(ctx, className, JvmHashRuntimeBuilder.MAKE_EQ, JvmHashRuntimeBuilder.MAKE_EQ_DESC);
+				return;
+			}
+			if (testCode == LispHashTable.TEST_EQL) {
+				invokeHelper(ctx, className, JvmHashRuntimeBuilder.MAKE_EQL, JvmHashRuntimeBuilder.MAKE_EQL_DESC);
+				return;
+			}
 		}
 		invokeHelper(ctx, className, JvmHashRuntimeBuilder.MAKE, JvmHashRuntimeBuilder.MAKE_DESC);
 	}
 
 	/**
-	 * Compiles {@code hash-table-test} to the test the table actually implements:
-	 * {@code equalp} when it folds its keys, {@code equal} otherwise -- an {@code eql}
-	 * table still places structurally ({@code .todo/012}). A program that can build no
-	 * folding table answers the constant, which is then the only true answer.
+	 * Compiles {@code hash-table-test} to the test the table actually implements. A
+	 * program that can build no folding or identity table answers the constant, which is
+	 * then the only true answer.
 	 * @param cons the accessor expression
 	 * @param ctx the compilation context
 	 * @param className the generated class
 	 */
 	static void compileTest(LispCons cons, JvmLispCompiler.Ctx ctx, String className) {
-		if (!ctx.usesEqualpHashTables) {
+		if (!ctx.usesEqualpHashTables && !ctx.usesIdentityHashTables) {
 			JvmExprCompiler.compileExpr(LispMacroExpander.expandHashTableTest(cons), ctx, className);
+			return;
+		}
+		if (!ctx.usesIdentityHashTables) {
+			List<LispVal> args = cons.toList();
+			JvmExprCompiler.compileExpr(args.get(1), ctx, className);
+			invokeHelper(ctx, className, JvmHashRuntimeBuilder.EQUALP_P, JvmHashRuntimeBuilder.EQUALP_P_DESC);
+			int ifNotEqualp = ctx.code.size();
+			ctx.emit(Opcode.IFNULL);
+			ctx.emitU2(0);
+			JvmEmitHelper.compileStringLiteral(LispNames.EQUALP, ctx);
+			int gotoEnd = ctx.code.size();
+			ctx.emit(Opcode.GOTO);
+			ctx.emitU2(0);
+			JvmEmitHelper.patchBranch(ctx, ifNotEqualp, ctx.code.size());
+			JvmEmitHelper.compileStringLiteral(LispNames.EQUAL, ctx);
+			JvmEmitHelper.patchBranch(ctx, gotoEnd, ctx.code.size());
 			return;
 		}
 		List<LispVal> args = cons.toList();
 		JvmExprCompiler.compileExpr(args.get(1), ctx, className);
-		invokeHelper(ctx, className, JvmHashRuntimeBuilder.EQUALP_P, JvmHashRuntimeBuilder.EQUALP_P_DESC);
-		int ifNotEqualp = ctx.code.size();
-		ctx.emit(Opcode.IFNULL);
+		invokeHelper(ctx, className, JvmHashRuntimeBuilder.TEST, JvmHashRuntimeBuilder.TEST_DESC);
+		// The test code goes into a temp: each comparison below consumes its own copy
+		// (3 eq, 2 eql, 1 equalp, else equal).
+		int testSlot = ctx.allocTemp();
+		ctx.emit(Opcode.ISTORE);
+		ctx.emit(testSlot);
+		ctx.emit(Opcode.ILOAD);
+		ctx.emit(testSlot);
+		ctx.emit(Opcode.ICONST_2);
+		int ifEql = ctx.code.size();
+		ctx.emit(Opcode.IF_ICMPEQ);
 		ctx.emitU2(0);
-		JvmEmitHelper.compileStringLiteral(LispNames.EQUALP, ctx);
+		ctx.emit(Opcode.ILOAD);
+		ctx.emit(testSlot);
+		ctx.emit(Opcode.ICONST_3);
+		int ifEq = ctx.code.size();
+		ctx.emit(Opcode.IF_ICMPEQ);
+		ctx.emitU2(0);
+		ctx.emit(Opcode.ILOAD);
+		ctx.emit(testSlot);
+		ctx.emit(Opcode.ICONST_1);
+		int ifEqualp = ctx.code.size();
+		ctx.emit(Opcode.IF_ICMPEQ);
+		ctx.emitU2(0);
+		JvmEmitHelper.compileStringLiteral(LispNames.EQUAL, ctx);
 		int gotoEnd = ctx.code.size();
 		ctx.emit(Opcode.GOTO);
 		ctx.emitU2(0);
-		JvmEmitHelper.patchBranch(ctx, ifNotEqualp, ctx.code.size());
-		JvmEmitHelper.compileStringLiteral(LispNames.EQUAL, ctx);
+		JvmEmitHelper.patchBranch(ctx, ifEql, ctx.code.size());
+		JvmEmitHelper.compileStringLiteral(LispNames.EQL, ctx);
+		int gotoEnd2 = ctx.code.size();
+		ctx.emit(Opcode.GOTO);
+		ctx.emitU2(0);
+		JvmEmitHelper.patchBranch(ctx, ifEq, ctx.code.size());
+		JvmEmitHelper.compileStringLiteral(LispNames.EQ_GENERAL, ctx);
+		int gotoEnd3 = ctx.code.size();
+		ctx.emit(Opcode.GOTO);
+		ctx.emitU2(0);
+		JvmEmitHelper.patchBranch(ctx, ifEqualp, ctx.code.size());
+		JvmEmitHelper.compileStringLiteral(LispNames.EQUALP, ctx);
 		JvmEmitHelper.patchBranch(ctx, gotoEnd, ctx.code.size());
+		JvmEmitHelper.patchBranch(ctx, gotoEnd2, ctx.code.size());
+		JvmEmitHelper.patchBranch(ctx, gotoEnd3, ctx.code.size());
 	}
 
 	static void compileGet(LispCons cons, JvmLispCompiler.Ctx ctx, String className) {

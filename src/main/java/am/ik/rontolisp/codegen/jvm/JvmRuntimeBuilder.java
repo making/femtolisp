@@ -1809,7 +1809,10 @@ final class JvmRuntimeBuilder {
 	record HashPrint(ClassConstant mapClass, ConstantPool.StringConstant tag, MethodrefConstant mapSize,
 			MethodrefConstant intToString, MethodrefConstant stringConcat, ConstantPool.StringConstant suffix,
 			ConstantPool.@org.jspecify.annotations.Nullable StringConstant equalpTag,
-			@org.jspecify.annotations.Nullable MethodrefConstant equalpTest) {
+			@org.jspecify.annotations.Nullable MethodrefConstant equalpTest,
+			ConstantPool.@org.jspecify.annotations.Nullable StringConstant eqlTag,
+			ConstantPool.@org.jspecify.annotations.Nullable StringConstant eqTag,
+			@org.jspecify.annotations.Nullable MethodrefConstant testCode) {
 	}
 
 	/**
@@ -2586,7 +2589,7 @@ final class JvmRuntimeBuilder {
 		int skip = code.size();
 		code.add(Opcode.IFEQ);
 		emitU2(code, 0);
-		if (hashPrint.equalpTag() != null && hashPrint.equalpTest() != null) {
+		if (hashPrint.equalpTag() != null && hashPrint.equalpTest() != null && hashPrint.testCode() == null) {
 			// The table says which test it implements: equalp when it folds its keys,
 			// equal otherwise. Only a program that can build one carries the branch.
 			code.add(Opcode.ALOAD_0);
@@ -2602,6 +2605,56 @@ final class JvmRuntimeBuilder {
 			patchBranch(code, notEqualp, code.size());
 			emitLdc(code, hashPrint.tag().index());
 			patchBranch(code, haveTag, code.size());
+		}
+		else if (hashPrint.testCode() != null && hashPrint.eqlTag() != null && hashPrint.eqTag() != null) {
+			// The table says which of the four tests it implements, read off its test
+			// code. Only a program that can build an identity table carries the
+			// branch; an equalp-only program keeps the two-way shape above.
+			code.add(Opcode.ALOAD_0);
+			code.add(Opcode.INVOKESTATIC);
+			emitU2(code, hashPrint.testCode().index());
+			code.add(Opcode.ICONST_2);
+			int isEql = code.size();
+			code.add(Opcode.IF_ICMPEQ);
+			emitU2(code, 0);
+			code.add(Opcode.ALOAD_0);
+			code.add(Opcode.INVOKESTATIC);
+			emitU2(code, hashPrint.testCode().index());
+			code.add(Opcode.ICONST_3);
+			int isEq = code.size();
+			code.add(Opcode.IF_ICMPEQ);
+			emitU2(code, 0);
+			code.add(Opcode.ALOAD_0);
+			code.add(Opcode.INVOKESTATIC);
+			emitU2(code, hashPrint.testCode().index());
+			code.add(Opcode.ICONST_1);
+			int isEqualp = code.size();
+			code.add(Opcode.IF_ICMPEQ);
+			emitU2(code, 0);
+			emitLdc(code, hashPrint.tag().index());
+			int haveTag = code.size();
+			code.add(Opcode.GOTO);
+			emitU2(code, 0);
+			patchBranch(code, isEql, code.size());
+			emitLdc(code, hashPrint.eqlTag().index());
+			int haveEql = code.size();
+			code.add(Opcode.GOTO);
+			emitU2(code, 0);
+			patchBranch(code, isEq, code.size());
+			emitLdc(code, hashPrint.eqTag().index());
+			int haveEq = code.size();
+			code.add(Opcode.GOTO);
+			emitU2(code, 0);
+			patchBranch(code, isEqualp, code.size());
+			if (hashPrint.equalpTag() != null) {
+				emitLdc(code, hashPrint.equalpTag().index());
+			}
+			else {
+				emitLdc(code, hashPrint.tag().index());
+			}
+			patchBranch(code, haveTag, code.size());
+			patchBranch(code, haveEql, code.size());
+			patchBranch(code, haveEq, code.size());
 		}
 		else {
 			emitLdc(code, hashPrint.tag().index());

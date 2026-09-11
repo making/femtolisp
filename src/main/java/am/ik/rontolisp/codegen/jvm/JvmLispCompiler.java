@@ -166,6 +166,13 @@ public final class JvmLispCompiler implements LispCompiler {
 	 */
 	private static final String GROUP_HASH_EQUALP = "hash-tables-equalp";
 
+	/**
+	 * The identity-table helpers ({@link JvmHashRuntimeBuilder#IDENTITY_METHOD_NAMES}), a
+	 * group of their own so a program that builds no {@code eq}/{@code eql} table carries
+	 * none of them.
+	 */
+	private static final String GROUP_HASH_IDENTITY = "hash-tables-identity";
+
 	/** The embedded eval/apply runtime group ({@link JvmEvalRuntimeBuilder}). */
 	private static final String GROUP_EVAL = "eval";
 
@@ -190,6 +197,9 @@ public final class JvmLispCompiler implements LispCompiler {
 		}
 		if (JvmHashRuntimeBuilder.EQUALP_METHOD_NAMES.contains(helperName)) {
 			return GROUP_HASH_EQUALP;
+		}
+		if (JvmHashRuntimeBuilder.IDENTITY_METHOD_NAMES.contains(helperName)) {
+			return GROUP_HASH_IDENTITY;
 		}
 		if (JvmHashRuntimeBuilder.METHOD_NAMES.contains(helperName)) {
 			return GROUP_HASH;
@@ -1252,8 +1262,14 @@ public final class JvmLispCompiler implements LispCompiler {
 		// travelling RontoHashTable stays out of its output.
 		boolean usesEqualpHashTables = LispMacroExpander.programMakesEqualpHashTable(program)
 				|| forcedGroups.contains(GROUP_HASH_EQUALP);
+		// A table whose aggregates key by identity: the makers, the test reader and
+		// the test-dispatched comparison/placement ride on their own gate, so a
+		// program that writes no :test 'eq or :test 'eql is emitted exactly as it was
+		// before identity tables existed.
+		boolean usesIdentityHashTables = LispMacroExpander.programMakesIdentityHashTable(program)
+				|| forcedGroups.contains(GROUP_HASH_IDENTITY);
 		boolean usesHashTables = programUsesAnyHashOp(program) || forcedGroups.contains(GROUP_HASH) || usesHttpHandler
-				|| usesEqualpHashTables;
+				|| usesEqualpHashTables || usesIdentityHashTables;
 		// The reader runtime is emitted for read/load; load also evaluates each form, so
 		// it pulls in the eval runtime as well.
 		boolean usesLoad = programUsesSymbol(program, LispNames.LOAD);
@@ -1948,6 +1964,7 @@ public final class JvmLispCompiler implements LispCompiler {
 			.usesArrays(usesArrays)
 			.usesHashTables(usesHashTables)
 			.usesEqualpHashTables(usesEqualpHashTables)
+			.usesIdentityHashTables(usesIdentityHashTables)
 			.usesSeqString(usesSeqString)
 			.mutableStringProducers(mutableStringProducers)
 			.mayUseInstances(mayUseInstances)
@@ -2520,8 +2537,10 @@ public final class JvmLispCompiler implements LispCompiler {
 		// Build the hash-table runtime helpers, only when the program uses hash tables.
 		final List<JvmHashRuntimeBuilder.HashMethod> hashMethods = usesHashTables
 				? JvmHashRuntimeBuilder.build(cp, thisClass, objectClass, objectArrayClass, longValueOf,
-						Objects.requireNonNull(numericRuntime.ops().get(JvmNumericRuntimeBuilder.EQUAL)), strvMethod,
-						instanceLayoutClass, usesEqualpHashTables)
+						Objects.requireNonNull(numericRuntime.ops().get(JvmNumericRuntimeBuilder.EQUAL)),
+						Objects.requireNonNull(numericRuntime.ops().get(JvmNumericRuntimeBuilder.EQV)),
+						Objects.requireNonNull(numericRuntime.ops().get(JvmNumericRuntimeBuilder.EQ_STRICT)),
+						strvMethod, instanceLayoutClass, usesEqualpHashTables, usesIdentityHashTables)
 				: List.of();
 
 		// Build the array runtime helpers, only when the program uses arrays. Includes
@@ -2676,14 +2695,22 @@ public final class JvmLispCompiler implements LispCompiler {
 					cp.addNameAndType(cp.addUtf8("toString"), cp.addUtf8("(I)Ljava/lang/String;")));
 			// The :TEST field is the test lookup implements. Only a program that can
 			// build an equalp table interns the second tag and asks the table which one
-			// it is; in every other program no table folds, so the EQUAL tag is a
-			// constant exactly as it was.
+			// it is; only a program that can build an identity table interns the eql
+			// and eq tags and reads the test code. In every other program no table
+			// folds or keys by identity, so the EQUAL tag is a constant exactly as it
+			// was.
 			hashPrint = new JvmRuntimeBuilder.HashPrint(mapClassForPrint, cp.addString(LispHashTable.HASH_TABLE_PREFIX),
 					mapSize, intToString, stringConcat, cp.addString(">"),
 					usesEqualpHashTables ? cp.addString(LispHashTable.HASH_TABLE_PREFIX_EQUALP) : null,
-					usesEqualpHashTables
-							? cp.addMethodref(thisClass, cp.addNameAndType(cp.addUtf8(JvmHashRuntimeBuilder.EQUALP_P),
+					usesEqualpHashTables ? cp.addMethodref(thisClass,
+							cp.addNameAndType(cp.addUtf8(JvmHashRuntimeBuilder.EQUALP_P),
 									cp.addUtf8(JvmHashRuntimeBuilder.EQUALP_P_DESC)))
+							: null,
+					usesIdentityHashTables ? cp.addString(LispHashTable.HASH_TABLE_PREFIX_EQL) : null,
+					usesIdentityHashTables ? cp.addString(LispHashTable.HASH_TABLE_PREFIX_EQ) : null,
+					usesIdentityHashTables
+							? cp.addMethodref(thisClass, cp.addNameAndType(cp.addUtf8(JvmHashRuntimeBuilder.TEST),
+									cp.addUtf8(JvmHashRuntimeBuilder.TEST_DESC)))
 							: null);
 		}
 		else {
@@ -6195,6 +6222,16 @@ public final class JvmLispCompiler implements LispCompiler {
 		boolean usesEqualpHashTables = false;
 
 		/**
+		 * True when the identity-table helpers are emitted for this program, i.e. when
+		 * its source writes {@code (make-hash-table :test 'eq)} or
+		 * {@code (make-hash-table :test 'eql)} somewhere. Gates the makers, the test
+		 * reader and the test-dispatched comparison/placement: with no identity table in
+		 * the program those are calls to helpers that were never generated, and the
+		 * {@code equal} behavior is the true one.
+		 */
+		boolean usesIdentityHashTables = false;
+
+		/**
 		 * True when the {@code %seq-string} helper is injected for this program, i.e. the
 		 * program itself writes a {@code (concatenate 'string ...)} with an argument that
 		 * is not a literal string. Only then does the string-family lowering normalize
@@ -6548,6 +6585,7 @@ public final class JvmLispCompiler implements LispCompiler {
 			this.usesArrays = builder.usesArrays;
 			this.usesHashTables = builder.usesHashTables;
 			this.usesEqualpHashTables = builder.usesEqualpHashTables;
+			this.usesIdentityHashTables = builder.usesIdentityHashTables;
 			this.usesSeqString = builder.usesSeqString;
 			this.mutableStringProducers = builder.mutableStringProducers;
 			this.mayUseInstances = builder.mayUseInstances;
@@ -6857,6 +6895,8 @@ public final class JvmLispCompiler implements LispCompiler {
 			private boolean usesHashTables = false;
 
 			private boolean usesEqualpHashTables = false;
+
+			private boolean usesIdentityHashTables = false;
 
 			private boolean usesSeqString = false;
 
@@ -7341,6 +7381,11 @@ public final class JvmLispCompiler implements LispCompiler {
 
 			Builder usesEqualpHashTables(boolean usesEqualpHashTables) {
 				this.usesEqualpHashTables = usesEqualpHashTables;
+				return this;
+			}
+
+			Builder usesIdentityHashTables(boolean usesIdentityHashTables) {
+				this.usesIdentityHashTables = usesIdentityHashTables;
 				return this;
 			}
 

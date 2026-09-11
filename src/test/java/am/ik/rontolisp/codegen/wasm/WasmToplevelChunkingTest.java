@@ -183,7 +183,7 @@ class WasmToplevelChunkingTest {
 		WasmLispCompiler.Ctx ctx = WasmLispCompiler.Ctx.builder()
 			.writer(new WasmWriter(new ByteArrayOutputStream()))
 			.bodyStream(new ByteArrayOutputStream())
-			.stringTable(new WasmLispCompiler.StringTable(0, false))
+			.stringTable(new WasmLispCompiler.StringTable(0, false, false))
 			.build();
 		ctx.locals.put("TRIP-WB-455", 1);
 		List<LispVal> program = LispReader.readAllFromString("(print 1)\n(print trip-wb-455)\n");

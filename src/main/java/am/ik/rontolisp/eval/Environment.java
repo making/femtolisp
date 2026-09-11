@@ -730,9 +730,9 @@ public final class Environment implements Scope {
 	private static void registerHashTables(Environment env) {
 		env.defineFunction(LispNames.MAKE_HASH_TABLE, new LispFunction(LispNames.MAKE_HASH_TABLE, args -> {
 			// Reads :test and ignores other keywords such as :size. Only equalp changes
-			// placement (its keys are folded); every other test places structurally, so
-			// eql and equal are one table here (see LispHashTable, .todo/012).
-			boolean equalpTest = false;
+			// placement (its keys are folded); eq and eql compare by identity for
+			// aggregates (see LispHashTable).
+			int testCode = LispHashTable.TEST_EQUAL;
 			for (int i = 0; i + 1 < args.size(); i += 2) {
 				if (args.get(i) instanceof LispSymbol kw && LispNames.TEST_KEYWORD.equals(kw.name())) {
 					String testName = switch (args.get(i + 1)) {
@@ -740,10 +740,10 @@ public final class Environment implements Scope {
 						case LispFunction f -> f.name();
 						default -> "";
 					};
-					equalpTest = LispNames.EQUALP.equals(testName);
+					testCode = LispHashTable.testCodeFor(testName);
 				}
 			}
-			return new LispHashTable(equalpTest);
+			return new LispHashTable(testCode);
 		}));
 		env.defineFunction(LispNames.GETHASH, new LispFunction(LispNames.GETHASH, args -> {
 			if (args.size() != 2 && args.size() != 3) {
@@ -795,14 +795,11 @@ public final class Environment implements Scope {
 					requireHashTable(LispNames.HASH_TABLE_REHASH_THRESHOLD, args.get(0));
 					return new LispDouble(1.0);
 				}));
-		// hash-table-test: the test the table actually implements, which is equalp for a
-		// table whose keys are folded and equal for every other -- an eql table still
-		// places structurally (.todo/012), so reporting eql would describe behavior that
-		// does not exist here.
+		// hash-table-test: the test the table actually implements.
 		env.defineFunction(LispNames.HASH_TABLE_TEST, new LispFunction(LispNames.HASH_TABLE_TEST, args -> {
 			requireArgCount(LispNames.HASH_TABLE_TEST, args, 1);
 			LispHashTable table = requireHashTable(LispNames.HASH_TABLE_TEST, args.get(0));
-			return new LispSymbol(table.equalpTest() ? LispNames.EQUALP : LispNames.EQUAL);
+			return new LispSymbol(LispHashTable.testNameFor(table.testCode()));
 		}));
 		env.defineFunction(LispNames.HASH_TABLE_P, new LispFunction(LispNames.HASH_TABLE_P, args -> {
 			requireArgCount(LispNames.HASH_TABLE_P, args, 1);
@@ -3239,26 +3236,15 @@ public final class Environment implements Scope {
 	 * @return whether the two values are {@code eq}
 	 */
 	static boolean isEqStrict(LispVal a, LispVal b) {
-		if ((a instanceof LispDouble && b instanceof LispDouble)
-				|| (a instanceof LispRatio && b instanceof LispRatio)) {
-			return false;
-		}
-		return isEq(a, b);
+		return LispEquality.eq(a, b);
 	}
 
 	// eql: like eq, but numbers of the same type and value are eql. Cons cells (and other
-	// aggregates) compare by reference identity.
+	// aggregates) compare by reference identity. The predicate itself lives in the root
+	// package next to the structural hash a hash table pairs it with (LispEquality) --
+	// an eql table is exactly that pair, and the two may not drift apart.
 	private static LispVal eqlValue(LispVal a, LispVal b) {
-		if (isIdentityAggregate(a) || isIdentityAggregate(b)) {
-			return a == b ? LispTrue.INSTANCE : LispNil.INSTANCE;
-		}
-		if (a instanceof LispNil && b instanceof LispNil) {
-			return LispTrue.INSTANCE;
-		}
-		if (a instanceof LispNil || b instanceof LispNil) {
-			return LispNil.INSTANCE;
-		}
-		return a.equals(b) ? LispTrue.INSTANCE : LispNil.INSTANCE;
+		return LispEquality.eql(a, b) ? LispTrue.INSTANCE : LispNil.INSTANCE;
 	}
 
 	/**
@@ -3283,30 +3269,15 @@ public final class Environment implements Scope {
 	}
 
 	/**
-	 * The aggregates {@code eq}/{@code eql} compare by REFERENCE, never by contents: a
-	 * cons and an instance (a struct, a CLOS object, a condition, a pathname). The
-	 * instance arm is what keeps the interpreter in step with the JVM and both WASM
-	 * backends, which compare instances with {@code ref.eq} / Java identity --
-	 * {@code LispInstance.equals} is structural (that is {@code equal}'s contract,
-	 * .kb/instance-syntax.md) and letting it decide {@code eql} made every identity-keyed
-	 * walk in the interpreter conflate two records with equal slots. The torch tape is
-	 * exactly such a walk (.kb/torch.md).
+	 * The aggregates {@code eq}/{@code eql} compare by REFERENCE, never by contents --
+	 * the single answer every backend shares ({@link LispEquality#isIdentityAggregate}).
 	 */
 	private static boolean isIdentityAggregate(LispVal v) {
-		return v instanceof LispCons || v instanceof LispInstance;
+		return LispEquality.isIdentityAggregate(v);
 	}
 
 	private static boolean isEq(LispVal a, LispVal b) {
-		if (isIdentityAggregate(a) || isIdentityAggregate(b)) {
-			return a == b;
-		}
-		if (a instanceof LispNil && b instanceof LispNil) {
-			return true;
-		}
-		if (a instanceof LispNil || b instanceof LispNil) {
-			return false;
-		}
-		return a.equals(b);
+		return LispEquality.eq(a, b);
 	}
 
 	/**

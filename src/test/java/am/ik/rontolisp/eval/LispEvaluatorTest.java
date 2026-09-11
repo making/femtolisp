@@ -11974,11 +11974,58 @@ class LispEvaluatorTest {
 	void anEqualHashTableStillSeparatesTheCases() {
 		// The fold is the equalp table's alone: an equal table is unchanged.
 		LispVal result = evalMulti("""
-				(defparameter *e* (make-hash-table :test 'equal))
-				(setf (gethash "CS" *e*) 'upper)
+					(defparameter *e* (make-hash-table :test 'equal))
+					(setf (gethash "CS" *e*) 'upper)
 				(list (gethash "Cs" *e*) (gethash "CS" *e*) (hash-table-count *e*))
 				""");
 		assertThat(result.print()).isEqualTo("(NIL UPPER 1)");
+	}
+
+	@Test
+	void anEqHashTableKeysAggregatesByIdentity() {
+		// :test 'eq is identity for aggregates: two instances with equal slots are two
+		// keys, and a key mutated after insertion still finds its entry (.todo/444).
+		LispVal result = evalMulti("""
+				(defstruct ipt x y)
+				(defparameter *q* (make-hash-table :test 'eq))
+				(let ((p (make-ipt :x 1 :y 2))
+				      (r (make-ipt :x 1 :y 2)))
+				  (setf (gethash p *q*) 'pee)
+				  (setf (gethash r *q*) 'arr)
+				  (setf (ipt-x p) 99)
+				  (list (gethash p *q*) (gethash r *q*) (gethash (make-ipt :x 99 :y 2) *q* nil)
+				        (hash-table-count *q*) (hash-table-test *q*)))
+				""");
+		assertThat(result.print()).isEqualTo("(PEE ARR NIL 2 EQ)");
+	}
+
+	@Test
+	void anEqlHashTableKeysNumbersByValueButAggregatesByIdentity() {
+		// :test 'eql compares numbers by type and value but aggregates by identity: a
+		// freshly built cons with equal contents is a MISS (.todo/444).
+		LispVal result = evalMulti("""
+				(defparameter *e* (make-hash-table :test 'eql))
+				(setf (gethash 1.5d0 *e*) 'one-half)
+				(setf (gethash 1 *e*) 'one)
+				(let ((a (list 1)) (b (list 1)))
+				  (setf (gethash a *e*) 'ay)
+				  (list (gethash 1.5d0 *e*) (gethash 1 *e*) (gethash a *e*) (gethash b *e* nil)
+				        (hash-table-count *e*) (hash-table-test *e*)))
+				""");
+		assertThat(result.print()).isEqualTo("(ONE-HALF ONE AY NIL 3 EQL)");
+	}
+
+	@Test
+	void eachHashTableTestPrintsItsOwnTag() {
+		// The printed :TEST field reports the test lookup implements, on every backend.
+		LispVal result = evalMulti("""
+				(list (princ-to-string (make-hash-table :test 'eq))
+				      (princ-to-string (make-hash-table :test 'eql))
+				      (princ-to-string (make-hash-table))
+				      (princ-to-string (make-hash-table :test 'equalp)))
+				""");
+		assertThat(result.print()).isEqualTo(
+				"(\"#<HASH-TABLE :TEST EQ :COUNT 0>\" \"#<HASH-TABLE :TEST EQL :COUNT 0>\" \"#<HASH-TABLE :TEST EQUAL :COUNT 0>\" \"#<HASH-TABLE :TEST EQUALP :COUNT 0>\")");
 	}
 
 	@Test

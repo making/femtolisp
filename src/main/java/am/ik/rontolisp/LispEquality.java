@@ -92,6 +92,60 @@ public final class LispEquality {
 	}
 
 	/**
+	 * The aggregates {@code eq}/{@code eql} compare by REFERENCE, never by contents: a
+	 * cons and an instance (a struct, a CLOS object, a condition, a pathname). The
+	 * instance arm is what keeps the interpreter in step with the JVM and both WASM
+	 * backends, which compare instances with {@code ref.eq} / Java identity --
+	 * {@code LispInstance.equals} is structural (that is {@code equal}'s contract,
+	 * {@code .kb/instance-syntax.md}) and letting it decide {@code eql} made every
+	 * identity-keyed walk in the interpreter conflate two records with equal slots.
+	 * @param v the value to test
+	 * @return whether {@code eq}/{@code eql} compare it by reference
+	 */
+	public static boolean isIdentityAggregate(LispVal v) {
+		return v instanceof LispCons || v instanceof LispInstance;
+	}
+
+	/**
+	 * The {@code eql} predicate: like {@code eq}, but numbers of the same type and value
+	 * are {@code eql}. Cons cells and instances compare by reference identity.
+	 * @param a the first value
+	 * @param b the second value
+	 * @return whether the two values are {@code eql}
+	 */
+	public static boolean eql(LispVal a, LispVal b) {
+		if (isIdentityAggregate(a) || isIdentityAggregate(b)) {
+			return a == b;
+		}
+		if (a instanceof LispNil || b instanceof LispNil) {
+			return a instanceof LispNil && b instanceof LispNil;
+		}
+		return a.equals(b);
+	}
+
+	/**
+	 * The {@code eq} predicate as object identity, except that floats and ratios
+	 * (distinct boxed objects, not interned like small integers or symbols) are never
+	 * {@code eq}, even to themselves.
+	 * @param a the first value
+	 * @param b the second value
+	 * @return whether the two values are {@code eq}
+	 */
+	public static boolean eq(LispVal a, LispVal b) {
+		if ((a instanceof LispDouble && b instanceof LispDouble)
+				|| (a instanceof LispRatio && b instanceof LispRatio)) {
+			return false;
+		}
+		if (isIdentityAggregate(a) || isIdentityAggregate(b)) {
+			return a == b;
+		}
+		if (a instanceof LispNil || b instanceof LispNil) {
+			return a instanceof LispNil && b instanceof LispNil;
+		}
+		return a.equals(b);
+	}
+
+	/**
 	 * Folds a value into the key an {@code equalp} hash table places it under: the
 	 * canonical representative of everything {@code equalp} calls the same. A string and
 	 * a character fold to their upper case, a float WHOSE VALUE IS AN INTEGER to that

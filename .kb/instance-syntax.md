@@ -72,8 +72,8 @@ knows nothing about `ClosRegistry`, so reading is split in two:
   structural `LispInstance.equals` until instances joined conses in
   `Environment.isIdentityAggregate`. It stopped being theoretical when torch's records became
   defstructs: `torch::%t-topo`'s visited set and `torch::%m-collect`'s parameter dedup are `member`
-  (i.e. `eql`) over records and BOTH mean identity (`.kb/torch.md`). Still open:
-  `make-hash-table :test` is ignored, so every table is `EQUAL`.
+  (i.e. `eql`) over records and BOTH mean identity (`.kb/torch.md`). An `eq`/`eql`
+  hash table keys instances the same way on every backend (`.kb/hash-tables.md`).
 - `equal` on two instances is STRUCTURAL: same layout, every slot recursively `equal`. **A deliberate
   deviation from CL**, where distinct structures are never `equal`; re-evaluate if a real program
   depends on CL's rule (one arm in each of the three `_equal`s).

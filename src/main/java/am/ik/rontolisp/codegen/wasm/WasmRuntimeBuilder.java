@@ -743,20 +743,52 @@ final class WasmRuntimeBuilder {
 	 * Builds the _hash_resize helper. Takes the table's header cons (local 0 =
 	 * {@code (count . buckets)}), doubles the bucket array and rehashes every entry into
 	 * it, then stores the new array back into the header's cdr. Returns nothing.
+	 * @param identityTables whether the module can hold an eql/eq table: the tag is read
+	 * off the header and an aggregate key of such a table rehashes into the shared bucket
+	 * 0, exactly where the table primitives place it
+	 * @param instanceTypeIndex the {@code TYPE_INSTANCE} index, or -1
+	 * @return the function body
 	 */
-	static byte[] buildHashResizeBody() {
+	static byte[] buildHashResizeBody(boolean identityTables, int instanceTypeIndex) {
 		ByteArrayOutputStream body = new ByteArrayOutputStream();
 		WasmWriter w = new WasmWriter(body);
 
-		// locals: 4 x (ref null eq) [1=oldArr 2=newArr 3=cur 4=entry], 3 x i32 [5=i
-		// 6=newCap 7=j]
+		// locals: 4 x (ref null eq) [1=oldArr 2=newArr 3=cur 4=entry] + the entry key
+		// [5] when identity tables can exist, 3 x i32 [6=i 7=newCap 8=j] + the test
+		// tag [9] then. Ref locals precede i32 locals, so the key takes the next ref
+		// slot and the tag the last i32 one.
+		int refCount = identityTables ? 5 : 4;
+		int i32Count = identityTables ? 4 : 3;
 		w.write(2); // 2 local groups
-		w.writeUnsignedLeb128(4);
+		w.writeUnsignedLeb128(refCount);
 		w.writeRefType(true, Type.EQ.code());
-		w.writeUnsignedLeb128(3);
+		w.writeUnsignedLeb128(i32Count);
 		w.write(Type.I32);
 
 		int oldArr = 1, newArr = 2, cur = 3, entry = 4, i = 5, newCap = 6, j = 7;
+		int key = 5, tag = 9;
+		if (identityTables) {
+			i = 6;
+			newCap = 7;
+			j = 8;
+		}
+
+		if (identityTables) {
+			// tag = the header count's low two bits: what the entries were placed by.
+			getLocal(w, 0);
+			w.write(Instruction.GC_PREFIX, Instruction.REF_CAST);
+			w.writeHeapType(WasmLispCompiler.TYPE_CONS);
+			w.write(Instruction.GC_PREFIX, Instruction.STRUCT_GET);
+			w.writeUnsignedLeb128(WasmLispCompiler.TYPE_CONS);
+			w.writeUnsignedLeb128(0);
+			w.write(Instruction.GC_PREFIX, Instruction.REF_CAST);
+			w.writeHeapType(Type.I31.code());
+			w.write(Instruction.GC_PREFIX, Instruction.I31_GET_S);
+			w.write(Instruction.I32_CONST);
+			w.writeSignedLeb128(3);
+			w.write(Instruction.I32_AND);
+			setLocal(w, tag);
+		}
 
 		// oldArr = header.cdr
 		getLocal(w, 0);
@@ -822,15 +854,50 @@ final class WasmRuntimeBuilder {
 		w.writeUnsignedLeb128(WasmLispCompiler.TYPE_CONS);
 		w.writeUnsignedLeb128(0);
 		setLocal(w, entry);
-		// j = (hash(car(entry)) & 0x7fffffff) % newCap
+		// j = (hash(car(entry)) & 0x7fffffff) % newCap -- or 0 for an aggregate key
+		// of an eql/eq table, whose bucket the table primitives never hash.
 		getLocal(w, entry);
 		w.write(Instruction.GC_PREFIX, Instruction.REF_CAST);
 		w.writeHeapType(WasmLispCompiler.TYPE_CONS);
 		w.write(Instruction.GC_PREFIX, Instruction.STRUCT_GET);
 		w.writeUnsignedLeb128(WasmLispCompiler.TYPE_CONS);
 		w.writeUnsignedLeb128(0);
-		w.write(Instruction.CALL);
-		w.writeUnsignedLeb128(WasmLispCompiler.FUNC_HASH);
+		if (identityTables) {
+			setLocal(w, key);
+			getLocal(w, tag);
+			w.write(Instruction.I32_CONST);
+			w.writeSignedLeb128(2);
+			w.write(Instruction.I32_GE_S);
+			w.write(Instruction.IF);
+			w.write(Type.I32);
+			getLocal(w, key);
+			w.write(Instruction.GC_PREFIX, Instruction.REF_TEST);
+			w.writeHeapType(WasmLispCompiler.TYPE_CONS);
+			if (instanceTypeIndex >= 0) {
+				getLocal(w, key);
+				w.write(Instruction.GC_PREFIX, Instruction.REF_TEST);
+				w.writeHeapType(instanceTypeIndex);
+				w.write(Instruction.I32_OR);
+			}
+			w.write(Instruction.IF);
+			w.write(Type.I32);
+			w.write(Instruction.I32_CONST);
+			w.writeSignedLeb128(0);
+			w.write(Instruction.ELSE);
+			getLocal(w, key);
+			w.write(Instruction.CALL);
+			w.writeUnsignedLeb128(WasmLispCompiler.FUNC_HASH);
+			w.write(Instruction.END);
+			w.write(Instruction.ELSE);
+			getLocal(w, key);
+			w.write(Instruction.CALL);
+			w.writeUnsignedLeb128(WasmLispCompiler.FUNC_HASH);
+			w.write(Instruction.END);
+		}
+		else {
+			w.write(Instruction.CALL);
+			w.writeUnsignedLeb128(WasmLispCompiler.FUNC_HASH);
+		}
 		w.write(Instruction.I32_CONST);
 		w.writeSignedLeb128(0x7fffffff);
 		w.write(Instruction.I32_AND);
@@ -4834,28 +4901,61 @@ final class WasmRuntimeBuilder {
 		// same reason rather than trapping: the count is emitted only when the header
 		// car really is an i31, and such a box prints the tag with a 0 count instead of
 		// trapping on the cast.
-		// The tagged count carries the table's TEST in its low bit when the module can
-		// build a folding table (WasmHashTableCompiler); the tag says which test lookup
-		// implements, and the count is shifted past the flag. A module that folds no key
-		// writes the EQUAL tag and the count as they always were.
-		if (st.hashTableEqualpStr == null) {
-			writeStr(w, st.hashTableStr);
-		}
-		else {
-			emitHashTableCount(w);
+		// The tagged count carries the table's two-bit TEST TAG in its low two bits
+		// when the module can build a non-equal table (WasmHashTableCompiler); the tag
+		// says which test lookup implements, and the count is shifted past it. A module
+		// that builds none writes the EQUAL tag and the count as they always were.
+		WasmLispCompiler.StringTable.StringEntry equalpStr = st.hashTableEqualpStr;
+		WasmLispCompiler.StringTable.StringEntry eqlStr = st.hashTableEqlStr;
+		WasmLispCompiler.StringTable.StringEntry eqStr = st.hashTableEqStr;
+		if (equalpStr != null && eqStr == null) {
+			emitHashTableTag(w);
 			w.write(Instruction.I32_CONST);
 			w.writeSignedLeb128(1);
-			w.write(Instruction.I32_AND);
+			w.write(Instruction.I32_EQ);
 			w.write(Instruction.IF, 0x40);
-			writeStr(w, st.hashTableEqualpStr);
+			writeStr(w, equalpStr);
 			w.write(Instruction.ELSE);
 			writeStr(w, st.hashTableStr);
 			w.write(Instruction.END);
 		}
-		emitHashTableCount(w);
-		if (st.hashTableEqualpStr != null) {
+		else if (eqStr != null && eqlStr != null) {
+			// An identity-only module interns no fold tag: tag 1 is unreachable there
+			// and reads as the plain tag.
+			WasmLispCompiler.StringTable.StringEntry equalpOrEqual = (equalpStr != null) ? equalpStr : st.hashTableStr;
+			emitHashTableTag(w);
 			w.write(Instruction.I32_CONST);
 			w.writeSignedLeb128(1);
+			w.write(Instruction.I32_EQ);
+			w.write(Instruction.IF, 0x40);
+			writeStr(w, equalpOrEqual);
+			w.write(Instruction.ELSE);
+			emitHashTableTag(w);
+			w.write(Instruction.I32_CONST);
+			w.writeSignedLeb128(2);
+			w.write(Instruction.I32_EQ);
+			w.write(Instruction.IF, 0x40);
+			writeStr(w, eqlStr);
+			w.write(Instruction.ELSE);
+			emitHashTableTag(w);
+			w.write(Instruction.I32_CONST);
+			w.writeSignedLeb128(3);
+			w.write(Instruction.I32_EQ);
+			w.write(Instruction.IF, 0x40);
+			writeStr(w, eqStr);
+			w.write(Instruction.ELSE);
+			writeStr(w, st.hashTableStr);
+			w.write(Instruction.END);
+			w.write(Instruction.END);
+			w.write(Instruction.END);
+		}
+		else {
+			writeStr(w, st.hashTableStr);
+		}
+		emitHashTableCount(w);
+		if (equalpStr != null || eqStr != null) {
+			w.write(Instruction.I32_CONST);
+			w.writeSignedLeb128(2);
 			w.write(Instruction.I32_SHR_S);
 		}
 		w.write(Instruction.CALL);
@@ -4863,6 +4963,16 @@ final class WasmRuntimeBuilder {
 		writeStr(w, st.hashTableEnd);
 		w.write(Instruction.RETURN);
 		w.write(Instruction.END); // is-cell if
+	}
+
+	// Pushes the cell's header test tag as an i32 -- 0 for a cell that is not a table,
+	// so an unexposed internal box takes the EQUAL tag like it takes the zero count
+	// below (the arm must answer for EVERY cell; see the comment above).
+	private static void emitHashTableTag(WasmWriter w) {
+		emitHashTableCount(w);
+		w.write(Instruction.I32_CONST);
+		w.writeSignedLeb128(3);
+		w.write(Instruction.I32_AND);
 	}
 
 	// Pushes the cell's header count as an i32 -- 0 for a cell that is not a table, so an

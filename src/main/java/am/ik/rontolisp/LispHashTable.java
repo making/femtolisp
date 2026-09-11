@@ -7,11 +7,15 @@ import java.util.LinkedHashMap;
  * A hash table value (Common Lisp {@code hash-table}).
  *
  * <p>
- * Keys are compared structurally, with hashing and comparison separated the way a hash
- * table separates them: a key is placed by {@link LispEquality#hash} (a depth-capped fold
- * over its structure) and decided by {@link LispEquality#equal} against the other keys in
- * its bucket. Both compiled backends reproduce that pair, so all four backends agree on
- * which keys are one key. A CYCLIC key is therefore usable -- the cap bounds the hash and
+ * Keys are compared by the table's test and hashed to agree with it. An {@code equal}
+ * table separates placement ({@link LispEquality#hash}, a depth-capped fold over the
+ * key's structure) from comparison (real {@code equal} within the bucket). An {@code eql}
+ * or {@code eq} table compares with {@link LispEquality#eql} / {@link LispEquality#eq}
+ * instead; its aggregates (conses, instances) hash by identity
+ * ({@link System#identityHashCode}), so a key mutated after insertion keeps its bucket,
+ * while every other value hashes structurally exactly as an {@code equal} table hashes
+ * it. Both compiled backends reproduce each pair, so all four backends agree on which
+ * keys are one key. A CYCLIC key is therefore usable -- the cap bounds the hash and
  * {@code equal} answers on identity -- where keying on the printed text of the key never
  * terminated.
  *
@@ -38,38 +42,104 @@ public final class LispHashTable implements LispVal {
 	}
 
 	/**
+	 * The test codes every backend agrees on: the tag a table carries for the test its
+	 * lookups implement ({@code .kb/hash-tables.md}).
+	 */
+	public static final int TEST_EQUAL = 0;
+
+	public static final int TEST_EQUALP = 1;
+
+	public static final int TEST_EQL = 2;
+
+	public static final int TEST_EQ = 3;
+
+	/**
+	 * Answers the test code for a {@code :test} name: {@code eq} and {@code eql} key by
+	 * identity, {@code equalp} folds its keys, and {@code equal} -- like anything else,
+	 * including no test at all -- places structurally.
+	 * @param testName the test name as written ({@code EQ}, {@code EQL}, {@code EQUAL},
+	 * {@code EQUALP})
+	 * @return the test code
+	 */
+	public static int testCodeFor(String testName) {
+		// LispNames.EQ is the numeric =, so the identity test is EQ_GENERAL.
+		if (LispNames.EQ_GENERAL.equals(testName)) {
+			return TEST_EQ;
+		}
+		if (LispNames.EQL.equals(testName)) {
+			return TEST_EQL;
+		}
+		if (LispNames.EQUALP.equals(testName)) {
+			return TEST_EQUALP;
+		}
+		return TEST_EQUAL;
+	}
+
+	/**
+	 * Answers the test name a table carrying {@code testCode} reports through
+	 * {@code hash-table-test} and the printed {@code :TEST} field.
+	 * @param testCode the test code
+	 * @return the test name
+	 */
+	public static String testNameFor(int testCode) {
+		if (testCode == TEST_EQ) {
+			return LispNames.EQ_GENERAL;
+		}
+		if (testCode == TEST_EQL) {
+			return LispNames.EQL;
+		}
+		if (testCode == TEST_EQUALP) {
+			return LispNames.EQUALP;
+		}
+		return LispNames.EQUAL;
+	}
+
+	/**
 	 * The unreadable-object prefix every backend prints before an {@code equal} table's
-	 * entry count. {@code EQUAL} is the test lookup implements for every table that is
-	 * not an {@code equalp} one -- an {@code eql} table still matches structurally
-	 * ({@code .todo/012}) -- and it is what {@code hash-table-test} answers for them;
-	 * SBCL's trailing identity hash is deliberately absent (it would vary between runs of
-	 * one program).
+	 * entry count. SBCL's trailing identity hash is deliberately absent (it would vary
+	 * between runs of one program).
 	 */
 	public static final String HASH_TABLE_PREFIX = "#<HASH-TABLE :TEST EQUAL :COUNT ";
 
 	/**
 	 * The same prefix for an {@code equalp} table, whose keys are folded
-	 * ({@link LispEquality#equalpKey}) before they are placed. Two whole constants rather
-	 * than one assembled at run time: each backend interns only the one it can print, so
-	 * a program with no {@code equalp} table carries exactly the bytes it carried before
-	 * the fold existed.
+	 * ({@link LispEquality#equalpKey}) before they are placed. One constant per test
+	 * rather than one assembled at run time: each backend interns only the ones its
+	 * programs can print.
 	 */
 	public static final String HASH_TABLE_PREFIX_EQUALP = "#<HASH-TABLE :TEST EQUALP :COUNT ";
 
-	private final boolean equalpTest;
+	/** The same prefix for an {@code eql} table, whose aggregates key by identity. */
+	public static final String HASH_TABLE_PREFIX_EQL = "#<HASH-TABLE :TEST EQL :COUNT ";
+
+	/** The same prefix for an {@code eq} table, whose aggregates key by identity. */
+	public static final String HASH_TABLE_PREFIX_EQ = "#<HASH-TABLE :TEST EQ :COUNT ";
+
+	private final int testCode;
 
 	private final LinkedHashMap<Key, Entry> map = new LinkedHashMap<>();
 
 	/**
 	 * A key as the backing {@link LinkedHashMap} sees it: the Lisp value plus its
-	 * precomputed structural hash. Bucket membership is {@link LispEquality#hash} and
-	 * bucket comparison is {@link LispEquality#equal}, which is the whole point -- the
-	 * value's own {@code hashCode} recurses without a bound.
+	 * precomputed hash for the table's test. Bucket membership is that hash and bucket
+	 * comparison is the test's predicate, which is the whole point -- the value's own
+	 * {@code hashCode} recurses without a bound.
 	 */
-	private record Key(LispVal val, int hash) {
+	private record Key(LispVal val, int hash, int testCode) {
 
-		static Key of(LispVal val) {
-			return new Key(val, LispEquality.hash(val));
+		static Key of(LispVal val, int testCode) {
+			return new Key(val, placementHash(val, testCode), testCode);
+		}
+
+		// The hash the test agrees with: an eql/eq table's aggregates hash by
+		// identity, so a key mutated after insertion keeps its bucket; everything
+		// else -- including an eql/eq table's numbers, symbols and strings, which
+		// compare by value exactly as equal compares them -- hashes structurally.
+		private static int placementHash(LispVal val, int testCode) {
+			if ((testCode == TEST_EQL || testCode == TEST_EQ) && LispEquality.isIdentityAggregate(val)) {
+				return System.identityHashCode(val);
+			}
+			return LispEquality.hash(val);
 		}
 
 		@Override
@@ -79,27 +149,44 @@ public final class LispHashTable implements LispVal {
 
 		@Override
 		public boolean equals(Object o) {
-			return o instanceof Key other && LispEquality.equal(this.val, other.val);
+			if (!(o instanceof Key other) || this.testCode != other.testCode) {
+				return false;
+			}
+			if (this.val == other.val) {
+				return true;
+			}
+			return switch (this.testCode) {
+				case TEST_EQL -> LispEquality.eql(this.val, other.val);
+				case TEST_EQ -> LispEquality.eq(this.val, other.val);
+				default -> LispEquality.equal(this.val, other.val);
+			};
 		}
 	}
 
 	/**
 	 * Creates an empty {@code equal} hash table -- the structural placement every table
-	 * that is not {@code equalp} uses.
+	 * without a test uses.
 	 */
 	public LispHashTable() {
-		this(false);
+		this(TEST_EQUAL);
 	}
 
 	/**
 	 * Creates an empty hash table with the given test.
 	 * @param equalpTest {@code true} when the table was created with
 	 * {@code :test 'equalp}, whose keys are folded ({@link LispEquality#equalpKey})
-	 * before they are placed; {@code false} for every other test, all of which place
-	 * structurally
+	 * before they are placed; {@code false} for every other test
 	 */
 	public LispHashTable(boolean equalpTest) {
-		this.equalpTest = equalpTest;
+		this(equalpTest ? TEST_EQUALP : TEST_EQUAL);
+	}
+
+	/**
+	 * Creates an empty hash table with the given test code ({@link #testCodeFor}).
+	 * @param testCode the test lookups implement
+	 */
+	public LispHashTable(int testCode) {
+		this.testCode = testCode;
 	}
 
 	/**
@@ -108,7 +195,16 @@ public final class LispHashTable implements LispVal {
 	 * @return {@code true} for a table made with {@code :test 'equalp}
 	 */
 	public boolean equalpTest() {
-		return this.equalpTest;
+		return this.testCode == TEST_EQUALP;
+	}
+
+	/**
+	 * The test code lookups implement ({@link #TEST_EQUAL}, {@link #TEST_EQUALP},
+	 * {@link #TEST_EQL} or {@link #TEST_EQ}).
+	 * @return the test code
+	 */
+	public int testCode() {
+		return this.testCode;
 	}
 
 	/**
@@ -121,7 +217,7 @@ public final class LispHashTable implements LispVal {
 	 * ({@code .kb/hash-tables.md}).
 	 */
 	private LispVal placed(LispVal val) {
-		return this.equalpTest ? LispEquality.equalpKey(val) : val;
+		return this.testCode == TEST_EQUALP ? LispEquality.equalpKey(val) : val;
 	}
 
 	/**
@@ -131,7 +227,7 @@ public final class LispHashTable implements LispVal {
 	 * @return the stored value, or {@code dflt}
 	 */
 	public LispVal get(LispVal key, LispVal dflt) {
-		Entry e = this.map.get(Key.of(placed(key)));
+		Entry e = this.map.get(Key.of(placed(key), this.testCode));
 		return (e == null) ? dflt : e.value();
 	}
 
@@ -143,7 +239,7 @@ public final class LispHashTable implements LispVal {
 	 */
 	public LispVal put(LispVal key, LispVal value) {
 		LispVal placed = placed(key);
-		this.map.put(Key.of(placed), new Entry(placed, value));
+		this.map.put(Key.of(placed, this.testCode), new Entry(placed, value));
 		return value;
 	}
 
@@ -153,7 +249,7 @@ public final class LispHashTable implements LispVal {
 	 * @return {@code true} if an entry was removed
 	 */
 	public boolean remove(LispVal key) {
-		return this.map.remove(Key.of(placed(key))) != null;
+		return this.map.remove(Key.of(placed(key), this.testCode)) != null;
 	}
 
 	/**
@@ -181,7 +277,12 @@ public final class LispHashTable implements LispVal {
 
 	@Override
 	public String print() {
-		return (this.equalpTest ? HASH_TABLE_PREFIX_EQUALP : HASH_TABLE_PREFIX) + count() + ">";
+		return switch (this.testCode) {
+			case TEST_EQ -> HASH_TABLE_PREFIX_EQ + count() + ">";
+			case TEST_EQL -> HASH_TABLE_PREFIX_EQL + count() + ">";
+			case TEST_EQUALP -> HASH_TABLE_PREFIX_EQUALP + count() + ">";
+			default -> HASH_TABLE_PREFIX + count() + ">";
+		};
 	}
 
 }
