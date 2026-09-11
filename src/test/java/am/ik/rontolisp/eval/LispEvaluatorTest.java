@@ -2991,6 +2991,80 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void evalCis() {
+		assertThat(eval("(cis 0d0)").print()).isEqualTo("#C(1.0 0.0)");
+		assertThat(eval("(cis 1d0)").print()).isEqualTo("#C(0.5403023058681398 0.8414709848078965)");
+		assertThat(eval("(cis (/ pi 4))").print()).isEqualTo("#C(0.7071067811865476 0.7071067811865475)");
+		assertThat(eval("(cis pi)").print()).isEqualTo("#C(-1.0 1.2246467991473532e-16)");
+		assertThat(eval("(cis (- (/ pi 2)))").print()).isEqualTo("#C(6.123233995736766e-17 -1.0)");
+		assertThat(eval("(abs (cis 1d0))")).isEqualTo(new LispDouble(1.0));
+		assertThat(eval("(phase (cis 1d0))")).isEqualTo(new LispDouble(1.0));
+	}
+
+	@Test
+	void evalInverseHyperbolicReal() {
+		assertThat(eval("(asinh -2d0)")).isEqualTo(new LispDouble(-1.4436354751788103));
+		assertThat(eval("(asinh -1d0)")).isEqualTo(new LispDouble(-0.881373587019543));
+		assertThat(eval("(asinh 0d0)")).isEqualTo(new LispDouble(0.0));
+		assertThat(eval("(asinh 1d0)")).isEqualTo(new LispDouble(0.881373587019543));
+		assertThat(eval("(asinh 2d0)")).isEqualTo(new LispDouble(1.4436354751788103));
+		assertThat(eval("(acosh 1d0)")).isEqualTo(new LispDouble(0.0));
+		assertThat(eval("(acosh 1.5d0)")).isEqualTo(new LispDouble(0.9624236501192069));
+		assertThat(eval("(acosh 2d0)")).isEqualTo(new LispDouble(1.3169578969248166));
+		assertThat(eval("(acosh 2.5d0)")).isEqualTo(new LispDouble(1.566799236972411));
+		assertThat(eval("(acosh 3d0)")).isEqualTo(new LispDouble(1.762747174039086));
+		// glibc's grouping past 2 keeps 2*x inside the float range and answers
+		// log(2x) correctly rounded (the naive log(x + sqrt(x*x - 1)) overflows here).
+		assertThat(eval("(acosh 1.0d18)")).isEqualTo(new LispDouble(42.13967885445277));
+		// SBCL's real-branch atanh answers the same bits as Math.log1p here; the
+		// 0.5493061443340549 the filing carried is SBCL's COMPLEX-path value (its
+		// clog halves log(x^2+y^2) where every backend here takes log(hypot)).
+		assertThat(eval("(atanh -0.5d0)")).isEqualTo(new LispDouble(-0.5493061443340548));
+		assertThat(eval("(atanh 0d0)")).isEqualTo(new LispDouble(0.0));
+		assertThat(eval("(atanh 0.5d0)")).isEqualTo(new LispDouble(0.5493061443340548));
+		// Round trips: the 2.0/0.5 the filing pinned are ideals, not measurements --
+		// SBCL itself answers 1.9999999999999998 and 0.49999999999999994 here.
+		assertThat(eval("(sinh (asinh 2d0))")).isEqualTo(new LispDouble(1.9999999999999998));
+		assertThat(eval("(cosh (acosh 3d0))")).isEqualTo(new LispDouble(3.0));
+		assertThat(eval("(tanh (atanh 0.5d0))")).isEqualTo(new LispDouble(0.49999999999999994));
+	}
+
+	@Test
+	void evalInverseHyperbolicDomainEscape() {
+		// Real arguments outside the function's real domain cross into the plane
+		// (SBCL parity) -- the escape .todo/763 covers for log/asin/acos. The atanh
+		// real part answers ...548 (log(hypot) grouping), SBCL's ...549 (it halves
+		// log(9)) is one ulp up.
+		assertThat(eval("(acosh 0d0)").print()).isEqualTo("#C(0.0 1.5707963267948966)");
+		assertThat(eval("(atanh 2d0)").print()).isEqualTo("#C(0.5493061443340548 1.5707963267948966)");
+	}
+
+	@Test
+	void evalInverseHyperbolicComplex() {
+		assertThat(eval("(asinh #c(1d0 1d0))").print()).isEqualTo("#C(1.0612750619050357 0.6662394324925153)");
+		assertThat(eval("(asinh #c(0d0 2d0))").print()).isEqualTo("#C(1.3169578969248166 1.5707963267948966)");
+		assertThat(eval("(asinh #c(0d0 -4d0))").print()).isEqualTo("#C(-2.0634370688955608 -1.5707963267948966)");
+		assertThat(eval("(sinh (asinh #c(1d0 1d0)))").print()).isEqualTo("#C(1.0 1.0000000000000002)");
+		// The ANSI form over log(hypot)/atan2 answers ...355 here; SBCL's ...357 (its
+		// clog squares instead of hypot-ing) is one ulp up.
+		assertThat(eval("(acosh #c(1d0 1d0))").print()).isEqualTo("#C(1.0612750619050355 0.9045568943023813)");
+		assertThat(eval("(acosh #c(0d0 0d0))").print()).isEqualTo("#C(0.0 1.5707963267948966)");
+		assertThat(eval("(acosh #c(0d0 -0d0))").print()).isEqualTo("#C(0.0 -1.5707963267948966)");
+		assertThat(eval("(acosh #c(-4d0 0d0))").print()).isEqualTo("#C(2.0634370688955603 3.141592653589793)");
+		// SBCL answers #C(-2.0634370688955608 -3.141592653589793) here -- a NEGATIVE
+		// real part, against CLHS's stated range (real part >= 0). This is what the
+		// ANSI formula produces; the SBCL deviation is 761's measurement, not a pin.
+		assertThat(eval("(acosh #c(-4d0 -0d0))").print()).isEqualTo("#C(2.0634370688955603 -3.141592653589793)");
+		assertThat(eval("(cosh (acosh #c(1d0 1d0)))").print()).isEqualTo("#C(1.0 0.9999999999999998)");
+		assertThat(eval("(atanh #c(1d0 1d0))").print()).isEqualTo("#C(0.4023594781085251 1.0172219678978514)");
+		assertThat(eval("(atanh #c(2d0 0d0))").print()).isEqualTo("#C(0.5493061443340548 1.5707963267948966)");
+		assertThat(eval("(atanh #c(2d0 -0d0))").print()).isEqualTo("#C(0.5493061443340548 -1.5707963267948966)");
+		assertThat(eval("(atanh #c(-4d0 0d0))").print()).isEqualTo("#C(-0.25541281188299536 1.5707963267948966)");
+		assertThat(eval("(atanh #c(-4d0 -0d0))").print()).isEqualTo("#C(-0.25541281188299536 -1.5707963267948966)");
+		assertThat(eval("(tanh (atanh #c(1d0 1d0)))").print()).isEqualTo("#C(1.0000000000000002 1.0)");
+	}
+
+	@Test
 	void evalUnless() {
 		assertThat(eval("(unless nil 42)")).isEqualTo(new LispInteger(42));
 		assertThat(eval("(unless t 42)")).isSameAs(LispNil.INSTANCE);

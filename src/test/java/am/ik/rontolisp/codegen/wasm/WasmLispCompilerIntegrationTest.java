@@ -13260,6 +13260,98 @@ class WasmLispCompilerIntegrationTest {
 	}
 
 	@Test
+	void compileAndRunCisAndInverseHyperbolicFloatCores() throws Exception {
+		// WASM is the approximate backend: the cores group log differently from the
+		// interpreter, so these float with isCloseTo; the exact anchors are the zero
+		// points each formula answers exactly.
+		assertThat(compileAndRun("(print (asinh 0))")).isEqualTo("0.0");
+		assertThat(Double.parseDouble(compileAndRun("(print (asinh 1))"))).isCloseTo(0.881373587019543, within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (asinh -2))"))).isCloseTo(-1.4436354751788103,
+				within(1e-9));
+		assertThat(compileAndRun("(print (acosh 1))")).isEqualTo("0.0");
+		assertThat(Double.parseDouble(compileAndRun("(print (acosh 2))"))).isCloseTo(1.3169578969248166, within(1e-9));
+		assertThat(compileAndRun("(print (atanh 0))")).isEqualTo("0.0");
+		assertThat(Double.parseDouble(compileAndRun("(print (atanh 0.5))"))).isCloseTo(0.5493061443340549,
+				within(1e-9));
+		// The domain escapes answer the plane like the sqrt site's negative root.
+		assertThat(Double.parseDouble(compileAndRun("(print (realpart (acosh 0)))"))).isCloseTo(0.0, within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (imagpart (acosh 0)))"))).isCloseTo(Math.PI / 2,
+				within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (realpart (atanh 2)))"))).isCloseTo(0.5493061443340549,
+				within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (imagpart (atanh 2)))"))).isCloseTo(Math.PI / 2,
+				within(1e-9));
+		// cis answers the unit-circle point for a real operand.
+		assertThat(compileAndRun("(print (cis 0))")).isEqualTo("#C(1.0 0.0)");
+		assertThat(Double.parseDouble(compileAndRun("(print (realpart (cis 1)))"))).isCloseTo(0.5403023058681398,
+				within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (imagpart (cis 1)))"))).isCloseTo(0.8414709848078965,
+				within(1e-9));
+		// The plane arms.
+		assertThat(Double.parseDouble(compileAndRun("(print (realpart (asinh #c(1 1))))")))
+			.isCloseTo(1.0612750619050357, within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (imagpart (asinh #c(1 1))))")))
+			.isCloseTo(0.6662394324925153, within(1e-9));
+		// The sheet flip: without the -log(s - z) branch the real part lands on +2.06.
+		assertThat(Double.parseDouble(compileAndRun("(print (realpart (asinh #c(0 -4))))")))
+			.isCloseTo(-2.0634370688955608, within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (imagpart (asinh #c(0 -4))))"))).isCloseTo(-Math.PI / 2,
+				within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (realpart (acosh #c(1 1))))")))
+			.isCloseTo(1.0612750619050355, within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (imagpart (acosh #c(1 1))))")))
+			.isCloseTo(0.9045568943023813, within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (imagpart (acosh #c(0 0))))"))).isCloseTo(Math.PI / 2,
+				within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (realpart (atanh #c(1 1))))")))
+			.isCloseTo(0.4023594781085251, within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (imagpart (atanh #c(1 1))))")))
+			.isCloseTo(1.0172219678978514, within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (realpart (atanh #c(2 0))))")))
+			.isCloseTo(0.5493061443340549, within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (imagpart (atanh #c(2 0))))"))).isCloseTo(Math.PI / 2,
+				within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (realpart (cis #c(1 1))))"))).isCloseTo(0.19876611034641298,
+				within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (imagpart (cis #c(1 1))))"))).isCloseTo(0.3095598756531122,
+				within(1e-9));
+	}
+
+	@Test
+	void compileAndRunComplexPhaseOnTheImaginaryAxis() throws Exception {
+		// The atan2 quadrant assembly answered the imaginary part ITSELF over a
+		// +0 real part (.todo/766); pi/2 is the constant it answers there, so the
+		// axis rows pin exactly like the interpreter, signed zeros included.
+		assertThat(Double.parseDouble(compileAndRun("(print (phase #c(0d0 1d0)))"))).isEqualTo(1.5707963267948966);
+		assertThat(Double.parseDouble(compileAndRun("(print (phase #c(0d0 3d0)))"))).isEqualTo(1.5707963267948966);
+		assertThat(Double.parseDouble(compileAndRun("(print (phase #c(0d0 -3d0)))"))).isEqualTo(-1.5707963267948966);
+		assertThat(Double.parseDouble(compileAndRun("(print (phase #c(-0d0 1d0)))"))).isEqualTo(1.5707963267948966);
+		assertThat(Double.parseDouble(compileAndRun("(print (phase #c(-0d0 -1d0)))"))).isEqualTo(-1.5707963267948966);
+		assertThat(compileAndRun("(print (phase #c(0d0 -0d0)))")).isEqualTo("-0.0");
+		assertThat(compileAndRun("(print (phase #c(-0d0 0d0)))")).isEqualTo("3.141592653589793");
+		assertThat(compileAndRun("(print (phase #c(-0d0 -0d0)))")).isEqualTo("-3.141592653589793");
+		assertThat(compileAndRun("(print (log #c(0d0 1d0)))")).isEqualTo("#C(0.0 1.5707963267948966)");
+		assertThat(Double.parseDouble(compileAndRun("(print (imagpart (log #c(0d0 -2d0))))")))
+			.isEqualTo(-1.5707963267948966);
+		// The asin/acos/atan formulas take a log of an intermediate that lands on
+		// the axis for these arguments.
+		assertThat(Double.parseDouble(compileAndRun("(print (realpart (asin #c(2d0 0d0))))")))
+			.isCloseTo(1.5707963267948966, within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (realpart (asin #c(-4d0 0d0))))")))
+			.isCloseTo(-1.5707963267948966, within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (realpart (acos #c(2d0 0d0))))"))).isCloseTo(0.0,
+				within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (realpart (acos #c(-4d0 0d0))))")))
+			.isCloseTo(3.141592653589793, within(1e-9));
+		assertThat(Double.parseDouble(compileAndRun("(print (realpart (atan #c(1d0 1d0))))")))
+			.isCloseTo(1.0172219678978514, within(1e-9));
+		// The component leg carries the same assembly.
+		assertThat(Double.parseDouble(compileComponentAndRun("(print (phase #c(0d0 1d0)))")))
+			.isEqualTo(1.5707963267948966);
+		assertThat(compileComponentAndRun("(print (log #c(0d0 1d0)))")).isEqualTo("#C(0.0 1.5707963267948966)");
+	}
+
+	@Test
 	void compileAndRunComplexFirstClass() throws Exception {
 		assertThat(compileAndRun("(print (funcall #'complex 1 2))")).isEqualTo("#C(1 2)");
 		assertThat(compileAndRun("(print (funcall #'conjugate #c(1 2)))")).isEqualTo("#C(1 -2)");

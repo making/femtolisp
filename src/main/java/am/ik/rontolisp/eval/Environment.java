@@ -2536,8 +2536,9 @@ public final class Environment implements Scope {
 	private static void registerMath(Environment env) {
 		// Unary floating-point functions: a double for real operands (Math.<name>),
 		// the float complex formula for complex ones. Real paths are unchanged: a
-		// negative real still answers NaN here (only sqrt roots one into the
-		// complex plane, like SBCL).
+		// negative real still answers NaN here (only sqrt roots one into the complex
+		// plane; acosh/atanh take the plane outside their own real domain below, like
+		// SBCL).
 		env.defineFunction(LispNames.SQRT, new LispFunction(LispNames.SQRT, args -> {
 			requireArgCount(LispNames.SQRT, args, 1);
 			if (args.get(0) instanceof LispComplex c) {
@@ -2561,6 +2562,48 @@ public final class Environment implements Scope {
 		defineUnaryComplex(env, LispNames.SINH, Math::sinh, Environment::complexSinh);
 		defineUnaryComplex(env, LispNames.COSH, Math::cosh, Environment::complexCosh);
 		defineUnaryComplex(env, LispNames.TANH, Math::tanh, Environment::complexTanh);
+		// cis answers a complex for every argument (it is the polar constructor:
+		// (cis x) = (complex (cos x) (sin x))), so it does not fit defineUnaryComplex's
+		// real-answers-real shape.
+		env.defineFunction(LispNames.CIS, new LispFunction(LispNames.CIS, args -> {
+			requireArgCount(LispNames.CIS, args, 1);
+			if (args.get(0) instanceof LispComplex c) {
+				double[] r = complexCis(realToDouble(c.real()), realToDouble(c.imag()));
+				return LispComplex.valueOf(new LispDouble(r[0]), new LispDouble(r[1]));
+			}
+			double d = asDouble(args.get(0));
+			return LispComplex.valueOf(new LispDouble(Math.cos(d)), new LispDouble(Math.sin(d)));
+		}));
+		defineUnaryComplex(env, LispNames.ASINH, Environment::asinhReal, Environment::complexAsinh);
+		// acosh/atanh take the plane for real arguments outside their real domain
+		// (SBCL parity): acosh of a real < 1 and atanh of a real |x| > 1 answer the
+		// complex formula at (x, +0.0); NaN stays a NaN double.
+		env.defineFunction(LispNames.ACOSH, new LispFunction(LispNames.ACOSH, args -> {
+			requireArgCount(LispNames.ACOSH, args, 1);
+			if (args.get(0) instanceof LispComplex c) {
+				double[] r = complexAcosh(realToDouble(c.real()), realToDouble(c.imag()));
+				return LispComplex.valueOf(new LispDouble(r[0]), new LispDouble(r[1]));
+			}
+			double d = asDouble(args.get(0));
+			if (!(d < 1.0)) {
+				return new LispDouble(acoshReal(d));
+			}
+			double[] r = complexAcosh(d, 0.0);
+			return LispComplex.valueOf(new LispDouble(r[0]), new LispDouble(r[1]));
+		}));
+		env.defineFunction(LispNames.ATANH, new LispFunction(LispNames.ATANH, args -> {
+			requireArgCount(LispNames.ATANH, args, 1);
+			if (args.get(0) instanceof LispComplex c) {
+				double[] r = complexAtanh(realToDouble(c.real()), realToDouble(c.imag()));
+				return LispComplex.valueOf(new LispDouble(r[0]), new LispDouble(r[1]));
+			}
+			double d = asDouble(args.get(0));
+			if (!(d > 1.0) && !(d < -1.0)) {
+				return new LispDouble(atanhReal(d));
+			}
+			double[] r = complexAtanh(d, 0.0);
+			return LispComplex.valueOf(new LispDouble(r[0]), new LispDouble(r[1]));
+		}));
 		env.defineFunction(LispNames.SCALE_FLOAT, new LispFunction(LispNames.SCALE_FLOAT, args -> {
 			requireArgCount(LispNames.SCALE_FLOAT, args, 2);
 			// f * 2^n with exact IEEE semantics, including the subnormal range.
@@ -8013,6 +8056,89 @@ public final class Environment implements Scope {
 		double[] c = complexCosh(re, im);
 		double denom = c[0] * c[0] + c[1] * c[1];
 		return new double[] { (s[0] * c[0] + s[1] * c[1]) / denom, (s[1] * c[0] - s[0] * c[1]) / denom };
+	}
+
+	// java.lang.Math has no inverse hyperbolics -- these are the real arms the JVM
+	// _cu1 helper bytecodes term for term (identical Math calls, identical bits), and
+	// they are overflow-safe: the small branch (|x| <= 1) keeps log1p's accuracy near
+	// zero, the large branch never squares past the float range.
+	private static double asinhReal(double x) {
+		double a = Math.abs(x);
+		if (a <= 1.0) {
+			return Math.copySign(Math.log1p(a + (a * a) / (1.0 + Math.hypot(a, 1.0))), x);
+		}
+		double inv = 1.0 / a;
+		return Math.copySign(Math.log(a) + Math.log(1.0 + Math.hypot(inv, 1.0)), x);
+	}
+
+	// acosh for x >= 1 only (the caller routes x < 1 into the plane). Three branches:
+	// near 1 the log1p form (no cancellation, no loss for x = nextUp(1)); mid-range
+	// log(2x) + log1p((r-1)/2) with r = sqrt(1 - 1/x^2) (the glibc grouping, the only
+	// one whose double bits are correctly rounded over the whole table); huge x a bare
+	// log(x) + log 2 so 2*x cannot overflow.
+	private static double acoshReal(double x) {
+		if (x < 2.0) {
+			double xm = x - 1.0;
+			return Math.log1p(xm + Math.sqrt(xm * (x + 1.0)));
+		}
+		if (x < 8.5e307) {
+			double inv = 1.0 / x;
+			double r = Math.sqrt(1.0 - inv * inv);
+			return Math.log(2.0 * x) + Math.log1p((r - 1.0) / 2.0);
+		}
+		return Math.log(x) + Math.log(2.0);
+	}
+
+	// atanh for |x| <= 1 only (the caller routes |x| > 1 into the plane). The log1p
+	// difference is accurate for small x and answers +-Infinity at +-1; a signed zero
+	// in answers the signed zero out (odd, like Math.sinh's small branch).
+	private static double atanhReal(double x) {
+		return (Math.log1p(x) - Math.log1p(-x)) * 0.5;
+	}
+
+	// cis(z) = exp(i*z) = (e^-im*cos(re), e^-im*sin(re)).
+	private static double[] complexCis(double re, double im) {
+		double e = Math.exp(-im);
+		return new double[] { e * Math.cos(re), e * Math.sin(re) };
+	}
+
+	// asinh(z) = log(z + sqrt(z^2 + 1)). The +0.0 on the imaginary part of z^2
+	// normalizes the -0.0 a zero times a negative factor leaves: the cut sqrt must
+	// take its +i root there, or (asinh #c(0 -4)) lands on the wrong sheet
+	// (SBCL's #C(-2.06... -pi/2) becomes #C(2.06... -pi/2)). When the sum z + s
+	// cancels to magnitude < 1, log(z+s) = -log(s-z) (their product is s^2 - z^2 = 1)
+	// and s - z adds without cancellation -- what keeps (asinh #c(0 -4)) on SBCL's bit.
+	private static double[] complexAsinh(double re, double im) {
+		double z2re = re * re - im * im;
+		double z2im = 2 * re * im + 0.0;
+		double[] s = complexSqrt(z2re + 1, z2im);
+		double w0 = re + s[0];
+		double w1 = im + s[1];
+		if (w0 * w0 + w1 * w1 < 1.0) {
+			double[] l = complexLog(s[0] - re, s[1] - im);
+			return new double[] { -l[0], -l[1] };
+		}
+		return complexLog(w0, w1);
+	}
+
+	// acosh(z) = 2*log(sqrt((z+1)/2) + sqrt((z-1)/2)) -- the ANSI form; the naive
+	// log(z + sqrt(z^2 - 1)) puts the branch cut in the wrong place. The /2 keeps
+	// the sign of a signed-zero imaginary part, which is what picks the sheet at
+	// the cut.
+	private static double[] complexAcosh(double re, double im) {
+		double[] s1 = complexSqrt((re + 1) / 2, im / 2);
+		double[] s2 = complexSqrt((re - 1) / 2, im / 2);
+		double[] l = complexLog(s1[0] + s2[0], s1[1] + s2[1]);
+		return new double[] { 2 * l[0], 2 * l[1] };
+	}
+
+	// atanh(z) = (log(1+z) - log(1-z)) / 2, the difference of the principal logs
+	// (the log of the quotient would answer the other edge of the cut: (atanh 2)
+	// needs its imaginary part at +pi/2, not -pi/2).
+	private static double[] complexAtanh(double re, double im) {
+		double[] l1 = complexLog(1 + re, im);
+		double[] l2 = complexLog(1 - re, -im);
+		return new double[] { (l1[0] - l2[0]) / 2, (l1[1] - l2[1]) / 2 };
 	}
 
 	/**

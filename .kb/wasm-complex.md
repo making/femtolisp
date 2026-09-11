@@ -40,10 +40,14 @@ emitted unconditionally, like the ratio block -- the limb-block precedent
   survives, unlike a `_csub`-from-zero fold).
 - Call-site (`WasmComplexCompiler` + cases in
   `WasmExprCompiler.compileCons()`): `complex`, `complexp`, `realp`,
-  `realpart`, `imagpart`, `conjugate`, `phase`, always-complex `sqrt`, and the
-  complex-aware `+ - * / abs expt = /=` orderings, `min`/`max`, and the eleven
-  unary math functions. Literals emit inline in code position and under
-  `quote` (the reader already canonicalized them, so parts plus tag plus
+  `realpart`, `imagpart`, `conjugate`, `phase`, always-complex `sqrt`,
+  always-complex-capable `cis`/`asinh`/`acosh`/`atanh` (real arguments run the
+  `WasmInverseHypCompiler` cores inside the same runtime test; `acosh`/`atanh`
+  build a temporary `(x, +0.0)` complex for the plane arm when the argument
+  leaves their real domain, like the `sqrt` site's negative root), and the
+  complex-aware `+ - * / abs expt = /=` orderings, `min`/`max`, and the
+  fifteen unary math functions. Literals emit inline in code position and
+  under `quote` (the reader already canonicalized them, so parts plus tag plus
   `struct.new` is the value).
 
 ## Steering: `containsComplex`, before everything else
@@ -102,8 +106,13 @@ over one is a guaranteed bail plus a trap.
 `sqrt` (except a non-negative real, which keeps native `f64.sqrt`), `abs`
 (scaled `hypot`, exact for the pinned magnitudes), `phase` (`atan2` from the
 atan core plus quadrant assembly -- `copysign` tells `+0` from `-0`, NaN in
-gives NaN out), `expt` (exact squaring loop for an i31 exponent, `exp(w*log
-z)` otherwise) and the eleven unary functions reuse the backend's software
+gives NaN out; on the imaginary axis the assembly answers `copysign(pi/2, y)`
+for a nonzero `y` over either zero and only a zero `y` takes its own sign
+(over `+0`) or `copysign(pi, y)` (over `-0`) -- the four `Math.atan2` rungs,
+where the assembly used to answer the imaginary part itself over `+0`, the
+bug `.todo/766` recorded and the inverse-hyperbolic plane arms surfaced in
+2026-09), `expt` (exact squaring loop for an i31 exponent, `exp(w*log
+z)` otherwise) and the fifteen unary functions reuse the backend's software
 exp/log/sin/cos/sinh/cosh/atan cores, so like every WASM transcendental they
 are close but not bit-exact: pinned with `isCloseTo`, everything else
 print-compared (`WasmLispCompilerIntegrationTest.compileAndRunComplex*`).
