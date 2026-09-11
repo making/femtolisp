@@ -138,7 +138,13 @@
 
 (defun vec:exp (v) (vec::%map1 #'exp v))
 
-(defun vec:log (v) (vec::%map1 #'log v))
+(defun vec::%flog (x)
+  ;; Float-domain natural logarithm (numpy np.log): NaN on a negative input, for
+  ;; %fsqrt's reason below -- CL log answers the complex plane there and a complex
+  ;; has no packed element store.
+  (if (< x 0.0) (/ 0.0 0.0) (log x)))
+
+(defun vec:log (v) (vec::%map1 #'vec::%flog v))
 
 (defun vec:tanh (v) (vec::%map1 #'tanh v))
 
@@ -148,9 +154,18 @@
 
 (defun vec:tan (v) (vec::%map1 #'tan v))
 
-(defun vec:asin (v) (vec::%map1 #'asin v))
+(defun vec::%fasin (x)
+  ;; Float-domain arc sine (numpy np.arcsin): NaN outside [-1, 1], for %fsqrt's
+  ;; reason below.
+  (if (or (> x 1.0) (< x -1.0)) (/ 0.0 0.0) (asin x)))
 
-(defun vec:acos (v) (vec::%map1 #'acos v))
+(defun vec:asin (v) (vec::%map1 #'vec::%fasin v))
+
+(defun vec::%facos (x)
+  ;; Float-domain arc cosine (numpy np.arccos): NaN outside [-1, 1].
+  (if (or (> x 1.0) (< x -1.0)) (/ 0.0 0.0) (acos x)))
+
+(defun vec:acos (v) (vec::%map1 #'vec::%facos v))
 
 (defun vec:atan (v) (vec::%map1 #'atan v))
 
@@ -249,7 +264,7 @@
 
 (defun vec:exp-into (out v) (vec::%map1-into out #'exp v))
 
-(defun vec:log-into (out v) (vec::%map1-into out #'log v))
+(defun vec:log-into (out v) (vec::%map1-into out #'vec::%flog v))
 
 (defun vec:tanh-into (out v) (vec::%map1-into out #'tanh v))
 
@@ -259,9 +274,9 @@
 
 (defun vec:tan-into (out v) (vec::%map1-into out #'tan v))
 
-(defun vec:asin-into (out v) (vec::%map1-into out #'asin v))
+(defun vec:asin-into (out v) (vec::%map1-into out #'vec::%fasin v))
 
-(defun vec:acos-into (out v) (vec::%map1-into out #'acos v))
+(defun vec:acos-into (out v) (vec::%map1-into out #'vec::%facos v))
 
 (defun vec:atan-into (out v) (vec::%map1-into out #'atan v))
 

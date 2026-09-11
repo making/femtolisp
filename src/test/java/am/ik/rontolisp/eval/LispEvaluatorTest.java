@@ -3138,13 +3138,94 @@ class LispEvaluatorTest {
 	@Test
 	void evalInverseHyperbolicDomainEscape() {
 		// Real arguments outside the function's real domain cross into the plane
-		// (SBCL parity) -- the escape .todo/763 covers for log/asin/acos. The atanh
+		// (SBCL parity), the same escape log/asin/acos/expt take below. The atanh
 		// real part is the log(hypot) grouping's (log 3)/2, and the last ulp of that
 		// log is the PLATFORM's, not the formula's: x64 rounds ln 3 correctly (landing
 		// on SBCL's ...549, which halves log 9) where aarch64 lands one low
 		// (.kb/jvm-complex.md). So the pin spells the call, never a box's digits.
 		assertThat(eval("(acosh 0d0)").print()).isEqualTo("#C(0.0 1.5707963267948966)");
 		assertThat(eval("(atanh 2d0)").print()).isEqualTo("#C(" + Math.log(3.0) / 2 + " 1.5707963267948966)");
+	}
+
+	@Test
+	void evalLogAsinAcosOfARealOutsideTheRealDomain() {
+		// A real argument that leaves the function's real domain runs the SAME complex
+		// formula at (x, +0.0) instead of poisoning everything downstream with NaN.
+		// The escape IS the complex arm, so that equality is the pin; the SBCL digits
+		// are asserted where the platform rounds them identically (atan2's pi and the
+		// exact zeros) and spelled as their Math call where it does not.
+		assertThat(eval("(log -1d0)").print()).isEqualTo("#C(0.0 3.141592653589793)");
+		assertThat(eval("(log -100d0)").print()).isEqualTo("#C(" + Math.log(100.0) + " 3.141592653589793)");
+		assertThat(eval("(log -1)").print()).isEqualTo("#C(0.0 3.141592653589793)");
+		assertThat(eval("(log -1/2)").print()).isEqualTo("#C(" + Math.log(0.5) + " 3.141592653589793)");
+		assertThat(eval("(log -100d0)")).isEqualTo(eval("(log #c(-100d0 0d0))"));
+		// The zero edge and the real domain are untouched.
+		assertThat(eval("(log 0d0)")).isEqualTo(new LispDouble(Double.NEGATIVE_INFINITY));
+		assertThat(eval("(log -0d0)")).isEqualTo(new LispDouble(Double.NEGATIVE_INFINITY));
+		assertThat(eval("(log 1d0)")).isEqualTo(new LispDouble(0.0));
+		assertThat(eval("(asin 2d0)")).isEqualTo(eval("(asin #c(2d0 0d0))"));
+		assertThat(eval("(asin -2d0)")).isEqualTo(eval("(asin #c(-2d0 0d0))"));
+		assertThat(eval("(acos 2d0)")).isEqualTo(eval("(acos #c(2d0 0d0))"));
+		assertThat(eval("(acos -4d0)")).isEqualTo(eval("(acos #c(-4d0 0d0))"));
+		assertThat(eval("(asin 2)")).isEqualTo(eval("(asin 2d0)"));
+		// SBCL's digits, within the ulp the platform's Math.log may move the asinh
+		// half by (the real parts are atan2's own constants and are exact).
+		assertThat(realPartOf("(asin 2d0)")).isEqualTo(1.5707963267948966);
+		assertThat(imagPartOf("(asin 2d0)")).isCloseTo(-1.3169578969248166, within(2 * Math.ulp(1.3)));
+		assertThat(realPartOf("(asin -2d0)")).isEqualTo(-1.5707963267948966);
+		assertThat(imagPartOf("(asin -2d0)")).isCloseTo(1.3169578969248166, within(2 * Math.ulp(1.3)));
+		assertThat(realPartOf("(acos 2d0)")).isEqualTo(0.0);
+		assertThat(imagPartOf("(acos 2d0)")).isCloseTo(1.3169578969248166, within(2 * Math.ulp(1.3)));
+		assertThat(realPartOf("(acos -2d0)")).isEqualTo(3.141592653589793);
+		assertThat(imagPartOf("(acos -2d0)")).isCloseTo(-1.3169578969248166, within(2 * Math.ulp(1.3)));
+		assertThat(realPartOf("(acos -4d0)")).isEqualTo(3.141592653589793);
+		assertThat(imagPartOf("(acos -4d0)")).isCloseTo(-2.0634370688955608, within(2 * Math.ulp(2.1)));
+		// Inside [-1, 1] nothing moved, and a NaN argument still answers a NaN double
+		// rather than a complex one.
+		assertThat(eval("(asin 0.5d0)")).isEqualTo(new LispDouble(Math.asin(0.5)));
+		assertThat(eval("(asin 1d0)")).isEqualTo(new LispDouble(Math.asin(1.0)));
+		assertThat(eval("(acos 1d0)")).isEqualTo(new LispDouble(0.0));
+		assertThat(eval("(acos -1d0)")).isEqualTo(new LispDouble(Math.acos(-1.0)));
+		assertThat(((LispDouble) eval("(asin (/ 0d0 0d0))")).value()).isNaN();
+		assertThat(((LispDouble) eval("(log (/ 0d0 0d0))")).value()).isNaN();
+	}
+
+	@Test
+	void evalExptOfANegativeBaseToAFractionalPower() {
+		// |x|^y turned through y*pi radians -- one pow and one cis, NOT exp(y*log x):
+		// a real base's phase is exactly pi, which is what makes the imaginary part of
+		// (expt -2d0 0.5d0) exactly (sqrt 2). The form is the pin.
+		double cubeRoot = Math.pow(8.0, 1.0 / 3.0);
+		double third = (1.0 / 3.0) * Math.PI;
+		assertThat(eval("(expt -8d0 (/ 1d0 3d0))").print())
+			.isEqualTo("#C(" + cubeRoot * Math.cos(third) + " " + cubeRoot * Math.sin(third) + ")");
+		assertThat(eval("(expt -8 1/3)")).isEqualTo(eval("(expt -8d0 (/ 1d0 3d0))"));
+		double root2 = Math.pow(2.0, 0.5);
+		assertThat(realPartOf("(expt -2d0 0.5d0)")).isEqualTo(root2 * Math.cos(0.5 * Math.PI));
+		assertThat(imagPartOf("(expt -2d0 0.5d0)")).isEqualTo(root2 * Math.sin(0.5 * Math.PI));
+		// SBCL's digits for both, and the deliberate disagreement with sqrt in the
+		// real part's last bits (sqrt has no logarithm and no rotation to round).
+		assertThat(realPartOf("(expt -8d0 (/ 1d0 3d0))")).isCloseTo(1.0000000000000002, within(4 * Math.ulp(1.0)));
+		assertThat(imagPartOf("(expt -8d0 (/ 1d0 3d0))")).isCloseTo(1.7320508075688772, within(4 * Math.ulp(1.8)));
+		assertThat(imagPartOf("(expt -2d0 0.5d0)")).isEqualTo(1.4142135623730951);
+		assertThat(eval("(sqrt -2d0)").print()).isEqualTo("#C(0.0 1.4142135623730951)");
+		// An integer exponent stays exact and real, an integer-VALUED float exponent
+		// stays real, and a non-negative base is untouched.
+		assertThat(eval("(expt -2 2)")).isEqualTo(new LispInteger(4));
+		assertThat(eval("(expt -8d0 2d0)")).isEqualTo(new LispDouble(64.0));
+		assertThat(eval("(expt -8d0 3d0)")).isEqualTo(new LispDouble(-512.0));
+		assertThat(eval("(expt -8d0 -2d0)")).isEqualTo(new LispDouble(0.015625));
+		assertThat(eval("(expt -8d0 0d0)")).isEqualTo(new LispDouble(1.0));
+		assertThat(eval("(expt 2 -1)").print()).isEqualTo("1/2");
+		assertThat(eval("(expt 2d0 0.5d0)")).isEqualTo(new LispDouble(Math.sqrt(2.0)));
+	}
+
+	private double realPartOf(String source) {
+		return ((LispDouble) eval("(realpart " + source + ")")).value();
+	}
+
+	private double imagPartOf(String source) {
+		return ((LispDouble) eval("(imagpart " + source + ")")).value();
 	}
 
 	@Test

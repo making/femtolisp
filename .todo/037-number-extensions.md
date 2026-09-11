@@ -47,19 +47,26 @@ only the decomposition/composition pair is missing.
 
 > **Update 2026-09-09 (.todo/754 landed):** the four-step split is complete --
 > type system, corpus and docs are in (see the step list below). Remaining
-> lite edges, all documented where they occur: `log`/`expt`/`asin` of a
-> negative/fractional REAL still answer NaN (only complex operands and `sqrt`
-> of a negative real cross into the plane); `(integer 0 10)` upgrades to
+> lite edges, all documented where they occur: `(integer 0 10)` upgrades to
 > `integer` where SBCL answers `(mod 11)`; variable-carried complex arithmetic
 > on the compiled backends steers syntactically (see `.todo/755` for the one
 > place that steering goes wrong today).
+>
+> **Update 2026-09-11 (.todo/763 landed):** the NaN edge is closed on all four
+> backends -- `log` of a negative, `asin`/`acos` beyond `[-1, 1]` and `expt` of
+> a negative base to a non-integer power answer the plane, through the existing
+> complex arms. The gate that keeps this free for ordinary numeric programs is
+> per-CALL rather than per-mention (`.kb/jvm-complex.md`, "Real arguments that
+> leave the real domain"). What does NOT cross is the syntactic steering above:
+> `(+ 1.0 (log x))` still lands in the `Expected number` funnel rather than
+> computing, which is the `.todo/755` shape with one more way in.
 >
 > **Update 2026-09-10:** a conformance sweep of the whole complex surface
 > against SBCL 2.6.5 filed the rest of the gap as six items --
 > `[[761-cis-asinh-acosh-atanh-are-not-defined]]` (four missing ANSI names),
 > `[[762-atan-and-log-take-only-one-argument]]` (no `atan2`, no log base),
-> `[[763-real-arguments-outside-the-real-domain-answer-nan]]` (the NaN edge
-> above), `[[764-complex-asin-and-acos-pick-the-wrong-branch-on-the-cut]]`,
+> `[[763-real-arguments-outside-the-real-domain-answer-nan]]` (the NaN edge,
+> now closed), `[[764-complex-asin-and-acos-pick-the-wrong-branch-on-the-cut]]`,
 > and two backend defects the sweep turned up,
 > `[[765-jvm-complex-acos-tan-and-tanh-answer-wrong-values]]` and
 > `[[766-wasm-phase-is-wrong-when-the-real-part-is-a-zero]]`. Everything else

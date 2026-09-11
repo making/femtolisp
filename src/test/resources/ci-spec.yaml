@@ -15955,6 +15955,47 @@ cases:
       #C(0.6 0.8)
       0
       0.0
+  - name: real-domain-escape-to-the-plane
+    # log of a negative, asin/acos beyond [-1, 1] and a negative base to a non-integer
+    # power answer the complex plane instead of NaN. Every argument arrives through a
+    # VARIABLE, which is what makes the answer's TYPE a run-time property the compiled
+    # backends cannot decide from the source. The transcendental digits differ between
+    # the backends, so what travels is the contract: the escape IS the complex arm run
+    # at (x, +0.0), the signs and the exactly-representable quadrant anchors, and what
+    # stays real -- inside the domain, a NaN, an infinity, an integer-valued exponent.
+    source: |
+      (let ((x -100d0)) (print (= (log x) (log (complex x 0d0)))))
+      (let ((x 2d0)) (print (= (asin x) (asin (complex x 0d0)))))
+      (let ((x -4d0)) (print (= (acos x) (acos (complex x 0d0)))))
+      (let ((x -1d0)) (print (= (imagpart (log x)) pi)))
+      (let ((x 2d0)) (print (= (realpart (asin x)) (/ pi 2))))
+      (let ((x 2d0)) (print (minusp (imagpart (asin x)))))
+      (let ((x -4d0)) (print (= (realpart (acos x)) pi)))
+      (let ((x -4d0)) (print (minusp (imagpart (acos x)))))
+      (let ((x 0.5d0)) (print (complexp (asin x))))
+      (let ((x 100d0)) (print (complexp (log x))))
+      (let ((x (/ 0d0 0d0))) (print (complexp (asin x))))
+      (let ((x (/ 1d0 0d0))) (print (complexp (asin x))))
+      (let ((b -2d0) (e 0.5d0)) (print (plusp (imagpart (expt b e)))))
+      (let ((b -8d0) (e 2d0)) (print (expt b e)))
+      (let ((b 8d0) (e 0.5d0)) (print (complexp (expt b e))))
+    expected: |
+      T
+      T
+      T
+      T
+      T
+      T
+      T
+      T
+      NIL
+      NIL
+      NIL
+      NIL
+      T
+      64.0
+      NIL
+
   - name: complex-asin-acos-branch-cut
     # asin/acos cut the real axis outside [-1, 1]: the value ON the cut is the one
     # continuous with quadrant IV above +1 and quadrant II below -1, and the sign of an

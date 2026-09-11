@@ -1401,10 +1401,13 @@ public final class JvmLispCompiler implements LispCompiler {
 		// reference gate above. #'upgraded-complex-part-type joins them: its body
 		// probes (subtypep <var> 'real), which compiles to the gated
 		// %subtypep-runtime. The cis/asinh/acosh/atanh wrappers join too: their
-		// bodies call the gated _cu1 with the new selectors.
+		// bodies call the gated _cu1 with the new selectors. So do log/asin/acos/expt:
+		// their wrapper bodies take the argument from a PARAMETER, which no literal can
+		// prove inside the real domain, so an ungated wrapper would open the complex
+		// gate for every program in the world -- (print 1) included.
 		for (String op : List.of(LispNames.COMPLEX, LispNames.CONJUGATE, LispNames.SQRT, LispNames.PHASE,
-				LispNames.UPGRADED_COMPLEX_PART_TYPE, LispNames.CIS, LispNames.ASINH, LispNames.ACOSH,
-				LispNames.ATANH)) {
+				LispNames.UPGRADED_COMPLEX_PART_TYPE, LispNames.CIS, LispNames.ASINH, LispNames.ACOSH, LispNames.ATANH,
+				LispNames.LOG, LispNames.ASIN, LispNames.ACOS, LispNames.EXPT)) {
 			if (!referencesFunctionDesignator(program, closRegistry, op)) {
 				wrapperExcludes.add(op);
 			}
@@ -1729,12 +1732,17 @@ public final class JvmLispCompiler implements LispCompiler {
 		// when the program may create a complex -- a #C literal, a
 		// complex/conjugate call, or a sqrt, which can root a negative into the
 		// plane (cis/asinh/acosh/atanh join the sqrt case: their real arms run
-		// through _cu1 and can cross into the plane). forcedGroups carries the
-		// verdict of a previous run whose scan under-predicted this gate (see
-		// compile(List)); it never turns the gate OFF. The holder travels exactly
-		// then (needsComplexRuntime below), so a complex-free program keeps its
+		// through _cu1 and can cross into the plane). log/asin/acos/expt cross too,
+		// but only for SOME arguments, so they are read through
+		// mayEscapeToComplex -- the same predicate their call sites steer on, so a
+		// literal that proves the escape unreachable ((log 2), (expt x 2),
+		// (expt 10.0 n)) leaves the gate shut. forcedGroups carries the verdict of a
+		// previous run whose scan under-predicted this gate (see compile(List)); it
+		// never turns the gate OFF. The holder travels exactly then
+		// (needsComplexRuntime below), so a complex-free program keeps its
 		// single-file output.
 		boolean usesComplex = LispMacroExpander.mayCreateComplex(program, closRegistry)
+				|| LispMacroExpander.mayEscapeToComplex(program, closRegistry)
 				|| programUsesSymbol(program, LispNames.SQRT) || programUsesSymbol(program, LispNames.CIS)
 				|| programUsesSymbol(program, LispNames.ASINH) || programUsesSymbol(program, LispNames.ACOSH)
 				|| programUsesSymbol(program, LispNames.ATANH)

@@ -562,6 +562,179 @@ final class WasmComplexCompiler {
 		ctx.writer.write(Instruction.END);
 	}
 
+	// (log x): a non-negative real (a NaN too -- f64.lt answers false for one) takes
+	// the software log core; a negative one escapes into the plane at (x, +0.0),
+	// where it answers (log |x|, pi) instead of NaN. Zero keeps -Infinity, the core's
+	// own answer.
+	static void compileLog(LispCons cons, WasmLispCompiler.Ctx ctx) {
+		List<LispVal> args = cons.toList();
+		if (args.size() != 2) {
+			throw new UnsupportedOperationException("log expects 1 argument, got " + (args.size() - 1));
+		}
+		WasmExprCompiler.compileExpr(args.get(1), ctx);
+		int slot = ctx.allocTemp();
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(slot);
+		emitTestComplex(ctx, slot);
+		ctx.writer.write(Instruction.IF);
+		ctx.writer.writeRefType(true, Type.EQ.code());
+		int[] parts = emitPartsF64(ctx, slot);
+		int reOut = ctx.allocTemp();
+		int imOut = ctx.allocTemp();
+		emitComplexLogInto(ctx, parts[0], parts[1], reOut, imOut);
+		emitComplexTag(ctx);
+		getLocal(ctx, reOut);
+		getLocal(ctx, imOut);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.STRUCT_NEW);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TYPE_COMPLEX);
+		ctx.writer.write(Instruction.ELSE);
+		int fSlot = emitRealAsF64Box(ctx, slot);
+		WasmExpCompiler.unboxF64Local(ctx, fSlot);
+		f64Const(ctx, 0.0);
+		ctx.writer.write(Instruction.F64_LT);
+		ctx.writer.write(Instruction.IF);
+		ctx.writer.writeRefType(true, Type.EQ.code());
+		emitPlaneArmAt(ctx, fSlot, am.ik.rontolisp.LispNames.LOG);
+		ctx.writer.write(Instruction.ELSE);
+		WasmExpCompiler.unboxF64Local(ctx, fSlot);
+		WasmLogCompiler.emitLogCore(ctx, ctx.allocTemp(), ctx.allocTemp(), ctx.allocTemp());
+		ctx.writer.write(Instruction.END);
+		ctx.writer.write(Instruction.END);
+	}
+
+	// (asin x) / (acos x): |x| <= 1 (a NaN too -- f64.gt answers false for one) takes
+	// the software real formula; beyond, x escapes into the plane at (x, +0.0), where
+	// Kahan's form answers the value on the branch cut instead of NaN.
+	static void compileAsinAcos(LispCons cons, WasmLispCompiler.Ctx ctx, String name) {
+		List<LispVal> args = cons.toList();
+		if (args.size() != 2) {
+			throw new UnsupportedOperationException(name + " expects 1 argument, got " + (args.size() - 1));
+		}
+		WasmExprCompiler.compileExpr(args.get(1), ctx);
+		int slot = ctx.allocTemp();
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(slot);
+		emitTestComplex(ctx, slot);
+		ctx.writer.write(Instruction.IF);
+		ctx.writer.writeRefType(true, Type.EQ.code());
+		int[] parts = emitPartsF64(ctx, slot);
+		int reOut = ctx.allocTemp();
+		int imOut = ctx.allocTemp();
+		if (am.ik.rontolisp.LispNames.ASIN.equals(name)) {
+			emitComplexAsinInto(ctx, parts[0], parts[1], reOut, imOut);
+		}
+		else {
+			emitComplexAcosInto(ctx, parts[0], parts[1], reOut, imOut);
+		}
+		emitComplexTag(ctx);
+		getLocal(ctx, reOut);
+		getLocal(ctx, imOut);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.STRUCT_NEW);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TYPE_COMPLEX);
+		ctx.writer.write(Instruction.ELSE);
+		int fSlot = emitRealAsF64Box(ctx, slot);
+		// |x| > 1 AND finite. An infinity has no complex asin/acos either (the formula
+		// would manufacture a #C(NaN Infinity)), so it keeps the real arm's NaN with
+		// the NaN itself -- f64.gt and f64.lt both answer false for a NaN.
+		WasmExpCompiler.unboxF64Local(ctx, fSlot);
+		ctx.writer.write(Instruction.F64_ABS);
+		f64Const(ctx, 1.0);
+		ctx.writer.write(Instruction.F64_GT);
+		WasmExpCompiler.unboxF64Local(ctx, fSlot);
+		ctx.writer.write(Instruction.F64_ABS);
+		f64Const(ctx, Double.POSITIVE_INFINITY);
+		ctx.writer.write(Instruction.F64_LT);
+		ctx.writer.write(Instruction.I32_AND);
+		ctx.writer.write(Instruction.IF);
+		ctx.writer.writeRefType(true, Type.EQ.code());
+		emitPlaneArmAt(ctx, fSlot, name);
+		ctx.writer.write(Instruction.ELSE);
+		WasmExpCompiler.unboxF64Local(ctx, fSlot);
+		WasmAtanCompiler.emitAsinAcosRealF64(ctx, name);
+		WasmExpCompiler.boxF64(ctx);
+		ctx.writer.write(Instruction.END);
+		ctx.writer.write(Instruction.END);
+	}
+
+	// Coerces the real in `slot` to an f64 and boxes it into a fresh temporary, whose
+	// slot index is returned -- the shape every escape arm below reads its argument
+	// from.
+	private static int emitRealAsF64Box(WasmLispCompiler.Ctx ctx, int slot) {
+		getLocal(ctx, slot);
+		WasmEmitHelper.castFloatGetF64(ctx);
+		WasmExpCompiler.boxF64(ctx);
+		int fSlot = ctx.allocTemp();
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(fSlot);
+		return fSlot;
+	}
+
+	// Runs one complex arm over the temporary complex (x, +0.0) built from the boxed
+	// f64 in fSlot, leaving the resulting complex on the stack. Building the value and
+	// running the arm is what carries the branch cut: (asin 2) is not (asin 2, 0) with
+	// a zero imaginary part bolted on, it is the plane formula's answer there.
+	private static void emitPlaneArmAt(WasmLispCompiler.Ctx ctx, int fSlot, String name) {
+		emitComplexTag(ctx);
+		getLocal(ctx, fSlot);
+		f64Const(ctx, 0.0);
+		WasmExpCompiler.boxF64(ctx);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.STRUCT_NEW);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TYPE_COMPLEX);
+		int escSlot = ctx.allocTemp();
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(escSlot);
+		int[] escParts = emitPartsF64(ctx, escSlot);
+		int escRe = ctx.allocTemp();
+		int escIm = ctx.allocTemp();
+		switch (name) {
+			case am.ik.rontolisp.LispNames.LOG -> emitComplexLogInto(ctx, escParts[0], escParts[1], escRe, escIm);
+			case am.ik.rontolisp.LispNames.ASIN -> emitComplexAsinInto(ctx, escParts[0], escParts[1], escRe, escIm);
+			case am.ik.rontolisp.LispNames.ACOS -> emitComplexAcosInto(ctx, escParts[0], escParts[1], escRe, escIm);
+			default -> throw new IllegalArgumentException("not a real-domain escape: " + name);
+		}
+		emitComplexTag(ctx);
+		getLocal(ctx, escRe);
+		getLocal(ctx, escIm);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.STRUCT_NEW);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TYPE_COMPLEX);
+	}
+
+	/**
+	 * The real-base {@code expt} escape: with the modulus {@code |x|^y} boxed in
+	 * {@code modulusSlot} and the exponent {@code y} boxed in {@code ySlot}, leaves
+	 * {@code |x|^y * cis(y*pi)} -- the complex {@code (expt -8d0 1/3)} -- on the stack. A
+	 * negative real base has an EXACTLY known phase of pi, so the answer is one rotation
+	 * of the real modulus rather than {@code exp(w*log z)} over a complex built for the
+	 * purpose; the interpreter and the JVM take the same form.
+	 * @param ctx the compile context
+	 * @param modulusSlot the boxed f64 modulus
+	 * @param ySlot the boxed f64 exponent
+	 */
+	static void emitNegativeBasePowInto(WasmLispCompiler.Ctx ctx, int modulusSlot, int ySlot) {
+		int thetaSlot = ctx.allocTemp();
+		WasmExpCompiler.unboxF64Local(ctx, ySlot);
+		f64Const(ctx, Math.PI);
+		ctx.writer.write(Instruction.F64_MUL);
+		WasmExpCompiler.boxF64(ctx);
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(thetaSlot);
+		int cosSlot = ctx.allocTemp();
+		callCosInto(ctx, thetaSlot, cosSlot);
+		int sinSlot = ctx.allocTemp();
+		callSinInto(ctx, thetaSlot, sinSlot);
+		emitComplexTag(ctx);
+		WasmExpCompiler.unboxF64Local(ctx, modulusSlot);
+		WasmExpCompiler.unboxF64Local(ctx, cosSlot);
+		ctx.writer.write(Instruction.F64_MUL);
+		WasmExpCompiler.boxF64(ctx);
+		WasmExpCompiler.unboxF64Local(ctx, modulusSlot);
+		WasmExpCompiler.unboxF64Local(ctx, sinSlot);
+		ctx.writer.write(Instruction.F64_MUL);
+		WasmExpCompiler.boxF64(ctx);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.STRUCT_NEW);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TYPE_COMPLEX);
+	}
+
 	// (atanh x): |x| <= 1 (NaN included, like the interpreter's two tests) takes
 	// the real core; beyond, x escapes into the plane at (x, +0.0).
 	static void compileAtanh(LispCons cons, WasmLispCompiler.Ctx ctx) {

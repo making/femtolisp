@@ -312,7 +312,11 @@
 
 (defun torch::%t-rexp (x) (if (numberp x) (exp x) (linalg:exp x)))
 
-(defun torch::%t-rlog (x) (if (numberp x) (log x) (linalg:log x)))
+(defun torch::%t-rlog (x)
+  ;; The scalar arm takes linalg's float-domain log so a negative answers NaN on
+  ;; both arms (PyTorch's torch.log), rather than a complex the tensor arm has no
+  ;; store for.
+  (if (numberp x) (linalg::%la-flog x) (linalg:log x)))
 
 (defun torch::%t-rsqrt (x) (if (numberp x) (sqrt x) (linalg:sqrt x)))
 

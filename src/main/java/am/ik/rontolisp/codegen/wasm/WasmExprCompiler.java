@@ -1930,6 +1930,11 @@ final class WasmExprCompiler {
 					if (WasmComplexCompiler.hasComplex(cons)) {
 						WasmComplexCompiler.compileUnaryMath(cons, ctx, sym.name());
 					}
+					else if (LispMacroExpander.escapesToComplex(sym.name(), cons.toList())) {
+						// A negative argument leaves the real line, and no literal
+						// here rules that out: the site carries the plane arm.
+						WasmComplexCompiler.compileLog(cons, ctx);
+					}
 					else {
 						WasmLogCompiler.compile(cons, ctx);
 					}
@@ -1953,6 +1958,11 @@ final class WasmExprCompiler {
 				case LispNames.ASIN, LispNames.ACOS, LispNames.ATAN -> {
 					if (WasmComplexCompiler.hasComplex(cons)) {
 						WasmComplexCompiler.compileUnaryMath(cons, ctx, sym.name());
+					}
+					else if (LispMacroExpander.escapesToComplex(sym.name(), cons.toList())) {
+						// asin/acos of an argument no literal proves inside [-1, 1]
+						// (atan's real domain is the whole line, so it never gets here).
+						WasmComplexCompiler.compileAsinAcos(cons, ctx, sym.name());
 					}
 					else {
 						WasmAtanCompiler.compile(cons, ctx, sym.name());
@@ -2107,7 +2117,8 @@ final class WasmExprCompiler {
 						WasmComplexCompiler.compileExpt(cons, ctx);
 					}
 					else {
-						WasmExptCompiler.compile(cons, ctx);
+						WasmExptCompiler.compile(cons, ctx,
+								LispMacroExpander.escapesToComplex(sym.name(), cons.toList()));
 					}
 				}
 				case LispNames.FIRST -> WasmExprCompiler.compileExpr(LispMacroExpander.expandFirst(cons), ctx);

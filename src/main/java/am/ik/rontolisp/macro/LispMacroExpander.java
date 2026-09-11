@@ -31,6 +31,7 @@ import am.ik.rontolisp.reader.LispReader;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 import org.jspecify.annotations.Nullable;
 
@@ -16477,6 +16478,110 @@ public final class LispMacroExpander {
 			}
 		}
 		return containsComplex(cons.car()) || containsComplex(cons.cdr());
+	}
+
+	/**
+	 * The four functions whose answer for a REAL argument can still be complex, because
+	 * the argument may leave the function's real domain at run time: {@code log} of a
+	 * negative, {@code asin}/{@code acos} beyond {@code [-1, 1]} and {@code expt} of a
+	 * negative base to a non-integer power. ({@code sqrt}, {@code cis}, {@code asinh},
+	 * {@code acosh} and {@code atanh} are complex-capable on a bare mention, which is
+	 * what their gates already read.)
+	 */
+	private static final Set<String> REAL_DOMAIN_ESCAPES = Set.of(LispNames.LOG, LispNames.ASIN, LispNames.ACOS,
+			LispNames.EXPT);
+
+	/**
+	 * Whether this CALL to one of {@link #REAL_DOMAIN_ESCAPES} can answer a complex, or
+	 * whether its literal arguments already prove it cannot. The one predicate the call
+	 * sites steer on and the JVM's complex gate scans with, so the two never disagree
+	 * about a program (a disagreement that under-predicts costs a whole extra compile
+	 * pass through {@code GateUnderpredicted}).
+	 * @param head the (uppercase-canonical) function name
+	 * @param call the whole call form as a list, the head included
+	 * @return whether the call may answer a complex value
+	 */
+	public static boolean escapesToComplex(String head, List<LispVal> call) {
+		return switch (head) {
+			// A non-negative literal argument has a real logarithm.
+			case LispNames.LOG -> call.size() != 2 || !isNonNegativeRealLiteral(call.get(1));
+			// A literal inside [-1, 1] has a real arc sine and arc cosine.
+			case LispNames.ASIN, LispNames.ACOS -> call.size() != 2 || !isUnitRangeLiteral(call.get(1));
+			// An INTEGER exponent answers a real for every base (the sign is the
+			// exponent's parity), and a non-negative base for every exponent.
+			case LispNames.EXPT ->
+				call.size() != 3 || !(isNonNegativeRealLiteral(call.get(1)) || isIntegerLiteral(call.get(2)));
+			default -> false;
+		};
+	}
+
+	/**
+	 * Whether the program can build a complex by leaving one of the four functions' real
+	 * domain -- {@link #escapesToComplex} over every call in it, plus a bare mention of
+	 * one of the names (a {@code #'log} designator reaches the same complex-capable
+	 * body).
+	 * @param program the program to scan
+	 * @param closRegistry the condition registry (whose reports are scanned too)
+	 * @return whether a real-domain escape can construct a complex value here
+	 */
+	public static boolean mayEscapeToComplex(List<LispVal> program, ClosRegistry closRegistry) {
+		for (LispVal form : program) {
+			if (escapesToComplex(form)) {
+				return true;
+			}
+		}
+		for (LispVal report : closRegistry.conditionReports().values()) {
+			if (escapesToComplex(report)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** The tree walk behind {@link #mayEscapeToComplex}. */
+	private static boolean escapesToComplex(LispVal form) {
+		if (form instanceof LispSymbol sym) {
+			// A bare mention is a first-class reference (#'log, (funcall 'acos x)) --
+			// the wrapper's body is the complex-capable one.
+			return REAL_DOMAIN_ESCAPES.contains(sym.name());
+		}
+		if (!(form instanceof LispCons cons)) {
+			return false;
+		}
+		if (cons.car() instanceof LispSymbol head && REAL_DOMAIN_ESCAPES.contains(head.name()) && cons.isProperList()) {
+			// The head is this call's operator, not a mention: only the arguments
+			// below it can carry another escape.
+			return escapesToComplex(head.name(), cons.toList()) || escapesToComplex(cons.cdr());
+		}
+		return escapesToComplex(cons.car()) || escapesToComplex(cons.cdr());
+	}
+
+	/** Whether the form is a literal real number that is not negative. */
+	private static boolean isNonNegativeRealLiteral(LispVal form) {
+		return switch (form) {
+			case LispInteger i -> i.value() >= 0;
+			case LispBigInteger b -> b.value().signum() >= 0;
+			case LispRatio r -> r.numerator().signum() >= 0;
+			// A NaN literal cannot be written, and neither zero is negative.
+			case LispDouble d -> !(d.value() < 0.0);
+			default -> false;
+		};
+	}
+
+	/** Whether the form is a literal real number inside {@code [-1, 1]}. */
+	private static boolean isUnitRangeLiteral(LispVal form) {
+		return switch (form) {
+			case LispInteger i -> i.value() >= -1 && i.value() <= 1;
+			case LispBigInteger b -> b.value().abs().compareTo(java.math.BigInteger.ONE) <= 0;
+			case LispRatio r -> r.numerator().abs().compareTo(r.denominator().abs()) <= 0;
+			case LispDouble d -> !(d.value() > 1.0) && !(d.value() < -1.0);
+			default -> false;
+		};
+	}
+
+	/** Whether the form is a literal EXACT integer (a float {@code 2d0} is not one). */
+	private static boolean isIntegerLiteral(LispVal form) {
+		return form instanceof LispInteger || form instanceof LispBigInteger;
 	}
 
 	/** The per-operator half of {@link #mayCreateInstances}. */

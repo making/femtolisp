@@ -7664,6 +7664,104 @@ class JvmLispCompilerTest {
 				""")).isEqualTo(String.join("\n", "T", "T", "T", "T"));
 	}
 
+	/**
+	 * Every real-domain escape, spelled as a literal AND carried through a variable --
+	 * the second is what makes the answer's TYPE a run-time property, which no syntactic
+	 * steering gate can see, so it is the case the escape exists for.
+	 */
+	private static final String REAL_DOMAIN_ESCAPE_PROGRAM = """
+			(print (log -1d0))
+			(print (log -100d0))
+			(print (log -1))
+			(print (log -1/2))
+			(print (log 0d0))
+			(print (log 1d0))
+			(print (asin 2d0))
+			(print (asin -2d0))
+			(print (asin 2))
+			(print (acos 2d0))
+			(print (acos -2d0))
+			(print (acos -4d0))
+			(print (asin 0.5d0))
+			(print (asin 1d0))
+			(print (acos 1d0))
+			(print (acosh 0d0))
+			(print (atanh 2d0))
+			(print (expt -8d0 (/ 1d0 3d0)))
+			(print (expt -8 1/3))
+			(print (expt -2d0 0.5d0))
+			(print (expt -2 2))
+			(print (expt -8d0 2d0))
+			(print (expt -8d0 -2d0))
+			(print (expt 2 -1))
+			(let ((x -1d0)) (print (log x)))
+			(let ((x 2d0)) (print (asin x)))
+			(let ((x -2d0)) (print (asin x)))
+			(let ((x 2d0)) (print (acos x)))
+			(let ((x -4d0)) (print (acos x)))
+			(let ((x 0d0)) (print (acosh x)))
+			(let ((x 2d0)) (print (atanh x)))
+			(let ((b -8d0) (e (/ 1d0 3d0))) (print (expt b e)))
+			(let ((b -8d0) (e 2d0)) (print (expt b e)))
+			(let ((b 8d0) (e 0.5d0)) (print (expt b e)))
+			""";
+
+	@Test
+	void compileAndRunRealDomainEscapesMirrorTheInterpreter() throws Exception {
+		// log of a negative, asin/acos beyond [-1, 1] and a negative base to a
+		// fractional power answer the plane instead of NaN, and the pin is the
+		// INTERPRETER's own output: these are Math.log/Math.pow values whose last bit
+		// is the platform's (.kb/jvm-complex.md), so no literal could stand for them.
+		assertThat(compileAndRun(REAL_DOMAIN_ESCAPE_PROGRAM)).isEqualTo(interpret(REAL_DOMAIN_ESCAPE_PROGRAM));
+	}
+
+	@Test
+	void compileAndRunRealDomainEscapesKeepANaNArgumentReal() throws Exception {
+		// A NaN is outside every one of these domains under a naive comparison, and
+		// answering a complex there would be wrong twice over: CL answers the NaN back.
+		// Each test therefore picks the DCMP variant a NaN fails.
+		String source = """
+				(let ((nan (/ 0d0 0d0)))
+				  (print (list (complexp (log nan)) (complexp (asin nan)) (complexp (acos nan))
+				               (complexp (acosh nan)) (complexp (atanh nan)) (complexp (sqrt nan))
+				               (complexp (expt nan 0.5d0)))))
+				""";
+		assertThat(compileAndRun(source)).isEqualTo(interpret(source));
+		assertThat(compileAndRun(source)).isEqualTo("(NIL NIL NIL NIL NIL NIL NIL)");
+	}
+
+	@Test
+	void aLiteralProvenRealDomainKeepsTheComplexGateShut() throws Exception {
+		// The gate's trigger for these four is the CALL, not the mention: an argument
+		// the source already proves inside the real domain cannot build a holder, so a
+		// program made only of those still emits without the _c* group and without the
+		// travelling RontoComplex.class beside it (.kb/jvm-complex.md's byte-identity
+		// promise). (expt x 2) and (expt 10.0 n) are the shapes that decide whether an
+		// ordinary numeric program pays for this escape.
+		// The holder's CLASS constant (the internal, slash-separated name) is what the
+		// gate owns; the dotted STRING beside it is the _hasComplex probe's
+		// Class.forName argument, which every class carries.
+		String holderClassConstant = "am/ik/rontolisp/runtime/RontoComplex";
+		byte[] shut = new JvmLispCompiler("Test").compile(LispReader.readAllFromString("""
+				(defun f (n) (+ (expt n 2) (expt 10.0 n) (log 2) (asin 1) (acos 0)))
+				(print (f 3))
+				"""));
+		assertThat(new String(shut, StandardCharsets.ISO_8859_1)).doesNotContain(holderClassConstant)
+			.doesNotContain("_ccomplex")
+			.doesNotContain("_cu1")
+			.doesNotContain("_cpowr");
+		byte[] open = new JvmLispCompiler("Test").compile(LispReader.readAllFromString("""
+				(defun f (n) (log n))
+				(print (f 3))
+				"""));
+		assertThat(new String(open, StandardCharsets.ISO_8859_1)).contains(holderClassConstant).contains("_cu1");
+		byte[] openPow = new JvmLispCompiler("Test").compile(LispReader.readAllFromString("""
+				(defun f (b e) (expt b e))
+				(print (f -8d0 2d0))
+				"""));
+		assertThat(new String(openPow, StandardCharsets.ISO_8859_1)).contains(holderClassConstant).contains("_cpowr");
+	}
+
 	@Test
 	void compileAndRunComplexFirstClass() throws Exception {
 		assertThat(compileAndRun("(print (funcall #'complex 1 2))")).isEqualTo("#C(1 2)");
@@ -14410,8 +14508,10 @@ class JvmLispCompilerTest {
 		// through a variable or a call used to be unboxed as a Long and die
 		// (ClassCastException). _pow now dispatches on the run-time
 		// exponent: a non-Long takes Math.pow over the float contagion, exactly the
-		// interpreter's answers.
-		assertThat(compileAndRun("""
+		// interpreter's answers. The negative base to a fractional power answers the
+		// PLANE rather than NaN, so its two digit strings are Math.pow/Math.cos values
+		// and the interpreter's own line is what pins them.
+		String source = """
 				(defun give (x) x)
 				(print (expt 4 (give 1/2)))
 				(print (expt 2 (give 0.5)))
@@ -14421,7 +14521,10 @@ class JvmLispCompilerTest {
 				(print (expt (give 0.0) (give -1.0)))
 				(print (* 1.5 (expt 10 (give 0.0))))
 				(print (expt (give 2) (give 10)))
-				""")).isEqualTo("2.0\n1.4142135623730951\n1000.0\n8.0\nNaN\nInfinity\n1.5\n1024");
+				""";
+		assertThat(compileAndRun(source)).isEqualTo(interpret(source))
+			.startsWith("2.0\n1.4142135623730951\n1000.0\n8.0\n#C(")
+			.endsWith("1.4142135623730951)\nInfinity\n1.5\n1024");
 	}
 
 	@Test

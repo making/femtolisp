@@ -44,7 +44,8 @@ emitted unconditionally, like the ratio block -- the limb-block precedent
   always-complex-capable `cis`/`asinh`/`acosh`/`atanh` (real arguments run the
   `WasmInverseHypCompiler` cores inside the same runtime test; `acosh`/`atanh`
   build a temporary `(x, +0.0)` complex for the plane arm when the argument
-  leaves their real domain, like the `sqrt` site's negative root), and the
+  leaves their real domain, like the `sqrt` site's negative root),
+  the real-domain escapes `log`/`asin`/`acos`/`expt` (below), and the
   complex-aware `+ - * / abs expt = /=` orderings, `min`/`max`, and the
   fifteen unary math functions. Literals emit inline in code position and
   under `quote` (the reader already canonicalized them, so parts plus tag plus
@@ -137,13 +138,44 @@ and the asinh core answers `0` at `0` -- `(asin (complex 0d0 0d0))` prints
 two zero signs answering one value, the sign of the imaginary part on the cut,
 and the exact zeros.
 
+## Real arguments that leave the real domain (`.todo/763`, 2026-09-11)
+
+`log` of a negative, `asin`/`acos` beyond `[-1, 1]` and `expt` of a negative
+base to a non-integer power answer the plane rather than NaN, the same escape
+`sqrt`/`acosh`/`atanh` already took. The rule and the reasoning are the JVM
+twin's (`.kb/jvm-complex.md`, "Real arguments that leave the real domain") --
+including `expt`'s `|x|^y` turned through `y*pi` radians rather than
+`exp(w*log z)` over a complex built for the purpose. Two things are this
+backend's own:
+
+- **Where the arm lives.** `WasmComplexCompiler.compileLog` /
+  `compileAsinAcos` shadow the software real cores
+  (`WasmLogCompiler.emitLogCore`, `WasmAtanCompiler.emitAsinAcosRealF64`)
+  inside one runtime domain test, and `emitPlaneArmAt` builds the temporary
+  `(x, +0.0)` complex the plane arm runs on -- `compileAcosh`'s shape exactly.
+  `expt`'s escape is `WasmExptCompiler.emitNegativeBaseOrNaN` plus
+  `WasmComplexCompiler.emitNegativeBasePowInto`, over this backend's software
+  `exp`/`log`/`sin`/`cos`, so the digits carry the usual ~1e-9 and are pinned
+  with `isCloseTo` (`WasmLispCompilerIntegrationTest#compileAndRunRealDomainEscapesAnswerThePlane`).
+- **The arm is emitted per CALL, not always.** The helpers here are
+  unconditional, but these arms are INLINE at the site, so the site reads the
+  same `LispMacroExpander.escapesToComplex` predicate the JVM's gate does: a
+  non-negative literal argument to `log`, a literal inside `[-1, 1]` to
+  `asin`/`acos`, a literal integer exponent or non-negative literal base to
+  `expt` all keep the small real-only shape. `(expt n 2)` and `(expt 10.0 n)`
+  cost nothing.
+
 ## The scalar backend refuses
 
 `--no-gc` has no complex representation (`.todo/037-number-extensions.md`):
 a `complex`/`complexp`/`realp`/`realpart`/`imagpart`/`conjugate`/`phase` call
 or a `#C` literal is a compile-time `UnsupportedOperationException` naming the
 form and the function -- never a trap, never a wrong number
-(`NoGcWasmCompilerTest.rejectsComplexNumbers`).
+(`NoGcWasmCompilerTest.rejectsComplexNumbers`). The real-domain escapes need
+no carve-out there: `log`, `asin`, `acos` and `expt` are not in the scalar
+backend's operator set at all, so a program using one is already refused at
+compile time. Its `sqrt` is a bare `f64.sqrt`, so a negative argument keeps the
+NaN -- the one documented place where that answer survives.
 
 ## Known corners (documented, matching the JVM where stated)
 

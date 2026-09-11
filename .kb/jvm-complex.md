@@ -25,17 +25,20 @@ in generated helpers so nothing duplicates `_rat`/`_norm`/`_dbl`.
   nothing (they fall through to the holder's `equals`).
 - Gated `GROUP_COMPLEX` (`JvmComplexRuntimeBuilder`, only when
   `mayCreateComplex`: a `#C` literal, a `complex`/`conjugate` call, a `sqrt`
-  mention, or a `#'complex`/`#'conjugate`/`#'phase` designator): `_ccomplex`
+  mention, or a `#'complex`/`#'conjugate`/`#'phase` designator -- plus
+  `mayEscapeToComplex`, the per-CALL gate below): `_ccomplex`
   (canonicalize), `_cadd`/`_csub`/`_cmul`/`_cdiv` (exact-or-float over
   `_add`/`_sub`/`_mul`/`_div`/`_dbl`/`_cmp`, so funnels match real
   arithmetic), `_cneg` (separate from `_csub`-from-zero: `0.0 - 0.0` is
   `+0.0`, `-0.0` is not), `_csqrt` (negatives root into the plane),
   `_cpow` (exact integer powers by squaring, else `exp(w*log z)`),
+  `_cpowr` (two REAL operands whose answer can still be complex: a negative
+  base to a non-integer power, else a delegation to the ungated `_pow`),
   `_cu1` (the 15 unary math functions by int opcode: `asinh`, `acosh`, `atanh`
   have hand-rolled real arms -- `java.lang.Math` has no inverse hyperbolic --
-  and `acosh`/`atanh` cross a real argument outside their domain into the
-  complex arm at `(x, +0.0)`, the way `cis` always answers the arm),
-  `_cconjugate`,
+  and `log`/`asin`/`acos`/`acosh`/`atanh` cross a real argument outside their
+  domain into the complex arm at `(x, +0.0)`, the way `cis` always answers the
+  arm), `_cconjugate`,
   `_ccmpb` (throw-on-holder then delegate), `_cphase`, and the `#C(re im)`
   printer arms (parts recurse through the same renderer).
   The holder class file travels exactly then (`needsComplexRuntime`).
@@ -87,7 +90,9 @@ genuinely missing file. Pinning test:
   complex value).
 - `#'complex`/`#'conjugate`/`#'sqrt`/`#'phase` wrappers are reference-gated on
   the JVM (their bodies call gated helpers; an ungated wrapper would force the
-  group into every program). `fboundp` still answers from the static registry.
+  group into every program), and so are `#'log`/`#'asin`/`#'acos`/`#'expt`
+  since the real-domain escape below. `fboundp` still answers from the static
+  registry.
 
 ## The asin/acos branch cut, and their exact real axis (`.todo/764`, 2026-09-11)
 
@@ -172,6 +177,68 @@ carry an anchor against the real functions
 (`LispEvaluatorTest#evalComplexTanTanhAreQuotientsOnEveryAxis`, and the
 four-backend leg `ci-spec.yaml`'s `complex-tan-tanh-are-quotients`, which pins
 the identity rather than digits the backends round differently).
+
+## Real arguments that leave the real domain (`.todo/763`, 2026-09-11)
+
+`log` of a negative, `asin`/`acos` beyond `[-1, 1]` and `expt` of a negative base to a
+non-integer power answer the PLANE, not `NaN` -- the escape `sqrt`, `acosh` and `atanh`
+already took. The value is the EXISTING complex arm run at `(x, +0.0)`
+(`_cu1`'s real path branches into `emitRealAsComplex`, exactly like acosh's), so nothing
+is defined twice and `(asin 2d0)` IS `(asin #c(2d0 0d0))`.
+
+**`expt` is the one exception, and deliberately.** A real base's phase is EXACTLY pi, so
+the answer is `Math.pow(|x|, y)` turned through `y*pi` radians (`_cpowr`, the
+interpreter's `negativeBasePow`) -- not `_cpow`'s `exp(w*log z)`, which would have to
+recover that phase from a logarithm. Measured against SBCL 2.2.9 on 2026-09-11:
+`(expt -8d0 1/3)` is `#C(1.0000000000000002 1.7320508075688772)` by the rotation and
+`#C(1.0 1.732050807568877)` through the logarithm, and SBCL answers the FIRST for the
+real base and the SECOND for `(expt #c(-8d0 0d0) 1/3)` -- it splits the same way, for the
+same reason. The rotation also makes `(expt -2d0 0.5d0)`'s imaginary part exactly
+`(sqrt 2)`. So `(expt x y)` and `(expt (complex x 0) y)` disagree in the last bits by
+design; do not "fix" one to the other. `_cpowr` delegates every other operand pair to the
+ungated `_pow`, so the exact rational path and its error funnels stay unduplicated.
+
+A NaN is outside every one of these domains under a naive comparison, and CL answers the
+NaN back -- so each test picks the DCMP variant a NaN fails (`dcmpl` for `>`, `dcmpg` for
+`<`). The acosh and atanh arms had them the other way round since they were written and
+escaped into the plane for a NaN; fixed with this, pinned by
+`JvmLispCompilerTest#compileAndRunRealDomainEscapesKeepANaNArgumentReal`.
+
+### The gate: the CALL, not the mention
+
+These four are far too common to gate on a mention the way `sqrt` is (`(expt n 2)` is in
+every numeric program), and they do not need to be: their complex arm is reachable only
+for SOME arguments. `LispMacroExpander.escapesToComplex(head, call)` answers whether a
+single call can escape -- a non-negative literal argument to `log`, a literal inside
+`[-1, 1]` to `asin`/`acos`, a literal INTEGER exponent or non-negative literal base to
+`expt` all close it -- and `mayEscapeToComplex` is that predicate over the program, ORed
+into `usesComplex`. **The call sites steer on the SAME predicate**, so the scan and the
+emission never disagree; a disagreement that under-predicts costs a whole extra compile
+pass through `GateUnderpredicted`. `(expt n 2)`, `(expt 10.0 n)`, `(log 2)`, `(asin 1)`
+keep the gate shut and the single-file output
+(`JvmLispCompilerTest#aLiteralProvenRealDomainKeepsTheComplexGateShut`).
+
+The trap this walked into first: the injected `#'log` / `#'asin` / `#'acos` / `#'expt`
+WRAPPERS take their argument from a parameter, which no literal can prove real, so an
+ungated wrapper opened the gate for EVERY program -- `(print 1)` included, through the
+`GateUnderpredicted` retry. They join `#'sqrt`'s reference-gated list in `JvmLispCompiler`
+(the `List.of(COMPLEX, CONJUGATE, SQRT, PHASE, ...)` loop). A wrapper whose body reaches a
+gated helper must be on that list.
+
+### What this does NOT reach
+
+The answer's type is now a run-time property, and the syntactic steering around it is
+unchanged, so two shapes keep the pre-existing corner rather than gaining an arm:
+
+- `(+ 1.0 (log x))` takes the unboxed double path and lands in `_dbl`'s
+  `Expected number` (catchable, correctly rendered) when `x` is negative -- the same
+  corner a complex arriving through a variable has always had. Widening
+  `containsComplex` to cover the escapes would fix it and would also push every
+  `(* alpha (log p))` in a numeric loop off the f64 path, which is the wrong trade.
+- A typed numeric loop (`JvmTypedLoopCompiler`) computes `log`/`asin`/`acos` as raw f64
+  and keeps the NaN. `sqrt` is in that same list with the same property and has been
+  since typed loops existed: the loop's result goes into a packed float array, which has
+  no complex representation anyway.
 
 ## Known corners (documented, not fixed here)
 

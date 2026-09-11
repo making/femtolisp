@@ -34,6 +34,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
+import java.util.function.DoublePredicate;
 import java.util.function.DoubleUnaryOperator;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
@@ -2532,10 +2533,10 @@ public final class Environment implements Scope {
 
 	private static void registerMath(Environment env) {
 		// Unary floating-point functions: a double for real operands (Math.<name>),
-		// the float complex formula for complex ones. Real paths are unchanged: a
-		// negative real still answers NaN here (only sqrt roots one into the complex
-		// plane; acosh/atanh take the plane outside their own real domain below, like
-		// SBCL).
+		// the float complex formula for complex ones. A real argument OUTSIDE the
+		// function's real domain runs the same complex formula at (x, +0.0) instead of
+		// answering NaN (SBCL parity, .todo/763): sqrt of a negative below, log of a
+		// negative, asin/acos beyond [-1, 1], acosh below 1 and atanh beyond [-1, 1].
 		env.defineFunction(LispNames.SQRT, new LispFunction(LispNames.SQRT, args -> {
 			requireArgCount(LispNames.SQRT, args, 1);
 			if (args.get(0) instanceof LispComplex c) {
@@ -2549,12 +2550,14 @@ public final class Environment implements Scope {
 			return new LispDouble(Math.sqrt(d));
 		}));
 		defineUnaryComplex(env, LispNames.EXP, Math::exp, Environment::complexExp);
-		defineUnaryComplex(env, LispNames.LOG, Math::log, Environment::complexLog);
+		// log's real domain is the non-negative reals; a zero keeps -Infinity (the
+		// zero edge is CL's own, not this escape).
+		defineUnaryComplexEscape(env, LispNames.LOG, Math::log, Environment::complexLog, d -> !(d < 0.0));
 		defineUnaryComplex(env, LispNames.SIN, Math::sin, Environment::complexSin);
 		defineUnaryComplex(env, LispNames.COS, Math::cos, Environment::complexCos);
 		defineUnaryComplex(env, LispNames.TAN, Math::tan, Environment::complexTan);
-		defineUnaryComplex(env, LispNames.ASIN, Math::asin, Environment::complexAsin);
-		defineUnaryComplex(env, LispNames.ACOS, Math::acos, Environment::complexAcos);
+		defineUnaryComplexEscape(env, LispNames.ASIN, Math::asin, Environment::complexAsin, Environment::insideUnit);
+		defineUnaryComplexEscape(env, LispNames.ACOS, Math::acos, Environment::complexAcos, Environment::insideUnit);
 		defineUnaryComplex(env, LispNames.ATAN, Math::atan, Environment::complexAtan);
 		defineUnaryComplex(env, LispNames.SINH, Math::sinh, Environment::complexSinh);
 		defineUnaryComplex(env, LispNames.COSH, Math::cosh, Environment::complexCosh);
@@ -2572,35 +2575,10 @@ public final class Environment implements Scope {
 			return LispComplex.valueOf(new LispDouble(Math.cos(d)), new LispDouble(Math.sin(d)));
 		}));
 		defineUnaryComplex(env, LispNames.ASINH, Environment::asinhReal, Environment::complexAsinh);
-		// acosh/atanh take the plane for real arguments outside their real domain
-		// (SBCL parity): acosh of a real < 1 and atanh of a real |x| > 1 answer the
-		// complex formula at (x, +0.0); NaN stays a NaN double.
-		env.defineFunction(LispNames.ACOSH, new LispFunction(LispNames.ACOSH, args -> {
-			requireArgCount(LispNames.ACOSH, args, 1);
-			if (args.get(0) instanceof LispComplex c) {
-				double[] r = complexAcosh(realToDouble(c.real()), realToDouble(c.imag()));
-				return LispComplex.valueOf(new LispDouble(r[0]), new LispDouble(r[1]));
-			}
-			double d = asDouble(args.get(0));
-			if (!(d < 1.0)) {
-				return new LispDouble(acoshReal(d));
-			}
-			double[] r = complexAcosh(d, 0.0);
-			return LispComplex.valueOf(new LispDouble(r[0]), new LispDouble(r[1]));
-		}));
-		env.defineFunction(LispNames.ATANH, new LispFunction(LispNames.ATANH, args -> {
-			requireArgCount(LispNames.ATANH, args, 1);
-			if (args.get(0) instanceof LispComplex c) {
-				double[] r = complexAtanh(realToDouble(c.real()), realToDouble(c.imag()));
-				return LispComplex.valueOf(new LispDouble(r[0]), new LispDouble(r[1]));
-			}
-			double d = asDouble(args.get(0));
-			if (!(d > 1.0) && !(d < -1.0)) {
-				return new LispDouble(atanhReal(d));
-			}
-			double[] r = complexAtanh(d, 0.0);
-			return LispComplex.valueOf(new LispDouble(r[0]), new LispDouble(r[1]));
-		}));
+		defineUnaryComplexEscape(env, LispNames.ACOSH, Environment::acoshReal, Environment::complexAcosh,
+				d -> !(d < 1.0));
+		defineUnaryComplexEscape(env, LispNames.ATANH, Environment::atanhReal, Environment::complexAtanh,
+				Environment::insideUnit);
 		env.defineFunction(LispNames.SCALE_FLOAT, new LispFunction(LispNames.SCALE_FLOAT, args -> {
 			requireArgCount(LispNames.SCALE_FLOAT, args, 2);
 			// f * 2^n with exact IEEE semantics, including the subnormal range.
@@ -2884,7 +2862,9 @@ public final class Environment implements Scope {
 		// reciprocal, e.g. (expt 2 -1) -> 1/2); otherwise Math.pow (double). A
 		// complex operand with an integer exponent stays exact by repeated
 		// multiplication (e.g. (expt #c(1 1) 2) -> #C(0 2)); any other complex
-		// exponentiation goes through exp(w*log(z)) in floats.
+		// exponentiation goes through exp(w*log(z)) in floats. A NEGATIVE real base
+		// to a non-integer power leaves the real line and answers the plane
+		// (negativeBasePow), where Math.pow alone would answer NaN.
 		env.defineFunction(LispNames.EXPT, new LispFunction(LispNames.EXPT, args -> {
 			requireArgCount(LispNames.EXPT, args, 2);
 			if (hasComplex(args)) {
@@ -2899,7 +2879,12 @@ public final class Environment implements Scope {
 							: LispRatio.valueOf(baseDen.pow((int) -power), baseNum.pow((int) -power));
 				}
 			}
-			return new LispDouble(Math.pow(asDouble(args.get(0)), asDouble(args.get(1))));
+			double base = asDouble(args.get(0));
+			double power = asDouble(args.get(1));
+			if (escapesToPlane(base, power)) {
+				return negativeBasePow(base, power);
+			}
+			return new LispDouble(Math.pow(base, power));
 		}));
 		// gcd: greatest common divisor (always non-negative). Variadic: (gcd) is 0 and
 		// (gcd n) is (abs n).
@@ -3183,6 +3168,36 @@ public final class Environment implements Scope {
 				return LispComplex.valueOf(new LispDouble(r[0]), new LispDouble(r[1]));
 			}
 			return new LispDouble(realFn.applyAsDouble(asDouble(args.get(0))));
+		}));
+	}
+
+	/**
+	 * {@link #defineUnaryComplex} for a function whose REAL domain is narrower than the
+	 * real line: an argument {@code staysReal} rejects runs the SAME complex formula at
+	 * {@code (x, +0.0)} rather than answering NaN, which is what CL means by the function
+	 * being defined over the whole plane. A NaN argument fails every comparison the
+	 * predicates are written around, so it keeps the real arm and stays a NaN double.
+	 * @param env the environment to define into
+	 * @param name the Lisp name
+	 * @param realFn the real arm, applied inside the real domain
+	 * @param complexFn the complex formula, applied to a complex argument and to a real
+	 * one outside the domain
+	 * @param staysReal whether a real argument is inside the real domain
+	 */
+	private static void defineUnaryComplexEscape(Environment env, String name, DoubleUnaryOperator realFn,
+			ComplexFn complexFn, DoublePredicate staysReal) {
+		env.defineFunction(name, new LispFunction(name, args -> {
+			requireArgCount(name, args, 1);
+			if (args.get(0) instanceof LispComplex c) {
+				double[] r = complexFn.apply(realToDouble(c.real()), realToDouble(c.imag()));
+				return LispComplex.valueOf(new LispDouble(r[0]), new LispDouble(r[1]));
+			}
+			double d = asDouble(args.get(0));
+			if (staysReal.test(d)) {
+				return new LispDouble(realFn.applyAsDouble(d));
+			}
+			double[] r = complexFn.apply(d, 0.0);
+			return LispComplex.valueOf(new LispDouble(r[0]), new LispDouble(r[1]));
 		}));
 	}
 
@@ -7957,6 +7972,34 @@ public final class Environment implements Scope {
 		return LispComplex.valueOf(new LispDouble(e[0]), new LispDouble(e[1]));
 	}
 
+	/**
+	 * Whether {@code base^power} over two REAL floats leaves the real line: a negative
+	 * base raised to a power that is not an integer. Everything else -- a non-negative
+	 * base, an integer-valued power (a float {@code 2d0} included, whose parity
+	 * {@code Math.pow} already honours) and either operand NaN or the power infinite --
+	 * has a real answer {@code Math.pow} gives.
+	 * @param base the base as a float
+	 * @param power the exponent as a float
+	 * @return whether the answer is complex
+	 */
+	static boolean escapesToPlane(double base, double power) {
+		return base < 0.0 && Double.isFinite(power) && power != Math.rint(power);
+	}
+
+	// (expt x y) for a NEGATIVE real x and a non-integer y: the modulus |x|^y turned
+	// through y*pi radians. This is NOT exp(y*log x) and NOT exptComplex over (x, 0):
+	// a real base's phase is EXACTLY pi, so the modulus costs one pow instead of a log
+	// and an exp, and (expt -2d0 0.5d0)'s imaginary part comes out exactly (sqrt 2)
+	// where the logarithmic form loses a ulp. The two therefore disagree in the last
+	// bits -- (expt #c(-8d0 0d0) 1/3) is not (expt -8d0 1/3) -- which is SBCL's split
+	// too, and correct: the real base carries information the complex one does not.
+	private static LispVal negativeBasePow(double base, double power) {
+		double modulus = Math.pow(-base, power);
+		double theta = power * Math.PI;
+		return LispComplex.valueOf(new LispDouble(modulus * Math.cos(theta)),
+				new LispDouble(modulus * Math.sin(theta)));
+	}
+
 	// The principal square root of (re, im) in floats.
 	private static double[] complexSqrt(double re, double im) {
 		if (re == 0.0 && im == 0.0) {
@@ -8075,6 +8118,18 @@ public final class Environment implements Scope {
 			return Math.log(2.0 * x) + Math.log1p((r - 1.0) / 2.0);
 		}
 		return Math.log(x) + Math.log(2.0);
+	}
+
+	// Whether a real argument keeps the REAL arm of asin, acos and atanh -- inside
+	// [-1, 1], their shared real domain. Written as two NEGATED comparisons so a NaN
+	// answers true and comes back out as itself rather than as a complex NaN pair.
+	// An INFINITY does the same, for the same reason: it has no complex value either
+	// (the formula would manufacture a #C(NaN Infinity), and SBCL signals
+	// FLOATING-POINT-INVALID rather than answer one), so Math.asin's NaN is the honest
+	// answer. log is the opposite case and is not on this predicate: (log -Infinity)
+	// is #C(Infinity pi), a real point of the plane, and SBCL answers it.
+	private static boolean insideUnit(double x) {
+		return !(x > 1.0) && !(x < -1.0) || Double.isInfinite(x);
 	}
 
 	// atanh for |x| <= 1 only (the caller routes |x| > 1 into the plane). The log1p

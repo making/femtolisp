@@ -28,6 +28,16 @@ final class JvmExptCompiler {
 			ctx.emitU2(JvmComplexCompiler.complexOp(ctx, className, JvmComplexRuntimeBuilder.POW).index());
 			return;
 		}
+		if (am.ik.rontolisp.macro.LispMacroExpander.escapesToComplex(am.ik.rontolisp.LispNames.EXPT, args)) {
+			// Both operands are real as far as the source shows, but a negative base
+			// to a non-integer power leaves the real line -- _cpowr answers the plane
+			// there and delegates everything else to the _pow below.
+			JvmExprCompiler.compileExpr(args.get(1), ctx, className);
+			JvmExprCompiler.compileExpr(args.get(2), ctx, className);
+			ctx.emit(Opcode.INVOKESTATIC);
+			ctx.emitU2(JvmComplexCompiler.complexOp(ctx, className, JvmComplexRuntimeBuilder.POW_REAL).index());
+			return;
+		}
 		if (JvmLispCompiler.hasDoubleLiteral(args, ctx)) {
 			JvmArithCompiler.compileUnboxedOperand(args.get(1), ctx, className);
 			JvmArithCompiler.compileUnboxedOperand(args.get(2), ctx, className);

@@ -13376,6 +13376,50 @@ class WasmLispCompilerIntegrationTest {
 	}
 
 	@Test
+	void compileAndRunRealDomainEscapesAnswerThePlane() throws Exception {
+		// The four escapes through a LET-bound variable, which is the shape that makes
+		// the answer's type a run-time property: log of a negative, asin/acos beyond
+		// [-1, 1] and a negative base to a fractional power answer the plane rather
+		// than NaN. WASM's transcendentals are software approximations, so the
+		// magnitudes float within 1e-9; the exactly-real parts and the printed TYPE are
+		// what the pin is for.
+		String[] out = compileAndRun("""
+				(let ((x -1d0)) (print (log x)))
+				(let ((x -100d0)) (print (realpart (log x))))
+				(let ((x -100d0)) (print (imagpart (log x))))
+				(let ((x 2d0)) (print (realpart (asin x))))
+				(let ((x 2d0)) (print (imagpart (asin x))))
+				(let ((x -2d0)) (print (realpart (asin x))))
+				(let ((x -4d0)) (print (realpart (acos x))))
+				(let ((x -4d0)) (print (imagpart (acos x))))
+				(let ((b -8d0) (e (/ 1d0 3d0))) (print (realpart (expt b e))))
+				(let ((b -8d0) (e (/ 1d0 3d0))) (print (imagpart (expt b e))))
+				(let ((b -2d0) (e 0.5d0)) (print (imagpart (expt b e))))
+				(let ((b -8d0) (e 2d0)) (print (expt b e)))
+				(let ((x 0.5d0)) (print (realpart (asin x))))
+				(let ((x 0.5d0)) (print (complexp (asin x))))
+				(let ((x 100d0)) (print (complexp (log x))))
+				""").split("\n");
+		assertThat(out[0]).startsWith("#C(0.0 3.14159265");
+		assertThat(Double.parseDouble(out[1])).isCloseTo(4.605170185988092, within(1e-9));
+		assertThat(Double.parseDouble(out[2])).isCloseTo(3.141592653589793, within(1e-9));
+		assertThat(Double.parseDouble(out[3])).isCloseTo(1.5707963267948966, within(1e-9));
+		assertThat(Double.parseDouble(out[4])).isCloseTo(-1.3169578969248166, within(1e-9));
+		assertThat(Double.parseDouble(out[5])).isCloseTo(-1.5707963267948966, within(1e-9));
+		assertThat(Double.parseDouble(out[6])).isCloseTo(3.141592653589793, within(1e-9));
+		assertThat(Double.parseDouble(out[7])).isCloseTo(-2.0634370688955608, within(1e-9));
+		assertThat(Double.parseDouble(out[8])).isCloseTo(1.0, within(1e-9));
+		assertThat(Double.parseDouble(out[9])).isCloseTo(1.7320508075688772, within(1e-9));
+		assertThat(Double.parseDouble(out[10])).isCloseTo(1.4142135623730951, within(1e-9));
+		// An integer-VALUED float exponent stays real, and so does everything inside
+		// the real domain.
+		assertThat(out[11]).isEqualTo("64.0");
+		assertThat(Double.parseDouble(out[12])).isCloseTo(0.5235987755982989, within(1e-9));
+		assertThat(out[13]).isEqualTo("NIL");
+		assertThat(out[14]).isEqualTo("NIL");
+	}
+
+	@Test
 	void compileAndRunComplexAsinAcosOfARealArgumentAnswerAnExactZero() throws Exception {
 		// A zero has no tolerance: an exactly real argument inside [-1, 1] answers an
 		// exactly real value here too, because Kahan's asinh argument is a difference
@@ -13632,9 +13676,14 @@ class WasmLispCompilerIntegrationTest {
 		assertThat(Double.parseDouble(compileAndRun("(print (log 1e300))"))).isCloseTo(Math.log(1e300), within(1e-5));
 		assertThat(Double.parseDouble(compileAndRun("(print (log 4.9e-324))"))).isCloseTo(Math.log(4.9e-324),
 				within(1e-5));
-		// The IEEE edges match Math.log.
+		// The IEEE edges match Math.log at zero; a NEGATIVE argument leaves the real
+		// line and answers the principal logarithm in the plane, not NaN.
 		assertThat(compileAndRun("(print (log 0.0))")).isEqualTo("-Infinity");
-		assertThat(compileAndRun("(print (log -1.0))")).isEqualTo("NaN");
+		assertThat(Double.parseDouble(compileAndRun("(print (realpart (log -1.0)))"))).isCloseTo(0.0, within(1e-5));
+		assertThat(Double.parseDouble(compileAndRun("(print (imagpart (log -1.0)))"))).isCloseTo(Math.PI, within(1e-5));
+		assertThat(Double.parseDouble(compileAndRun("(print (realpart (log -100.0)))"))).isCloseTo(Math.log(100),
+				within(1e-5));
+		assertThat(compileAndRun("(print (complexp (log (/ 0.0 0.0))))")).isEqualTo("NIL");
 		// log as a first-class value over an integer argument.
 		assertThat(Double.parseDouble(compileAndRun("(print (funcall #'log 10))"))).isCloseTo(Math.log(10),
 				within(1e-5));
@@ -13784,15 +13833,20 @@ class WasmLispCompilerIntegrationTest {
 		// integer-valued float exponent takes the exact multiplication path (8.0, not
 		// 7.999...); a fractional one is exp(y * log(x)) over the software exp/log --
 		// so its low-order digits differ from Math.pow's and are rounded here -- with
-		// the Math.pow edges: x^0.0 = 1.0, 0^y = 0.0 / +inf by the sign of y, a
-		// negative base to a fractional power is NaN, +inf^y follows the sign of y.
+		// the Math.pow edges: x^0.0 = 1.0, 0^y = 0.0 / +inf by the sign of y, +inf^y
+		// follows the sign of y. A NEGATIVE base to a fractional power leaves the real
+		// line and answers the plane -- |x|^y turned through y*pi radians -- so the
+		// rounded imaginary part of (expt -2.0 0.5) is (sqrt 2) and its real part is a
+		// rounding residue near zero.
 		assertThat(compileAndRun("""
 				(defun give (x) x)
 				(print (expt 2 (give 3.0)))
 				(print (expt (give 2.0) (give 0.0)))
 				(print (expt (give 0.0) (give 0.5)))
 				(print (expt (give 0.0) (give -0.5)))
-				(print (expt (give -2.0) (give 0.5)))
+				(print (complexp (expt (give -2.0) (give 0.5))))
+				(print (round (* 1000000 (imagpart (expt (give -2.0) (give 0.5))))))
+				(print (round (* 1000000 (realpart (expt (give -2.0) (give 0.5))))))
 				(print (expt (give -2.0) (give 3.0)))
 				(print (round (* 1000 (expt 4 (give 1/2)))))
 				(print (round (* 1000 (expt (give 10000.0) (give 0.75)))))
@@ -13800,7 +13854,9 @@ class WasmLispCompilerIntegrationTest {
 				(print (* 1.5 (expt 10 (give 0.0))))
 				(print (expt (/ 1.0 0.0) (give 0.5)))
 				(print (expt (/ 1.0 0.0) (give -0.5)))
-				""")).isEqualTo("8.0\n1.0\n0.0\nInfinity\nNaN\n-8.0\n2000\n1000000\n1414214\n1.5\nInfinity\n0.0");
+				(print (expt (/ 0.0 0.0) (give 0.5)))
+				""")).isEqualTo(
+				"8.0\n1.0\n0.0\nInfinity\nT\n1414214\n0\n-8.0\n2000\n1000000\n1414214" + "\n1.5\nInfinity\n0.0\nNaN");
 		// A literal float exponent, the shape the RoPE table of examples/llm needs.
 		assertThat(compileAndRun("(print (round (* 1000 (expt 10000.0 0.75))))")).isEqualTo("1000000");
 	}
@@ -13891,9 +13947,14 @@ class WasmLispCompilerIntegrationTest {
 		assertThat(Double.parseDouble(compileAndRun("(print (sinh -2.0))"))).isCloseTo(Math.sinh(-2), within(1e-5));
 		assertThat(Double.parseDouble(compileAndRun("(print (cosh 2.0))"))).isCloseTo(Math.cosh(2), within(1e-5));
 		assertThat(Double.parseDouble(compileAndRun("(print (cosh -1.0))"))).isCloseTo(Math.cosh(-1), within(1e-5));
-		// The IEEE edges: out-of-domain asin/acos and NaN map to NaN; infinities.
-		assertThat(compileAndRun("(print (asin 1.5))")).isEqualTo("NaN");
-		assertThat(compileAndRun("(print (acos -1.5))")).isEqualTo("NaN");
+		// The IEEE edges. An out-of-domain asin/acos leaves the real line and answers
+		// the plane; a NaN and an INFINITY keep the real arm's NaN (an infinity has no
+		// complex arc sine either).
+		assertThat(Double.parseDouble(compileAndRun("(print (imagpart (asin 1.5)))")))
+			.isCloseTo(-Math.log(1.5 + Math.sqrt(1.25)), within(1e-5));
+		assertThat(Double.parseDouble(compileAndRun("(print (realpart (acos -1.5)))"))).isCloseTo(Math.PI,
+				within(1e-5));
+		assertThat(compileAndRun("(print (complexp (asin (/ 0.0 0.0))))")).isEqualTo("NIL");
 		assertThat(compileAndRun("(print (asin (/ 1.0 0.0)))")).isEqualTo("NaN");
 		assertThat(compileAndRun("(print (atan (/ 0.0 0.0)))")).isEqualTo("NaN");
 		assertThat(compileAndRun("(print (sinh (/ 0.0 0.0)))")).isEqualTo("NaN");
