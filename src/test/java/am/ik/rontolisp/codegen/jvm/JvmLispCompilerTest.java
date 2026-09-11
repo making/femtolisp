@@ -295,6 +295,29 @@ class JvmLispCompilerTest {
 	}
 
 	@Test
+	void compileFindClassAnswersForTheBuiltInClassLatticeAndClassOfNarrowsArrays() throws Exception {
+		// The generated resolver's built-in fallback covers the INTERIOR of the lattice
+		// too (array/vector/bit-vector, number/real/rational, sequence/list,
+		// structure-object, built-in-class), and class-of narrows what the lite
+		// designator answers t for: a rank-1 array is a vector, anything else an array.
+		assertThat(compileAndRun("""
+				(print (list (mapcar (lambda (n) (class-name (find-class n)))
+				                     '(array vector bit-vector number real rational
+				                       sequence list structure-object built-in-class))
+				             (typep #(1 2) (find-class 'array))
+				             (typep 1 (find-class 'array))
+				             (typep 1 (find-class 'number))
+				             (subtypep (find-class 'vector) 'array)
+				             (class-name (class-of (make-array 3)))
+				             (class-name (class-of #2a((1 2) (3 4))))
+				             (class-name (class-of "ab"))
+				             (eq (class-of (make-array 3)) (find-class 'vector))))
+				"""))
+			.isEqualTo("((ARRAY VECTOR BIT-VECTOR NUMBER REAL RATIONAL SEQUENCE LIST STRUCTURE-OBJECT BUILT-IN-CLASS)"
+					+ " T NIL T T VECTOR ARRAY STRING T)");
+	}
+
+	@Test
 	void compileFindClassAnswersForSeededConditionClasses() throws Exception {
 		assertThat(compileAndRun("""
 				(let ((c (find-class 'type-error)))
@@ -9780,7 +9803,7 @@ class JvmLispCompilerTest {
 				+ " (print (class-name (class-of nil))) (print (class-name (class-of t)))"
 				+ " (print (class-name (class-of (make-hash-table)))) (print (class-name (class-of #'car)))"
 				+ " (print (class-name (class-of (make-array 1))))"))
-			.isEqualTo("INTEGER\nSTRING\nSYMBOL\nKEYWORD\nFLOAT\nCONS\nNULL\nBOOLEAN\nHASH-TABLE\nFUNCTION\nT");
+			.isEqualTo("INTEGER\nSTRING\nSYMBOL\nKEYWORD\nFLOAT\nCONS\nNULL\nBOOLEAN\nHASH-TABLE\nFUNCTION\nVECTOR");
 		assertThat(compileAndRun("""
 				(defclass co-pt () ((x :initarg :x)))
 				(defstruct co-node value)

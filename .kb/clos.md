@@ -497,7 +497,7 @@ The STATIC metaobject subset is IN: `find-class` AND `class-of` answer a real me
 - **Interpreter**: Java built-ins over `ClosRegistry.classMetaobject` (designator-aware: plain
   names AND instance tags; a struct class is a `standard-class` instance, `structure-class`
   does not exist) and `builtinClassMetaobject` (`BUILTIN_CLASS_NAMES` = exactly the
-  `%class-designator` result set, `T` for everything else). Seeding is lazy
+  `class-of` designator result set, `T` for everything else). Seeding is lazy
   (`ensureMopClassesSeeded()`) — **NEVER seed unconditionally**: that joins every runtime
   dispatch table and once pushed the ci-spec corpus over the JVM 64 KB method ceiling.
 - **Compile paths**: `expandTopLevelDefinitions`, gated on the program referencing `find-class`
@@ -509,6 +509,40 @@ The STATIC metaobject subset is IN: `find-class` AND `class-of` answer a real me
 - The OLD tag/type-name view lives on as the internal `%class-designator`, ridden by the light
   consumers (prelude `type-of`, `print-unreadable-object :type`, the no-applicable-method
   message, `%json-out-instance`) — they drag no metaobject runtime in.
+- **The built-in class set is TWO lists and ONE narrowing.** `BUILTIN_CLASS_NAMES` is what
+  `class-of` can answer; `FIND_CLASS_ONLY_CLASS_NAMES` is the rest of the CL built-in lattice,
+  reachable by NAME only because every value it covers has a narrower answer
+  (`number`/`real`/`rational` under `integer`/`ratio`/`float`/`complex`, `sequence`/`list`
+  under `cons`/`null`, `bit-vector` under the general `vector` — this implementation has no
+  separate bit-array representation — plus `structure-object`, `built-in-class` and
+  `standard-object`). The narrowing is ARRAYS: `%class-designator` answers `T` for every one
+  of them, while `class-of` answers `vector` at rank 1 and `array` otherwise, leaving a string
+  to the narrower `string` the designator already gives. Two emission sites, one dispatch —
+  `LispMacroExpander.expandClassOf` (over `%arrayp`, which is the array representations
+  WITHOUT strings) and the interpreter's `classOfTypeName`. `type-of` is NOT this dispatch: it
+  rides `%class-designator` and its own `%arrayp` arm, and still answers `(simple-vector 3)`.
+- **The lattice is NOT copied into the metaobjects.** A built-in class metaobject has no slots
+  and no superclasses; standing where a type specifier is expected it means the same set as
+  its NAME (the normalization below), so `typep`/`subtypep` hold the lattice — once — and
+  `(typep #(1 2) (find-class 'array))` and `(subtypep (find-class 'vector) 'array)` answer
+  through it. Filling `direct-superclasses` would be a second copy that can drift, would
+  nest the printed representation of every built-in class four deep, and buys no ANSI test:
+  what the suite asks of these names is `(typep X (find-class 'name))` and "does the name
+  resolve", not `class-precedence-list` (which `.todo/715` §4 rules out).
+  `built-in-class` is a NAME here, not a metaclass: `(class-of (find-class 'array))` is
+  `standard-class`, and `(typep x 'built-in-class)` keeps its deliberate empty test.
+- **Measured 2026-09-11** (suite `ca06bd9`, interpreter, `arrays` + `objects` +
+  `types-and-classes`): adding the names moved `arrays` 650 -> 690 passing (errors 619 ->
+  575) and `types-and-classes` 280 -> 281, **+41 tests**, with `objects` unchanged. Only
+  8 `there is no class named` lines survive, for `broadcast-stream` (7) and
+  `standard-generic-function` (1). `.todo/744` priced the row at **156** by counting every
+  TEST-level `ERROR` line naming `array`/`vector`/`bit-vector`/..., which over-counts: the
+  test behind such a line often fails for a second reason once the class resolves. 14
+  `BIT-VECTOR.*`/`SIMPLE-BIT-VECTOR.*` tests turned ERROR into FAIL for exactly that reason
+  -- `(typep #*101 'bit-vector)` is nil because there is no distinct bit-array
+  representation (`.todo/043`, `.todo/180`) -- and the `built-in-class` / `structure-object`
+  / `real` rows are behind `*universe*` (`.todo/679`) or `class-precedence-list` instead.
+  A count of ERROR lines naming a missing operator is an UPPER bound on the tests it wins.
 - **`typep`/`subtypep` take a class METAOBJECT wherever a type specifier is expected.** ONE
   rule — "an instance tagged as a `standard-class` descendant continues as its slot-0 name" —
   with three emission sites: `subtypep` folds it in Java for the interpreter

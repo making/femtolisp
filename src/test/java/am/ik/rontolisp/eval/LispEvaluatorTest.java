@@ -15658,7 +15658,45 @@ class LispEvaluatorTest {
 				      (class-name (class-of t))
 				      (class-name (class-of 'sym))
 				      (class-name (class-of (make-array 1))))
-				""").print()).isEqualTo("(T INTEGER STRING NULL BOOLEAN SYMBOL T)");
+				""").print()).isEqualTo("(T INTEGER STRING NULL BOOLEAN SYMBOL VECTOR)");
+	}
+
+	@Test
+	void findClassAnswersForTheBuiltInClassLattice() {
+		// The built-in classes are not only the leaves class-of answers: the INTERIOR of
+		// the lattice (array/vector/bit-vector, number/real/rational, sequence/list,
+		// structure-object, built-in-class) resolves by NAME too, and a metaobject
+		// standing as a type specifier means the same set as the name spelling.
+		assertThat(eval("""
+				(list (mapcar (lambda (n) (class-name (find-class n)))
+				              '(array vector bit-vector number real rational
+				                sequence list structure-object built-in-class))
+				      (typep #(1 2) (find-class 'array))
+				      (typep "ab" (find-class 'array))
+				      (typep 1 (find-class 'array))
+				      (typep 1 (find-class 'number))
+				      (typep 1.5 (find-class 'real))
+				      (typep '(1) (find-class 'list))
+				      (subtypep 'vector (find-class 'array))
+				      (subtypep (find-class 'vector) 'array))
+				""").print())
+			.isEqualTo("((ARRAY VECTOR BIT-VECTOR NUMBER REAL RATIONAL SEQUENCE LIST STRUCTURE-OBJECT BUILT-IN-CLASS)"
+					+ " T T NIL T T T T T)");
+	}
+
+	@Test
+	void classOfNarrowsAnArrayToVectorOrArray() {
+		// class-of narrows what the lite %class-designator answers t for: a rank-1 array
+		// is a vector, anything else an array, and a string keeps the narrower string.
+		// type-of is untouched -- it rides the designator, not this dispatch.
+		assertThat(eval("""
+				(list (class-name (class-of (make-array 3)))
+				      (class-name (class-of #2a((1 2) (3 4))))
+				      (class-name (class-of (make-array nil)))
+				      (class-name (class-of "ab"))
+				      (eq (class-of (make-array 3)) (find-class 'vector))
+				      (type-of (make-array 3)))
+				""").print()).isEqualTo("(VECTOR ARRAY ARRAY STRING T (SIMPLE-VECTOR 3))");
 	}
 
 	@Test

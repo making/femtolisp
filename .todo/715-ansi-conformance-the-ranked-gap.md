@@ -81,7 +81,7 @@ why the report keeps the lost-form column beside the rate.
 | stream constructors and `open`'s `:if-exists` / `:direction` / `:element-type` | 224 | `.todo/387` |
 | complex numbers (`#C` 56, the type specifier 40, the operators 92) | 188 | `.todo/037` |
 | the integer logical family plus `float-radix` (80 on its own), `rational`, `rationalize`, `realp` | ~180 | `.todo/037` |
-| `find-class` has no `ARRAY`/`VECTOR`/`BIT-VECTOR`/`NUMBER` class (104 of them in `arrays` alone) | 156 | **`.todo/744`** (new) |
+| ~~`find-class` has no `ARRAY`/`VECTOR`/`BIT-VECTOR`/`NUMBER` class~~ -- DONE 2026-09-11, worth **+41**, not the 156 this row priced (see "Worked so far") | 41 | `.todo/744` |
 | `pprint-fill`/`-linear`/`-tabular`/`formatter` (81) and a `setf` place for `readtable-case` (56) | 137 | `.todo/041`, `.todo/001` |
 | `(go 10)` -- an integer tagbody tag is rejected | 51 | **`.todo/743`** (new) |
 
@@ -160,6 +160,21 @@ runtime package API (`.todo/741`) and complex numbers. The corpus uses only
 - **2026-09-08, `.todo/681`** -- a raw exception escaping a `deftest` is booked
   as that test's error, not as a lost form. Lost forms 2,229 -> 586, and the
   denominator grew by 1,770.
+- **2026-09-11, `.todo/744`** -- `find-class` answers for the built-in class
+  lattice (`array`, `vector`, `bit-vector`, `number`, `real`, `rational`,
+  `sequence`, `list`, `structure-object`, `built-in-class`) and `class-of`
+  narrows an array to `vector`/`array`. Measured on `arrays` + `objects` +
+  `types-and-classes`: **+41 tests** (`arrays` 650 -> 690, errors 619 -> 575;
+  `types-and-classes` 280 -> 281; `objects` unchanged). **The row above priced it
+  at 156 and was wrong**: it counted TEST-level `ERROR` lines naming the class,
+  but once the class resolves the test often fails for a SECOND reason -- 14
+  `BIT-VECTOR.*` tests went ERROR -> FAIL because there is no distinct bit-array
+  representation (`.todo/043`), and the `built-in-class`/`structure-object`/`real`
+  rows sit behind `*universe*` (`.todo/679`) or `class-precedence-list`.
+  **An ERROR-line census is an UPPER bound on what closing the gap wins**; when
+  ranking from `results/logs/`, discount a row whose tests assert something else
+  as well. Mechanics and the remaining 8 lines (`broadcast-stream` 7,
+  `standard-generic-function` 1): `.kb/clos.md`.
 
 ## Reading caveat
 

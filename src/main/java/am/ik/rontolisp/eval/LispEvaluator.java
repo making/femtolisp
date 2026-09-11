@@ -1160,10 +1160,10 @@ public final class LispEvaluator {
 				// that covers everything.
 				return java.util.Objects.requireNonNull(this.closRegistry.builtinClassMetaobject("T"));
 			}
-			// builtinTypeName only yields members of BUILTIN_CLASS_NAMES, so the answer
+			// classOfTypeName only yields members of BUILTIN_CLASS_NAMES, so the answer
 			// is never null.
 			return java.util.Objects.requireNonNull(
-					this.closRegistry.builtinClassMetaobject(builtinTypeName(v).toUpperCase(java.util.Locale.ROOT)));
+					this.closRegistry.builtinClassMetaobject(classOfTypeName(v).toUpperCase(java.util.Locale.ROOT)));
 		}));
 		this.globalEnv.defineFunction(LispNames.CLASS_DESIGNATOR_INTERNAL,
 				new LispFunction(LispNames.CLASS_DESIGNATOR_INTERNAL, args -> {
@@ -3440,6 +3440,24 @@ public final class LispEvaluator {
 			case am.ik.rontolisp.LispQuantizedMatrix ignored -> "quantized-matrix";
 			case LispFunction ignored -> "function";
 			default -> "t";
+		};
+	}
+
+	/**
+	 * The built-in class name {@code class-of} answers for a non-instance value: the
+	 * {@code %class-designator} view narrowed over ARRAYS, which that view answers
+	 * {@code t} for. A string is left to {@code builtinTypeName} (the narrower
+	 * {@code string}); every other array is a {@code vector} at rank 1 and an
+	 * {@code array} above or below it. The result set is
+	 * {@code ClosRegistry.BUILTIN_CLASS_NAMES}, which
+	 * {@code LispMacroExpander.expandClassOf} reproduces on the compile paths.
+	 */
+	private static String classOfTypeName(LispVal v) {
+		return switch (v) {
+			case LispArray array -> array.dimensions().length == 1 ? "vector" : "array";
+			case LispFloatArray array -> array.rank() == 1 ? "vector" : "array";
+			case LispIntVector ignored -> "vector";
+			default -> builtinTypeName(v);
 		};
 	}
 

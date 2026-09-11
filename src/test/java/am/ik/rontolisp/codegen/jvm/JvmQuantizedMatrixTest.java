@@ -125,6 +125,12 @@ class JvmQuantizedMatrixTest {
 						+ " (rontolisp:quantized-matrix-p *m*) (typep *m* 'rontolisp:quantized-matrix) (type-of *m*)"
 						+ " (rontolisp:quantized-matrix-p #f(1.0)) (typep 3 'rontolisp:quantized-matrix)))",
 				"(NIL NIL NIL T T QUANTIZED-MATRIX NIL NIL)");
+		// class-of answers the quantized-matrix built-in class, and find-class resolves
+		// the same metaobject: the %class-designator names QUANTIZED-MATRIX, so the
+		// built-in class table has to carry it. It did not, and the interpreter's
+		// class-of fell off the end of that table with a NullPointerException.
+		assertAgreedText(program + "(print (list (class-name (class-of *m*))"
+				+ " (eq (class-of *m*) (find-class 'quantized-matrix))))", "(QUANTIZED-MATRIX T)");
 		assertAgreedText("(print (rontolisp:make-quantized-matrix 'q8-0 32))", "#<quantized-matrix q8-0 (32)>");
 		assertAgreedText("(print (length (rontolisp:make-quantized-matrix 'q8-0 96)))", "96");
 		assertAgreedText("(princ (rontolisp:make-quantized-matrix :q8-0 '(1 32)))", "#<quantized-matrix q8-0 (1 32)>");

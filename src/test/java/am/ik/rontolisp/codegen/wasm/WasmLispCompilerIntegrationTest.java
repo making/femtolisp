@@ -9963,6 +9963,28 @@ class WasmLispCompilerIntegrationTest {
 	}
 
 	@Test
+	void findClassAnswersForTheBuiltInClassLatticeAndClassOfNarrowsArrays() throws Exception {
+		// The WASM twin of
+		// JvmLispCompilerTest#compileFindClassAnswersForTheBuiltInClassLatticeAndClassOfNarrowsArrays.
+		// class-name is a prelude defun, so the program goes through the prelude splice.
+		assertThat(compileAndRunPrelude("""
+				(print (list (mapcar (lambda (n) (class-name (find-class n)))
+				                     '(array vector bit-vector number real rational
+				                       sequence list structure-object built-in-class))
+				             (typep #(1 2) (find-class 'array))
+				             (typep 1 (find-class 'array))
+				             (typep 1 (find-class 'number))
+				             (subtypep (find-class 'vector) 'array)
+				             (class-name (class-of (make-array 3)))
+				             (class-name (class-of #2a((1 2) (3 4))))
+				             (class-name (class-of "ab"))
+				             (eq (class-of (make-array 3)) (find-class 'vector))))
+				"""))
+			.isEqualTo("((ARRAY VECTOR BIT-VECTOR NUMBER REAL RATIONAL SEQUENCE LIST STRUCTURE-OBJECT BUILT-IN-CLASS)"
+					+ " T NIL T T VECTOR ARRAY STRING T)");
+	}
+
+	@Test
 	void typepAndSubtypepAcceptClassMetaobjectsAsTypeSpecifiers() throws Exception {
 		// The WASM twin of
 		// JvmLispCompilerTest#compileTypepAndSubtypepAcceptClassMetaobjectsAsTypeSpecifiers:

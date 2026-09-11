@@ -15353,12 +15353,32 @@ public final class LispMacroExpander {
 	 * metaobject {@code find-class} answers, so {@code (eq (class-of x)
 	 * (find-class name))} holds. The {@code class-of}/{@code find-class} reference makes
 	 * {@link #expandTopLevelDefinitions} inject the metaobject runtime.
+	 *
+	 * <p>
+	 * ONE narrowing sits between the two views: the lite designator answers {@code t} for
+	 * every ARRAY, while {@code class-of} answers the {@code vector} / {@code array}
+	 * built-in classes. The test is {@code %arrayp} -- the array representations WITHOUT
+	 * strings -- so a string keeps the narrower {@code string} the designator already
+	 * gives. The interpreter's {@code classOfTypeName} is the same dispatch, and
+	 * {@code ClosRegistry.BUILTIN_CLASS_NAMES} is the result set of both.
 	 * @param cons the class-of expression
 	 * @param hashTablesExist see {@link #expandClassDesignator(LispCons, boolean)}
 	 * @return the expanded expression
 	 */
 	public static LispVal expandClassOf(LispCons cons, boolean hashTablesExist) {
-		return mvCall(LispNames.FIND_CLASS_INTERNAL, expandClassDesignator(cons, hashTablesExist), LispTrue.INSTANCE);
+		List<LispVal> parts = cons.toList();
+		if (parts.size() != 2) {
+			throw new IllegalArgumentException(LispNames.CLASS_OF + " expects exactly one argument: " + cons.print());
+		}
+		LispSymbol v = new LispSymbol("__cof" + MV_COUNTER.getAndIncrement() + "_v");
+		LispVal designator = expandClassDesignator((LispCons) fmtCall(LispNames.CLASS_DESIGNATOR_INTERNAL, v),
+				hashTablesExist);
+		LispVal rankOne = listToCons(
+				List.of(new LispSymbol(LispNames.EQ), callOf(LispNames.ARRAY_RANK, v), new LispInteger(1)));
+		LispVal narrowed = makeIf(callOf(LispNames.ARRAYP_INTERNAL, v),
+				makeIf(rankOne, unspelledQuoteOf("VECTOR"), unspelledQuoteOf("ARRAY")), designator);
+		return nestMvBindings(List.of(new MvBinding(v, parts.get(1))),
+				mvCall(LispNames.FIND_CLASS_INTERNAL, narrowed, LispTrue.INSTANCE));
 	}
 
 	/**
