@@ -9,18 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import am.ik.rontolisp.LispVal;
 import am.ik.rontolisp.cli.JvmSourceCompiler;
-import am.ik.rontolisp.cli.LoadInliner;
-import am.ik.rontolisp.codegen.jvm.JvmLispCompiler;
-import am.ik.rontolisp.compiler.WitExportDirective;
-import am.ik.rontolisp.eval.EnvironmentLibrary;
-import am.ik.rontolisp.eval.LibraryDefunPruner;
-import am.ik.rontolisp.eval.LispPreludeLibrary;
-import am.ik.rontolisp.eval.SourceLoader;
-import am.ik.rontolisp.eval.UserMacroExpander;
-import am.ik.rontolisp.reader.Features;
-import am.ik.rontolisp.reader.LispReader;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
@@ -51,24 +40,13 @@ class JvmLibraryMethodSizeTest {
 
 	@Test
 	void noCompiledIroncladMethodCrossesHotSpotsHugeMethodLimit() {
-		// The CLI compile pipeline, mirroring AsdfLibraryE2eSupport: inline the system,
-		// expand its macros, splice the prelude, prune -- then compile for the JVM.
-		List<LispVal> program = LibraryDefunPruner.prune(
-				EnvironmentLibrary
-					.process(
-							am.ik.rontolisp.eval.UnreadCharLibrary
-								.process(
-										am.ik.rontolisp.eval.GrayStreamsLibrary
-											.process(
-													LispPreludeLibrary.process(
-															UserMacroExpander.expand(LoadInliner.inline(
-																	LispReader.readAllFromString(EXERCISE,
-																			Features.JVM),
-																	SourceLoader.fileSystem(), null,
-																	List.of(SYSTEM_DIR), Features.JVM)),
-															Features.JVM))),
-							WitExportDirective.Backend.OTHER));
-		byte[] classBytes = new JvmLispCompiler("IroncladSize").compile(program);
+		// The CLI's -o out.class path in process: JvmSourceCompiler runs the shared
+		// front end (which inlines the system off --system-path, expands its macros,
+		// splices the libraries and prunes) and then the JVM backend, so what is measured
+		// here is what a user's build emits.
+		byte[] classBytes = new JvmSourceCompiler("IroncladSize").systemPath(List.of(SYSTEM_DIR))
+			.compile(EXERCISE, null)
+			.classBytes();
 		// Every method that can run per evaluated form must stay under the limit --
 		// including the tail continuations a body that would have crossed it is split
 		// into (_k$N, JvmBodyOutliner), which is what keeps ironclad's 80-round

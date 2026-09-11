@@ -7,18 +7,11 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import am.ik.rontolisp.LispVal;
+import am.ik.rontolisp.cli.CompileFrontendAccess;
+import am.ik.rontolisp.cli.JvmSourceCompiler;
 import am.ik.rontolisp.cli.LoadInliner;
-import am.ik.rontolisp.codegen.jvm.JvmLispCompiler;
 import am.ik.rontolisp.codegen.wasm.WasmLispCompiler;
-import am.ik.rontolisp.compiler.WitExportDirective;
-import am.ik.rontolisp.eval.EnvironmentLibrary;
-import am.ik.rontolisp.eval.LibraryDefunPruner;
 import am.ik.rontolisp.eval.LispEvaluator;
-import am.ik.rontolisp.eval.LispPreludeLibrary;
-import am.ik.rontolisp.eval.SourceLoader;
-import am.ik.rontolisp.eval.UserMacroExpander;
-import am.ik.rontolisp.eval.UsocketLibrary;
-import am.ik.rontolisp.reader.Features;
 import am.ik.rontolisp.reader.LispReader;
 import am.ik.rontolisp.testsupport.WasmtimeSupport;
 import org.junit.jupiter.api.Test;
@@ -40,9 +33,10 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *
  * <ol>
  * <li>the interpreter ({@link LispEvaluator} driven directly),</li>
- * <li>the JVM compiler (CLI pipeline: {@link LoadInliner} splices the system,
- * {@link UserMacroExpander} expands its defmacros, then {@link JvmLispCompiler}; the
- * class is defined from its bytes and {@code main} is run),</li>
+ * <li>the JVM compiler ({@link JvmSourceCompiler}, which is the CLI's own
+ * {@code -o out.class} path in process: the shared front end splices the system and
+ * expands its defmacros, then the JVM backend emits; the class is defined from its bytes
+ * and {@code main} is run),</li>
  * <li>WASM Preview 1 ({@link WasmLispCompiler} run under {@code wasmtime} in a
  * container),</li>
  * <li>the WASM component / WASI 0.3 ({@code --component}, run under {@code wasmtime
@@ -163,8 +157,12 @@ abstract class AsdfLibraryE2eSupport {
 
 	@Test
 	void compilesAndRunsOnJvm() throws Exception {
-		byte[] classBytes = new JvmLispCompiler(artifactName())
-			.compile(compileProgram(Features.JVM, WitExportDirective.Backend.OTHER));
+		// JvmSourceCompiler is the same shared front end the WASM legs below run,
+		// plus the JVM backend half -- which is exactly what the CLI's -o out.class is,
+		// so this leg cannot compile a program the command line would not.
+		byte[] classBytes = new JvmSourceCompiler(artifactName()).systemPath(systemPath())
+			.compile(exercise(), null)
+			.classBytes();
 		assertThat(runMain(classBytes, artifactName()).lines().map(String::trim).map(this::normalizeLine))
 			.containsExactlyElementsOf(expected());
 	}
@@ -172,8 +170,8 @@ abstract class AsdfLibraryE2eSupport {
 	@Test
 	void compilesAndRunsOnWasmPreview1() throws Exception {
 		assumeTrue(DOCKER_AVAILABLE, "Docker is not available");
-		byte[] wasmBytes = new WasmLispCompiler()
-			.compile(compileProgram(Features.WASM, WitExportDirective.Backend.WASM_GC));
+		CompileFrontendAccess.Program program = wasmProgram(false);
+		byte[] wasmBytes = new WasmLispCompiler().runtimeFeatures(program.features().names()).compile(program.forms());
 		assertThat(runWasm(wasmBytes, false).lines().map(String::trim).map(this::normalizeLine))
 			.containsExactlyElementsOf(expected());
 	}
@@ -181,48 +179,26 @@ abstract class AsdfLibraryE2eSupport {
 	@Test
 	void compilesAndRunsOnWasmComponent() throws Exception {
 		assumeTrue(DOCKER_AVAILABLE, "Docker is not available");
-		byte[] wasmBytes = new WasmLispCompiler(false, true)
-			.compile(compileProgram(Features.WASM, WitExportDirective.Backend.WASM_COMPONENT));
+		CompileFrontendAccess.Program program = wasmProgram(true);
+		byte[] wasmBytes = new WasmLispCompiler(false, true).runtimeFeatures(program.features().names())
+			.compile(program.forms());
 		assertThat(runWasm(wasmBytes, true).lines().map(String::trim).map(this::normalizeLine))
 			.containsExactlyElementsOf(expected());
 	}
 
-	// The CLI compile pipeline for the given feature set: inline the system's component
-	// files, expand the user macros they define, then splice the rontolisp-source prelude
-	// (equalp/string<), the Gray-stream dispatch and the usocket shim when referenced.
-	// Finally tree-shake -- mirroring RontoLispCli -- before the backend compiler runs.
-	// The pruner belongs here, not only in the CLI: these tests are the coverage for
-	// pruning a real third-party tree. Each library below exercises its own API on three
-	// compile backends, so a definition the pass drops that the program still needs fails
-	// here rather than in a user's build.
-	private List<LispVal> compileProgram(Features features, WitExportDirective.Backend backend) {
-		// LispPreludeLibrary must be handed the TARGET feature set (mirroring
-		// RontoLispCli.compileToFile): uiop:featurep's definition reads *features*,
-		// which the reader substitutes with the target's list per feature set, so the
-		// one-argument overload would splice the INTERPRETER's answer into a compiled
-		// module (.kb/uiop.md). EnvironmentLibrary mirrors the CLI too: uiop:getenv on
-		// the --component path is environment.lisp over a wit-imported
-		// wasi:cli/environment (a no-op on the other backends), and rove's
-		// with-local-envs -- run's :env option -- reads it.
-		// UnreadCharLibrary comes after the Gray splice like in the CLI, so a
-		// character-read call site a Gray dispatch helper introduced reaches the
-		// pushback cell too (cl-json's decoder cannot scan a number or aggregate
-		// without unread-char).
-		return LibraryDefunPruner.prune(
-				EnvironmentLibrary
-					.process(
-							am.ik.rontolisp.eval.UnreadCharLibrary.process(
-									UsocketLibrary.process(
-											am.ik.rontolisp.eval.GrayStreamsLibrary.process(
-													LispPreludeLibrary.process(
-															UserMacroExpander
-																.expand(LoadInliner.inline(
-																		LispReader.readAllFromString(exercise(),
-																				features),
-																		SourceLoader.fileSystem(), null, systemPath(),
-																		features)),
-															features)))),
-							backend));
+	// The compile path's whole front end for a WASM target: the read with the target's
+	// own feature set, the (load ...) and ASDF inlining that splices the system's
+	// component files off systemPath(), user macro expansion, the library splice chain
+	// and the tree-shaker. It RUNS the CLI's pipeline rather than restating it
+	// (CompileFrontendAccess -> CompileFrontend), because these tests are the coverage
+	// for that pipeline over a real third-party tree: a pass the CLI applies and a copy
+	// here skipped would mean compiling a program no user can build, and it would surface
+	// as a library failure rather than as a missing pass. The pruning is part of it for
+	// the same reason -- each library below exercises its own API on three compile
+	// backends, so a definition the pass drops that the program still needs fails here
+	// rather than in a user's build.
+	private CompileFrontendAccess.Program wasmProgram(boolean component) {
+		return CompileFrontendAccess.withSystemPath(exercise(), systemPath(), true, component);
 	}
 
 	// Defines the compiled class from its bytes and runs main, capturing UTF-8 stdout.

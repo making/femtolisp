@@ -163,8 +163,8 @@ class WasmToplevelChunkingTest {
 				+ IntStream.range(0, 11000)
 					.mapToObj(i -> "(print (+ %d (* %d 3)))".formatted(i, i))
 					.collect(Collectors.joining("\n"));
-		List<LispVal> program = am.ik.rontolisp.cli.CorpusFrontend.program(source, am.ik.rontolisp.reader.Features.WASM,
-				true, false);
+		List<LispVal> program = am.ik.rontolisp.cli.CompileFrontendAccess.corpus(source,
+				am.ik.rontolisp.reader.Features.WASM, true, false);
 
 		int largest = WasmModuleInspector.largestFunctionBodySize(new WasmLispCompiler().compile(program));
 

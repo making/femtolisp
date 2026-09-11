@@ -54,11 +54,11 @@ class JvmClassShakerCorpusTest {
 		// stage (see CorpusFixtures); this run's working directory is the project
 		// root, so the tree is removed again below.
 		am.ik.rontolisp.testsupport.CorpusFixtures.stageWildPathnameTree(Path.of("."));
-		// The CLI's own pass pipeline, not a copy of it: CorpusFrontend calls
+		// The CLI's own pass pipeline, not a copy of it: CompileFrontendAccess calls
 		// CompileFrontend.expand, so the shaker decodes exactly the class the real CLI
 		// emits and no pass or ordering can drift out of this test again. It used to be
 		// spelled out here and had fallen ten passes behind (.todo/688).
-		List<LispVal> program = am.ik.rontolisp.cli.CorpusFrontend.program(corpusSource(),
+		List<LispVal> program = am.ik.rontolisp.cli.CompileFrontendAccess.corpus(corpusSource(),
 				am.ik.rontolisp.reader.Features.JVM, false, false);
 
 		byte[] plain = withoutUndefinedWarnings(

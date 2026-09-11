@@ -48,12 +48,12 @@ class WasmTreeShakerCorpusTest {
 		// Both modes exercise renumbering: default WASI drops unused function imports,
 		// no-wasi drops the trap-stub functions that fill the import slots.
 		for (boolean noWasi : new boolean[] { false, true }) {
-			// The CLI's own pass pipeline, not a copy of it: CorpusFrontend calls
+			// The CLI's own pass pipeline, not a copy of it: CompileFrontendAccess calls
 			// CompileFrontend.expand, so the shaker decodes exactly the module the real
 			// CLI emits. It runs INSIDE the loop because --no-wasi reaches the front end
 			// too (the feature set, and which wasi:*-binding libraries splice), which
 			// the hand-written copy this replaces could not express at all (.todo/688).
-			List<LispVal> program = am.ik.rontolisp.cli.CorpusFrontend.program(source,
+			List<LispVal> program = am.ik.rontolisp.cli.CompileFrontendAccess.corpus(source,
 					am.ik.rontolisp.reader.Features.WASM, true, noWasi);
 			byte[] plain = withoutUndefinedWarnings(
 					() -> new WasmLispCompiler(false, false, noWasi, OptimizeLevel.NONE).compile(program));

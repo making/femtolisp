@@ -107,7 +107,9 @@ am.ik.objc -> (nothing)
   `ci-spec.yaml` and went red, ten when that was finally fixed, and -- invisibly to any
   census of pass NAMES -- `VecLibrary` applied in the wrong POSITION, so a `vec:` reference
   introduced by the Gray-streams / usocket / unread-char rewrites was spliced by the CLI
-  and missed by both guards. They now reach it through `src/test/.../cli/CorpusFrontend`.
+  and missed by both guards. The `asdf:load-system` library E2Es carried the same copy,
+  stopped six passes in. Every test now reaches the front end through
+  `src/test/.../cli/CompileFrontendAccess` (or, for a JVM target, `JvmSourceCompiler`).
   A list of libraries exported for a caller to fold is the same bug with more steps.
 
 Where behavior must be identical across the interpreter, the JVM and both WASM backends,
