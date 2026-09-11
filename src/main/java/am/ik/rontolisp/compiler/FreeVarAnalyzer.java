@@ -774,14 +774,51 @@ public final class FreeVarAnalyzer {
 		}
 	}
 
+	/**
+	 * The variables a lambda list binds. An entry is a bare symbol or -- for an
+	 * {@code &optional} / {@code &key} parameter that carries a default -- the
+	 * {@code (var init [supplied-p])} shape, whose supplied-p variable is bound too and
+	 * whose {@code &key} {@code var} may itself be a {@code (:keyword var)} pair. Reading
+	 * only the bare shape made a nested lambda with a defaulted optional
+	 * ({@code (defun f (n) (lambda (&optional (x 1 p)) ...))}) a ClassCastException at
+	 * compile time.
+	 *
+	 * <p>
+	 * The init FORMS are values, not bindings, so they are not collected here; a name
+	 * only an init mentions still reaches both walks, because the lambda-list lowering
+	 * moves the default into the body before either runs.
+	 */
 	private static Set<String> extractParamNames(LispVal paramList) {
 		Set<String> names = new HashSet<>();
 		if (paramList instanceof LispCons paramCons) {
 			for (LispVal p : paramCons.toList()) {
-				names.add(((LispSymbol) p).name());
+				collectParamNames(p, names);
 			}
 		}
 		return names;
+	}
+
+	private static void collectParamNames(LispVal param, Set<String> names) {
+		if (param instanceof LispSymbol symbol) {
+			names.add(symbol.name());
+			return;
+		}
+		if (!(param instanceof LispCons spec)) {
+			return;
+		}
+		List<LispVal> parts = spec.toList();
+		// (var init supplied-p) -- the init form is a value, not a binding -- where var
+		// is itself ((:keyword var)) for a &key parameter that renames its keyword.
+		if (parts.get(0) instanceof LispCons named && named.toList().size() == 2
+				&& named.toList().get(1) instanceof LispSymbol keyVar) {
+			names.add(keyVar.name());
+		}
+		else if (parts.get(0) instanceof LispSymbol var) {
+			names.add(var.name());
+		}
+		if (parts.size() > 2 && parts.get(2) instanceof LispSymbol suppliedP) {
+			names.add(suppliedP.name());
+		}
 	}
 
 	/**

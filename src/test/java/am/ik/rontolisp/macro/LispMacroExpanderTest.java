@@ -748,6 +748,34 @@ class LispMacroExpanderTest {
 	}
 
 	@Test
+	void complementAnswersALambdaThatCoversEveryDesignatorArity() {
+		// The function form is evaluated once, into a let the lambda closes over.
+		String expansion = LispMacroExpander
+			.expandComplement((LispCons) LispReader.readAllFromString("(complement (mk))").get(0))
+			.print();
+		assertThat(expansion).startsWith("(LET ((|__complement_fn| (MK)))");
+		assertThat(expansion.indexOf("(MK)")).isEqualTo(expansion.lastIndexOf("(MK)"));
+		// &optional with supplied-p flags, not &rest: a complemented :test-not runs once
+		// per element of the sequence being scanned, and a rest list would cons there.
+		assertThat(expansion).contains(
+				"(LAMBDA (&OPTIONAL (|__complement_a0| NIL |__complement_p0|) (|__complement_a1| NIL |__complement_p1|) (|__complement_a2| NIL |__complement_p2|))");
+		// One funcall arm per arity, the widest tested first -- an equality designator
+		// (two arguments) is the common one and used to be an arity error.
+		assertThat(expansion)
+			.contains("(IF |__complement_p2| (FUNCALL |__complement_fn| |__complement_a0| |__complement_a1| "
+					+ "|__complement_a2|)")
+			.contains("(IF |__complement_p1| (FUNCALL |__complement_fn| |__complement_a0| |__complement_a1|)")
+			.contains("(IF |__complement_p0| (FUNCALL |__complement_fn| |__complement_a0|)")
+			.contains("(FUNCALL |__complement_fn|)");
+		assertThat(expansion).doesNotContain("APPLY");
+		// A site whose arity is statically two spells the two, rather than paying the
+		// dispatch per element: the first-class remove/position wrappers and KeywordTail.
+		assertThat(LispMacroExpander.twoArgumentComplement(LispReader.readAllFromString("(mk)").get(0)).print())
+			.isEqualTo("(LET ((|__complement2_fn| (MK))) (LAMBDA (|__complement2_a| |__complement2_b|) "
+					+ "(NOT (FUNCALL |__complement2_fn| |__complement2_a| |__complement2_b|))))");
+	}
+
+	@Test
 	void aBoundedRemoveDuplicatesLooksForTheDuplicateInsideTheWindow() {
 		// The piecewise rule, here too: a call that spells no bound and a LITERAL
 		// direction keeps the member-over-the-tail loop it always expanded to -- no

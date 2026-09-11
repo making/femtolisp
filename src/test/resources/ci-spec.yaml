@@ -717,6 +717,49 @@ cases:
       3
       (1 2 3 4)
       ((B C) 2 1 B 2 2 (3 4) (2 . B) (2 . B))
+  # complement answers a lambda covering every designator arity up to three, not just
+  # the one-argument predicate case: ANSI's remove.order.2 / delete.order.2 /
+  # adjoin.order.2 pass (complement #'eq) as a two-argument :test-not, and the
+  # first-class #'remove / #'position wrappers build their :test on the same negation.
+  # An unbounded lowering would need apply, which opens the eval gate
+  # (.kb/sequence-designator-evaluation.md, "What a variadic complement costs").
+  - name: complement-designator-arity
+    source: |
+      (defun ci-cpl-3 (a b c) (and (eql a b) (eql b c)))
+      (defun ci-cpl-0 () nil)
+      ;; The lambda-list shape complement now emits: a nested lambda whose &optional
+      ;; carries a default and a supplied-p flag used to be a compile-time cast failure
+      ;; (FreeVarAnalyzer read only the bare-symbol parameter shape).
+      (defun ci-cpl-defaulted (n) (lambda (&optional (x n xp)) (if xp x n)))
+      (print (funcall (complement #'evenp) 3))
+      (print (list (funcall (complement #'eq) 'a 'b) (funcall (complement #'eq) 'a 'a)))
+      (print (list (funcall (complement #'ci-cpl-3) 1 1 2) (funcall (complement #'ci-cpl-3) 1 1 1)))
+      (print (funcall (complement #'ci-cpl-0)))
+      (let ((ci-cpl-log nil))
+        (let ((ci-cpl-f (complement (progn (setq ci-cpl-log (cons 1 ci-cpl-log)) #'eq))))
+          (funcall ci-cpl-f 'a 'b)
+          (funcall ci-cpl-f 'a 'a)
+          (print (length ci-cpl-log))))
+      (print (remove 3 (list 1 2 3 4) :test-not (progn (complement #'eql))))
+      (print (adjoin 3 (list 1 2 3) :test-not (progn (complement #'eql))))
+      (print (position 3 (list 1 2 3 4) :test-not (progn (complement #'eql))))
+      (print (apply #'remove 3 (list 1 2 3 4) (list :test-not #'eql)))
+      (print (apply #'position 3 (list 1 2 3 4) (list :test-not #'eql)))
+      (print (funcall (ci-cpl-defaulted 7)))
+      (print (funcall (ci-cpl-defaulted 7) 9))
+    expected: |
+      T
+      (T NIL)
+      (T NIL)
+      T
+      1
+      (1 2 4)
+      (1 2 3)
+      2
+      (3)
+      0
+      7
+      9
   # remove-duplicates / delete-duplicates take the same 17.2.1 keywords, but their
   # window bounds which elements are CONSIDERED: one outside :start/:end is kept
   # VERBATIM rather than dropped (.kb/sequence-bounding-keywords.md). The duplicate is
