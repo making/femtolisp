@@ -288,7 +288,7 @@ final class JvmComplexRuntimeBuilder {
 		addMethod(cp, thisClass, methods, ops, MUL, BINARY_DESC,
 				buildMul(refs, cp.addUtf8(MUL), cp.addUtf8(BINARY_DESC)));
 		addMethod(cp, thisClass, methods, ops, DIV, BINARY_DESC,
-				buildDiv(refs, cp.addUtf8(DIV), cp.addUtf8(BINARY_DESC)));
+				buildDiv(refs, cp, cp.addUtf8(DIV), cp.addUtf8(BINARY_DESC)));
 		addMethod(cp, thisClass, methods, ops, NEG, UNARY_DESC,
 				buildNeg(refs, cp.addUtf8(NEG), cp.addUtf8(UNARY_DESC)));
 		addMethod(cp, thisClass, methods, ops, SQRT, UNARY_DESC,
@@ -862,9 +862,11 @@ final class JvmComplexRuntimeBuilder {
 
 	// _cdiv over real-or-complex operands. The exact path divides by the
 	// c^2+d^2 denominator through _div, whose _rat landing throws the same
-	// ArithmeticException("Division by zero") a real division throws.
-	// Slots: params 0-1, parts 2-5, temps 6-8, doubles 10-19.
-	private static ComplexMethod buildDiv(Refs refs, Utf8Constant name, Utf8Constant desc) {
+	// ArithmeticException("Division by zero") a real division throws; the FLOAT tail
+	// is Smith's form, the interpreter's smithDivide (see there for why).
+	// Slots: params 0-1, parts 2-5, temps 6-8, doubles 10-21
+	// (10=a, 12=b, 14=c, 16=d, 18=r, 20=den).
+	private static ComplexMethod buildDiv(Refs refs, ConstantPool cp, Utf8Constant name, Utf8Constant desc) {
 		List<Integer> c = new ArrayList<>();
 		// Neither operand a holder: a plain real division, which the ungated _div
 		// answers -- exactly, without the c^2+d^2 denominator's two extra roundings
@@ -934,39 +936,79 @@ final class JvmComplexRuntimeBuilder {
 		dstore(c, 14);
 		emitToDouble(c, refs, 5);
 		dstore(c, 16);
+		// Smith's fold: |c| >= |d| ? -- DCMPL answers -1 for a NaN, so a NaN operand
+		// takes the mirrored arm, exactly what Java's >= does in smithDivide.
 		dload(c, 14);
+		callMath(c, refs, cp, "abs", "(D)D");
+		dload(c, 16);
+		callMath(c, refs, cp, "abs", "(D)D");
+		c.add(Opcode.DCMPL);
+		int realFold = jump(c, Opcode.IFGE);
+		// |c| < |d|: r = c/d, den = c*r + d, re = (a*r + b)/den, im = (b*r - a)/den.
 		dload(c, 14);
-		c.add(Opcode.DMUL);
 		dload(c, 16);
-		dload(c, 16);
-		c.add(Opcode.DMUL);
-		c.add(Opcode.DADD);
+		c.add(Opcode.DDIV);
 		dstore(c, 18);
-		dload(c, 10);
 		dload(c, 14);
+		dload(c, 18);
+		c.add(Opcode.DMUL);
+		dload(c, 16);
+		c.add(Opcode.DADD);
+		dstore(c, 20);
+		dload(c, 10);
+		dload(c, 18);
 		c.add(Opcode.DMUL);
 		dload(c, 12);
-		dload(c, 16);
-		c.add(Opcode.DMUL);
 		c.add(Opcode.DADD);
-		dload(c, 18);
+		dload(c, 20);
 		c.add(Opcode.DDIV);
 		emitBoxDouble(c, refs);
 		astore(c, 6);
 		dload(c, 12);
-		dload(c, 14);
+		dload(c, 18);
 		c.add(Opcode.DMUL);
 		dload(c, 10);
-		dload(c, 16);
-		c.add(Opcode.DMUL);
 		c.add(Opcode.DSUB);
-		dload(c, 18);
+		dload(c, 20);
 		c.add(Opcode.DDIV);
 		emitBoxDouble(c, refs);
 		astore(c, 7);
+		int built = jump(c, Opcode.GOTO);
+		patch(c, realFold);
+		// |c| >= |d|: r = d/c, den = c + d*r, re = (a + b*r)/den, im = (b - a*r)/den.
+		// A REAL divisor lands here with d zero, so both parts are ONE division.
+		dload(c, 16);
+		dload(c, 14);
+		c.add(Opcode.DDIV);
+		dstore(c, 18);
+		dload(c, 14);
+		dload(c, 16);
+		dload(c, 18);
+		c.add(Opcode.DMUL);
+		c.add(Opcode.DADD);
+		dstore(c, 20);
+		dload(c, 10);
+		dload(c, 12);
+		dload(c, 18);
+		c.add(Opcode.DMUL);
+		c.add(Opcode.DADD);
+		dload(c, 20);
+		c.add(Opcode.DDIV);
+		emitBoxDouble(c, refs);
+		astore(c, 6);
+		dload(c, 12);
+		dload(c, 10);
+		dload(c, 18);
+		c.add(Opcode.DMUL);
+		c.add(Opcode.DSUB);
+		dload(c, 20);
+		c.add(Opcode.DDIV);
+		emitBoxDouble(c, refs);
+		astore(c, 7);
+		patch(c, built);
 		emitNewHolderFromSlots(c, refs, 6, 7);
 		c.add(Opcode.ARETURN);
-		return new ComplexMethod(name, desc, c, 6, 20, List.of());
+		return new ComplexMethod(name, desc, c, 6, 22, List.of());
 	}
 
 	// _cneg(Object x): (-re, -im), each part through _neg (which keeps doubles

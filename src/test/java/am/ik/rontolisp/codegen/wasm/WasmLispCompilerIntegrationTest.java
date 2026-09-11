@@ -1545,6 +1545,23 @@ class WasmLispCompilerIntegrationTest {
 		// legal because it lands on the arm the dispatch would have taken, so the
 		// rendering must be identical -- including the NaN/infinity text, the negative
 		// zero and the readable spellings prin1/print produce for the same value.
+		//
+		// A COMPLEX operand voids the shortcut wherever it stands: float contagion makes
+		// the answer a complex, not a double. certainlyDouble scanned the operands in one
+		// pass and answered true for (+ 3d0 #c(1d0 2d0)) on the double it met FIRST,
+		// never reaching the complex -- and the ref.cast to TYPE_FLOAT then TRAPPED the
+		// module instead of printing a value (a hard wasmtime "cast failure", not the
+		// JVM's catchable landing).
+		assertThat(compileAndRun("""
+				(princ (+ 3d0 #c(1d0 2d0))) (terpri)
+				(princ (* 2.0 #c(1 2))) (terpri)
+				(princ (/ 6.0 #c(1 1))) (terpri)
+				(princ (- 1.0 #c(0 1)))
+				""")).isEqualTo("""
+				#C(4.0 2.0)
+				#C(2.0 4.0)
+				#C(3.0 -3.0)
+				#C(1.0 -1.0)""");
 		assertThat(compileAndRun("""
 				(princ (* 1.0 3)) (terpri)
 				(prin1 (+ 1.0 2)) (terpri)
@@ -13231,6 +13248,31 @@ class WasmLispCompilerIntegrationTest {
 		assertThat(compileAndRun("(print (+ #c(1 2) 1.5))")).isEqualTo("#C(2.5 2.0)");
 		assertThat(compileAndRun("(print (* #c(1 2) 2.0))")).isEqualTo("#C(2.0 4.0)");
 		assertThat(compileAndRun("(print (- 1 #c(1 2)))")).isEqualTo("#C(0 -2)");
+	}
+
+	@Test
+	void compileAndRunComplexFloatDivisionIsSmithsForm() throws Exception {
+		// _c_div's float arm is Smith's fold, the interpreter's smithDivide: raw f64
+		// instructions, so unlike the software log core these digits ARE the JVM's.
+		// A real divisor is one division per part, and the fold never squares the
+		// larger part -- the c^2+d^2 denominator answered #C(NaN NaN) for the two
+		// range rows. The exact arm below keeps that denominator, where rationals
+		// neither round nor overflow.
+		String[] out = compileAndRun("""
+				(print (/ #c(2.0794415416798357d0 3.141592653589793d0) 0.6931471805599453d0))
+				(print (/ #c(1d200 1d200) #c(1d200 1d200)))
+				(print (/ #c(1d-200 1d-200) #c(1d-200 1d-200)))
+				(print (/ #c(1d0 2d0) #c(3d0 4d0)))
+				(print (/ #c(1d0 2d0) #c(4d0 3d0)))
+				(print (/ #c(1d0 2d0) #c(0d0 1d0)))
+				(print (/ 3d0 #c(1d0 2d0)))
+				(print (/ #c(1d0 2d0) 3d0))
+				(print (/ #c(1 2) #c(3 4)))
+				(print (/ #c(1 2) 2))
+				""").split("\n");
+		assertThat(out).containsExactly("#C(3.0 4.532360141827194)", "#C(1.0 0.0)", "#C(1.0 0.0)", "#C(0.44 0.08)",
+				"#C(0.4 0.2)", "#C(2.0 -1.0)", "#C(0.6 -1.2)", "#C(" + 1.0 / 3.0 + " " + 2.0 / 3.0 + ")",
+				"#C(11/25 2/25)", "#C(1/2 1)");
 	}
 
 	@Test

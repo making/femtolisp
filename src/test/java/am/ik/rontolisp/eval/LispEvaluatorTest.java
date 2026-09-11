@@ -2395,6 +2395,40 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void evalComplexFloatDivisionIsSmithsForm() {
+		// Float complex division folds on the LARGER divisor part (Smith's form, what
+		// SBCL 2.2.9 computes) instead of dividing by c^2+d^2. A REAL divisor makes the
+		// fold's r zero, so each part costs ONE rounding: this quotient is SBCL's
+		// #C(3.0 4.532360141827194), where the denominator form answered
+		// 2.9999999999999996 for the real part.
+		assertThat(eval("(/ #c(2.0794415416798357d0 3.141592653589793d0) 0.6931471805599453d0)").print())
+			.isEqualTo("#C(3.0 4.532360141827194)");
+		assertThat(realPartOf("(/ #c(1d0 2d0) 3d0)")).isEqualTo(1.0 / 3.0);
+		assertThat(imagPartOf("(/ #c(1d0 2d0) 3d0)")).isEqualTo(2.0 / 3.0);
+		// Nothing intermediate leaves the operands' own range: c^2+d^2 overflows above
+		// |c| ~ 1.3e154 and flushes to zero below ~1.5e-162, and both of these answered
+		// #C(NaN NaN) through it.
+		assertThat(eval("(/ #c(1d200 1d200) #c(1d200 1d200))").print()).isEqualTo("#C(1.0 0.0)");
+		assertThat(eval("(/ #c(1d-200 1d-200) #c(1d-200 1d-200))").print()).isEqualTo("#C(1.0 0.0)");
+		assertThat(realPartOf("(/ #c(1d0 2d0) #c(1d300 1d300))")).isEqualTo(3.0 / (2.0 * 1e300));
+		assertThat(imagPartOf("(/ #c(1d0 2d0) #c(1d300 1d300))")).isEqualTo(1.0 / (2.0 * 1e300));
+		// Both arms of the fold, and the values every form already agreed on.
+		assertThat(eval("(/ #c(1d0 2d0) #c(3d0 4d0))").print()).isEqualTo("#C(0.44 0.08)");
+		assertThat(eval("(/ #c(1d0 2d0) #c(4d0 3d0))").print()).isEqualTo("#C(0.4 0.2)");
+		assertThat(eval("(/ #c(1d0 2d0) #c(0d0 1d0))").print()).isEqualTo("#C(2.0 -1.0)");
+		assertThat(eval("(/ 3d0 #c(1d0 2d0))").print()).isEqualTo("#C(0.6 -1.2)");
+		// A zero FLOAT divisor keeps the NaN the denominator form answered (r is 0/0):
+		// SBCL signals DIVISION-BY-ZERO there because its FPU traps, this runtime does
+		// not trap, and a part-wise infinity would claim an answer where there is none.
+		assertThat(realPartOf("(/ #c(1d0 2d0) 0d0)")).isNaN();
+		assertThat(imagPartOf("(/ #c(1d0 2d0) 0d0)")).isNaN();
+		assertThat(realPartOf("(/ #c(1d0 2d0) #c(0d0 0d0))")).isNaN();
+		// The EXACT arm is untouched, division by an exact zero included.
+		assertThat(eval("(/ #c(1 2) #c(3 4))").print()).isEqualTo("#C(11/25 2/25)");
+		assertThatThrownBy(() -> eval("(/ #c(1 2) 0)")).hasMessageContaining("Division by zero");
+	}
+
+	@Test
 	void evalComplexAbs() {
 		// abs answers a real (a float even for exact parts, like SBCL).
 		assertThat(eval("(abs #c(3 4))")).isEqualTo(new LispDouble(5.0));
@@ -3235,12 +3269,12 @@ class LispEvaluatorTest {
 		assertThat(eval("(log 8d0 2d0)")).isEqualTo(new LispDouble(3.0));
 		assertThat(eval("(log 1000d0 10d0)")).isEqualTo(new LispDouble(Math.log(1000.0) / Math.log(10.0)));
 		// Each logarithm takes the real-domain escape on its own, so a negative number
-		// answers the plane divided by the real base. The QUOTIENT is the definition,
-		// so the identity is the pin -- and it is also why the real part is
-		// 2.9999999999999996 where SBCL answers 3.0: this complex division is the
-		// naive (ac+bd)/(c^2+d^2), SBCL's is Smith's, whose real divisor reduces to a
-		// part-wise divide (.kb/jvm-complex.md).
+		// answers the plane divided by the real base. The QUOTIENT is the definition, so
+		// the identity is the pin -- and Smith's fold makes that quotient's real part
+		// ONE division by the real base, which is SBCL's #C(3.0 4.532360141827194) on
+		// every platform whose Math.log is correctly rounded (.kb/jvm-complex.md).
 		assertThat(eval("(log -8d0 2d0)")).isEqualTo(eval("(/ (log -8d0) (log 2d0))"));
+		assertThat(realPartOf("(log -8d0 2d0)")).isEqualTo(Math.log(8.0) / Math.log(2.0));
 		assertThat(realPartOf("(log -8d0 2d0)")).isCloseTo(3.0, within(2 * Math.ulp(3.0)));
 		assertThat(imagPartOf("(log -8d0 2d0)")).isEqualTo(Math.PI / Math.log(2.0));
 		// A complex number or base is legal: the quotient of two complex logs.

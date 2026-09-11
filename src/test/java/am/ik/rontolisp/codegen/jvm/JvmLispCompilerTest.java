@@ -7471,6 +7471,39 @@ class JvmLispCompilerTest {
 		assertThat(compileAndRun("(print (- 1 #c(1 2)))")).isEqualTo("#C(0 -2)");
 	}
 
+	private static final String COMPLEX_FLOAT_DIVISION_PROGRAM = """
+			(print (/ #c(2.0794415416798357d0 3.141592653589793d0) 0.6931471805599453d0))
+			(print (/ #c(1d0 2d0) 3d0))
+			(print (/ #c(1d200 1d200) #c(1d200 1d200)))
+			(print (/ #c(1d-200 1d-200) #c(1d-200 1d-200)))
+			(print (/ #c(1d0 2d0) #c(1d300 1d300)))
+			(print (/ #c(1d0 2d0) #c(1d-300 1d-300)))
+			(print (/ #c(1d0 2d0) #c(3d0 4d0)))
+			(print (/ #c(1d0 2d0) #c(4d0 3d0)))
+			(print (/ #c(1d0 2d0) #c(0d0 1d0)))
+			(print (/ 3d0 #c(1d0 2d0)))
+			(print (/ #c(1d0 2d0) 0d0))
+			(print (/ #c(1 2) #c(3 4)))
+			(print (/ #c(1 2) 2))
+			(print (log -8d0 2d0))
+			""";
+
+	@Test
+	void compileAndRunComplexFloatDivisionIsSmithsForm() throws Exception {
+		// _cdiv's float tail is Smith's fold, the interpreter's smithDivide term for
+		// term -- so the pin is the interpreter's own output, which is the only one the
+		// platform's rounding cannot invalidate. The exact arm is in the program too:
+		// it keeps the c^2+d^2 denominator, where rationals neither round nor overflow.
+		assertThat(compileAndRun(COMPLEX_FLOAT_DIVISION_PROGRAM)).isEqualTo(interpret(COMPLEX_FLOAT_DIVISION_PROGRAM));
+		// The two rows that MOVED, and that no rounding can blur: a real divisor is one
+		// division per part (SBCL's answer), and the fold never squares the larger part
+		// (the denominator form answered #C(NaN NaN) for both range cases).
+		assertThat(compileAndRun("(print (/ #c(2.0794415416798357d0 3.141592653589793d0) 0.6931471805599453d0))"))
+			.isEqualTo("#C(3.0 4.532360141827194)");
+		assertThat(compileAndRun("(print (/ #c(1d200 1d200) #c(1d200 1d200)))")).isEqualTo("#C(1.0 0.0)");
+		assertThat(compileAndRun("(print (/ #c(1d-200 1d-200) #c(1d-200 1d-200)))")).isEqualTo("#C(1.0 0.0)");
+	}
+
 	@Test
 	void compileAndRunComplexAbs() throws Exception {
 		assertThat(compileAndRun("(print (abs #c(3 4)))")).isEqualTo("5.0");
