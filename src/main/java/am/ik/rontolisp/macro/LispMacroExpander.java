@@ -4749,6 +4749,8 @@ public final class LispMacroExpander {
 		if (keywordError != null) {
 			return keywordError;
 		}
+		KeywordTail tail = KeywordTail.of(parts, 3, "__member");
+		parts = tail.parts();
 		TestSpec testForm = testSpec(parts, 3);
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol item = new LispSymbol("__member_item");
@@ -4764,7 +4766,8 @@ public final class LispMacroExpander {
 		LispVal element = keyedForm(keyForm, callOf(LispNames.CAR, cur));
 		LispVal match = testMatchForm(testForm, item, element);
 		LispVal body = makeIf(match, makeReturn(cur), LispNil.INSTANCE);
-		return expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body)));
+		return tail
+			.wrap(expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body))));
 	}
 
 	// Scans a keyword/value argument tail starting at the given index for the named
@@ -4802,6 +4805,167 @@ public final class LispMacroExpander {
 			int start) {
 		return keywordTailError(call, name, parts, start, LispNames.KEY_KEYWORD, LispNames.START_KEYWORD,
 				LispNames.END_KEYWORD, LispNames.COUNT_KEYWORD, LispNames.FROM_END_KEYWORD);
+	}
+
+	/**
+	 * A call's keyword tail, read ONCE in the order the CALL spells it.
+	 *
+	 * <p>
+	 * Every sequence and alist scan INLINES its {@code :test} / {@code :test-not} /
+	 * {@code :key} designator form into the loop body. For a literal -- {@code #'name},
+	 * {@code 'name}, a {@code lambda}, a self-evaluating atom -- that is exactly right:
+	 * evaluating it is not observable and the compilers' function-designator
+	 * normalization depends on SEEING it. For anything else it is wrong twice over: the
+	 * form runs once per ELEMENT, and it runs inside the loop rather than in the
+	 * argument-evaluation order CLHS 3.1.2.1.2.3 requires. So a non-literal value form
+	 * binds to a variable here, before the scan, and the expansion below sees the
+	 * variable -- as inert as the literal it used to see.
+	 *
+	 * <p>
+	 * The bindings are emitted in SOURCE order, the positional arguments first (the call
+	 * spells them first, and the scans bind them INSIDE a sequence dispatch or a do loop
+	 * the keyword values would otherwise have run before). A keyword spelled twice binds
+	 * BOTH values though only the first is used (ANSI's {@code member-if.order.2}). A
+	 * call whose keyword values are all literal hoists nothing at all and expands
+	 * byte-identically to the way it did before, so no existing call site pays.
+	 *
+	 * <p>
+	 * A hoisted designator is DEFAULTED where it binds, because the expansion can no
+	 * longer read the literal that used to tell it so: a nil {@code :key} is
+	 * {@code identity} and a nil {@code :test} is {@code eql} (ANSI passes a computed nil
+	 * for both -- {@code subsetp.order.2}), and a {@code :test-not} that is actually used
+	 * binds as the COMPLEMENTED {@code :test}, which is what the first-class wrappers
+	 * already do ({@code BuiltinFunctionWrappers.sequenceScanFamily}).
+	 */
+	private static final class KeywordTail {
+
+		private final List<LispVal> parts;
+
+		private final List<String> names;
+
+		private final List<LispVal> inits;
+
+		private KeywordTail(List<LispVal> parts, List<String> names, List<LispVal> inits) {
+			this.parts = parts;
+			this.names = names;
+			this.inits = inits;
+		}
+
+		/**
+		 * Reads the keyword tail of a call, hoisting what must not stay inlined.
+		 * @param parts the call's elements
+		 * @param start the index its keyword tail begins at
+		 * @param prefix the expansion's variable prefix
+		 * @return the tail, binding nothing when every keyword value is a literal
+		 */
+		static KeywordTail of(List<LispVal> parts, int start, String prefix) {
+			if (!hoists(parts, start)) {
+				return new KeywordTail(parts, List.of(), List.of());
+			}
+			List<LispVal> rewritten = new ArrayList<>(parts);
+			List<String> names = new ArrayList<>();
+			List<LispVal> inits = new ArrayList<>();
+			for (int i = 1; i < start && i < parts.size(); i++) {
+				if (!isInertValue(parts.get(i))) {
+					String name = prefix + "_a" + i;
+					names.add(name);
+					inits.add(parts.get(i));
+					rewritten.set(i, new LispSymbol(name));
+				}
+			}
+			// Whether a :test-not in this tail is the one the scan will USE -- a :test
+			// beside it wins, and is then the only designator the match form calls.
+			LispVal test = keywordValue(parts, start, LispNames.TEST_KEYWORD);
+			boolean negating = test == null || isLiteralNil(test);
+			for (int i = start; i + 1 < parts.size(); i += 2) {
+				if (!(parts.get(i) instanceof LispSymbol keyword) || isInertValue(parts.get(i + 1))) {
+					continue;
+				}
+				String name = prefix + "_k" + i;
+				names.add(name);
+				inits.add(designatorInit(keyword.name(), parts.get(i + 1), negating));
+				if (negating && LispNames.TEST_NOT_KEYWORD.equals(keyword.name())) {
+					rewritten.set(i, new LispSymbol(LispNames.TEST_KEYWORD));
+				}
+				rewritten.set(i + 1, new LispSymbol(name));
+			}
+			return new KeywordTail(rewritten, names, inits);
+		}
+
+		/** The call, with every hoisted form replaced by the variable it bound to. */
+		List<LispVal> parts() {
+			return this.parts;
+		}
+
+		/** Wraps the expansion in the bindings, in the order the call spelled them. */
+		LispVal wrap(LispVal body) {
+			LispVal result = body;
+			for (int i = this.names.size() - 1; i >= 0; i--) {
+				result = makeLet(this.names.get(i), this.inits.get(i), result);
+			}
+			return result;
+		}
+
+		// Nothing is hoisted for a tail of literals -- not even a positional argument,
+		// so a call that spells no computed keyword expands exactly as it did before.
+		private static boolean hoists(List<LispVal> parts, int start) {
+			for (int i = start; i + 1 < parts.size(); i += 2) {
+				if (parts.get(i) instanceof LispSymbol && !isInertValue(parts.get(i + 1))) {
+					return true;
+				}
+			}
+			return false;
+		}
+
+		// A form the expansion may keep inlining: evaluating it is not observable, and a
+		// designator spelled this way is what the compilers' function-designator
+		// normalization reads. A bare symbol is NOT inert -- it can be a symbol macro.
+		private static boolean isInertValue(LispVal form) {
+			if (form instanceof LispCons cons) {
+				return cons.car() instanceof LispSymbol head && (LispNames.QUOTE.equals(head.name())
+						|| LispNames.FUNCTION.equals(head.name()) || LispNames.LAMBDA.equals(head.name()));
+			}
+			if (form instanceof LispSymbol symbol) {
+				String name = symbol.name();
+				return name.startsWith(":") || "NIL".equals(name) || "T".equals(name);
+			}
+			return true;
+		}
+
+		private static LispVal designatorInit(String keyword, LispVal form, boolean negating) {
+			return switch (keyword) {
+				case LispNames.KEY_KEYWORD -> defaulted(form, LispNames.IDENTITY);
+				case LispNames.TEST_KEYWORD -> defaulted(form, LispNames.EQL);
+				case LispNames.TEST_NOT_KEYWORD -> negating ? complemented(form) : form;
+				default -> form;
+			};
+		}
+
+		// (or form #'fallback) -- the else arm allocates nothing unless the designator
+		// really is nil, and `or` binds the value once.
+		private static LispVal defaulted(LispVal form, String fallback) {
+			return listToCons(List.of(new LispSymbol(LispNames.OR), form, functionForm(fallback)));
+		}
+
+		// (let ((v form)) (if v (lambda (a b) (not (funcall v a b))) #'eql)): the scan's
+		// match form is then the same funcall a :test gets, and a nil :test-not is the
+		// ABSENT designator exactly as a literal nil one is. The negation is spelled out
+		// rather than delegated to `complement`, whose expansion answers a ONE-argument
+		// lambda on purpose (see expandComplement) -- an equality designator takes two.
+		private static LispVal complemented(LispVal form) {
+			LispSymbol fn = new LispSymbol("__testnot_fn");
+			LispSymbol left = new LispSymbol("__testnot_a");
+			LispSymbol right = new LispSymbol("__testnot_b");
+			LispVal call = listToCons(List.of(new LispSymbol(LispNames.FUNCALL), fn, left, right));
+			LispVal lambda = listToCons(
+					List.of(new LispSymbol(LispNames.LAMBDA), listToCons(List.of(left, right)), makeNot(call)));
+			return makeLet(fn.name(), form, makeIf(fn, lambda, functionForm(LispNames.EQL)));
+		}
+
+		private static LispVal functionForm(String name) {
+			return listToCons(List.of(new LispSymbol(LispNames.FUNCTION), new LispSymbol(name)));
+		}
+
 	}
 
 	/**
@@ -5325,8 +5489,10 @@ public final class LispMacroExpander {
 	 *     (if __pos_hit __pos_hit __pos_found)))
 	 * </pre>
 	 */
-	private static LispVal buildPositionScan(List<LispVal> parts, PositionMode mode, PositionResult resultKind,
+	private static LispVal buildPositionScan(List<LispVal> callParts, PositionMode mode, PositionResult resultKind,
 			boolean arraysExist) {
+		KeywordTail tail = KeywordTail.of(callParts, 3, "__pos");
+		List<LispVal> parts = tail.parts();
 		TestSpec testForm = testSpec(parts, 3);
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispVal startForm = keywordValue(parts, 3, LispNames.START_KEYWORD);
@@ -5407,7 +5573,7 @@ public final class LispMacroExpander {
 		result = makeLet(lenv.name(), lenvInit, result);
 		result = makeLet(startv.name(), startForm == null ? new LispInteger(0) : startForm, result);
 		result = makeLet(lst.name(), parts.get(2), result);
-		return makeLet(item.name(), parts.get(1), result);
+		return tail.wrap(makeLet(item.name(), parts.get(1), result));
 	}
 
 	/**
@@ -5894,11 +6060,13 @@ public final class LispMacroExpander {
 		if (keywordError != null) {
 			return keywordError;
 		}
+		KeywordTail tail = KeywordTail.of(parts, 3, "__count");
+		parts = tail.parts();
 		TestSpec testForm = testSpec(parts, 3);
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol item = new LispSymbol("__count_item");
-		return countScan(seqScanBounds(parts, 3, false), item, parts.get(1), parts.get(2), "__count",
-				elem -> testMatchForm(testForm, item, keyedForm(keyForm, elem)));
+		return tail.wrap(countScan(seqScanBounds(parts, 3, false), item, parts.get(1), parts.get(2), "__count",
+				elem -> testMatchForm(testForm, item, keyedForm(keyForm, elem))));
 	}
 
 	/**
@@ -5916,10 +6084,12 @@ public final class LispMacroExpander {
 		if (keywordError != null) {
 			return keywordError;
 		}
+		KeywordTail tail = KeywordTail.of(parts, 3, "__countif");
+		parts = tail.parts();
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol pred = new LispSymbol("__countif_pred");
-		return countScan(seqScanBounds(parts, 3, false), pred, parts.get(1), parts.get(2), "__countif",
-				elem -> listToCons(List.of(new LispSymbol(LispNames.FUNCALL), pred, keyedForm(keyForm, elem))));
+		return tail.wrap(countScan(seqScanBounds(parts, 3, false), pred, parts.get(1), parts.get(2), "__countif",
+				elem -> listToCons(List.of(new LispSymbol(LispNames.FUNCALL), pred, keyedForm(keyForm, elem)))));
 	}
 
 	/**
@@ -5975,6 +6145,8 @@ public final class LispMacroExpander {
 		if (keywordError != null) {
 			return keywordError;
 		}
+		KeywordTail tail = KeywordTail.of(parts, 3, "__assoc");
+		parts = tail.parts();
 		TestSpec testForm = testSpec(parts, 3);
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol key = new LispSymbol("__assoc_key");
@@ -5991,7 +6163,8 @@ public final class LispMacroExpander {
 		LispVal match = listToCons(List.of(new LispSymbol(LispNames.AND),
 				listToCons(List.of(new LispSymbol(LispNames.CONSP), pair)), comparison));
 		LispVal body = makeIf(match, makeReturn(pair), LispNil.INSTANCE);
-		return expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body)));
+		return tail
+			.wrap(expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body))));
 	}
 
 	/**
@@ -6249,6 +6422,8 @@ public final class LispMacroExpander {
 		if (keywordError != null) {
 			return keywordError;
 		}
+		KeywordTail tail = KeywordTail.of(parts, 2, "__rd");
+		parts = tail.parts();
 		TestSpec testForm = testSpec(parts, 2);
 		LispVal keyForm = keywordValue(parts, 2, LispNames.KEY_KEYWORD);
 		LispVal fromEndForm = keywordValue(parts, 2, LispNames.FROM_END_KEYWORD);
@@ -6265,7 +6440,7 @@ public final class LispMacroExpander {
 		// (setq __rd_acc (cons (car __rd_cur) __rd_acc))))
 		// where DUPS is the tail (cdr __rd_cur) for the keep-last default and the
 		// already-kept accumulator for :from-end t (keep-first).
-		return seqResultDispatchForm(parts.get(1), lst -> {
+		return tail.wrap(seqResultDispatchForm(parts.get(1), lst -> {
 			LispVal bindings = listToCons(List.of(listToCons(List.of(acc, LispNil.INSTANCE)),
 					listToCons(List.of(cur, lst, callOf(LispNames.CDR, cur)))));
 			LispVal endClause = listToCons(List.of(callOf(LispNames.ATOM, cur), nreverseListForm(acc)));
@@ -6275,7 +6450,7 @@ public final class LispMacroExpander {
 					listToCons(List.of(new LispSymbol(LispNames.CONS), callOf(LispNames.CAR, cur), acc))));
 			LispVal body = makeIf(dup, LispNil.INSTANCE, keep);
 			return expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body)));
-		}, arraysExist, false);
+		}, arraysExist, false));
 	}
 
 	/**
@@ -6511,6 +6686,8 @@ public final class LispMacroExpander {
 		if (keywordError != null) {
 			return keywordError;
 		}
+		KeywordTail tail = KeywordTail.of(parts, 3, "__adjoin");
+		parts = tail.parts();
 		TestSpec testForm = testSpec(parts, 3);
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol item = new LispSymbol("__adjoin_item");
@@ -6523,7 +6700,7 @@ public final class LispMacroExpander {
 		LispVal ifExpr = makeIf(memberTest, lst, consCall);
 		LispVal bindings = listToCons(
 				List.of(listToCons(List.of(item, parts.get(1))), listToCons(List.of(lst, parts.get(2)))));
-		return listToCons(List.of(new LispSymbol(LispNames.LET), bindings, ifExpr));
+		return tail.wrap(listToCons(List.of(new LispSymbol(LispNames.LET), bindings, ifExpr)));
 	}
 
 	/**
@@ -6541,23 +6718,28 @@ public final class LispMacroExpander {
 		if (keywordError != null) {
 			return keywordError;
 		}
+		KeywordTail tail = KeywordTail.of(parts, 3, "__un");
+		parts = tail.parts();
 		TestSpec testForm = testSpec(parts, 3);
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol cur = new LispSymbol("__un_cur");
 		LispSymbol acc = new LispSymbol("__un_acc");
-		// (do ((__un_cur b (cdr __un_cur)) (__un_acc a))
+		// (do ((__un_acc a) (__un_cur b (cdr __un_cur)))
 		// ((atom __un_cur) __un_acc)
 		// (if (member (car __un_cur) __un_acc [:test fn] [:key fn]) nil
 		// (setq __un_acc (cons (car __un_cur) __un_acc))))
-		LispVal bindings = listToCons(List.of(listToCons(List.of(cur, parts.get(2), callOf(LispNames.CDR, cur))),
-				listToCons(List.of(acc, parts.get(1)))));
+		// The accumulator binds FIRST: a do evaluates its init forms left to right, and
+		// the call spells list-a before list-b (ANSI's union.order.1).
+		LispVal bindings = listToCons(List.of(listToCons(List.of(acc, parts.get(1))),
+				listToCons(List.of(cur, parts.get(2), callOf(LispNames.CDR, cur)))));
 		LispVal endClause = listToCons(List.of(callOf(LispNames.ATOM, cur), acc));
 		LispVal elem = callOf(LispNames.CAR, cur);
 		LispVal match = memberCallForm(keyedForm(keyForm, elem), acc, testForm, keyForm);
 		LispVal prepend = listToCons(List.of(new LispSymbol(LispNames.SETQ), acc,
 				listToCons(List.of(new LispSymbol(LispNames.CONS), elem, acc))));
 		LispVal body = makeIf(match, LispNil.INSTANCE, prepend);
-		return expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body)));
+		return tail
+			.wrap(expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body))));
 	}
 
 	/**
@@ -6575,6 +6757,8 @@ public final class LispMacroExpander {
 		if (keywordError != null) {
 			return keywordError;
 		}
+		KeywordTail tail = KeywordTail.of(parts, 3, "__in");
+		parts = tail.parts();
 		TestSpec testForm = testSpec(parts, 3);
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol cur = new LispSymbol("__in_cur");
@@ -6592,7 +6776,8 @@ public final class LispMacroExpander {
 		LispVal collect = listToCons(List.of(new LispSymbol(LispNames.SETQ), acc,
 				listToCons(List.of(new LispSymbol(LispNames.CONS), elem, acc))));
 		LispVal body = makeIf(match, collect, LispNil.INSTANCE);
-		return expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body)));
+		return tail
+			.wrap(expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body))));
 	}
 
 	/**
@@ -6610,6 +6795,8 @@ public final class LispMacroExpander {
 		if (keywordError != null) {
 			return keywordError;
 		}
+		KeywordTail tail = KeywordTail.of(parts, 3, "__sd");
+		parts = tail.parts();
 		TestSpec testForm = testSpec(parts, 3);
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol cur = new LispSymbol("__sd_cur");
@@ -6627,7 +6814,8 @@ public final class LispMacroExpander {
 		LispVal collect = listToCons(List.of(new LispSymbol(LispNames.SETQ), acc,
 				listToCons(List.of(new LispSymbol(LispNames.CONS), elem, acc))));
 		LispVal body = makeIf(match, LispNil.INSTANCE, collect);
-		return expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body)));
+		return tail
+			.wrap(expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body))));
 	}
 
 	/**
@@ -6646,18 +6834,25 @@ public final class LispMacroExpander {
 		if (keywordError != null) {
 			return keywordError;
 		}
+		KeywordTail tail = KeywordTail.of(parts, 3, "__sp");
+		parts = tail.parts();
 		TestSpec testForm = testSpec(parts, 3);
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol cur = new LispSymbol("__sp_cur");
-		// (do ((__sp_cur list1 (cdr __sp_cur)))
+		LispSymbol b = new LispSymbol("__sp_b");
+		// (do ((__sp_cur list1 (cdr __sp_cur)) (__sp_b list2))
 		// ((atom __sp_cur) t)
-		// (if (member (car __sp_cur) list2 [:test fn] [:key fn]) nil (return nil)))
-		LispVal bindings = listToCons(List.of(listToCons(List.of(cur, parts.get(1), callOf(LispNames.CDR, cur)))));
+		// (if (member (car __sp_cur) __sp_b [:test fn] [:key fn]) nil (return nil)))
+		// list2 binds once, beside list1: inlined into the member call it was evaluated
+		// once per ELEMENT of list1, and after it (ANSI's subsetp.order.1).
+		LispVal bindings = listToCons(List.of(listToCons(List.of(cur, parts.get(1), callOf(LispNames.CDR, cur))),
+				listToCons(List.of(b, parts.get(2)))));
 		LispVal endClause = listToCons(List.of(callOf(LispNames.ATOM, cur), LispTrue.INSTANCE));
 		LispVal elem = callOf(LispNames.CAR, cur);
-		LispVal match = memberCallForm(keyedForm(keyForm, elem), parts.get(2), testForm, keyForm);
+		LispVal match = memberCallForm(keyedForm(keyForm, elem), b, testForm, keyForm);
 		LispVal body = makeIf(match, LispNil.INSTANCE, makeReturn(LispNil.INSTANCE));
-		return expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body)));
+		return tail
+			.wrap(expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body))));
 	}
 
 	/**
@@ -6777,17 +6972,19 @@ public final class LispMacroExpander {
 		if (keywordError != null) {
 			return keywordError;
 		}
+		KeywordTail tail = KeywordTail.of(parts, 3, "__remove");
+		parts = tail.parts();
 		TestSpec testForm = testSpec(parts, 3);
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		SeqScanBounds bounds = seqScanBounds(parts, 3, true);
 		LispSymbol item = new LispSymbol("__remove_item");
 		// The item binds outside the string dispatch to keep the argument evaluation
 		// order (item, then sequence); the filter's do rebinds it to itself.
-		return makeLet(item.name(), parts.get(1),
+		return tail.wrap(makeLet(item.name(), parts.get(1),
 				seqResultDispatchForm(parts.get(2),
 						lst -> expandFilter(item, item, lst, "__remove",
 								elem -> testMatchForm(testForm, item, keyedForm(keyForm, elem)), false, bounds),
-						arraysExist, false));
+						arraysExist, false)));
 	}
 
 	/**
@@ -6814,13 +7011,15 @@ public final class LispMacroExpander {
 		if (keywordError != null) {
 			return keywordError;
 		}
+		KeywordTail tail = KeywordTail.of(parts, 3, "__removeif");
+		parts = tail.parts();
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		SeqScanBounds bounds = seqScanBounds(parts, 3, true);
 		LispSymbol pred = new LispSymbol("__removeif_pred");
-		return makeLet(pred.name(), parts.get(1),
+		return tail.wrap(makeLet(pred.name(), parts.get(1),
 				seqResultDispatchForm(parts.get(2), lst -> expandFilter(pred, pred, lst, "__removeif",
 						elem -> listToCons(List.of(new LispSymbol(LispNames.FUNCALL), pred, keyedForm(keyForm, elem))),
-						false, bounds), arraysExist, false));
+						false, bounds), arraysExist, false)));
 	}
 
 	/**
@@ -6847,13 +7046,15 @@ public final class LispMacroExpander {
 		if (keywordError != null) {
 			return keywordError;
 		}
+		KeywordTail tail = KeywordTail.of(parts, 3, "__removeifnot");
+		parts = tail.parts();
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		SeqScanBounds bounds = seqScanBounds(parts, 3, true);
 		LispSymbol pred = new LispSymbol("__removeifnot_pred");
-		return makeLet(pred.name(), parts.get(1),
+		return tail.wrap(makeLet(pred.name(), parts.get(1),
 				seqResultDispatchForm(parts.get(2), lst -> expandFilter(pred, pred, lst, "__removeifnot",
 						elem -> listToCons(List.of(new LispSymbol(LispNames.FUNCALL), pred, keyedForm(keyForm, elem))),
-						true, bounds), arraysExist, false));
+						true, bounds), arraysExist, false)));
 	}
 
 	/**
@@ -6882,6 +7083,8 @@ public final class LispMacroExpander {
 		if (keywordError != null) {
 			return keywordError;
 		}
+		KeywordTail tail = KeywordTail.of(parts, 4, "__subst");
+		parts = tail.parts();
 		TestSpec testForm = testSpec(parts, 4);
 		LispVal keyForm = keywordValue(parts, 4, LispNames.KEY_KEYWORD);
 		SeqScanBounds bounds = seqScanBounds(parts, 4, true);
@@ -6898,7 +7101,7 @@ public final class LispMacroExpander {
 				lst -> substituteScan(newItem, lst, "__subst",
 						elem -> testMatchForm(testForm, oldItem, keyedForm(keyForm, elem)), true, bounds),
 				arraysExist, false);
-		return makeLet(newItem.name(), parts.get(1), makeLet(oldItem.name(), parts.get(2), scan));
+		return tail.wrap(makeLet(newItem.name(), parts.get(1), makeLet(oldItem.name(), parts.get(2), scan)));
 	}
 
 	/**
@@ -6928,6 +7131,8 @@ public final class LispMacroExpander {
 		if (keywordError != null) {
 			return keywordError;
 		}
+		KeywordTail tail = KeywordTail.of(parts, 4, "__nsub");
+		parts = tail.parts();
 		TestSpec testForm = testSpec(parts, 4);
 		LispVal keyForm = keywordValue(parts, 4, LispNames.KEY_KEYWORD);
 		SeqScanBounds bounds = seqScanBounds(parts, 4, true);
@@ -6953,7 +7158,7 @@ public final class LispMacroExpander {
 		substParts.set(3, lst);
 		LispVal nonListForm = expandSubstitute((LispCons) listToCons(substParts), arraysExist);
 		LispVal dispatch = deleteOrSubstituteDispatch(lst, parts.get(3), listForm, nonListForm, arraysExist);
-		return makeLet(newItem.name(), parts.get(1), makeLet(oldItem.name(), parts.get(2), dispatch));
+		return tail.wrap(makeLet(newItem.name(), parts.get(1), makeLet(oldItem.name(), parts.get(2), dispatch)));
 	}
 
 	/**
@@ -7020,6 +7225,8 @@ public final class LispMacroExpander {
 		if (keywordError != null) {
 			return keywordError;
 		}
+		KeywordTail tail = KeywordTail.of(parts, 4, "__substif");
+		parts = tail.parts();
 		LispVal keyForm = keywordValue(parts, 4, LispNames.KEY_KEYWORD);
 		SeqScanBounds bounds = seqScanBounds(parts, 4, true);
 		LispSymbol newItem = new LispSymbol("__substif_new");
@@ -7032,7 +7239,7 @@ public final class LispMacroExpander {
 						elem -> listToCons(List.of(new LispSymbol(LispNames.FUNCALL), pred, keyedForm(keyForm, elem))),
 						!negated, bounds),
 				arraysExist, false);
-		return makeLet(newItem.name(), parts.get(1), makeLet(pred.name(), parts.get(2), scan));
+		return tail.wrap(makeLet(newItem.name(), parts.get(1), makeLet(pred.name(), parts.get(2), scan)));
 	}
 
 	/**
@@ -7086,6 +7293,8 @@ public final class LispMacroExpander {
 		if (keywordError != null) {
 			return keywordError;
 		}
+		KeywordTail tail = KeywordTail.of(parts, 4, "__nsubif");
+		parts = tail.parts();
 		LispVal keyForm = keywordValue(parts, 4, LispNames.KEY_KEYWORD);
 		SeqScanBounds bounds = seqScanBounds(parts, 4, true);
 		LispSymbol newItem = new LispSymbol("__nsubif_new");
@@ -7103,7 +7312,7 @@ public final class LispMacroExpander {
 		substIfParts.set(3, lst);
 		LispVal nonListForm = expandSubstituteIf((LispCons) listToCons(substIfParts), arraysExist, negated);
 		LispVal dispatch = deleteOrSubstituteDispatch(lst, parts.get(3), listForm, nonListForm, arraysExist);
-		return makeLet(newItem.name(), parts.get(1), makeLet(pred.name(), parts.get(2), dispatch));
+		return tail.wrap(makeLet(newItem.name(), parts.get(1), makeLet(pred.name(), parts.get(2), dispatch)));
 	}
 
 	/**
@@ -7131,6 +7340,8 @@ public final class LispMacroExpander {
 		if (keywordError != null) {
 			return keywordError;
 		}
+		KeywordTail tail = KeywordTail.of(parts, 3, "__delete");
+		parts = tail.parts();
 		TestSpec testForm = testSpec(parts, 3);
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol item = new LispSymbol("__delete_item");
@@ -7152,10 +7363,10 @@ public final class LispMacroExpander {
 			// below cannot serve :from-end, whose cells would have to be visited
 			// backwards
 			// through a singly linked spine.
-			return makeLet(item.name(), parts.get(1), makeLet(seq.name(), parts.get(2), nonListForm));
+			return tail.wrap(makeLet(item.name(), parts.get(1), makeLet(seq.name(), parts.get(2), nonListForm)));
 		}
 		LispVal dispatch = deleteOrSubstituteDispatch(seq, parts.get(2), listForm, nonListForm, arraysExist);
-		return makeLet(item.name(), parts.get(1), dispatch);
+		return tail.wrap(makeLet(item.name(), parts.get(1), dispatch));
 	}
 
 	/**
@@ -7181,6 +7392,8 @@ public final class LispMacroExpander {
 		if (keywordError != null) {
 			return keywordError;
 		}
+		KeywordTail tail = KeywordTail.of(parts, 3, "__deleteif");
+		parts = tail.parts();
 		LispSymbol pred = new LispSymbol("__deleteif_pred");
 		LispSymbol seq = new LispSymbol("__deleteif_seq");
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
@@ -7200,10 +7413,10 @@ public final class LispMacroExpander {
 			// below cannot serve :from-end, whose cells would have to be visited
 			// backwards
 			// through a singly linked spine.
-			return makeLet(pred.name(), parts.get(1), makeLet(seq.name(), parts.get(2), nonListForm));
+			return tail.wrap(makeLet(pred.name(), parts.get(1), makeLet(seq.name(), parts.get(2), nonListForm)));
 		}
 		LispVal dispatch = deleteOrSubstituteDispatch(seq, parts.get(2), listForm, nonListForm, arraysExist);
-		return makeLet(pred.name(), parts.get(1), dispatch);
+		return tail.wrap(makeLet(pred.name(), parts.get(1), dispatch));
 	}
 
 	/**
@@ -7229,6 +7442,8 @@ public final class LispMacroExpander {
 		if (keywordError != null) {
 			return keywordError;
 		}
+		KeywordTail tail = KeywordTail.of(parts, 3, "__deleteifnot");
+		parts = tail.parts();
 		LispSymbol pred = new LispSymbol("__deleteifnot_pred");
 		LispSymbol seq = new LispSymbol("__deleteifnot_seq");
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
@@ -7248,10 +7463,10 @@ public final class LispMacroExpander {
 			// below cannot serve :from-end, whose cells would have to be visited
 			// backwards
 			// through a singly linked spine.
-			return makeLet(pred.name(), parts.get(1), makeLet(seq.name(), parts.get(2), nonListForm));
+			return tail.wrap(makeLet(pred.name(), parts.get(1), makeLet(seq.name(), parts.get(2), nonListForm)));
 		}
 		LispVal dispatch = deleteOrSubstituteDispatch(seq, parts.get(2), listForm, nonListForm, arraysExist);
-		return makeLet(pred.name(), parts.get(1), dispatch);
+		return tail.wrap(makeLet(pred.name(), parts.get(1), dispatch));
 	}
 
 	/**
@@ -25948,6 +26163,8 @@ public final class LispMacroExpander {
 		if (keywordError != null) {
 			return keywordError;
 		}
+		KeywordTail tail = KeywordTail.of(parts, 3, "__rassoc");
+		parts = tail.parts();
 		TestSpec testForm = testSpec(parts, 3);
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol key = new LispSymbol("__rassoc_key");
@@ -25960,7 +26177,8 @@ public final class LispMacroExpander {
 		LispVal match = listToCons(List.of(new LispSymbol(LispNames.AND),
 				listToCons(List.of(new LispSymbol(LispNames.CONSP), pair)), comparison));
 		LispVal body = makeIf(match, makeReturn(pair), LispNil.INSTANCE);
-		return expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body)));
+		return tail
+			.wrap(expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body))));
 	}
 
 	/**

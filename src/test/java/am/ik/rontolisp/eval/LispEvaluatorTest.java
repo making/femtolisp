@@ -4458,6 +4458,77 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void evalSequenceScansEvaluateAComputedDesignatorOnce() {
+		// CLHS 3.1.2.1.2.3: every argument form is evaluated left to right, exactly
+		// once. The scans inline a designator FORM into the loop body, which is right
+		// for a literal and wrong for a computed one -- it used to run once per ELEMENT,
+		// inside the loop. ANSI pins it with a side-effecting form per keyword
+		// (count.order.1 / remove.order.1 / position.order.2), which is what these are.
+		assertThat(eval("""
+				(let ((log nil))
+				  (list (count (progn (setq log (cons 1 log)) nil)
+				               (progn (setq log (cons 2 log)) '(a nil b c nil d e))
+				               :start (progn (setq log (cons 3 log)) 0)
+				               :end (progn (setq log (cons 4 log)) 3)
+				               :key (progn (setq log (cons 5 log)) #'identity)
+				               :from-end (progn (setq log (cons 6 log)) nil)
+				               :test (progn (setq log (cons 7 log)) #'eql))
+				        (reverse log)))""").print()).isEqualTo("(1 (1 2 3 4 5 6 7))");
+		assertThat(eval("""
+				(let ((log nil))
+				  (list (remove (progn (setq log (cons 1 log)) 'a)
+				                (progn (setq log (cons 2 log)) (list 'a 'b 'c 'd 'a 'f))
+				                :from-end (progn (setq log (cons 3 log)) t)
+				                :count (progn (setq log (cons 4 log)) 1)
+				                :key (progn (setq log (cons 5 log)) #'identity)
+				                :test (progn (setq log (cons 6 log)) #'eq)
+				                :start (progn (setq log (cons 7 log)) 0)
+				                :end (progn (setq log (cons 8 log)) nil))
+				        (reverse log)))""").print()).isEqualTo("((A B C D F) (1 2 3 4 5 6 7 8))");
+		assertThat(eval("""
+				(let ((log nil))
+				  (list (position (progn (setq log (cons 1 log)) 0)
+				                  (progn (setq log (cons 2 log)) '(3 1 8 2 1 2 3 4))
+				                  :test-not (progn (setq log (cons 3 log)) #'/=)
+				                  :key (progn (setq log (cons 4 log)) #'1-)
+				                  :end (progn (setq log (cons 5 log)) 6)
+				                  :start (progn (setq log (cons 6 log)) 1)
+				                  :from-end (progn (setq log (cons 7 log)) t))
+				        (reverse log)))""").print()).isEqualTo("(4 (1 2 3 4 5 6 7))");
+		// The list arguments of the set operations are arguments too: list2 used to be
+		// evaluated once per element of list1, and union evaluated list-b first
+		// (subsetp.order.1, union.order.1).
+		assertThat(eval("""
+				(let ((log nil))
+				  (list (subsetp (progn (setq log (cons 1 log)) '(a b))
+				                 (progn (setq log (cons 2 log)) '(a b c)))
+				        (length (union (progn (setq log (cons 3 log)) (list 1 3))
+				                       (progn (setq log (cons 4 log)) (list 2 3))))
+				        (reverse log)))""").print()).isEqualTo("(T 3 (1 2 3 4))");
+		// A keyword spelled twice evaluates BOTH values and uses the first
+		// (member-if.order.2).
+		assertThat(eval("""
+				(let ((log nil))
+				  (list (count 1 '(1 2 1)
+				               :key (progn (setq log (cons 1 log)) #'identity)
+				               :key (progn (setq log (cons 2 log)) #'1+))
+				        (reverse log)))""").print()).isEqualTo("(2 (1 2))");
+		// A COMPUTED designator can answer nil, which is the ABSENT designator exactly
+		// as the literal nil spelling is (subsetp.order.2 passes (progn ... nil) for
+		// :key). The call position and the runtime twin agree.
+		assertThat(eval("(let ((k nil)) (remove 'a '(a b a c) :key k :test k))").print()).isEqualTo("(B C)");
+		assertThat(eval("(let ((k nil)) (count 1 '(1 2 1) :test-not k))").print()).isEqualTo("2");
+		assertThat(eval("(let ((k nil)) (member 3 '(1 2 3) :key k))").print()).isEqualTo("(3)");
+		assertThat(eval("(let ((k nil)) (assoc 2 '((1 . a) (2 . b)) :key k))").print()).isEqualTo("(2 . B)");
+		assertThat(eval("(let ((k nil)) (rassoc 'b '((1 . a) (2 . b)) :test k))").print()).isEqualTo("(2 . B)");
+		assertThat(eval("(let ((k nil)) (funcall #'remove 'a '(a b a) :key k :test k))").print()).isEqualTo("(B)");
+		// A computed :test-not stays the complemented equality it is.
+		assertThat(eval("(let ((f #'eql)) (count 1 '(1 2 1 3) :test-not f))").print()).isEqualTo("2");
+		assertThat(eval("(let ((f #'=)) (remove 3 '((1 a) (3 b) (3 c)) :test-not f :key #'first))").print())
+			.isEqualTo("((3 B) (3 C))");
+	}
+
+	@Test
 	void evalAconsAsFunctionValue() {
 		assertThat(eval("(funcall #'acons 'a 1 '((b . 2)))").print()).isEqualTo("((A . 1) (B . 2))");
 	}
