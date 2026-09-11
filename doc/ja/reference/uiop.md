@@ -27,9 +27,9 @@
 
 | サブパッケージ | 内容 | 実装済み |
 |-------------|------|---------|
-| `uiop/package` | シンボルとパッケージの操作 (`find-symbol*`、`intern*`、`define-package`) | 4 / 31 |
-| `uiop/package-local-nicknames` | パッケージローカルニックネーム API | 1 / 3 |
-| `uiop/package*` | `uiop/package` が定義するがエクスポートしない 3 つのコンディション・型名 | 0 / 3 |
+| `uiop/package` | シンボルとパッケージの操作 (検索・インターンと `define-package` 支援は実装、ホットアップグレード用の移動系はシグナル) | 31 / 31 |
+| `uiop/package-local-nicknames` | パッケージローカルニックネーム API | 3 / 3 |
+| `uiop/package*` | `uiop/package` が定義するがエクスポートしない 3 つのコンディション・型名 | 3 / 3 |
 | [`uiop/utility`](uiop/utility.md) | 移植性のあるヘルパ (`strcat`、`split-string`、`if-let`、`not-implemented-error`) | 68 / 68 |
 | `uiop/version` | バージョン比較と非推奨コンディション | 1 / 15 |
 | [`uiop/os`](uiop/os.md) | ホストの識別、環境変数、作業ディレクトリ | 22 / 22 |
@@ -81,6 +81,26 @@
 | `uiop:default-temporary-directory` | `(uiop:default-temporary-directory)` | `$TMPDIR` をディレクトリ形式で。環境変数が空の場合 (`--env` なしの 2 つの WASM バックエンド) は `#P"/tmp/"` |
 | `uiop:add-package-local-nickname` | `(uiop:add-package-local-nickname '#:j '#:com.example.pkg)` | パッケージ短縮名を登録 (lite: グローバル、パッケージごとのスコープなし)。リテラルなトップレベル呼び出しはコンパイル時ディレクティブなので、すべてのバックエンドで動作します |
 | `uiop:symbol-call` | `(uiop:symbol-call :cl :+ 1 2)` | 実行時にパッケージから名前を引いて適用します — 依存関係に持たないシステムを呼ぶための UIOP の遅延束縛呼び出しです |
+| `uiop:find-package*` | `(uiop:find-package* :cl)` | パッケージを返すか、存在しなければ `uiop:no-such-package-error` (第 2 引数 nil で nil) |
+| `uiop:find-symbol*` | `(uiop:find-symbol* "CAR" :cl)` | `find-symbol` と同様にシンボルと状態を返す (エラーなし指定で見つからなければ nil, nil) |
+| `uiop:intern*` | `(uiop:intern* "NAME" :my-pkg)` | 文字列化した名前をインターン (エラーなし指定でパッケージがなければ nil) |
+| `uiop:export*`、`uiop:import*` | `(uiop:export* "NAME" :my-pkg)` | インターンしてエクスポート、およびインポート — レジストリが変更可能な範囲で実装 (コンパイル済みバックエンドでは CL 自身の実行時操作と同様に引数の評価と `t` のみ) |
+| `uiop:make-symbol*` | `(uiop:make-symbol* "X")` | 文字列からはインターンされていないシンボル、シンボルからはコピー |
+| `uiop:home-package-p` | `(uiop:home-package-p s p)` | シンボルのホームパッケージがそのパッケージかどうか |
+| `uiop:symbol-package-name` | `(uiop:symbol-package-name 'car)` | `"CL"` (インターンされていないシンボルは nil) |
+| `uiop:standard-common-lisp-symbol-p` | `(uiop:standard-common-lisp-symbol-p 'car)` | エクスポートされた `cl` シンボルかどうか |
+| `uiop:symbol-shadowing-p` | `(uiop:symbol-shadowing-p s p)` | 常に nil — ここに実行時のシャドウイングは存在しません |
+| `uiop:package-names` | `(uiop:package-names :cl)` | 名前とニックネーム |
+| `uiop:packages-from-names` | `(uiop:packages-from-names '(:a :b))` | 名前が指すパッケージ。重複除去・欠番除外つき |
+| `uiop:fresh-package-name` | `(uiop:fresh-package-name)` | どのパッケージも使っていないパッケージ名 |
+| `uiop:rename-package-away` | `(uiop:rename-package-away p)` | `rename-package` が効く範囲で新名へリネーム |
+| `uiop:package-definition-form` | `(uiop:package-definition-form :my-pkg)` | 宣言済みメンバを再現する `defpackage` フォーム (`:error nil` で欠番は nil) |
+| `uiop:parse-define-package-form` | `(uiop:parse-define-package-form pkg clauses)` | `define-package` ヘッダが解析される `ensure-package` 引数 |
+| `uiop:package-designator` | `(typep x 'uiop:package-designator)` | デザイネータの型、および `uiop:no-such-package-error` の datum リーダー |
+| `uiop:no-such-package-error` | `(handler-case ... (uiop:no-such-package-error (c) ...))` | パッケージ欠番時に `find-package*` がシグナルする `type-error` コンディション |
+| `uiop:define-package-style-warning` | — | パッケージ再定義がシグナルするはずの `style-warning` |
+| `uiop:package-local-nicknames` | `(uiop:package-local-nicknames :my-pkg)` | そのパッケージを指すグローバルニックネームの一覧 (lite: ニックネームはグローバルでパッケージごとのスコープなし) |
+| `uiop:remove-package-local-nickname` | `(uiop:remove-package-local-nickname '#:nick)` | ニックネームの登録解除 (`t`)、なければ nil。リテラルなトップレベル呼び出しはすべてのバックエンドで動作します |
 
 完全実装済みサブパッケージ以外の 8 つのメンバは**マクロ**で、呼び出されるのではなく
 コンパイラが展開します: `uiop:with-temporary-file`、

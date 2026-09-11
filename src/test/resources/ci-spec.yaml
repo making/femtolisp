@@ -11191,6 +11191,81 @@ cases:
       (print (apn:apn-answer))
     expected: |
       42
+  # The uiop/package surgery family (.todo/361): the name-level questions the
+  # registry serves are real on all four backends, and the symbol-identity
+  # surgery signals not-implemented-error naming the operation with the "no
+  # image to upgrade" reason. Only cross-backend-agreeing answers are pinned
+  # (the compiled find-symbol builds unknown spellings, and the WASM
+  # symbol-package cannot tell cl from cl-user -- both documented divergences
+  # with twins in LispEvaluatorTest). The nickname is added AND removed by
+  # literal top-level calls (both are compile-time directives), so nothing
+  # leaks into later cases.
+  - name: uiop-package-surgery
+    source: |
+      (defpackage #:ci-up (:use #:cl) (:export #:up-foo))
+      (in-package #:ci-up)
+      (defun up-foo () 42)
+      (in-package #:cl-user)
+      (uiop:add-package-local-nickname '#:ci-up-nick '#:ci-up)
+      (print (uiop:find-package* :ci-up))
+      (print (uiop:find-symbol* "UP-FOO" :ci-up))
+      (print (multiple-value-list (uiop:find-symbol* "CAR" :cl)))
+      (print (uiop:find-package* :no-such-ci-pkg-zzz nil))
+      (print (handler-case (uiop:find-package* :no-such-ci-pkg-zzz)
+               (uiop:no-such-package-error (c) (princ-to-string c))))
+      (print (typep :ci-up 'uiop:package-designator))
+      (print (typep 42 'uiop:package-designator))
+      (print (symbol-name (uiop:intern* "CI-UP-NEW" :ci-up)))
+      (print (uiop:symbol-package-name (uiop:intern* "CI-UP-NEW" :ci-up)))
+      (print (uiop:make-symbol* "CI-X"))
+      (print (uiop:symbol-package-name 'ci-up::ci-up-new))
+      (print (uiop:standard-common-lisp-symbol-p 'car))
+      (print (uiop:standard-common-lisp-symbol-p 'ci-up-new))
+      (print (uiop:home-package-p 'ci-up::ci-up-new :ci-up))
+      (print (uiop:home-package-p :car :keyword))
+      (print (uiop:symbol-shadowing-p 'car :cl))
+      (print (uiop:package-names :ci-up))
+      (print (uiop:packages-from-names '(:ci-up :cl :no-such-ci-pkg-zzz)))
+      (print (null (find-package (uiop:fresh-package-name))))
+      (print (uiop:fresh-package-name :prefix "CI-UP-" :separator "-" :index 3))
+      (print (uiop:package-definition-form :ci-up))
+      (print (list (uiop:export* "UP-BAR" :ci-up) (uiop:import* 'cl:car :ci-up) (ci-up-nick:up-foo)))
+      (print (uiop:package-local-nicknames :ci-up))
+      (defvar *ci-upa-renamed* (uiop:rename-package-away (make-package "CI-UPA" :use '(:cl))))
+      (print (list (null (find-package "CI-UPA"))
+                   (if (search "__CI-UPA__" (package-name *ci-upa-renamed*)) t nil)))
+      (delete-package *ci-upa-renamed*)
+      (print (handler-case (uiop:rehome-symbol 'a :cl)
+               (uiop:not-implemented-error (c) (princ-to-string c))))
+      (print (handler-case (uiop:ensure-package :cl)
+               (uiop:not-implemented-error (c) (princ-to-string c))))
+    expected: |
+      :CI-UP
+      CI-UP:UP-FOO
+      (CAR :EXTERNAL)
+      NIL
+      "No package named NO-SUCH-CI-PKG-ZZZ"
+      T
+      NIL
+      "CI-UP-NEW"
+      "CI-UP"
+      #:CI-X
+      "CI-UP"
+      T
+      NIL
+      T
+      T
+      NIL
+      ("CI-UP" "CI-UP-NICK")
+      (:CI-UP :CL)
+      T
+      "CI-UP--3"
+      (DEFPACKAGE "CI-UP" (:NICKNAMES "CI-UP-NICK") (:USE "CL") (:EXPORT "UP-FOO"))
+      (T T 42)
+      (("CI-UP-NICK" . :CI-UP))
+      (T T)
+      "Not (currently) implemented on rontolisp: UIOP/PACKAGE:REHOME-SYMBOL moving a symbol between packages needs symbol identity, and rontolisp has no image to upgrade"
+      "Not (currently) implemented on rontolisp: UIOP/PACKAGE:ENSURE-PACKAGE redefining a package at run time is upgrade surgery needing symbol identity, and rontolisp has no image to upgrade -- define the package with uiop:define-package or defpackage instead"
   - name: mutex-primitives
     source: |
       ; The handle is opaque (an integer index interpreted, a ReentrantLock on the

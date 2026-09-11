@@ -307,6 +307,18 @@ public final class PackageResolver {
 					return consumed;
 				}
 			}
+			// A literal top-level (uiop:remove-package-local-nickname 'nick [scope])
+			// is consumed like the add: the nickname unregisters here (so it works on
+			// every backend -- the compiled runtimes have no uiop function) and the
+			// call is replaced by t/nil, the runtime function's return value. A
+			// non-literal call stays a runtime call, which only the interpreter can
+			// serve.
+			if (LispNames.REMOVE_PACKAGE_LOCAL_NICKNAME.equals(member) && isUiopOperator(op)) {
+				LispVal consumed = tryConsumeRemoveLocalNickname(cons);
+				if (consumed != null) {
+					return consumed;
+				}
+			}
 		}
 		return resolveForm(form);
 	}
@@ -373,6 +385,31 @@ public final class PackageResolver {
 		}
 		registerLocalNickname(nickname, actual);
 		return quotedSymbol(this.registry.canonicalName(actual));
+	}
+
+	/**
+	 * Consumes a literal {@code (uiop:remove-package-local-nickname 'nick [scope])} call:
+	 * unregisters the (global, lite) nickname and returns t/nil -- the runtime function's
+	 * return value. Returns null when an argument is not a literal designator (a runtime
+	 * call the interpreter serves).
+	 */
+	private @Nullable LispVal tryConsumeRemoveLocalNickname(LispCons cons) {
+		List<LispVal> parts = cons.toList();
+		if (parts.size() < 2 || parts.size() > 3) {
+			return null;
+		}
+		String nickname = literalDesignator(parts.get(1));
+		if (nickname == null) {
+			return null;
+		}
+		String scope = null;
+		if (parts.size() == 3) {
+			scope = literalDesignator(parts.get(2));
+			if (scope == null) {
+				return null;
+			}
+		}
+		return removeLocalNickname(nickname, scope) ? LispTrue.INSTANCE : LispNil.INSTANCE;
 	}
 
 	/**
@@ -980,6 +1017,35 @@ public final class PackageResolver {
 					"Nickname " + nickname + " already names " + existing + "; cannot repoint it to " + target);
 		}
 		this.registry.defineNickname(nickname, target);
+	}
+
+	/**
+	 * Removes a package nickname -- the runtime half of
+	 * {@code uiop:remove-package-local-nickname}. Lite: nicknames are GLOBAL (no
+	 * per-package scoping, see {@link #registerLocalNickname}), so the scope package only
+	 * guards the removal: when given, the nickname must point at it, otherwise nothing is
+	 * removed. The scope is canonicalized exactly like a registration target, so it
+	 * compares equal to what {@link #registerLocalNickname} stored.
+	 * @param nickname the nickname as written (prefix already stripped)
+	 * @param scopeDesignator the scope package as written, or null for no guard
+	 * @return {@code true} when a mapping was removed
+	 * @throws LispPackageException when the scope names no package
+	 */
+	public boolean removeLocalNickname(String nickname, @Nullable String scopeDesignator) {
+		if (!this.registry.contains(nickname) || this.registry.canonicalName(nickname).equals(nickname)) {
+			// Not a nickname mapping at all (unknown, or a package's own name):
+			// nothing to remove.
+			return false;
+		}
+		if (scopeDesignator != null) {
+			if (findPackageName(scopeDesignator) == null) {
+				throw new LispPackageException("No such package: " + scopeDesignator);
+			}
+			if (!this.registry.canonicalName(nickname).equals(this.registry.canonicalName(scopeDesignator))) {
+				return false;
+			}
+		}
+		return this.registry.removeNickname(nickname);
 	}
 
 	/**

@@ -1741,6 +1741,24 @@ public final class LispEvaluator {
 			this.packageResolver.registerLocalNickname(nickname, actual);
 			return new LispSymbol(actual);
 		}));
+		// uiop:remove-package-local-nickname -- unregisters a GLOBAL nickname (no
+		// per-package scoping, like the add above); a non-literal call stays a runtime
+		// call only the interpreter serves. The optional scope package only guards the
+		// removal: the nickname must point at it. Answers t when a mapping was
+		// removed, nil when there was none (or it points elsewhere).
+		String removeNicknameName = UiopExports.qualified(LispNames.REMOVE_PACKAGE_LOCAL_NICKNAME);
+		this.globalEnv.defineFunction(removeNicknameName, new LispFunction(removeNicknameName, args -> {
+			if (args.isEmpty() || args.size() > 2) {
+				throw new LispEvalException(LispNames.REMOVE_PACKAGE_LOCAL_NICKNAME
+						+ " expects a nickname and an optional package, got " + args.size());
+			}
+			String nickname = packageNameDesignator(LispNames.REMOVE_PACKAGE_LOCAL_NICKNAME, args.get(0));
+			String scope = null;
+			if (args.size() == 2) {
+				scope = packageNameDesignator(LispNames.REMOVE_PACKAGE_LOCAL_NICKNAME, args.get(1));
+			}
+			return this.packageResolver.removeLocalNickname(nickname, scope) ? LispTrue.INSTANCE : LispNil.INSTANCE;
+		}));
 		// use-package: a literal top-level call is consumed by the PackageResolver (so it
 		// works on every backend); this runtime binding serves the computed calls only
 		// the
@@ -3885,6 +3903,56 @@ public final class LispEvaluator {
 	}
 
 	/**
+	 * The type-mention half of the uiop lazy trigger: a quoted uiop type name in a
+	 * {@code typep}/{@code typecase} form is not a function or variable resolution, so
+	 * nothing would load the deftype behind it (the compile paths splice it from the
+	 * quoted occurrence, but the interpreter only loads functions, variables and the
+	 * condition/class set). Loads every library definition the form names -- usually just
+	 * the deftype, through the same idempotent {@link #loadUiopDefinition} the call
+	 * positions use. Both spellings count: the form may reach here unresolved.
+	 */
+	private void ensureUiopTypesFor(LispVal form) {
+		for (String name : uiopNamesMentioned(form)) {
+			loadUiopDefinition(name);
+		}
+	}
+
+	private static java.util.List<String> uiopNamesMentioned(LispVal form) {
+		java.util.List<String> names = new java.util.ArrayList<>();
+		collectUiopNames(form, names);
+		return names;
+	}
+
+	private static void collectUiopNames(LispVal form, java.util.List<String> names) {
+		switch (form) {
+			case LispSymbol sym -> {
+				String name = sym.name();
+				if (UiopLibrary.definesName(name)) {
+					names.add(name);
+				}
+				else {
+					PackageRegistry.QualifiedName qn = PackageRegistry.splitQualified(name);
+					if (qn != null && UiopExports.isUiopFamily(qn.pkg())) {
+						String homePackage = UiopExports.homePackage(qn.member());
+						if (homePackage != null) {
+							String home = homePackage + ":" + qn.member();
+							if (UiopLibrary.definesName(home)) {
+								names.add(home);
+							}
+						}
+					}
+				}
+			}
+			case LispCons cons -> {
+				collectUiopNames(cons.car(), names);
+				collectUiopNames(cons.cdr(), names);
+			}
+			default -> {
+			}
+		}
+	}
+
+	/**
 	 * Evaluates the {@code geom} library (geom.lisp -- solid modeling over linalg,
 	 * {@code GeomLibrary}) into the global environment once, then installs
 	 * {@link GeomKernels} over the three members a model FILE spends its load time in.
@@ -5739,14 +5807,17 @@ public final class LispEvaluator {
 			case LispNames.TYPECASE:
 				ensureAsdfClassesFor(cons);
 				ensureGeomClassesFor(cons);
+				ensureUiopTypesFor(cons);
 				return eval(LispMacroExpander.expandTypecase(cons, this.closRegistry), env);
 			case LispNames.ETYPECASE:
 				ensureAsdfClassesFor(cons);
 				ensureGeomClassesFor(cons);
+				ensureUiopTypesFor(cons);
 				return eval(LispMacroExpander.expandEtypecase(cons, this.closRegistry), env);
 			case LispNames.CTYPECASE:
 				ensureAsdfClassesFor(cons);
 				ensureGeomClassesFor(cons);
+				ensureUiopTypesFor(cons);
 				return eval(LispMacroExpander.expandCtypecase(cons, this.closRegistry), env);
 			case LispNames.CHECK_TYPE:
 				return evalBuiltinMacro(cons, env, LispMacroExpander::expandCheckType);
@@ -5800,6 +5871,7 @@ public final class LispEvaluator {
 				seedMopClassesForTypepForm(cons);
 				ensureAsdfClassesFor(cons);
 				ensureGeomClassesFor(cons);
+				ensureUiopTypesFor(cons);
 				return eval(LispMacroExpander.expandTypep(cons, this.closRegistry), env);
 			case LispNames.UPGRADED_COMPLEX_PART_TYPE:
 				return evalBuiltinMacro(cons, env, LispMacroExpander::expandUpgradedComplexPartType);

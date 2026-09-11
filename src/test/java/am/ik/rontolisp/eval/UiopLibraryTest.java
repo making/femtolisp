@@ -148,6 +148,7 @@ class UiopLibraryTest {
 		// library form at all, so nothing can shadow it.
 		assertThat(splicedNames("(uiop:if-let ((x 1)) x)")).isEmpty();
 		assertThat(splicedNames("(uiop:add-package-local-nickname \"A\" \"CL\")")).isEmpty();
+		assertThat(splicedNames("(uiop:remove-package-local-nickname \"A\")")).isEmpty();
 	}
 
 	@Test

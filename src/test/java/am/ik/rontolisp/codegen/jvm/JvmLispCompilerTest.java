@@ -2473,6 +2473,129 @@ class JvmLispCompilerTest {
 	}
 
 	@Test
+	void compileAndRunUiopPackageLookupHalf() throws Exception {
+		// The interpreter twin is
+		// LispEvaluatorTest#evalUiopPackageLookupHalfAnswersFromTheRegistry: the
+		// registry answers are baked at compile time, so the name-level questions
+		// agree. The absent-name find-symbol* deviation is NOT pinned here (the
+		// compiled lowering builds the spelling where the interpreter answers nil).
+		assertThat(compileAndRun("""
+				(print (uiop:find-package* :cl))
+				(print (uiop:find-package* :no-such-pkg nil))
+				(print (handler-case (uiop:find-package* :no-such-pkg)
+				         (uiop:no-such-package-error (c)
+				           (list (typep c 'type-error) (uiop:package-designator c)))))
+				(print (typep :cl 'uiop:package-designator))
+				(print (typep "CL" 'uiop:package-designator))
+				(print (typep 42 'uiop:package-designator))
+				(print (uiop:find-symbol* "CAR" :cl))
+				(print (multiple-value-list (uiop:find-symbol* "CAR" :cl)))
+				(print (uiop:intern* "JU-NEW" :cl-user))
+				(print (uiop:make-symbol* "JU-X"))
+				(print (symbol-name (uiop:make-symbol* 'car)))
+				""")).isEqualTo(":CL\nNIL\n(T :NO-SUCH-PKG)\nT\nT\nNIL\nCAR\n(CAR :EXTERNAL)\nJU-NEW\n#:JU-X\n\"CAR\"");
+	}
+
+	@Test
+	void compileAndRunUiopPackageNamePredicates() throws Exception {
+		// Only the cases every backend answers alike: symbol-package cannot tell
+		// cl from cl-user on the WASM backend, so no cl member is asked about its
+		// home here (LispEvaluatorTest pins the interpreter's answers).
+		assertThat(compileAndRun("""
+				(print (uiop:symbol-package-name '#:ju-u))
+				(print (uiop:standard-common-lisp-symbol-p 'car))
+				(print (uiop:standard-common-lisp-symbol-p 'ju-definitely-not-cl))
+				(print (uiop:standard-common-lisp-symbol-p "CAR"))
+				(print (uiop:home-package-p :car :keyword))
+				(print (uiop:home-package-p 'ju-own :cl-user))
+				(print (uiop:home-package-p 'car nil))
+				(print (uiop:symbol-shadowing-p 'car :cl))
+				(print (uiop:package-names :cl))
+				(print (uiop:packages-from-names '(:cl :cl :cl-user :no-such-pkg)))
+				(print (null (find-package (uiop:fresh-package-name))))
+				(print (uiop:fresh-package-name :prefix "JU-" :separator "-" :index 3))
+				"""))
+			.isEqualTo("NIL\nT\nNIL\nNIL\nT\nT\nNIL\nNIL\n(\"CL\" \"COMMON-LISP\")\n(:CL :CL-USER)\nT\n\"JU--3\"");
+	}
+
+	@Test
+	void compileAndRunUiopPackageMutationsAndSurgery() throws Exception {
+		// export* and import* inherit exactly what CL's own operators do on the
+		// compiled backends (arguments for effect plus t, the registry being
+		// frozen); rename-package-away is a fresh name plus rename-package, which
+		// the runtime-package gate keeps visible; the surgery family signals with
+		// the same report as on the interpreter.
+		assertThat(compileAndRun("""
+				(defpackage #:ju-ei (:use #:cl) (:export #:ei-foo))
+				(in-package #:ju-ei)
+				(defun ei-foo () 42)
+				(in-package #:cl-user)
+				(uiop:add-package-local-nickname '#:ju-nick '#:ju-ei)
+				(print (list (uiop:export* "EI-BAR" :ju-ei) (uiop:import* 'cl:car :ju-ei)))
+				(print (ju-nick:ei-foo))
+				(print (uiop:package-local-nicknames :ju-ei))
+				(print (let ((renamed (uiop:rename-package-away
+				                        (make-package "JU-RPA" :use '(:cl)))))
+				         (list (null (find-package "JU-RPA"))
+				               (search "__JU-RPA__" (package-name renamed)))))
+				(print (handler-case (uiop:rehome-symbol 'a :cl)
+				         (uiop:not-implemented-error (c) (princ-to-string c))))
+				(print (handler-case (uiop:ensure-package :cl)
+				         (uiop:not-implemented-error (c) (princ-to-string c))))
+				(print (handler-case (uiop:delete-package* :cl)
+				         (uiop:not-implemented-error (c) (princ-to-string c))))
+				""")).isEqualTo("(T T)\n42\n((\"JU-NICK\" . :JU-EI))\n(T 0)\n"
+				+ "\"Not (currently) implemented on rontolisp: UIOP/PACKAGE:REHOME-SYMBOL moving a symbol between packages needs symbol identity, and rontolisp has no image to upgrade\"\n"
+				+ "\"Not (currently) implemented on rontolisp: UIOP/PACKAGE:ENSURE-PACKAGE redefining a package at run time is upgrade surgery needing symbol identity, and rontolisp has no image to upgrade -- define the package with uiop:define-package or defpackage instead\"\n"
+				+ "\"Not (currently) implemented on rontolisp: UIOP/PACKAGE:DELETE-PACKAGE* deleting a package out from under a running image is upgrade surgery, and rontolisp has no image to upgrade\"");
+	}
+
+	@Test
+	void compileAndRunUiopRemovePackageLocalNickname() throws Exception {
+		// A literal top-level remove is consumed like the add (so it works on every
+		// backend), and the baked tables answer the end state the directive leaves:
+		// the call through the nickname resolves (it precedes the remove), and every
+		// listing after it agrees the nickname is gone. A listing BEFORE the remove
+		// would still see the end state on the compiled backends while the
+		// interpreter answers the mid-program state, so the two are never mixed in
+		// one program (the frozen-registry rule, .kb/packages.md).
+		assertThat(compileAndRun("""
+				(defpackage #:ju-rm (:use #:cl) (:export #:rm-foo))
+				(in-package #:ju-rm)
+				(defun rm-foo () 9)
+				(in-package #:cl-user)
+				(uiop:add-package-local-nickname '#:ju-rm-nick '#:ju-rm)
+				(print (ju-rm-nick:rm-foo))
+				(uiop:remove-package-local-nickname '#:ju-rm-nick)
+				(print (uiop:package-local-nicknames :ju-rm))
+				(print (uiop:package-names :ju-rm))
+				""")).isEqualTo("9\nNIL\n(\"JU-RM\")");
+	}
+
+	@Test
+	void compileAndRunUiopPackageParseAndDefinitionForm() throws Exception {
+		// Byte-identical with the interpreter (smoke-pinned on all four backends):
+		// the parse is pure list surgery, and the definition form walks the baked
+		// enumeration the interpreter's own walk agrees with.
+		assertThat(compileAndRun("""
+				(defpackage #:ju-pdf (:use #:cl) (:export #:pdf-e1 #:pdf-e2))
+				(print (uiop:parse-define-package-form
+				        ':uiop/package*
+				        '((:use-reexport :uiop/package)
+				          (:import-from :uiop/package #:define-package-style-warning
+				                       #:no-such-package-error #:package-designator)
+				          (:export #:define-package-style-warning #:no-such-package-error
+				                   #:package-designator))))
+				(print (uiop:package-definition-form :ju-pdf))
+				(print (uiop:package-definition-form :ju-pdf :exportp nil :internp t))
+				(print (uiop:package-definition-form :no-such-pkg :error nil))
+				""")).isEqualTo(
+				"(':UIOP/PACKAGE* :NICKNAMES 'NIL :DOCUMENTATION 'NIL :USE '(:UIOP/PACKAGE) :SHADOW 'NIL :SHADOWING-IMPORT-FROM 'NIL :IMPORT-FROM '((:UIOP/PACKAGE #:DEFINE-PACKAGE-STYLE-WARNING #:NO-SUCH-PACKAGE-ERROR #:PACKAGE-DESIGNATOR)) :EXPORT '(#:DEFINE-PACKAGE-STYLE-WARNING #:NO-SUCH-PACKAGE-ERROR #:PACKAGE-DESIGNATOR) :INTERN 'NIL :RECYCLE '(:UIOP/PACKAGE*) :MIX 'NIL :REEXPORT '(:UIOP/PACKAGE) :UNINTERN 'NIL)\n"
+						+ "(DEFPACKAGE \"JU-PDF\" (:USE \"CL\") (:EXPORT \"PDF-E1\" \"PDF-E2\"))\n"
+						+ "(DEFPACKAGE \"JU-PDF\" (:USE \"CL\"))\n" + "NIL");
+	}
+
+	@Test
 	void compileAndRunUiopSymbolCallAsAFirstClassValueOverUninternedDesignators() throws Exception {
 		// dexador's backend dispatch, verbatim in shape: the operator is a VALUE
 		// (#'uiop:symbol-call applied to a runtime argument list) and both designators

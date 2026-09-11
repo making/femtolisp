@@ -27,9 +27,9 @@ one member name:
 
 | Sub-package | What lives there | Implemented |
 |-------------|------------------|-------------|
-| `uiop/package` | symbol and package surgery (`find-symbol*`, `intern*`, `define-package`) | 4 / 31 |
-| `uiop/package-local-nicknames` | the package-local nickname API | 1 / 3 |
-| `uiop/package*` | the three condition/type names `uiop/package` defines but does not export | 0 / 3 |
+| `uiop/package` | symbol and package surgery (the lookups, interning and `define-package` support real; the hot-upgrade movers signal) | 31 / 31 |
+| `uiop/package-local-nicknames` | the package-local nickname API | 3 / 3 |
+| `uiop/package*` | the three condition/type names `uiop/package` defines but does not export | 3 / 3 |
 | [`uiop/utility`](uiop/utility.md) | the portable helpers (`strcat`, `split-string`, `if-let`, `not-implemented-error`) | 68 / 68 |
 | `uiop/version` | version comparison and the deprecation conditions | 1 / 15 |
 | [`uiop/os`](uiop/os.md) | host identity, the environment, the working directory | 22 / 22 |
@@ -82,6 +82,26 @@ honest identity, and the four mutating operations run where their primitives do
 | `uiop:default-temporary-directory` | `(uiop:default-temporary-directory)` | `$TMPDIR` in directory form, or `#P"/tmp/"` when the environment is empty (both WASM backends without `--env`) |
 | `uiop:add-package-local-nickname` | `(uiop:add-package-local-nickname '#:j '#:com.example.pkg)` | register a package shorthand (lite: global, no per-package scoping). A literal top-level call is a compile-time directive, so it works on every backend |
 | `uiop:symbol-call` | `(uiop:symbol-call :cl :+ 1 2)` | look the name up in the package at run time and apply it — UIOP's late-binding call into a system the caller does not depend on |
+| `uiop:find-package*` | `(uiop:find-package* :cl)` | the package, or `uiop:no-such-package-error` (nil for a missing package with a nil second argument) |
+| `uiop:find-symbol*` | `(uiop:find-symbol* "CAR" :cl)` | the symbol and its status, like `find-symbol` (nil, nil for a missing name with no error) |
+| `uiop:intern*` | `(uiop:intern* "NAME" :my-pkg)` | intern the stringified name (nil for a missing package with no error) |
+| `uiop:export*`, `uiop:import*` | `(uiop:export* "NAME" :my-pkg)` | intern-then-export, and import — real where the registry can mutate (the compiled backends answer what CL's own runtime operators answer: arguments for effect plus `t`) |
+| `uiop:make-symbol*` | `(uiop:make-symbol* "X")` | an uninterned symbol from a string, a copy from a symbol |
+| `uiop:home-package-p` | `(uiop:home-package-p s p)` | whether the symbol's home package is the package |
+| `uiop:symbol-package-name` | `(uiop:symbol-package-name 'car)` | `"CL"` (nil for an uninterned symbol) |
+| `uiop:standard-common-lisp-symbol-p` | `(uiop:standard-common-lisp-symbol-p 'car)` | whether the symbol is an exported `cl` symbol |
+| `uiop:symbol-shadowing-p` | `(uiop:symbol-shadowing-p s p)` | always nil — runtime shadowing does not exist here |
+| `uiop:package-names` | `(uiop:package-names :cl)` | the name plus the nicknames |
+| `uiop:packages-from-names` | `(uiop:packages-from-names '(:a :b))` | the packages the names denote, deduplicated with missing ones dropped |
+| `uiop:fresh-package-name` | `(uiop:fresh-package-name)` | a package name no package has |
+| `uiop:rename-package-away` | `(uiop:rename-package-away p)` | rename the package to a fresh name, wherever `rename-package` works |
+| `uiop:package-definition-form` | `(uiop:package-definition-form :my-pkg)` | the `defpackage` form reproducing the declared members (nil for a missing package with `:error nil`) |
+| `uiop:parse-define-package-form` | `(uiop:parse-define-package-form pkg clauses)` | the `ensure-package` arguments a `define-package` header parses to |
+| `uiop:package-designator` | `(typep x 'uiop:package-designator)` | the designator type, and the datum reader of `uiop:no-such-package-error` |
+| `uiop:no-such-package-error` | `(handler-case ... (uiop:no-such-package-error (c) ...))` | the `type-error` condition `find-package*` signals for a missing package |
+| `uiop:define-package-style-warning` | — | the `style-warning` a package redefinition would signal |
+| `uiop:package-local-nicknames` | `(uiop:package-local-nicknames :my-pkg)` | every global nickname pointing at the package (lite: nicknames are global, no per-package scoping) |
+| `uiop:remove-package-local-nickname` | `(uiop:remove-package-local-nickname '#:nick)` | unregister the nickname (`t`) or answer nil; a literal top-level call works on every backend |
 
 Eight members outside the complete sub-packages are **macros**, expanded by the
 compiler rather than called: `uiop:with-temporary-file`,

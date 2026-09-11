@@ -18181,6 +18181,194 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void evalUiopPackageLookupHalfAnswersFromTheRegistry() {
+		// find-package* is find-package that signals uiop:no-such-package-error by
+		// default and answers nil for a missing package when told not to; the
+		// condition is a type-error whose datum the package-designator reader
+		// returns, and package-designator the type accepts every designator shape.
+		assertThat(eval("(uiop:find-package* :cl)").print()).isEqualTo(":CL");
+		assertThat(eval("(uiop:find-package* :common-lisp)").print()).isEqualTo(":CL");
+		assertThat(eval("(uiop:find-package* :no-such-pkg nil)").print()).isEqualTo("NIL");
+		assertThat(eval("""
+				(handler-case (uiop:find-package* :no-such-pkg)
+				  (uiop:no-such-package-error (c)
+				    (list (typep c 'type-error) (uiop:package-designator c)
+				          (princ-to-string c))))
+				""").print()).isEqualTo("(T :NO-SUCH-PKG \"No package named NO-SUCH-PKG\")");
+		assertThat(eval("(typep :cl 'uiop:package-designator)").print()).isEqualTo("T");
+		assertThat(eval("(typep \"CL\" 'uiop:package-designator)").print()).isEqualTo("T");
+		// find-symbol* answers the symbol and its status, like CL's find-symbol;
+		// a missing name with no error answers (nil nil) instead of signalling.
+		assertThat(eval("(uiop:find-symbol* \"CAR\" :cl)").print()).isEqualTo("CAR");
+		assertThat(eval("""
+				(multiple-value-bind (s status) (uiop:find-symbol* "CAR" :cl)
+				  (list s status))
+				""").print()).isEqualTo("(CAR :EXTERNAL)");
+		assertThat(eval("""
+				(multiple-value-bind (s status) (uiop:find-symbol* "ABSENT" :cl nil)
+				  (list s status))
+				""").print()).isEqualTo("(NIL NIL)");
+		assertThat(eval("""
+				(handler-case (uiop:find-symbol* "ABSENT" :cl)
+				  (error (c) (princ-to-string c)))
+				""").print()).contains("ABSENT");
+		// intern* interns the stringified name; a missing package with no error
+		// answers nil (upstream would intern into *package*, which the two-argument
+		// form has no default for here).
+		assertThat(eval("(uiop:intern* \"IU-NEW\" :cl-user)").print()).isEqualTo("IU-NEW");
+		assertThat(eval("(uiop:intern* \"IU-NEW\" :no-such-pkg nil)").print()).isEqualTo("NIL");
+		// make-symbol* copies symbols and builds uninterned names from strings.
+		assertThat(eval("(uiop:make-symbol* \"IU-X\")").print()).isEqualTo("#:IU-X");
+		assertThat(eval("(symbol-name (uiop:make-symbol* 'car))").print()).isEqualTo("\"CAR\"");
+	}
+
+	@Test
+	void evalUiopPackageNamePredicatesReadTheRegistry() {
+		assertThat(eval("(uiop:symbol-package-name 'car)").print()).isEqualTo("\"CL\"");
+		assertThat(eval("(uiop:symbol-package-name '#:iu-u)").print()).isEqualTo("NIL");
+		assertThat(eval("(uiop:standard-common-lisp-symbol-p 'car)").print()).isEqualTo("T");
+		assertThat(eval("(uiop:standard-common-lisp-symbol-p 'iu-definitely-not-cl)").print()).isEqualTo("NIL");
+		assertThat(eval("(uiop:standard-common-lisp-symbol-p \"CAR\")").print()).isEqualTo("NIL");
+		assertThat(eval("(uiop:standard-common-lisp-symbol-p :car)").print()).isEqualTo("NIL");
+		assertThat(eval("(uiop:standard-common-lisp-symbol-p '#:car)").print()).isEqualTo("NIL");
+		assertThat(eval("(uiop:home-package-p 'car :cl)").print()).isEqualTo("T");
+		assertThat(eval("(uiop:home-package-p 'car :cl-user)").print()).isEqualTo("NIL");
+		assertThat(eval("(uiop:home-package-p 'car nil)").print()).isEqualTo("NIL");
+		// Nothing shadows anything: the runtime shadowing operators are documented
+		// non-goals, so the predicate is real and always nil.
+		assertThat(eval("(uiop:symbol-shadowing-p 'car :cl)").print()).isEqualTo("NIL");
+		assertThat(eval("(uiop:package-names :cl)").print()).isEqualTo("(\"CL\" \"COMMON-LISP\")");
+		assertThat(eval("(uiop:packages-from-names '(:cl :cl :cl-user :no-such-pkg))").print())
+			.isEqualTo("(:CL :CL-USER)");
+		// fresh-package-name answers a name no package has; the default prefix is
+		// upstream's, and an explicit prefix/index spells the name directly.
+		assertThat(eval("(null (find-package (uiop:fresh-package-name)))").print()).isEqualTo("T");
+		assertThat(eval("(string= (uiop:fresh-package-name :prefix \"IU-\" :index 0) \"IU-\")").print()).isEqualTo("T");
+		assertThat(
+				eval("(string= (uiop:fresh-package-name :prefix \"IU-\" :separator \"-\" :index 3) \"IU--3\")").print())
+			.isEqualTo("T");
+	}
+
+	@Test
+	void evalUiopPackageMutationsReachTheRegistryWhereItCanMove() {
+		// export* and import* are real where the registry can take the mutation:
+		// the interpreter runs the CL operator.
+		assertThat(evalMulti("""
+				(defpackage #:iu-ei (:use #:cl) (:export #:ei-foo))
+				(in-package #:iu-ei)
+				(defun ei-foo () 42)
+				(in-package #:cl-user)
+				(list (uiop:export* "EI-BAR" :iu-ei)
+				      (uiop:import* 'cl:car :iu-ei)
+				      (iu-ei:ei-foo))
+				""").print()).isEqualTo("(T T 42)");
+		// rename-package-away is a fresh name plus rename-package, so it works
+		// wherever rename-package works.
+		assertThat(evalMulti("""
+				(let ((renamed (uiop:rename-package-away
+				                (make-package "IU-RPA" :use '(:cl)))))
+				  (list (null (find-package "IU-RPA")) (package-name renamed)))
+				""").print()).startsWith("(T \"__IU-RPA__");
+		// The nickname query lists every global nickname for the package (the
+		// scope is global, .kb/packages.md); removal answers t once, then nil,
+		// and a scope the nickname does not point at removes nothing.
+		assertThat(evalMulti("""
+				(defpackage #:iu-np (:use #:cl) (:export #:np-foo))
+				(in-package #:iu-np)
+				(defun np-foo () 7)
+				(in-package #:cl-user)
+				(uiop:add-package-local-nickname '#:iu-nick '#:iu-np)
+				(list (uiop:package-local-nicknames :iu-np)
+				      (iu-nick:np-foo)
+				      (uiop:remove-package-local-nickname '#:iu-nick '#:iu-np)
+				      (uiop:remove-package-local-nickname '#:iu-nick)
+				      (uiop:package-local-nicknames :iu-np))
+				""").print()).isEqualTo("(((\"IU-NICK\" . :IU-NP)) 7 T NIL NIL)");
+		assertThat(evalMulti("""
+				(defpackage #:iu-np2 (:use #:cl))
+				(defpackage #:iu-np3 (:use #:cl))
+				(in-package #:cl-user)
+				(uiop:add-package-local-nickname '#:iu-nick2 '#:iu-np2)
+				(list (uiop:remove-package-local-nickname '#:iu-nick2 '#:iu-np3)
+				      (funcall #'uiop:remove-package-local-nickname '#:iu-nick2))
+				""").print()).isEqualTo("(NIL T)");
+	}
+
+	@Test
+	void evalUiopPackageParseDefinePackageFormAgainstTheCorpusHeader() {
+		// Pinned against uiop 3.3.7's own (define-package :uiop/package* ...)
+		// header from the cached Quicklisp corpus: the parse is upstream's list
+		// surgery, so a real header parses to the real ensure-package arguments.
+		assertThat(eval("""
+				(uiop:parse-define-package-form
+				 ':uiop/package*
+				 '((:use-reexport :uiop/package)
+				   (:import-from :uiop/package #:define-package-style-warning
+				                #:no-such-package-error #:package-designator)
+				   (:export #:define-package-style-warning #:no-such-package-error
+				            #:package-designator)))
+				""").print()).isEqualTo(
+				"(':UIOP/PACKAGE* :NICKNAMES 'NIL :DOCUMENTATION 'NIL :USE '(:UIOP/PACKAGE) :SHADOW 'NIL :SHADOWING-IMPORT-FROM 'NIL :IMPORT-FROM '((:UIOP/PACKAGE #:DEFINE-PACKAGE-STYLE-WARNING #:NO-SUCH-PACKAGE-ERROR #:PACKAGE-DESIGNATOR)) :EXPORT '(#:DEFINE-PACKAGE-STYLE-WARNING #:NO-SUCH-PACKAGE-ERROR #:PACKAGE-DESIGNATOR) :INTERN 'NIL :RECYCLE '(:UIOP/PACKAGE*) :MIX 'NIL :REEXPORT '(:UIOP/PACKAGE) :UNINTERN 'NIL)");
+		// The fan-out and the defaults: :mix-reexport joins :mix and :reexport
+		// (and, like upstream, marks :use present but empty rather than falling
+		// back to (:common-lisp)); a missing :recycle defaults to the package
+		// itself, and an unknown keyword is an error naming it.
+		assertThat(eval("""
+				(uiop:parse-define-package-form
+				 ':iu-p '((:mix-reexport :iu-m) (:shadow #:s) (:unintern #:u)
+				          (:documentation "D")))
+				""").print()).isEqualTo(
+				"(':IU-P :NICKNAMES 'NIL :DOCUMENTATION '\"D\" :USE 'NIL :SHADOW '(#:S) :SHADOWING-IMPORT-FROM 'NIL :IMPORT-FROM 'NIL :EXPORT 'NIL :INTERN 'NIL :RECYCLE '(:IU-P) :MIX '(:IU-M) :REEXPORT '(:IU-M) :UNINTERN '(#:U))");
+		assertThat(eval("""
+				(handler-case (uiop:parse-define-package-form ':iu-p '((:bogus #:x)))
+				  (error (c) (princ-to-string c)))
+				""").print()).contains(":BOGUS");
+	}
+
+	@Test
+	void evalUiopPackageDefinitionFormRoundTripsADeclaredPackage() {
+		// The form covers the declared members (what defpackage said, plus
+		// imports): a defun-defined name is not in the registry's universe, so
+		// only the declared exports round-trip. :error nil answers nil for a
+		// missing package; otherwise it signals no-such-package-error.
+		assertThat(evalMulti("""
+				(defpackage #:iu-pdf (:use #:cl) (:export #:pdf-e1 #:pdf-e2))
+				(in-package #:iu-pdf)
+				(defun pdf-hidden () 1)
+				(in-package #:cl-user)
+				(uiop:package-definition-form :iu-pdf)
+				""").print()).isEqualTo("(DEFPACKAGE \"IU-PDF\" (:USE \"CL\") (:EXPORT \"PDF-E1\" \"PDF-E2\"))");
+		assertThat(evalMulti("""
+				(defpackage #:iu-pdf2 (:use #:cl) (:export #:pdf-e))
+				(uiop:package-definition-form :iu-pdf2 :exportp nil :internp t)
+				""").print()).isEqualTo("(DEFPACKAGE \"IU-PDF2\" (:USE \"CL\"))");
+		assertThat(eval("(uiop:package-definition-form :no-such-pkg :error nil)").print()).isEqualTo("NIL");
+		assertThat(eval("""
+				(handler-case (uiop:package-definition-form :no-such-pkg)
+				  (uiop:no-such-package-error (c) (uiop:package-designator c)))
+				""").print()).isEqualTo(":NO-SUCH-PKG");
+	}
+
+	@Test
+	void evalUiopPackageSurgerySignalsNameTheOperation() {
+		// The surgery family needs symbol identity, which does not exist; each
+		// member names its operation and carries the "no image to upgrade"
+		// reason, rather than standing behind a bare synthesized stub.
+		for (String call : List.of("(uiop:rehome-symbol 'a :cl)", "(uiop:nuke-symbol 'a)",
+				"(uiop:nuke-symbol-in-package 'a :cl)", "(uiop:reify-package :cl)", "(uiop:unreify-package :cl)",
+				"(uiop:reify-symbol 'a)", "(uiop:unreify-symbol '#(\"A\" :cl))", "(uiop:unintern* \"A\" :cl)",
+				"(uiop:shadow* \"A\" :cl)", "(uiop:shadowing-import* 'a :cl)", "(uiop:ensure-package-unused :cl)",
+				"(uiop:delete-package* :cl)", "(uiop:ensure-package :cl)")) {
+			String report = eval("""
+					(handler-case %s
+					  (uiop:not-implemented-error (c) (princ-to-string c)))
+					""".formatted(call)).print();
+			String operation = call.substring(6, call.indexOf(' ')).toUpperCase(java.util.Locale.ROOT);
+			assertThat(report).contains(operation, "no image to upgrade");
+		}
+	}
+
+	@Test
 	void usePackageMakesAPackagesExternalSymbolsVisibleUnqualified() {
 		assertThat(evalMulti("""
 				(defpackage #:greeter (:use #:cl) (:export #:hello))

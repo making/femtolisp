@@ -218,6 +218,16 @@ public final class FreeVarAnalyzer {
 								knownFunctions, globals, specialNames, freeVars);
 						case LispNames.DO_STAR -> collectFreeVars(LispMacroExpander.expandDoStar(cons), boundVars,
 								knownFunctions, globals, specialNames, freeVars);
+						// do-symbols / do-external-symbols bind their iteration
+						// variable (the expansion is a while loop over the
+						// %do-symbols-list universe); without this the variable
+						// reads as a free reference, which breaks any closure
+						// around the walk.
+						case LispNames.DO_SYMBOLS -> collectFreeVars(LispMacroExpander.expandDoSymbols(cons, false),
+								boundVars, knownFunctions, globals, specialNames, freeVars);
+						case LispNames.DO_EXTERNAL_SYMBOLS ->
+							collectFreeVars(LispMacroExpander.expandDoSymbols(cons, true), boundVars, knownFunctions,
+									globals, specialNames, freeVars);
 						case LispNames.LOOP -> collectFreeVars(LispMacroExpander.expandLoop(cons), boundVars,
 								knownFunctions, globals, specialNames, freeVars);
 						// Expand before walking: the default walk would misread the raw
@@ -582,6 +592,13 @@ public final class FreeVarAnalyzer {
 								knownFunctions, captured, insideLambda);
 						case LispNames.DO -> collectCapturedVars(LispMacroExpander.expandDo(cons), localVars,
 								knownFunctions, captured, insideLambda);
+						// do-symbols / do-external-symbols bind their iteration
+						// variable (same reason as in collectFreeVars).
+						case LispNames.DO_SYMBOLS -> collectCapturedVars(LispMacroExpander.expandDoSymbols(cons, false),
+								localVars, knownFunctions, captured, insideLambda);
+						case LispNames.DO_EXTERNAL_SYMBOLS ->
+							collectCapturedVars(LispMacroExpander.expandDoSymbols(cons, true), localVars,
+									knownFunctions, captured, insideLambda);
 						case LispNames.LOOP -> collectCapturedVars(LispMacroExpander.expandLoop(cons), localVars,
 								knownFunctions, captured, insideLambda);
 						// The with-* stream macros bind their stream variable (same

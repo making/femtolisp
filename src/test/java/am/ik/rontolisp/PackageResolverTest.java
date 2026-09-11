@@ -925,6 +925,39 @@ class PackageResolverTest {
 	}
 
 	@Test
+	void uiopRemovePackageLocalNicknameUnregistersALiteralNickname() {
+		// The mirror of the add consumption: a literal top-level remove unregisters
+		// here (so it works on every backend) and the call is replaced by the
+		// runtime function's t/nil answer.
+		PackageResolver resolver = new PackageResolver();
+		resolve(resolver, "(defpackage #:com.example.long-name (:use #:cl) (:export #:run))");
+		resolve(resolver, "(uiop:add-package-local-nickname '#:short '#:com.example.long-name)");
+		assertThat(resolve(resolver, "(short:run)")).isEqualTo("(COM.EXAMPLE.LONG-NAME:RUN)");
+		assertThat(resolve(resolver, "(uiop:remove-package-local-nickname '#:short)")).isEqualTo("T");
+		assertThatThrownBy(() -> resolve(resolver, "(short:run)")).isInstanceOf(LispPackageException.class);
+		assertThat(resolve(resolver, "(uiop:remove-package-local-nickname '#:short)")).isEqualTo("NIL");
+	}
+
+	@Test
+	void uiopRemovePackageLocalNicknameScopeGuardsTheRemoval() {
+		PackageResolver resolver = new PackageResolver();
+		resolve(resolver, "(defpackage #:com.example.a (:use #:cl))");
+		resolve(resolver, "(defpackage #:com.example.b (:use #:cl))");
+		resolve(resolver, "(uiop:add-package-local-nickname '#:s '#:com.example.a)");
+		assertThat(resolve(resolver, "(uiop:remove-package-local-nickname '#:s '#:com.example.b)")).isEqualTo("NIL");
+		assertThat(resolve(resolver, "(s::run)")).contains("COM.EXAMPLE.A");
+		assertThat(resolve(resolver, "(uiop:remove-package-local-nickname '#:s '#:com.example.a)")).isEqualTo("T");
+	}
+
+	@Test
+	void uiopRemovePackageLocalNicknameWithAComputedNicknameStaysACall() {
+		// A non-literal nickname is a runtime call only the interpreter serves, so
+		// resolution leaves it alone.
+		assertThat(resolve("(uiop:remove-package-local-nickname (car '(#:s)))"))
+			.isEqualTo("(UIOP/PACKAGE-LOCAL-NICKNAMES:REMOVE-PACKAGE-LOCAL-NICKNAME (CAR '(#:S)))");
+	}
+
+	@Test
 	void variableNamedQuoteDoesNotSwallowTheFollowingArgument() {
 		// A call tail beginning with a variable named `quote` must not be re-read as
 		// the (quote DATUM) special form: the following argument is code (s-sql's

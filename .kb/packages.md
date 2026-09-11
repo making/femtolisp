@@ -83,8 +83,17 @@ post-resolution). Pinned by `JvmLispCompilerTest.compileAndRunBuiltinNicknamesTr
 **Package-local nicknames are GLOBAL nicknames**: `(:local-nicknames (nick actual)...)` and
 `uiop:add-package-local-nickname` both funnel into `PackageResolver.registerLocalNickname`; a
 literal top-level call is CONSUMED like a defpackage, so the idiom works on every backend, while a
-non-literal call stays a runtime call (interpreter only). ci-spec
-`uiop-add-package-local-nickname`.
+non-literal call stays a runtime call (interpreter only).
+`uiop:remove-package-local-nickname` is the undo both ways: a literal top-level call is
+consumed (`tryConsumeRemoveLocalNickname`, replaced by the t/nil the runtime answers) and a
+computed call runs the interpreter's `removeLocalNickname` (a scope package only guards: the
+nickname must point at it; removing a seeded built-in nickname is refused). The query
+`uiop:package-local-nicknames` is Lisp over `package-nicknames`, so it runs everywhere and
+answers every global nickname for the package. Residual, the frozen-registry rule applied to a
+directive: the baked listing tables are built AFTER the whole program resolves, so on the
+compiled backends they answer the END state -- a program that lists nicknames and then removes
+one disagrees with the interpreter's mid-program answer there (`.kb/uiop.md`). ci-spec
+`uiop-add-package-local-nickname`, `uiop-package-surgery`.
 
 ## Resolution order and imports
 - `resolveUnqualified` consults, in order: `current.imports()`, the shadow set, the `cl` table,
@@ -119,8 +128,10 @@ name (`.kb/wasm-import.md`).
 ## Directives consumed at read/compile time
 Their effect is consulted by `resolveUnqualified` as the resolver walks, so a runtime-only effect
 would be invisible to the forms it affects -- and invisible entirely on the compiled backends. Each
-is consumed by `PackageResolver.resolve` and listed in `UserMacroExpander.isPackageDirective` (the
-macro pass tracks the same state and keeps the form verbatim). Each takes LITERAL designators; a
+is consumed by `PackageResolver.resolve` and (except the two uiop nickname calls, which the macro
+evaluator's resolver consumes in passing like any other form) listed in
+`UserMacroExpander.isPackageDirective` (the macro pass tracks the same state and keeps the form
+verbatim). Each takes LITERAL designators; a
 computed call falls through to an interpreter-only runtime function using the SAME resolver.
 
 | directive | resolver entry | notes |
@@ -129,6 +140,7 @@ computed call falls through to an interpreter-only runtime function using the SA
 | `export` / `unexport` | `exportSymbols` | export also records the same re-export redirect the `:export` clause does |
 | `import` | `importSymbols` | same `imports` redirect (member -> `trueHome`) as `:import-from`; the argument keeps its QUALIFIER; an UNQUALIFIED argument is a no-op, as in CL |
 | `uiop:add-package-local-nickname` | `registerLocalNickname` | see Nicknames |
+| `uiop:remove-package-local-nickname` | `removeLocalNickname` | see Nicknames; replaced by `T`/`NIL` |
 
 All are CL FUNCTIONS, hence usable as function values. ci-spec `use-package`,
 `export-and-unexport`.

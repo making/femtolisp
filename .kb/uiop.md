@@ -241,6 +241,70 @@ string-stream macro) closes exactly once, and a caller-owned stream handed
 directly to a slurper stays open. Part 2 (`.todo/360`) owns
 the other 28: temporary files, encodings, the standard streams.
 
+`uiop/package` (31/31), `uiop/package-local-nicknames` (3/3), `uiop/package*`
+(3/3) -- `uiop-package.lisp` plus two Java built-ins (`.todo/361`). A rontolisp
+symbol is a string, so the family splits: the name-level questions are real,
+the surgery that moves a symbol between packages signals
+`not-implemented-error` naming the operation with the "no image to upgrade"
+reason (upstream needs it to hot-upgrade ASDF inside a running image, and
+there is no image here) -- real definitions, not synthesized stubs, so the
+message says why instead of only which name. That reason is also the
+re-evaluation trigger: this sub-package is one of the things symbol identity
+(the deferred intern table) would unblock.
+
+Real: `find-package*` (now signalling `no-such-package-error`, a `type-error`
+whose datum `package-designator` reads), `find-symbol*`, `intern*` (a missing
+package with no error answers nil -- upstream interns into `*package*, which
+the two-argument form has no default for here), `export*`/`import*` (real where
+the registry can mutate: the interpreter runs the CL operator, the compiled
+backends answer exactly what CL's own runtime export/import answer -- arguments
+for effect plus `t`), `make-symbol*`, `symbol-shadowing-p` (nil, honestly:
+runtime shadowing are non-goals), `home-package-p`, `symbol-package-name`,
+`standard-common-lisp-symbol-p`, `package-names`, `packages-from-names`,
+`fresh-package-name`, `rename-package-away` (a fresh name plus
+`rename-package`, working wherever it works), `package-definition-form`,
+`parse-define-package-form` (a pure port, pinned against uiop 3.3.7's own
+`:uiop/package*` header), the `package-designator` type plus its reader, both
+conditions, the nickname query (Lisp over `package-nicknames`), and
+`remove-package-local-nickname` (an interpreter runtime with a literal
+top-level call consumed at resolve time like the add, so it works on every
+backend). `define-package` was already a resolver-level macro;
+`add-package-local-nickname` was already Java.
+
+Three places the string model shows through, all pinned on all four backends.
+`standard-common-lisp-symbol-p` walks the cl externals comparing member names:
+a compiled `find-symbol` builds the spelling, so its status cannot
+discriminate, and a shadowed-in standard name still reads as standard.
+`package-definition-form` buckets the `do-symbols` enumeration by spelling
+(owned `PKG:`/`PKG::` into `:export`/`:intern`, anything else into
+`:import-from` under its true home) and skips whatever the use list already
+provides; it covers the DECLARED universe (a defun-defined name is not in the
+registry, so only declared members round-trip), and an inherited member of a
+merely-used package is skipped even when genuinely imported (the `:use`
+clause still provides it). The `:local-nicknames` clause of
+`parse-define-package-form` is always accepted: the lite-global machinery is
+always present, so upstream's feature gate could only ever refuse. Signals:
+`rehome-symbol`, both nukes, all four reify/unreify members, `unintern*`,
+`shadow*`, `shadowing-import*`, `ensure-package-unused`, `delete-package*`
+and `ensure-package` (whose compile-time job the `define-package` macro
+already does through the resolver).
+
+Two interpreter/compiling gaps this item closed, both outside uiop proper.
+`FreeVarAnalyzer` did not know `do-symbols`/`do-external-symbols` bind their
+variable (only `dolist` et al. were expanded before the walk), so any closure
+around the walk failed to compile with `Cannot capture variable`: both walks
+now expand them like `dolist`. And a quoted uiop TYPE name never lazy-loaded
+(the loader triggers on function/variable resolution, and the compile paths
+splice from the quoted occurrence): `typep`/`typecase`/`etypecase`/`ctypecase`
+now run `ensureUiopTypesFor` first, which loads every library definition the
+form names. Residual rule the remove consumption exposed: a resolve-time
+directive is program-global on the compiled backends, so the baked listing
+tables answer the END state -- a program that lists nicknames and then removes
+one sees the mid-program state on the interpreter and the end state compiled;
+the two are never mixed in one pinned program (ci-spec `uiop-package-surgery`
+adds without removing; the remove leg lives in the backend tests with its
+listings after it).
+
 ## Selection, not pruning
 `UiopLibrary.process` prepends only the definitions the program reaches, to a fixpoint on a
 `PackageResolver.resolveProgram` copy. **`MACRO_EXPANSION_CALLEES` is the surface-form rule**

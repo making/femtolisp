@@ -8889,6 +8889,23 @@ public final class LispNames {
 	public static final String ADD_PACKAGE_LOCAL_NICKNAME = "ADD-PACKAGE-LOCAL-NICKNAME";
 
 	/**
+	 * {@code uiop:package-local-nicknames} -- lite: nicknames are GLOBAL (no per-package
+	 * scoping), so this answers every global nickname pointing at the package, as
+	 * {@code (NICKNAME-STRING . PACKAGE-KEYWORD)} pairs. A Lisp definition over
+	 * {@code package-nicknames} ({@code uiop-package.lisp}), so it runs on every backend.
+	 */
+	public static final String PACKAGE_LOCAL_NICKNAMES = "PACKAGE-LOCAL-NICKNAMES";
+
+	/**
+	 * {@code uiop:remove-package-local-nickname} -- removes a GLOBAL nickname (no
+	 * per-package scoping, like {@link #ADD_PACKAGE_LOCAL_NICKNAME}); a non-literal call
+	 * is a runtime call only the interpreter serves. Answers {@code t} when a nickname
+	 * was removed, nil when there was none (or, with a scope package, when it points
+	 * elsewhere).
+	 */
+	public static final String REMOVE_PACKAGE_LOCAL_NICKNAME = "REMOVE-PACKAGE-LOCAL-NICKNAME";
+
+	/**
 	 * {@code uiop:merge-pathnames*} -- the safer defaults-aware merge, portable across
 	 * ASDF-loaded libraries. Runtime function on all backends (interpreter + JVM at
 	 * present; the WASM sandbox has no filesystem access to the loaded system's data dir,

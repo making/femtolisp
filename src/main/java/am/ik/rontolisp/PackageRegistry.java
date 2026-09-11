@@ -1301,6 +1301,22 @@ public final class PackageRegistry {
 	}
 
 	/**
+	 * Removes a nickname registration (the runtime
+	 * {@code uiop:remove-package-local-nickname}): the nickname mapping only, never a
+	 * package. Seeded built-in nicknames refuse to go -- they are reserved names, and
+	 * unseating one would orphan every canonical spelling the backends baked.
+	 * @param nickname the nickname as written
+	 * @return {@code true} when a mapping was removed
+	 * @throws LispPackageException when the nickname is a seeded built-in
+	 */
+	public boolean removeNickname(String nickname) {
+		if (BUILTIN_NICKNAMES.containsKey(nickname)) {
+			throw new LispPackageException("Cannot remove the built-in nickname: " + nickname);
+		}
+		return this.nicknames.remove(nickname) != null;
+	}
+
+	/**
 	 * Resolves a package designator to the canonical package name: a registered nickname
 	 * maps to the package it names, any other name is returned unchanged.
 	 * @param name the package name or nickname

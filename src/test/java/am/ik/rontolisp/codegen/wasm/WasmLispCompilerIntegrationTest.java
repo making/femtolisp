@@ -14129,6 +14129,122 @@ class WasmLispCompilerIntegrationTest {
 	}
 
 	@Test
+	void uiopPackageLookupHalf() throws Exception {
+		// The JVM twin is JvmLispCompilerTest#compileAndRunUiopPackageLookupHalf
+		// (and the interpreter twin
+		// LispEvaluatorTest#evalUiopPackageLookupHalfAnswersFromTheRegistry).
+		// Run through the prelude helper: the uiop definitions arrive by the
+		// splice, and the absent-name find-symbol* deviation is not pinned here.
+		assertThat(compileAndRunPrelude("""
+				(print (uiop:find-package* :cl))
+				(print (uiop:find-package* :no-such-pkg nil))
+				(print (handler-case (uiop:find-package* :no-such-pkg)
+				         (uiop:no-such-package-error (c)
+				           (list (typep c 'type-error) (uiop:package-designator c)))))
+				(print (typep :cl 'uiop:package-designator))
+				(print (typep "CL" 'uiop:package-designator))
+				(print (typep 42 'uiop:package-designator))
+				(print (uiop:find-symbol* "CAR" :cl))
+				(print (multiple-value-list (uiop:find-symbol* "CAR" :cl)))
+				(print (uiop:intern* "WU-NEW" :cl-user))
+				(print (uiop:make-symbol* "WU-X"))
+				(print (symbol-name (uiop:make-symbol* 'car)))
+				""")).isEqualTo(":CL\nNIL\n(T :NO-SUCH-PKG)\nT\nT\nNIL\nCAR\n(CAR :EXTERNAL)\nWU-NEW\n#:WU-X\n\"CAR\"");
+	}
+
+	@Test
+	void uiopPackageNamePredicates() throws Exception {
+		// The JVM twin is JvmLispCompilerTest#compileAndRunUiopPackageNamePredicates.
+		// Only the cases every backend answers alike (see the twin for why no cl
+		// member is asked about its home here).
+		assertThat(compileAndRunPrelude("""
+				(print (uiop:symbol-package-name '#:wu-u))
+				(print (uiop:standard-common-lisp-symbol-p 'car))
+				(print (uiop:standard-common-lisp-symbol-p 'wu-definitely-not-cl))
+				(print (uiop:standard-common-lisp-symbol-p "CAR"))
+				(print (uiop:home-package-p :car :keyword))
+				(print (uiop:home-package-p 'wu-own :cl-user))
+				(print (uiop:home-package-p 'car nil))
+				(print (uiop:symbol-shadowing-p 'car :cl))
+				(print (uiop:package-names :cl))
+				(print (uiop:packages-from-names '(:cl :cl :cl-user :no-such-pkg)))
+				(print (null (find-package (uiop:fresh-package-name))))
+				(print (uiop:fresh-package-name :prefix "WU-" :separator "-" :index 3))
+				"""))
+			.isEqualTo("NIL\nT\nNIL\nNIL\nT\nT\nNIL\nNIL\n(\"CL\" \"COMMON-LISP\")\n(:CL :CL-USER)\nT\n\"WU--3\"");
+	}
+
+	@Test
+	void uiopPackageMutationsAndSurgery() throws Exception {
+		// The JVM twin is
+		// JvmLispCompilerTest#compileAndRunUiopPackageMutationsAndSurgery.
+		assertThat(compileAndRunPrelude("""
+				(defpackage #:wu-ei (:use #:cl) (:export #:ei-foo))
+				(in-package #:wu-ei)
+				(defun ei-foo () 42)
+				(in-package #:cl-user)
+				(uiop:add-package-local-nickname '#:wu-nick '#:wu-ei)
+				(print (list (uiop:export* "EI-BAR" :wu-ei) (uiop:import* 'cl:car :wu-ei)))
+				(print (wu-nick:ei-foo))
+				(print (uiop:package-local-nicknames :wu-ei))
+				(print (let ((renamed (uiop:rename-package-away
+				                        (make-package "WU-RPA" :use '(:cl)))))
+				         (list (null (find-package "WU-RPA"))
+				               (search "__WU-RPA__" (package-name renamed)))))
+				(print (handler-case (uiop:rehome-symbol 'a :cl)
+				         (uiop:not-implemented-error (c) (princ-to-string c))))
+				(print (handler-case (uiop:ensure-package :cl)
+				         (uiop:not-implemented-error (c) (princ-to-string c))))
+				(print (handler-case (uiop:delete-package* :cl)
+				         (uiop:not-implemented-error (c) (princ-to-string c))))
+				""")).isEqualTo("(T T)\n42\n((\"WU-NICK\" . :WU-EI))\n(T 0)\n"
+				+ "\"Not (currently) implemented on rontolisp: UIOP/PACKAGE:REHOME-SYMBOL moving a symbol between packages needs symbol identity, and rontolisp has no image to upgrade\"\n"
+				+ "\"Not (currently) implemented on rontolisp: UIOP/PACKAGE:ENSURE-PACKAGE redefining a package at run time is upgrade surgery needing symbol identity, and rontolisp has no image to upgrade -- define the package with uiop:define-package or defpackage instead\"\n"
+				+ "\"Not (currently) implemented on rontolisp: UIOP/PACKAGE:DELETE-PACKAGE* deleting a package out from under a running image is upgrade surgery, and rontolisp has no image to upgrade\"");
+	}
+
+	@Test
+	void uiopRemovePackageLocalNickname() throws Exception {
+		// The WASM twin of
+		// JvmLispCompilerTest#compileAndRunUiopRemovePackageLocalNickname
+		// (see it for why the listings sit after the remove).
+		assertThat(compileAndRunPrelude("""
+				(defpackage #:wu-rm (:use #:cl) (:export #:rm-foo))
+				(in-package #:wu-rm)
+				(defun rm-foo () 9)
+				(in-package #:cl-user)
+				(uiop:add-package-local-nickname '#:wu-rm-nick '#:wu-rm)
+				(print (wu-rm-nick:rm-foo))
+				(uiop:remove-package-local-nickname '#:wu-rm-nick)
+				(print (uiop:package-local-nicknames :wu-rm))
+				(print (uiop:package-names :wu-rm))
+				""")).isEqualTo("9\nNIL\n(\"WU-RM\")");
+	}
+
+	@Test
+	void uiopPackageParseAndDefinitionForm() throws Exception {
+		// The JVM twin is
+		// JvmLispCompilerTest#compileAndRunUiopPackageParseAndDefinitionForm:
+		// byte-identical with the interpreter on every backend.
+		assertThat(compileAndRunPrelude("""
+				(defpackage #:wu-pdf (:use #:cl) (:export #:pdf-e1 #:pdf-e2))
+				(print (uiop:parse-define-package-form
+				        ':uiop/package*
+				        '((:use-reexport :uiop/package)
+				          (:import-from :uiop/package #:define-package-style-warning
+				                       #:no-such-package-error #:package-designator)
+				          (:export #:define-package-style-warning #:no-such-package-error
+				                   #:package-designator))))
+				(print (uiop:package-definition-form :wu-pdf))
+				(print (uiop:package-definition-form :wu-pdf :exportp nil :internp t))
+				(print (uiop:package-definition-form :no-such-pkg :error nil))
+				""")).isEqualTo(
+				"(':UIOP/PACKAGE* :NICKNAMES 'NIL :DOCUMENTATION 'NIL :USE '(:UIOP/PACKAGE) :SHADOW 'NIL :SHADOWING-IMPORT-FROM 'NIL :IMPORT-FROM '((:UIOP/PACKAGE #:DEFINE-PACKAGE-STYLE-WARNING #:NO-SUCH-PACKAGE-ERROR #:PACKAGE-DESIGNATOR)) :EXPORT '(#:DEFINE-PACKAGE-STYLE-WARNING #:NO-SUCH-PACKAGE-ERROR #:PACKAGE-DESIGNATOR) :INTERN 'NIL :RECYCLE '(:UIOP/PACKAGE*) :MIX 'NIL :REEXPORT '(:UIOP/PACKAGE) :UNINTERN 'NIL)\n"
+						+ "(DEFPACKAGE \"WU-PDF\" (:USE \"CL\") (:EXPORT \"PDF-E1\" \"PDF-E2\"))\n"
+						+ "(DEFPACKAGE \"WU-PDF\" (:USE \"CL\"))\n" + "NIL");
+	}
+
+	@Test
 	void applyOfAnUndefinedRuntimeSymbolTraps() throws Exception {
 		// _apply's symbol-designator miss used to return nil SILENTLY; it must fail
 		// loudly like the funcall dispatcher's miss arm (a trap -- the tree-shaker
