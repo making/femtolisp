@@ -32,6 +32,25 @@
   `DeviceResidency.dirty(Object)`/`.backed(Object)`, exposed as
   `GpuThresholds.isDirty(Object)`/`.isBacked(Object)`.
 
+## The in-process interpreter leg runs on the CLI's stack, not JUnit's
+
+`AsdfLibraryE2eSupport#loadsAndRunsOnTheInterpreter` drives `LispEvaluator` IN PROCESS,
+so without help it recurses on the JUnit worker thread -- the JVM default stack, 1 MiB on
+linux-x64. The interpreter's recursion depth is the PROGRAM's: cl-mustache's spec suite
+renders its templates about **800 KiB** down (measured 2026-09-11 on aarch64: the run
+survives `-Xss832k` and dies at `-Xss768k`), which is inside that margin, and CI duly
+went red on `ClMustacheSpecE2eTest » StackOverflow` while every local box stayed green.
+The leg therefore runs its body on a thread with the stack the CLI hands the interpreter
+(16 MiB, `RontoLispCli`'s worker) and rethrows what that thread threw, so the leg
+measures the product's ceiling rather than the harness's. A `StackOverflowError` from
+this leg is a real depth regression, not a stack-size accident.
+
+The evaluator's own per-form scans stay off that budget too: the typecase arm's uiop /
+asdf / geom name scans (`LispEvaluator#collectUiopNames`,
+`AsdfRuntimeLibrary#mentionsComponentClass`, `GeomLibrary#mentionsGeomClass`) walk the
+cdr spine in a LOOP, since they run at whatever depth the program has already reached and
+a frame per list element would spend stack the program still needs.
+
 ## A test that never ran the mechanism it asserts on
 
 A test exercising a THRESHOLD-gated mechanism must build a shape clearing the threshold

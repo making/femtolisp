@@ -114,16 +114,51 @@ abstract class AsdfLibraryE2eSupport {
 	// WasmtimeSupport.container() contacts Docker only when actually called.
 	private static final boolean DOCKER_AVAILABLE = WasmtimeSupport.DOCKER_AVAILABLE;
 
+	/**
+	 * The stack the interpreter leg runs on. The interpreter's recursion depth is the
+	 * PROGRAM's -- cl-mustache's spec suite renders its templates ~800 KiB down -- and a
+	 * JUnit worker thread carries the JVM default (1 MiB on linux-x64), which is inside
+	 * that program's own margin: the same leg that passes here ran out of stack on CI.
+	 * The CLI hands the interpreter 16 MiB for exactly this reason
+	 * ({@code RontoLispCli}'s worker stack), so the in-process leg measures the same
+	 * ceiling the product does rather than JUnit's.
+	 */
+	private static final long INTERPRETER_STACK_BYTES = 16L << 20;
+
 	@Test
-	void loadsAndRunsOnTheInterpreter() {
+	void loadsAndRunsOnTheInterpreter() throws Exception {
 		ByteArrayOutputStream out = new ByteArrayOutputStream();
-		LispEvaluator evaluator = new LispEvaluator(new PrintStream(out, true, StandardCharsets.UTF_8));
-		evaluator.setSystemPath(systemPath());
-		for (LispVal expr : LispReader.readAllFromString(exercise())) {
-			evaluator.eval(expr);
-		}
+		runOnAnInterpreterStack(() -> {
+			LispEvaluator evaluator = new LispEvaluator(new PrintStream(out, true, StandardCharsets.UTF_8));
+			evaluator.setSystemPath(systemPath());
+			for (LispVal expr : LispReader.readAllFromString(exercise())) {
+				evaluator.eval(expr);
+			}
+		});
 		assertThat(out.toString(StandardCharsets.UTF_8).trim().lines().map(String::trim).map(this::normalizeLine))
 			.containsExactlyElementsOf(expected());
+	}
+
+	// Runs the body on a thread with the CLI's interpreter stack and rethrows whatever
+	// it threw, so a failure still reports as this test's own.
+	private static void runOnAnInterpreterStack(Runnable body) throws Exception {
+		Throwable[] thrown = new Throwable[1];
+		Thread worker = new Thread(null, () -> {
+			try {
+				body.run();
+			}
+			catch (Throwable ex) {
+				thrown[0] = ex;
+			}
+		}, "interpreter", INTERPRETER_STACK_BYTES);
+		worker.start();
+		worker.join();
+		if (thrown[0] instanceof Error error) {
+			throw error;
+		}
+		if (thrown[0] instanceof Exception exception) {
+			throw exception;
+		}
 	}
 
 	@Test

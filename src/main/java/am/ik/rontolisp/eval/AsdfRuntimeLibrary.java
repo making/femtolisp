@@ -110,13 +110,21 @@ public final class AsdfRuntimeLibrary {
 	 * @return {@code true} when a class name occurs anywhere in it
 	 */
 	public static boolean mentionsComponentClass(LispVal form) {
-		if (form instanceof LispSymbol sym) {
-			return CLASS_NAMES.contains(sym.name());
+		// The spine is a loop: the scan runs at whatever depth the evaluating program
+		// has reached, so it costs frames for the form's NESTING, never its length.
+		for (LispVal val = form;;) {
+			if (val instanceof LispSymbol sym) {
+				return CLASS_NAMES.contains(sym.name());
+			}
+			if (val instanceof LispCons cons) {
+				if (mentionsComponentClass(cons.car())) {
+					return true;
+				}
+				val = cons.cdr();
+				continue;
+			}
+			return false;
 		}
-		if (form instanceof LispCons cons) {
-			return mentionsComponentClass(cons.car()) || mentionsComponentClass(cons.cdr());
-		}
-		return false;
 	}
 
 	/**

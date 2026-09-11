@@ -120,13 +120,21 @@ public final class GeomLibrary {
 	 * @return {@code true} when a geom class name occurs anywhere in it
 	 */
 	public static boolean mentionsGeomClass(LispVal form) {
-		if (form instanceof LispSymbol sym) {
-			return CLASS_NAMES.contains(sym.name());
+		// The spine is a loop: the scan runs at whatever depth the evaluating program
+		// has reached, so it costs frames for the form's NESTING, never its length.
+		for (LispVal val = form;;) {
+			if (val instanceof LispSymbol sym) {
+				return CLASS_NAMES.contains(sym.name());
+			}
+			if (val instanceof LispCons cons) {
+				if (mentionsGeomClass(cons.car())) {
+					return true;
+				}
+				val = cons.cdr();
+				continue;
+			}
+			return false;
 		}
-		if (form instanceof LispCons cons) {
-			return mentionsGeomClass(cons.car()) || mentionsGeomClass(cons.cdr());
-		}
-		return false;
 	}
 
 	/**

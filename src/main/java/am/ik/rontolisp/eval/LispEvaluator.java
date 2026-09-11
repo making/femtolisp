@@ -3923,32 +3923,41 @@ public final class LispEvaluator {
 		return names;
 	}
 
+	// The spine is a LOOP, not a recursion: this runs on the typecase arm at whatever
+	// depth the program has already reached, so a frame per list element would spend
+	// the stack a deeply recursive program still needs (cl-mustache's spec suite
+	// renders its templates ~800 KiB of stack down). Only NESTING recurses, which a
+	// source form bounds the way the reader does.
 	private static void collectUiopNames(LispVal form, java.util.List<String> names) {
-		switch (form) {
-			case LispSymbol sym -> {
-				String name = sym.name();
-				if (UiopLibrary.definesName(name)) {
-					names.add(name);
-				}
-				else {
-					PackageRegistry.QualifiedName qn = PackageRegistry.splitQualified(name);
-					if (qn != null && UiopExports.isUiopFamily(qn.pkg())) {
-						String homePackage = UiopExports.homePackage(qn.member());
-						if (homePackage != null) {
-							String home = homePackage + ":" + qn.member();
-							if (UiopLibrary.definesName(home)) {
-								names.add(home);
+		for (LispVal val = form;;) {
+			switch (val) {
+				case LispSymbol sym -> {
+					String name = sym.name();
+					if (UiopLibrary.definesName(name)) {
+						names.add(name);
+					}
+					else {
+						PackageRegistry.QualifiedName qn = PackageRegistry.splitQualified(name);
+						if (qn != null && UiopExports.isUiopFamily(qn.pkg())) {
+							String homePackage = UiopExports.homePackage(qn.member());
+							if (homePackage != null) {
+								String home = homePackage + ":" + qn.member();
+								if (UiopLibrary.definesName(home)) {
+									names.add(home);
+								}
 							}
 						}
 					}
 				}
+				case LispCons cons -> {
+					collectUiopNames(cons.car(), names);
+					val = cons.cdr();
+					continue;
+				}
+				default -> {
+				}
 			}
-			case LispCons cons -> {
-				collectUiopNames(cons.car(), names);
-				collectUiopNames(cons.cdr(), names);
-			}
-			default -> {
-			}
+			return;
 		}
 	}
 
