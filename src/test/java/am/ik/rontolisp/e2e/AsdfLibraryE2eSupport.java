@@ -119,9 +119,10 @@ abstract class AsdfLibraryE2eSupport {
 	 * PROGRAM's -- cl-mustache's spec suite renders its templates ~800 KiB down -- and a
 	 * JUnit worker thread carries the JVM default (1 MiB on linux-x64), which is inside
 	 * that program's own margin: the same leg that passes here ran out of stack on CI.
-	 * The CLI hands the interpreter 16 MiB for exactly this reason
-	 * ({@code RontoLispCli}'s worker stack), so the in-process leg measures the same
-	 * ceiling the product does rather than JUnit's.
+	 * The CLI hands every program 16 MiB for exactly this reason
+	 * ({@code RontoLispCli.WORKER_STACK_BYTES}, on a thread of its own whatever the
+	 * launcher did), so the in-process leg measures the same ceiling the product does
+	 * rather than JUnit's. It must track that constant.
 	 */
 	private static final long INTERPRETER_STACK_BYTES = 16L << 20;
 
