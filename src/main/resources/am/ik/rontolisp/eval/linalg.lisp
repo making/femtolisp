@@ -1186,9 +1186,15 @@
   ;; Elementwise e^x (numpy np.exp).
   (linalg:emap (function exp) a))
 
+(defun linalg::%la-flog (x)
+  ;; Float-domain natural logarithm (numpy np.log): NaN on a negative input, for
+  ;; %la-fsqrt's reason below -- CL log answers the complex plane there and neither
+  ;; a packed nor a row-major store accepts a complex.
+  (if (< x 0.0) (/ 0.0 0.0) (log x)))
+
 (defun linalg:log (a)
   ;; Elementwise natural log (numpy np.log).
-  (linalg:emap (function log) a))
+  (linalg:emap (function linalg::%la-flog) a))
 
 (defun linalg:tanh (a)
   ;; Elementwise hyperbolic tangent (numpy np.tanh).
@@ -1206,13 +1212,22 @@
   ;; Elementwise tangent (numpy np.tan).
   (linalg:emap (function tan) a))
 
+(defun linalg::%la-fasin (x)
+  ;; Float-domain arc sine (numpy np.arcsin): NaN outside [-1, 1], for %la-fsqrt's
+  ;; reason below.
+  (if (or (> x 1.0) (< x -1.0)) (/ 0.0 0.0) (asin x)))
+
 (defun linalg:asin (a)
   ;; Elementwise arc sine (numpy np.arcsin).
-  (linalg:emap (function asin) a))
+  (linalg:emap (function linalg::%la-fasin) a))
+
+(defun linalg::%la-facos (x)
+  ;; Float-domain arc cosine (numpy np.arccos): NaN outside [-1, 1].
+  (if (or (> x 1.0) (< x -1.0)) (/ 0.0 0.0) (acos x)))
 
 (defun linalg:acos (a)
   ;; Elementwise arc cosine (numpy np.arccos).
-  (linalg:emap (function acos) a))
+  (linalg:emap (function linalg::%la-facos) a))
 
 (defun linalg:atan (a)
   ;; Elementwise arc tangent (numpy np.arctan).

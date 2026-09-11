@@ -61,6 +61,13 @@ final class JvmComplexRuntimeBuilder {
 	static final String POW = "_cpow";
 
 	/**
+	 * {@code expt} over two REAL operands whose answer can still be complex: a negative
+	 * base to a non-integer power. Everything else delegates to the unconditional
+	 * {@code _pow}, so the exact rational path and its error funnels are unduplicated.
+	 */
+	static final String POW_REAL = "_cpowr";
+
+	/**
 	 * The unary math functions over real-or-complex operands, selected by an {@code int}
 	 * opcode ({@link #U1_EXP} and friends).
 	 */
@@ -141,8 +148,8 @@ final class JvmComplexRuntimeBuilder {
 	 * finished class calling one of these without it having been emitted re-runs with the
 	 * complex group forced on.
 	 */
-	static final Set<String> METHOD_NAMES = Set.of(COMPLEX, ADD, SUB, MUL, DIV, NEG, SQRT, POW, U1, CONJUGATE, CCPMB,
-			CPHASE, SIGNUM);
+	static final Set<String> METHOD_NAMES = Set.of(COMPLEX, ADD, SUB, MUL, DIV, NEG, SQRT, POW, POW_REAL, U1, CONJUGATE,
+			CCPMB, CPHASE, SIGNUM);
 
 	/**
 	 * The class files that travel beside a compiled program using this group
@@ -223,7 +230,8 @@ final class JvmComplexRuntimeBuilder {
 			MethodrefConstant strConcat, MethodrefConstant lispToString, ConstantPool.StringConstant numPrefix,
 			ConstantPool.StringConstant realPrefix, MethodrefConstant rAdd, MethodrefConstant rSub,
 			MethodrefConstant rMul, MethodrefConstant rDiv, MethodrefConstant rNeg, MethodrefConstant rDbl,
-			MethodrefConstant rCmp, MethodrefConstant rCComplex, MethodrefConstant rCMul, MethodrefConstant rCDiv) {
+			MethodrefConstant rCmp, MethodrefConstant rCComplex, MethodrefConstant rCMul, MethodrefConstant rCDiv,
+			MethodrefConstant rPow) {
 	}
 
 	/**
@@ -267,7 +275,8 @@ final class JvmComplexRuntimeBuilder {
 				self(cp, thisClass, JvmNumericRuntimeBuilder.NEG, UNARY_DESC),
 				self(cp, thisClass, JvmNumericRuntimeBuilder.DBL, UNARY_DESC),
 				self(cp, thisClass, JvmNumericRuntimeBuilder.CMP, CMP_DESC), self(cp, thisClass, COMPLEX, BINARY_DESC),
-				self(cp, thisClass, MUL, BINARY_DESC), self(cp, thisClass, DIV, BINARY_DESC));
+				self(cp, thisClass, MUL, BINARY_DESC), self(cp, thisClass, DIV, BINARY_DESC),
+				self(cp, thisClass, JvmNumericRuntimeBuilder.POW, BINARY_DESC));
 		List<ComplexMethod> methods = new ArrayList<>();
 		Map<String, MethodrefConstant> ops = new LinkedHashMap<>();
 		addMethod(cp, thisClass, methods, ops, COMPLEX, BINARY_DESC,
@@ -286,6 +295,8 @@ final class JvmComplexRuntimeBuilder {
 				buildSqrt(refs, cp, cp.addUtf8(SQRT), cp.addUtf8(UNARY_DESC)));
 		addMethod(cp, thisClass, methods, ops, POW, BINARY_DESC,
 				buildPow(refs, cp, cp.addUtf8(POW), cp.addUtf8(BINARY_DESC)));
+		addMethod(cp, thisClass, methods, ops, POW_REAL, BINARY_DESC,
+				buildPowReal(refs, cp, cp.addUtf8(POW_REAL), cp.addUtf8(BINARY_DESC)));
 		addMethod(cp, thisClass, methods, ops, U1, U1_DESC, buildU1(refs, cp, cp.addUtf8(U1), cp.addUtf8(U1_DESC)));
 		addMethod(cp, thisClass, methods, ops, CONJUGATE, UNARY_DESC,
 				buildConjugate(refs, cp.addUtf8(CONJUGATE), cp.addUtf8(UNARY_DESC)));
@@ -1311,6 +1322,71 @@ final class JvmComplexRuntimeBuilder {
 		return new ComplexMethod(name, desc, c, 8, 27, List.of());
 	}
 
+	/**
+	 * {@code _cpowr(base, exp)}: the REAL {@code expt} with the one answer that leaves
+	 * the real line. A negative base to a non-integer power is {@code |base|^exp} turned
+	 * through {@code exp*pi} radians -- one {@code Math.pow} and one rotation, which is
+	 * the interpreter's {@code negativeBasePow} term for term (and NOT {@code _cpow}'s
+	 * {@code exp(w*log z)}: a real base's phase is exactly pi, so nothing has to be
+	 * recovered from a logarithm). Every other operand pair -- a non-negative base, an
+	 * integer-valued power, a NaN, an infinite power -- delegates to the unconditional
+	 * {@code _pow}, which keeps the exact rational path and the error funnels
+	 * unduplicated. Slots: base 0, exp 1, x 2, y 4, modulus 6, boxed parts 8 and 9.
+	 */
+	private static ComplexMethod buildPowReal(Refs refs, ConstantPool cp, Utf8Constant name, Utf8Constant desc) {
+		List<Integer> c = new ArrayList<>();
+		emitToDouble(c, refs, 0);
+		dstore(c, 2);
+		emitToDouble(c, refs, 1);
+		dstore(c, 4);
+		// x < 0 ? -- DCMPG answers 1 for a NaN, which takes the real path with it.
+		dload(c, 2);
+		c.add(Opcode.DCONST_0);
+		c.add(Opcode.DCMPG);
+		int realPathSign = jump(c, Opcode.IFGE);
+		dload(c, 4);
+		c.add(Opcode.INVOKESTATIC);
+		emitU2(c, cp.addMethodref(refs.doubleClass(), cp.addNameAndType(cp.addUtf8("isFinite"), cp.addUtf8("(D)Z")))
+			.index());
+		int realPathInfinite = jump(c, Opcode.IFEQ);
+		dload(c, 4);
+		dload(c, 4);
+		callMath(c, refs, cp, "rint", "(D)D");
+		c.add(Opcode.DCMPL);
+		int realPathInteger = jump(c, Opcode.IFEQ);
+		dload(c, 2);
+		c.add(Opcode.DNEG);
+		dload(c, 4);
+		callMath(c, refs, cp, "pow", "(DD)D");
+		dstore(c, 6);
+		dload(c, 4);
+		emitDoubleConst(c, cp, Math.PI);
+		c.add(Opcode.DMUL);
+		dstore(c, 4);
+		dload(c, 6);
+		dload(c, 4);
+		callMath(c, refs, cp, "cos", "(D)D");
+		c.add(Opcode.DMUL);
+		emitBoxDouble(c, refs);
+		astore(c, 8);
+		dload(c, 6);
+		dload(c, 4);
+		callMath(c, refs, cp, "sin", "(D)D");
+		c.add(Opcode.DMUL);
+		emitBoxDouble(c, refs);
+		astore(c, 9);
+		emitNewHolderFromSlots(c, refs, 8, 9);
+		c.add(Opcode.ARETURN);
+		patch(c, realPathSign);
+		patch(c, realPathInfinite);
+		patch(c, realPathInteger);
+		aload(c, 0);
+		aload(c, 1);
+		call(c, refs.rPow());
+		c.add(Opcode.ARETURN);
+		return new ComplexMethod(name, desc, c, 6, 10, List.of());
+	}
+
 	private static void patchAt(List<Integer> c, int pos, int target) {
 		JvmRuntimeBuilder.patchBranch(c, pos, target);
 	}
@@ -1406,6 +1482,40 @@ final class JvmComplexRuntimeBuilder {
 			iload(c, 1);
 			emitInt(c, op);
 			int next = jump(c, Opcode.IF_ICMPNE);
+			// log of a negative and asin/acos beyond [-1, 1] leave the real line, where
+			// java.lang.Math answers NaN: they run the SAME complex arm at (x, +0.0),
+			// like acosh and atanh below. The tests are written as the conditions that
+			// KEEP the real arm and jump over the escape, so a NaN -- which fails every
+			// comparison -- needs only the DCMP variant that answers "not less"
+			// (dcmpg) to come back out as itself. asin/acos additionally keep an
+			// INFINITY real: it has no complex value either, and the formula would
+			// manufacture a #C(NaN Infinity). log's -Infinity is a real point of the
+			// plane (#C(Infinity pi)) and escapes like any other negative.
+			List<Integer> toReal = new ArrayList<>();
+			if (op == U1_LOG) {
+				dload(c, 2);
+				c.add(Opcode.DCONST_0);
+				c.add(Opcode.DCMPG);
+				toReal.add(jump(c, Opcode.IFGE));
+			}
+			else if (op == U1_ASIN || op == U1_ACOS) {
+				dload(c, 2);
+				callMath(c, refs, cp, "abs", "(D)D");
+				c.add(Opcode.DCONST_1);
+				c.add(Opcode.DCMPG);
+				toReal.add(jump(c, Opcode.IFLE));
+				dload(c, 2);
+				callMath(c, refs, cp, "abs", "(D)D");
+				emitDoubleConst(c, cp, Double.POSITIVE_INFINITY);
+				c.add(Opcode.DCMPG);
+				toReal.add(jump(c, Opcode.IFGE));
+			}
+			if (!toReal.isEmpty()) {
+				emitRealAsComplex(c, refs, cp, op);
+			}
+			for (int skip : toReal) {
+				patch(c, skip);
+			}
 			dload(c, 2);
 			callMath(c, refs, cp, mathFns[op], "(D)D");
 			emitBoxDouble(c, refs);
@@ -1422,13 +1532,14 @@ final class JvmComplexRuntimeBuilder {
 		c.add(Opcode.ARETURN);
 		patch(c, notAsinh);
 		// acosh: x >= 1 stays real (a NaN stays a NaN double, like the interpreter's
-		// !(d < 1.0) test); x < 1 escapes into the plane at (x, +0.0).
+		// !(d < 1.0) test -- which is why the compare is DCMPG, whose NaN answers 1);
+		// x < 1 escapes into the plane at (x, +0.0).
 		iload(c, 1);
 		emitInt(c, U1_ACOSH);
 		int notAcosh = jump(c, Opcode.IF_ICMPNE);
 		dload(c, 2);
 		c.add(Opcode.DCONST_1);
-		c.add(Opcode.DCMPL);
+		c.add(Opcode.DCMPG);
 		int acoshEscape = jump(c, Opcode.IFLT);
 		emitAcoshRealF64(c, refs, cp, 2);
 		emitBoxDouble(c, refs);
@@ -1436,18 +1547,19 @@ final class JvmComplexRuntimeBuilder {
 		patch(c, acoshEscape);
 		emitRealAsComplex(c, refs, cp, U1_ACOSH);
 		patch(c, notAcosh);
-		// atanh: |x| <= 1 stays real (a NaN too, like !(d > 1) && !(d < -1)); beyond
-		// that it escapes at (x, +0.0).
+		// atanh: |x| <= 1 stays real (a NaN too, like !(d > 1) && !(d < -1) -- DCMPL for
+		// the > and DCMPG for the <, so a NaN fails both); beyond that it escapes at
+		// (x, +0.0).
 		iload(c, 1);
 		emitInt(c, U1_ATANH);
 		int notAtanh = jump(c, Opcode.IF_ICMPNE);
 		dload(c, 2);
 		c.add(Opcode.DCONST_1);
-		c.add(Opcode.DCMPG);
+		c.add(Opcode.DCMPL);
 		int atanhEscape = jump(c, Opcode.IFGT);
 		dload(c, 2);
 		emitDoubleConst(c, cp, -1.0);
-		c.add(Opcode.DCMPL);
+		c.add(Opcode.DCMPG);
 		int atanhEscape2 = jump(c, Opcode.IFLT);
 		// (log1p(x) - log1p(-x)) * 0.5
 		dload(c, 2);

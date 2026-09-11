@@ -182,7 +182,11 @@ through the exponent bits -- ~3e-14 relative over the full finite range, with th
   (`vec::%fsqrt`, `linalg::%la-fsqrt` beside it): NaN on a negative input on both paths. CL `sqrt`
   roots negatives into the complex plane, and a complex has no packed element store, so the CL
   spelling signalled on the scalar path (a type error on the interpreter/JVM, a trap on wasm-GC)
-  while the lane answered NaN. Scalar `(sqrt x)` itself stays complex-extended; only the packed
+  while the lane answered NaN. **`log`, `asin` and `acos` joined it on 2026-09-11**, when CL's
+  own spellings gained the same escape (`.kb/jvm-complex.md`, "Real arguments that leave the real
+  domain") -- `%flog`/`%fasin`/`%facos` and their `%la-` twins are NaN outside the real domain, and
+  the rule is now general: an element function that can answer a complex does not belong in a
+  packed kernel. Scalar `(sqrt x)` itself stays complex-extended; only the packed
   element functions are float-domain, pinned by `ci-spec.yaml`'s `vec-sqrt-negative-cross-backend`
   (four backends x scalar/`--simd`, with 200-element lane shapes); exp/log/tanh/sin/cos/tan/sign walk element loops over
   `WasmVecSimdRuntimeBuilder.emitExpF64`/`emitLogF64`/`emitTanhF64`/`emitSinCosF64`/`emitSignumF64`,

@@ -86,33 +86,58 @@ final class WasmAtanCompiler {
 
 		switch (name) {
 			case LispNames.ATAN -> emitAtanCore(ctx, xSlot, tSlot, uSlot, zSlot, rSlot);
-			case LispNames.ASIN -> {
-				// if (|x| > 1) -> NaN, else atan(x / sqrt((1-x)*(1+x))).
+			case LispNames.ASIN, LispNames.ACOS -> {
+				// if (|x| > 1) -> NaN, else the real formula. The complex-capable
+				// spelling of the same site answers the PLANE instead of that NaN
+				// (WasmComplexCompiler.compileAsinAcos), which is why the formula
+				// below is reachable on its own.
 				emitDomainGuard(ctx, xSlot);
-				unbox(ctx, xSlot);
-				emitOneMinusAndOnePlus(ctx, xSlot);
-				ctx.writer.write(Instruction.F64_MUL);
-				ctx.writer.write(Instruction.F64_SQRT);
-				ctx.writer.write(Instruction.F64_DIV);
-				boxInto(ctx, xSlot);
-				emitAtanCore(ctx, xSlot, tSlot, uSlot, zSlot, rSlot);
-				ctx.writer.write(Instruction.END);
-			}
-			case LispNames.ACOS -> {
-				// if (|x| > 1) -> NaN, else 2 * atan(sqrt((1-x)/(1+x))).
-				emitDomainGuard(ctx, xSlot);
-				emitOneMinusAndOnePlus(ctx, xSlot);
-				ctx.writer.write(Instruction.F64_DIV);
-				ctx.writer.write(Instruction.F64_SQRT);
-				boxInto(ctx, xSlot);
-				emitAtanCore(ctx, xSlot, tSlot, uSlot, zSlot, rSlot);
-				f64Const(ctx, 2.0);
-				ctx.writer.write(Instruction.F64_MUL);
+				emitAsinAcosFromSlot(ctx, name, xSlot, tSlot, uSlot, zSlot, rSlot);
 				ctx.writer.write(Instruction.END);
 			}
 			default -> throw new IllegalArgumentException("not an atan/asin/acos operator: " + name);
 		}
 		WasmExpCompiler.boxF64(ctx);
+	}
+
+	/**
+	 * The real {@code asin}/{@code acos} over the f64 on the stack, leaving an f64 -- the
+	 * arm the complex-capable call site takes once it has decided the argument is inside
+	 * {@code [-1, 1]}, so there is no domain guard here. A NaN flows through the
+	 * arithmetic to a NaN, exactly as it does under the guard.
+	 * @param ctx the compile context
+	 * @param name {@code ASIN} or {@code ACOS}
+	 */
+	static void emitAsinAcosRealF64(WasmLispCompiler.Ctx ctx, String name) {
+		int xSlot = ctx.allocTemp();
+		WasmExpCompiler.boxF64(ctx);
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(xSlot);
+		emitAsinAcosFromSlot(ctx, name, xSlot, ctx.allocTemp(), ctx.allocTemp(), ctx.allocTemp(), ctx.allocTemp());
+	}
+
+	// asin(x) = atan(x / sqrt((1-x)*(1+x))), acos(x) = 2 * atan(sqrt((1-x)/(1+x))),
+	// over the boxed argument in xSlot; leaves the f64 result on the stack.
+	private static void emitAsinAcosFromSlot(WasmLispCompiler.Ctx ctx, String name, int xSlot, int tSlot, int uSlot,
+			int zSlot, int rSlot) {
+		if (LispNames.ASIN.equals(name)) {
+			unbox(ctx, xSlot);
+			emitOneMinusAndOnePlus(ctx, xSlot);
+			ctx.writer.write(Instruction.F64_MUL);
+			ctx.writer.write(Instruction.F64_SQRT);
+			ctx.writer.write(Instruction.F64_DIV);
+			boxInto(ctx, xSlot);
+			emitAtanCore(ctx, xSlot, tSlot, uSlot, zSlot, rSlot);
+		}
+		else {
+			emitOneMinusAndOnePlus(ctx, xSlot);
+			ctx.writer.write(Instruction.F64_DIV);
+			ctx.writer.write(Instruction.F64_SQRT);
+			boxInto(ctx, xSlot);
+			emitAtanCore(ctx, xSlot, tSlot, uSlot, zSlot, rSlot);
+			f64Const(ctx, 2.0);
+			ctx.writer.write(Instruction.F64_MUL);
+		}
 	}
 
 	// Opens "if (|x| > 1) -> NaN else ..." (the caller emits the else body + END). A NaN

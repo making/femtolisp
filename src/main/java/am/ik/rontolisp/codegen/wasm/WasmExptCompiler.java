@@ -25,16 +25,31 @@ import am.ik.wasm.Type;
  * {@code exp(y * ln(x))} over the backend's software {@code exp} / {@code log} (so it
  * carries their approximation error, like every WASM transcendental), with the
  * {@code Math.pow} edges the interpreter and JVM answer: {@code x^0 = 1.0},
- * {@code 0^y = 0.0} for {@code y > 0} and {@code +inf} for {@code y < 0}, a negative or
- * NaN base to a fractional power is NaN, {@code +inf^y} is {@code +inf} / {@code 0.0} by
- * the sign of {@code y}.
+ * {@code 0^y = 0.0} for {@code y > 0} and {@code +inf} for {@code y < 0}, a NaN base to a
+ * fractional power is NaN, {@code +inf^y} is {@code +inf} / {@code 0.0} by the sign of
+ * {@code y}.
+ *
+ * <p>
+ * A NEGATIVE base to a fractional power leaves the real line and answers the plane --
+ * {@code |x|^y} turned through {@code y*pi} radians, the interpreter's
+ * {@code negativeBasePow} -- unless the call site's literals already prove the escape
+ * unreachable, in which case the arm is not emitted at all and the NaN stands
+ * ({@code .kb/wasm-complex.md}).
  */
 final class WasmExptCompiler {
 
 	private WasmExptCompiler() {
 	}
 
-	static void compile(LispCons cons, WasmLispCompiler.Ctx ctx) {
+	/**
+	 * @param cons the {@code (expt base power)} form
+	 * @param ctx the compile context
+	 * @param complexEscape whether a negative base to a fractional power must answer the
+	 * PLANE rather than NaN -- false only when the form's literals already prove the
+	 * escape unreachable ({@code (expt x 2)}, {@code (expt 10.0 n)}), which is the same
+	 * predicate the JVM's complex gate reads ({@code LispMacroExpander.escapesToComplex})
+	 */
+	static void compile(LispCons cons, WasmLispCompiler.Ctx ctx, boolean complexEscape) {
 		List<LispVal> args = cons.toList();
 		int baseSlot = ctx.allocTemp();
 		int pSlot = ctx.allocTemp();
@@ -68,7 +83,7 @@ final class WasmExptCompiler {
 		ctx.writer.writeHeapType(WasmLispCompiler.TYPE_RATIO);
 		ctx.writer.write(Instruction.I32_OR);
 		ctx.writer.write(Instruction.IF, 0x40);
-		emitFloatExponent(ctx, baseSlot, pSlot, rSlot, ySlot, t1Slot, t2Slot, doneSlot);
+		emitFloatExponent(ctx, baseSlot, pSlot, rSlot, ySlot, t1Slot, t2Slot, doneSlot, complexEscape);
 		ctx.writer.write(Instruction.END);
 
 		// if (!done) { the exact loop over an integer exponent, into rSlot }
@@ -139,7 +154,7 @@ final class WasmExptCompiler {
 	// rewrites (base, p) into (float base, i31 p) for the exact loop and leaves done = 0;
 	// anything else computes the float result into rSlot and sets done = 1.
 	private static void emitFloatExponent(WasmLispCompiler.Ctx ctx, int baseSlot, int pSlot, int rSlot, int ySlot,
-			int t1Slot, int t2Slot, int doneSlot) {
+			int t1Slot, int t2Slot, int doneSlot, boolean complexEscape) {
 		// y = as_f64(p), boxed
 		ctx.writer.write(Instruction.GET_LOCAL);
 		ctx.writer.writeUnsignedLeb128(pSlot);
@@ -184,7 +199,7 @@ final class WasmExptCompiler {
 		ctx.writer.writeUnsignedLeb128(baseSlot);
 		WasmEmitHelper.castFloatGetF64(ctx);
 		boxInto(ctx, t1Slot);
-		emitPowFractional(ctx, t1Slot, ySlot, rSlot, t2Slot, doneSlot);
+		emitPowFractional(ctx, t1Slot, ySlot, rSlot, t2Slot, doneSlot, complexEscape);
 		WasmMathHelper.constI32(ctx, 1);
 		WasmMathHelper.setI32(ctx, doneSlot);
 		ctx.writer.write(Instruction.END);
@@ -194,7 +209,7 @@ final class WasmExptCompiler {
 	// x is boxed in xSlot, y in ySlot; scratchSlot and doneSlot are free ref temps
 	// (doneSlot is only assigned by the caller afterwards).
 	private static void emitPowFractional(WasmLispCompiler.Ctx ctx, int xSlot, int ySlot, int rSlot, int scratchSlot,
-			int doneSlot) {
+			int doneSlot, boolean complexEscape) {
 		// if (x > 0.0)
 		unbox(ctx, xSlot);
 		f64Const(ctx, 0.0);
@@ -232,12 +247,11 @@ final class WasmExptCompiler {
 		ctx.writer.writeUnsignedLeb128(rSlot);
 		ctx.writer.write(Instruction.END);
 		ctx.writer.write(Instruction.ELSE);
-		// x == 0.0 (either sign): y > 0 -> 0.0, y < 0 -> +inf; x < 0 or NaN -> NaN
+		// x == 0.0 (either sign): y > 0 -> 0.0, y < 0 -> +inf.
 		unbox(ctx, xSlot);
 		f64Const(ctx, 0.0);
 		ctx.writer.write(Instruction.F64_EQ);
-		ctx.writer.write(Instruction.IF);
-		ctx.writer.write(Type.F64);
+		ctx.writer.write(Instruction.IF, 0x40);
 		unbox(ctx, ySlot);
 		f64Const(ctx, 0.0);
 		ctx.writer.write(Instruction.F64_GT);
@@ -247,9 +261,51 @@ final class WasmExptCompiler {
 		ctx.writer.write(Instruction.ELSE);
 		f64Const(ctx, Double.POSITIVE_INFINITY);
 		ctx.writer.write(Instruction.END);
+		boxInto(ctx, rSlot);
+		ctx.writer.write(Instruction.ELSE);
+		// x < 0 (a NaN fails f64.lt and keeps the NaN): the answer leaves the real
+		// line. |x|^y through the same exp/log cores, turned through y*pi radians --
+		// the interpreter's negativeBasePow and the JVM's _cpowr, in this backend's
+		// software transcendentals.
+		emitNegativeBaseOrNaN(ctx, xSlot, ySlot, rSlot, scratchSlot, doneSlot, complexEscape);
+		ctx.writer.write(Instruction.END);
+		ctx.writer.write(Instruction.END);
+	}
+
+	// The x <= 0 tail of emitPowFractional with x != 0: a negative base answers the
+	// plane (or NaN, when the call site's literals proved the escape unreachable), a
+	// NaN base answers itself.
+	private static void emitNegativeBaseOrNaN(WasmLispCompiler.Ctx ctx, int xSlot, int ySlot, int rSlot,
+			int scratchSlot, int doneSlot, boolean complexEscape) {
+		if (!complexEscape) {
+			f64Const(ctx, Double.NaN);
+			boxInto(ctx, rSlot);
+			return;
+		}
+		unbox(ctx, xSlot);
+		f64Const(ctx, 0.0);
+		ctx.writer.write(Instruction.F64_LT);
+		ctx.writer.write(Instruction.IF, 0x40);
+		// modulus = exp(y * ln(-x)); the cores consume x first and then reuse its slot.
+		int modulusSlot = ctx.allocTemp();
+		unbox(ctx, xSlot);
+		ctx.writer.write(Instruction.F64_NEG);
+		WasmLogCompiler.emitLogCore(ctx, xSlot, scratchSlot, doneSlot);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.REF_CAST);
+		ctx.writer.writeHeapType(WasmLispCompiler.TYPE_FLOAT);
+		ctx.writer.write(Instruction.GC_PREFIX, Instruction.STRUCT_GET);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TYPE_FLOAT);
+		ctx.writer.writeUnsignedLeb128(0);
+		unbox(ctx, ySlot);
+		ctx.writer.write(Instruction.F64_MUL);
+		WasmExpCompiler.emitExpCore(ctx, xSlot, scratchSlot, doneSlot);
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(modulusSlot);
+		WasmComplexCompiler.emitNegativeBasePowInto(ctx, modulusSlot, ySlot);
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(rSlot);
 		ctx.writer.write(Instruction.ELSE);
 		f64Const(ctx, Double.NaN);
-		ctx.writer.write(Instruction.END);
 		boxInto(ctx, rSlot);
 		ctx.writer.write(Instruction.END);
 	}

@@ -81,10 +81,13 @@ final class JvmMathFnCompiler {
 
 	static void compile(LispCons cons, JvmLispCompiler.Ctx ctx, String className, String name) {
 		List<LispVal> args = cons.toList();
-		if (JvmLispCompiler.hasComplexOperand(args)) {
+		if (JvmLispCompiler.hasComplexOperand(args)
+				|| am.ik.rontolisp.macro.LispMacroExpander.escapesToComplex(name, args)) {
 			// A complex operand answers the float complex formula through the
-			// gated _cu1 helper (`.kb/jvm-complex.md`); anything else keeps the
-			// inline Math call below.
+			// gated _cu1 helper (`.kb/jvm-complex.md`); so does a log/asin/acos
+			// whose argument may leave the real domain at run time, because _cu1
+			// carries the escape and java.lang.Math would answer NaN. Anything else
+			// keeps the inline Math call below.
 			JvmExprCompiler.compileExpr(args.get(1), ctx, className);
 			ctx.emit(Opcode.BIPUSH);
 			ctx.emit(u1Op(name));
