@@ -2767,7 +2767,7 @@ public final class LispEvaluator {
 			// the eql-based scan.
 			requireTestKeyKeywords(LispNames.MEMBER, args, 2);
 			RuntimeTest test = runtimeTest(args, 2);
-			LispVal keyFn = optionalKeywordArg(args, 2, LispNames.KEY_KEYWORD);
+			LispVal keyFn = presentKeyword(args, 2, LispNames.KEY_KEYWORD);
 			LispVal item = args.get(0);
 			LispVal cur = args.get(1);
 			while (cur instanceof LispCons cell) {
@@ -2803,7 +2803,7 @@ public final class LispEvaluator {
 			// car before the test, mirroring member.
 			requireTestKeyKeywords(LispNames.ASSOC, args, 2);
 			RuntimeTest test = runtimeTest(args, 2);
-			LispVal keyFn = optionalKeywordArg(args, 2, LispNames.KEY_KEYWORD);
+			LispVal keyFn = presentKeyword(args, 2, LispNames.KEY_KEYWORD);
 			LispVal key = args.get(0);
 			LispVal cur = args.get(1);
 			while (cur instanceof LispCons cell) {
@@ -2825,7 +2825,7 @@ public final class LispEvaluator {
 			// The mirror of assoc: matches each pair's cdr instead of its car.
 			requireTestKeyKeywords(LispNames.RASSOC, args, 2);
 			RuntimeTest test = runtimeTest(args, 2);
-			LispVal keyFn = optionalKeywordArg(args, 2, LispNames.KEY_KEYWORD);
+			LispVal keyFn = presentKeyword(args, 2, LispNames.KEY_KEYWORD);
 			LispVal value = args.get(0);
 			LispVal cur = args.get(1);
 			while (cur instanceof LispCons cell) {

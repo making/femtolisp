@@ -652,6 +652,71 @@ cases:
       (A B X)
       1
       (1 3 4)
+  # A COMPUTED :test/:test-not/:key designator is evaluated ONCE, before the scan, in
+  # the order the call spells its arguments -- CLHS 3.1.2.1.2.3, which ANSI pins with a
+  # side-effecting form per keyword (count.order.1, remove.order.1). A literal
+  # #'name/'name/(lambda ...) still INLINES into the loop body, where the compilers'
+  # function-designator normalization can see it (.kb/sequence-bounding-keywords.md).
+  # The nil block below is the other half of the same rule: a computed designator can
+  # answer nil, which is the ABSENT designator (identity / eql), exactly as the literal
+  # nil spelling is.
+  - name: sequence-designator-order
+    source: |
+      (let ((ci-sdo-log nil))
+        (print (count (progn (setq ci-sdo-log (cons 1 ci-sdo-log)) nil)
+                      (progn (setq ci-sdo-log (cons 2 ci-sdo-log)) '(a nil b c nil d e))
+                      :start (progn (setq ci-sdo-log (cons 3 ci-sdo-log)) 0)
+                      :end (progn (setq ci-sdo-log (cons 4 ci-sdo-log)) 3)
+                      :key (progn (setq ci-sdo-log (cons 5 ci-sdo-log)) #'identity)
+                      :from-end (progn (setq ci-sdo-log (cons 6 ci-sdo-log)) nil)
+                      :test (progn (setq ci-sdo-log (cons 7 ci-sdo-log)) #'eql)))
+        (print (reverse ci-sdo-log)))
+      (let ((ci-sdo-log nil))
+        (print (remove (progn (setq ci-sdo-log (cons 1 ci-sdo-log)) 'a)
+                       (progn (setq ci-sdo-log (cons 2 ci-sdo-log)) (list 'a 'b 'c 'd 'a 'f))
+                       :from-end (progn (setq ci-sdo-log (cons 3 ci-sdo-log)) t)
+                       :count (progn (setq ci-sdo-log (cons 4 ci-sdo-log)) 1)
+                       :key (progn (setq ci-sdo-log (cons 5 ci-sdo-log)) #'identity)
+                       :test (progn (setq ci-sdo-log (cons 6 ci-sdo-log)) #'eq)
+                       :start (progn (setq ci-sdo-log (cons 7 ci-sdo-log)) 0)
+                       :end (progn (setq ci-sdo-log (cons 8 ci-sdo-log)) nil)))
+        (print (reverse ci-sdo-log)))
+      (let ((ci-sdo-log nil))
+        (print (position (progn (setq ci-sdo-log (cons 1 ci-sdo-log)) 0)
+                         (progn (setq ci-sdo-log (cons 2 ci-sdo-log)) '(3 1 8 2 1 2 3 4))
+                         :test-not (progn (setq ci-sdo-log (cons 3 ci-sdo-log)) #'/=)
+                         :key (progn (setq ci-sdo-log (cons 4 ci-sdo-log)) #'1-)
+                         :end (progn (setq ci-sdo-log (cons 5 ci-sdo-log)) 6)
+                         :start (progn (setq ci-sdo-log (cons 6 ci-sdo-log)) 1)
+                         :from-end (progn (setq ci-sdo-log (cons 7 ci-sdo-log)) t)))
+        (print (reverse ci-sdo-log)))
+      (let ((ci-sdo-log nil))
+        (print (subsetp (progn (setq ci-sdo-log (cons 1 ci-sdo-log)) '(a b))
+                        (progn (setq ci-sdo-log (cons 2 ci-sdo-log)) '(a b c))))
+        (print (length (union (progn (setq ci-sdo-log (cons 3 ci-sdo-log)) (list 1 3))
+                              (progn (setq ci-sdo-log (cons 4 ci-sdo-log)) (list 2 3)))))
+        (print (reverse ci-sdo-log)))
+      (let ((ci-sdo-nil (list nil)))
+        (print (list (remove 'a '(a b a c) :key (car ci-sdo-nil))
+                     (count 'a '(a b a) :test (car ci-sdo-nil))
+                     (position 'b '(a b) :key (car ci-sdo-nil))
+                     (find 'b '(a b) :test (car ci-sdo-nil))
+                     (count 1 '(1 2 1) :test-not (car ci-sdo-nil))
+                     (count 1 '(1 2 1 3) :test-not (car (list #'eql)))
+                     (member 3 '(1 2 3 4) :key (car ci-sdo-nil))
+                     (assoc 2 '((1 . a) (2 . b)) :key (car ci-sdo-nil))
+                     (rassoc 'b '((1 . a) (2 . b)) :test (car ci-sdo-nil)))))
+    expected: |
+      1
+      (1 2 3 4 5 6 7)
+      (A B C D F)
+      (1 2 3 4 5 6 7 8)
+      4
+      (1 2 3 4 5 6 7)
+      T
+      3
+      (1 2 3 4)
+      ((B C) 2 1 B 2 2 (3 4) (2 . B) (2 . B))
   # The interpreter answers (coerce x 'list|'string|'vector) in Java for the
   # representations it can serve identically and DECLINES the rest to the shared
   # expansion (.kb/seq-coerce-runtime.md); the compile paths keep the expansion

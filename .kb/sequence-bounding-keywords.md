@@ -92,11 +92,12 @@ landed between them, because a test can fail for a second reason once the first 
 Two families of newly-REACHED failures this exposed, both out of scope here:
 
 - **`*.ORDER.1/2`** (7 operators): CL evaluates the keyword VALUE forms left to right, once
-  each. The scaffold now binds `:start`/`:end`/`:count`/`:from-end` once, but in a fixed order,
-  and `:test`/`:key` are still INLINED into the loop (deliberately -- a literal `#'name` has to
-  stay visible to the compilers' function-designator normalization), so a computed designator
-  is evaluated per element. The fix is to bind a NON-literal designator once before the loop
-  and keep inlining literal ones (`.todo/772`).
+  each. The scaffold binds `:start`/`:end`/`:count`/`:from-end` once, but in a FIXED order, and
+  `:test`/`:key` were still INLINED into the loop, so a computed designator ran per element.
+  Fixed 2026-09-11 by `LispMacroExpander.KeywordTail`, which hoists every non-literal keyword
+  value of the call -- these four included -- into one source-ordered `let` chain outside the
+  scaffold, leaving `wrap`'s own fixed-order bindings to copy variables:
+  `.kb/sequence-designator-evaluation.md`.
 - **`NSUBSTITUTE-*-VECTOR.3/.32/.33`**: a destructive substitute over a VECTOR answers a fresh
   sequence instead of writing through (`.todo/623`'s latitude). ANSI expects the argument itself
   to change (`.todo/773`).

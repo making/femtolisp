@@ -721,6 +721,32 @@ class LispMacroExpanderTest {
 			.contains("|__remove_i|");
 	}
 
+	@Test
+	void aComputedSequenceDesignatorBindsOnceBeforeTheScan() {
+		// A LITERAL designator keeps being inlined into the loop body: evaluating it is
+		// not observable, and the compilers' function-designator normalization is what
+		// turns the #'name there into a direct call.
+		String literal = removeExpansionOf("(remove 'a lst :test #'eq :key #'car)");
+		assertThat(literal).contains("(FUNCALL #'EQ |__remove_item| (FUNCALL #'CAR (CAR |__remove_cur|)))")
+			.doesNotContain("|__remove_k");
+		// A COMPUTED one binds once, before the scan, in the order the call spells the
+		// keywords -- the loop body sees only the variable (CLHS 3.1.2.1.2.3). The
+		// sequence binds ahead of them, because the call spells it first.
+		String computed = removeExpansionOf("(remove 'a lst :key (mk) :test (mt))");
+		assertThat(computed).contains("(LET ((|__remove_a2| LST)) (LET ((|__remove_k3| (OR (MK) #'IDENTITY)))")
+			.contains("(LET ((|__remove_k5| (OR (MT) #'EQL)))")
+			.contains("(FUNCALL |__remove_k5| |__remove_item| (FUNCALL |__remove_k3| (CAR |__remove_cur|)))");
+		// ... and it appears exactly once, which is the whole point: it used to be
+		// evaluated per element.
+		assertThat(computed.indexOf("(MK)")).isEqualTo(computed.lastIndexOf("(MK)"));
+		assertThat(computed.indexOf("(MT)")).isEqualTo(computed.lastIndexOf("(MT)"));
+		// A computed :test-not binds as the COMPLEMENTED :test, so the match form is the
+		// same funcall either way, and a nil value is the absent designator.
+		assertThat(removeExpansionOf("(remove 'a lst :test-not (mt))")).contains(
+				"(LET ((|__remove_k3| (LET ((|__testnot_fn| (MT))) (IF |__testnot_fn| (LAMBDA (|__testnot_a| |__testnot_b|) (NOT (FUNCALL |__testnot_fn| |__testnot_a| |__testnot_b|))) #'EQL))))")
+			.contains("(FUNCALL |__remove_k3| |__remove_item| (CAR |__remove_cur|))");
+	}
+
 	private static String removeExpansionOf(String call) {
 		return LispMacroExpander.expandRemove((LispCons) LispReader.readAllFromString(call).get(0)).print();
 	}
