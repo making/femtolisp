@@ -7,6 +7,9 @@
 keyword-forwarding wrapper (`BuiltinFunctionWrappers.sequenceScanFamily`) for first-class use
 on the compile paths. A call spelling NONE of them expands to exactly the loop it always did.**
 
+`remove-duplicates`/`delete-duplicates` take the same keywords with a DIFFERENT meaning for
+the window and are the section at the end of this file, not part of the fifteen.
+
 The operators: `count`, `count-if`, `count-if-not`; `remove`, `remove-if`, `remove-if-not`;
 `delete`, `delete-if`, `delete-if-not`; `substitute`, `substitute-if`, `substitute-if-not`;
 `nsubstitute`, `nsubstitute-if`, `nsubstitute-if-not`. The `count` three have no `:count`.
@@ -105,10 +108,57 @@ Two families of newly-REACHED failures this exposed, both out of scope here:
 While closing the gap, `Environment.seqAsList` was found to have no arm for a rank-1
 `LispFloatArray` -- see `.kb/seq-coerce-runtime.md`.
 
+## `remove-duplicates` / `delete-duplicates`: the window bounds what is CONSIDERED
+
+The two spellings take the same 17.2.1 set minus `:count` (`:from-end`, `:test`,
+`:test-not`, `:start`, `:end`, `:key`) but they are NOT the scan above, and
+`SeqScanScaffold` serves them only in part:
+
+- `:start`/`:end` bound which elements are **compared**, not which ones reach the answer.
+  An element outside the window is kept VERBATIM and never handed to a designator, so the
+  guard's else arm ACCUMULATES where the fifteen's skips.
+- `:from-end` picks which occurrence of a duplicate set survives (the first instead of the
+  last), so it decides which SIDE of the element the duplicate is looked for on -- not the
+  order the walk runs in.
+
+One forward loop serves all of it. The duplicate is looked for with the position family's
+own bounded scan -- `[i+1, end)` keeping the last, `[start, i)` keeping the first -- which
+is both how CLHS defines the operator and how ANSI's own reference implementation
+(`auxiliary/remove-duplicates-aux.lsp`) spells it. That is what lets a **computed**
+`:from-end` be a branch over two INDEX BOUNDS inside one loop rather than over two loops:
+it used to be rejected outright (`IllegalArgumentException`, "expects a literal t or nil"),
+which is exactly what ANSI's `remove-duplicates.order.1/2` -- whose `:from-end` counts its
+own evaluation -- failed on.
+
+The piecewise rule holds here too, and decides between TWO renderings: a call that spells
+no bound and a LITERAL direction keeps the `member`-over-the-tail (or over the accumulated
+answer) loop it always expanded to, index-free and byte-identical; only a bound or a
+computed direction pays for the index, the guard and the inner bounded scan. The scaffold's
+`forceIndex` exists for the second case, where the BODY needs the element index though no
+guard does.
+
+First-class use is still 1-argument only (`(apply #'remove-duplicates seq :test ...)`
+signals), unlike the fifteen -- `.todo/778`.
+
+**Measured 2026-09-11** (`ansi-test/measure.sh sequences cons`, suite `ca06bd9`,
+interpreter): sequences 2,891 -> 2,895 / 3,287 (88.0% -> 88.1%), cons unchanged at
+1,082 / 1,879. A name-by-name diff of the FAIL/ERROR sets: **4 tests fixed**
+(`remove-duplicates.order.1/2`, `delete-duplicates.order.1/2`), **zero that passed before
+failing after**. The census of `X expects keyword arguments` rows had no plain (non-order)
+duplicates test behind it -- what is left in that file is `*.error.10` (an unbound
+`*mini-universe*`), `remove-duplicates.fold.4` (constant folding) and the two `random-*`
+tests, which stop at `make-sequence` with a computed result type before any of this.
+
 ## Pinning tests
 
 - `LispMacroExpanderTest.aBoundedSequenceScanEmitsOnlyTheScaffoldingItsKeywordsAskFor` (the
   piecewise/size invariant, and that `:start`/`:end` is an index bound rather than a `subseq`).
+- `LispMacroExpanderTest.aBoundedRemoveDuplicatesLooksForTheDuplicateInsideTheWindow` and
+  `LispEvaluatorTest.evalRemoveDuplicatesTakesTheBoundingKeywords` (the two renderings, the
+  window's verbatim else arm, the computed direction), with
+  `JvmLispCompilerTest.compileAndRunRemoveDuplicatesBoundingKeywords`,
+  `WasmLispCompilerIntegrationTest.removeDuplicatesBoundingKeywords` and ci-spec
+  `remove-duplicates-bounding-keywords` across the four backends.
 - `LispEvaluatorTest.evalSequenceScansTakeTheBoundingKeywords` (behavior, call position AND
   first-class, including the counting `:key` that only a reversed walk answers).
 - `JvmLispCompilerTest.compileAndRunSequenceBoundingKeywords`,

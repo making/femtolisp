@@ -91,10 +91,14 @@ What the order tests still fail on, each a different gap:
 
 - `remove.order.2` / `delete.order.2` / `adjoin.order.2` pass `(complement #'eq)` as a
   two-argument `:test-not`: `complement` answers a ONE-argument lambda (`.todo/774`).
-- `remove-duplicates.order.1/2` want `:start`/`:end`/`:test-not`, which
-  `expandRemoveDuplicates` rejects (`.todo/775`).
 - `member-if.order.2`, `assoc-if*.order.*`, `rassoc-if*.order.*`: the `-if` spellings of
   `member`/`assoc`/`rassoc` take no `:key` at all (`.todo/776`).
+
+A third gap stood in that list until 2026-09-11:
+`remove-duplicates.order.1/2` and `delete-duplicates.order.1/2` want
+`:start`/`:end`/`:test-not` and a COMPUTED `:from-end`, which `expandRemoveDuplicates`
+rejected. Fixed (4 more tests, sequences 2,891 -> 2,895) --
+`.kb/sequence-bounding-keywords.md`, "the window bounds what is CONSIDERED".
 
 ## Pinning tests
 
