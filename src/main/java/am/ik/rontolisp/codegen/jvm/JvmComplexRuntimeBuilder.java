@@ -120,6 +120,22 @@ final class JvmComplexRuntimeBuilder {
 	/** {@link #U1} selector for {@code tanh}. */
 	static final int U1_TANH = 10;
 
+	/** {@link #U1} selector for {@code asinh}. */
+	static final int U1_ASINH = 11;
+
+	/**
+	 * {@link #U1} selector for {@code acosh} (real arms below 1 cross into the plane).
+	 */
+	static final int U1_ACOSH = 12;
+
+	/**
+	 * {@link #U1} selector for {@code atanh} (real arms beyond +-1 cross into the plane).
+	 */
+	static final int U1_ATANH = 13;
+
+	/** {@link #U1} selector for {@code cis} (answers a complex for every operand). */
+	static final int U1_CIS = 14;
+
 	/**
 	 * The helper names this group owns, for {@code JvmLispCompiler.gateGroupFor}: a
 	 * finished class calling one of these without it having been emitted re-runs with the
@@ -1369,16 +1385,15 @@ final class JvmComplexRuntimeBuilder {
 		emitToDouble(c, refs, 8);
 		dstore(c, 4);
 		List<Integer> toTail = new ArrayList<>();
-		String[] mathFns = { "exp", "log", "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh" };
-		for (int op = 0; op <= U1_TANH; op++) {
+		for (int op = 0; op <= U1_CIS; op++) {
 			int nextArm = -1;
-			if (op < U1_TANH) {
+			if (op < U1_CIS) {
 				iload(c, 1);
 				emitInt(c, op);
 				nextArm = jump(c, Opcode.IF_ICMPNE);
 			}
 			emitComplexArm(c, refs, cp, op);
-			if (op < U1_TANH) {
+			if (op < U1_CIS) {
 				toTail.add(jump(c, Opcode.GOTO));
 				patch(c, nextArm);
 			}
@@ -1399,25 +1414,201 @@ final class JvmComplexRuntimeBuilder {
 		patch(c, realPath);
 		emitToDouble(c, refs, 0);
 		dstore(c, 2);
+		String[] mathFns = { "exp", "log", "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh" };
 		for (int op = 0; op <= U1_TANH; op++) {
-			if (op < U1_TANH) {
-				iload(c, 1);
-				emitInt(c, op);
-				int next = jump(c, Opcode.IF_ICMPNE);
-				dload(c, 2);
-				callMath(c, refs, cp, mathFns[op], "(D)D");
-				emitBoxDouble(c, refs);
-				c.add(Opcode.ARETURN);
-				patch(c, next);
-			}
-			else {
-				dload(c, 2);
-				callMath(c, refs, cp, mathFns[op], "(D)D");
-				emitBoxDouble(c, refs);
-				c.add(Opcode.ARETURN);
-			}
+			iload(c, 1);
+			emitInt(c, op);
+			int next = jump(c, Opcode.IF_ICMPNE);
+			dload(c, 2);
+			callMath(c, refs, cp, mathFns[op], "(D)D");
+			emitBoxDouble(c, refs);
+			c.add(Opcode.ARETURN);
+			patch(c, next);
 		}
+		// asinh/acosh/atanh have no java.lang.Math counterpart -- the real arms are the
+		// interpreter's formulas, bytecode term for term, so both answer identical bits.
+		iload(c, 1);
+		emitInt(c, U1_ASINH);
+		int notAsinh = jump(c, Opcode.IF_ICMPNE);
+		emitAsinhRealF64(c, refs, cp, 2);
+		emitBoxDouble(c, refs);
+		c.add(Opcode.ARETURN);
+		patch(c, notAsinh);
+		// acosh: x >= 1 stays real (a NaN stays a NaN double, like the interpreter's
+		// !(d < 1.0) test); x < 1 escapes into the plane at (x, +0.0).
+		iload(c, 1);
+		emitInt(c, U1_ACOSH);
+		int notAcosh = jump(c, Opcode.IF_ICMPNE);
+		dload(c, 2);
+		c.add(Opcode.DCONST_1);
+		c.add(Opcode.DCMPL);
+		int acoshEscape = jump(c, Opcode.IFLT);
+		emitAcoshRealF64(c, refs, cp, 2);
+		emitBoxDouble(c, refs);
+		c.add(Opcode.ARETURN);
+		patch(c, acoshEscape);
+		emitRealAsComplex(c, refs, cp, U1_ACOSH);
+		patch(c, notAcosh);
+		// atanh: |x| <= 1 stays real (a NaN too, like !(d > 1) && !(d < -1)); beyond
+		// that it escapes at (x, +0.0).
+		iload(c, 1);
+		emitInt(c, U1_ATANH);
+		int notAtanh = jump(c, Opcode.IF_ICMPNE);
+		dload(c, 2);
+		c.add(Opcode.DCONST_1);
+		c.add(Opcode.DCMPG);
+		int atanhEscape = jump(c, Opcode.IFGT);
+		dload(c, 2);
+		emitDoubleConst(c, cp, -1.0);
+		c.add(Opcode.DCMPL);
+		int atanhEscape2 = jump(c, Opcode.IFLT);
+		// (log1p(x) - log1p(-x)) * 0.5
+		dload(c, 2);
+		callMath(c, refs, cp, "log1p", "(D)D");
+		dload(c, 2);
+		c.add(Opcode.DNEG);
+		callMath(c, refs, cp, "log1p", "(D)D");
+		c.add(Opcode.DSUB);
+		emitDoubleConst(c, cp, 0.5);
+		c.add(Opcode.DMUL);
+		emitBoxDouble(c, refs);
+		c.add(Opcode.ARETURN);
+		patch(c, atanhEscape);
+		patch(c, atanhEscape2);
+		emitRealAsComplex(c, refs, cp, U1_ATANH);
+		patch(c, notAtanh);
+		// cis answers a complex for every operand: the +0.0 arm is exact (e^0 = 1, and
+		// 1.0 * is the identity), matching the interpreter's direct (cos x, sin x).
+		emitRealAsComplex(c, refs, cp, U1_CIS);
 		return new ComplexMethod(name, desc, c, 8, 16, List.of());
+	}
+
+	/**
+	 * The real arm of {@code asinh} -- the double in {@code slot} as its argument, the
+	 * result on the stack. The interpreter's two branches: the |x| &lt;= 1 log1p form
+	 * (accurate near zero), and log |x| + log(1 + hypot(1/|x|, 1)) beyond (never squaring
+	 * past the float range).
+	 */
+	private static void emitAsinhRealF64(List<Integer> c, Refs refs, ConstantPool cp, int slot) {
+		dload(c, slot);
+		callMath(c, refs, cp, "abs", "(D)D");
+		dstore(c, 6);
+		dload(c, 6);
+		c.add(Opcode.DCONST_1);
+		c.add(Opcode.DCMPL);
+		int large = jump(c, Opcode.IFGT);
+		dload(c, 6);
+		dload(c, 6);
+		c.add(Opcode.DMUL);
+		c.add(Opcode.DCONST_1);
+		dload(c, 6);
+		c.add(Opcode.DCONST_1);
+		callMath(c, refs, cp, "hypot", "(DD)D");
+		c.add(Opcode.DADD);
+		c.add(Opcode.DDIV);
+		dload(c, 6);
+		c.add(Opcode.DADD);
+		callMath(c, refs, cp, "log1p", "(D)D");
+		int sign = jump(c, Opcode.GOTO);
+		patch(c, large);
+		dload(c, 6);
+		callMath(c, refs, cp, "log", "(D)D");
+		c.add(Opcode.DCONST_1);
+		dload(c, 6);
+		c.add(Opcode.DDIV);
+		c.add(Opcode.DCONST_1);
+		callMath(c, refs, cp, "hypot", "(DD)D");
+		c.add(Opcode.DCONST_1);
+		c.add(Opcode.DADD);
+		callMath(c, refs, cp, "log", "(D)D");
+		c.add(Opcode.DADD);
+		patch(c, sign);
+		dload(c, slot);
+		callMath(c, refs, cp, "copySign", "(DD)D");
+	}
+
+	/**
+	 * The real arm of {@code acosh} (x &gt;= 1) -- the interpreter's three branches: the
+	 * near-1 log1p form, the glibc-grouped log(2x) + log1p((r-1)/2) mid range (whose
+	 * double bits are correctly rounded across the table), and a bare log(x) + log 2 so
+	 * 2*x cannot overflow.
+	 */
+	private static void emitAcoshRealF64(List<Integer> c, Refs refs, ConstantPool cp, int slot) {
+		dload(c, slot);
+		emitDoubleConst(c, cp, 2.0);
+		c.add(Opcode.DCMPL);
+		int mid = jump(c, Opcode.IFGT);
+		dload(c, slot);
+		c.add(Opcode.DCONST_1);
+		c.add(Opcode.DSUB);
+		dstore(c, 6);
+		dload(c, 6);
+		dload(c, 6);
+		dload(c, slot);
+		c.add(Opcode.DCONST_1);
+		c.add(Opcode.DADD);
+		c.add(Opcode.DMUL);
+		callMath(c, refs, cp, "sqrt", "(D)D");
+		c.add(Opcode.DADD);
+		callMath(c, refs, cp, "log1p", "(D)D");
+		int done = jump(c, Opcode.GOTO);
+		patch(c, mid);
+		dload(c, slot);
+		emitDoubleConst(c, cp, 8.5e307);
+		c.add(Opcode.DCMPL);
+		int huge = jump(c, Opcode.IFGT);
+		dload(c, slot);
+		emitDoubleConst(c, cp, 2.0);
+		c.add(Opcode.DMUL);
+		callMath(c, refs, cp, "log", "(D)D");
+		dstore(c, 8);
+		c.add(Opcode.DCONST_1);
+		dload(c, slot);
+		c.add(Opcode.DDIV);
+		dstore(c, 6);
+		c.add(Opcode.DCONST_1);
+		dload(c, 6);
+		dload(c, 6);
+		c.add(Opcode.DMUL);
+		c.add(Opcode.DSUB);
+		callMath(c, refs, cp, "sqrt", "(D)D");
+		c.add(Opcode.DCONST_1);
+		c.add(Opcode.DSUB);
+		emitDoubleConst(c, cp, 2.0);
+		c.add(Opcode.DDIV);
+		callMath(c, refs, cp, "log1p", "(D)D");
+		dload(c, 8);
+		c.add(Opcode.DADD);
+		int done2 = jump(c, Opcode.GOTO);
+		patch(c, huge);
+		dload(c, slot);
+		callMath(c, refs, cp, "log", "(D)D");
+		emitDoubleConst(c, cp, 2.0);
+		callMath(c, refs, cp, "log", "(D)D");
+		c.add(Opcode.DADD);
+		patch(c, done2);
+		patch(c, done);
+	}
+
+	/**
+	 * Answer the {@link #U1} complex arm for {@code op} with the real in {@code slot 2}
+	 * promoted to (re, +0.0), boxing the pair into a holder and returning it: the
+	 * acosh/atanh domain escape and the always-complex {@code cis}.
+	 */
+	private static void emitRealAsComplex(List<Integer> c, Refs refs, ConstantPool cp, int op) {
+		c.add(Opcode.DCONST_0);
+		dstore(c, 4);
+		emitComplexArm(c, refs, cp, op);
+		dstore(c, 12);
+		dstore(c, 10);
+		dload(c, 10);
+		emitBoxDouble(c, refs);
+		astore(c, 6);
+		dload(c, 12);
+		emitBoxDouble(c, refs);
+		astore(c, 8);
+		emitNewHolderFromSlots(c, refs, 6, 8);
+		c.add(Opcode.ARETURN);
 	}
 
 	/**
@@ -1598,6 +1789,155 @@ final class JvmComplexRuntimeBuilder {
 			dload(c, 2);
 			callMath(c, refs, cp, "sinh", "(D)D");
 			dload(c, 4);
+			callMath(c, refs, cp, "sin", "(D)D");
+			c.add(Opcode.DMUL);
+		}
+		else if (op == U1_ASINH) {
+			// asinh(z) = log(z + sqrt(z^2 + 1)) with the interpreter's two
+			// refinements: the +0.0 that normalizes a -0.0 imaginary part of z^2 so
+			// the cut sqrt takes its +i root, and the sheet flip (a |z + s| < 1
+			// answers -log(s - z), whose sum adds without cancellation).
+			dload(c, 2);
+			dload(c, 2);
+			c.add(Opcode.DMUL);
+			dload(c, 4);
+			dload(c, 4);
+			c.add(Opcode.DMUL);
+			c.add(Opcode.DSUB);
+			dstore(c, 6);
+			dload(c, 2);
+			dload(c, 4);
+			c.add(Opcode.DMUL);
+			emitDoubleConst(c, cp, 2.0);
+			c.add(Opcode.DMUL);
+			c.add(Opcode.DCONST_0);
+			c.add(Opcode.DADD);
+			dstore(c, 8);
+			dload(c, 6);
+			c.add(Opcode.DCONST_1);
+			c.add(Opcode.DADD);
+			dstore(c, 14);
+			emitComplexSqrtInto(c, refs, cp, 14, 8, 10, 12, 6);
+			dload(c, 2);
+			dload(c, 10);
+			c.add(Opcode.DADD);
+			dstore(c, 6);
+			dload(c, 4);
+			dload(c, 12);
+			c.add(Opcode.DADD);
+			dstore(c, 8);
+			dload(c, 6);
+			dload(c, 6);
+			c.add(Opcode.DMUL);
+			dload(c, 8);
+			dload(c, 8);
+			c.add(Opcode.DMUL);
+			c.add(Opcode.DADD);
+			c.add(Opcode.DCONST_1);
+			c.add(Opcode.DCMPL);
+			int direct = jump(c, Opcode.IFGE);
+			dload(c, 10);
+			dload(c, 2);
+			c.add(Opcode.DSUB);
+			dstore(c, 6);
+			dload(c, 12);
+			dload(c, 4);
+			c.add(Opcode.DSUB);
+			dstore(c, 8);
+			emitComplexLog(c, refs, cp, 6, 8);
+			dstore(c, 8);
+			dstore(c, 6);
+			dload(c, 6);
+			c.add(Opcode.DNEG);
+			dload(c, 8);
+			c.add(Opcode.DNEG);
+			int joined = jump(c, Opcode.GOTO);
+			patch(c, direct);
+			emitComplexLog(c, refs, cp, 6, 8);
+			patch(c, joined);
+		}
+		else if (op == U1_ACOSH) {
+			// acosh(z) = 2*log(sqrt((z+1)/2) + sqrt((z-1)/2)) -- the ANSI form; the
+			// /2 of the imaginary part keeps its sign, which picks the sheet at the
+			// cut. The second sqrt lands in 8/2 (rd is spent by now), scratch 4.
+			dload(c, 4);
+			emitDoubleConst(c, cp, 2.0);
+			c.add(Opcode.DDIV);
+			dstore(c, 6);
+			dload(c, 2);
+			c.add(Opcode.DCONST_1);
+			c.add(Opcode.DADD);
+			emitDoubleConst(c, cp, 2.0);
+			c.add(Opcode.DDIV);
+			dstore(c, 14);
+			emitComplexSqrtInto(c, refs, cp, 14, 6, 10, 12, 8);
+			dload(c, 2);
+			c.add(Opcode.DCONST_1);
+			c.add(Opcode.DSUB);
+			emitDoubleConst(c, cp, 2.0);
+			c.add(Opcode.DDIV);
+			dstore(c, 14);
+			emitComplexSqrtInto(c, refs, cp, 14, 6, 8, 2, 4);
+			dload(c, 10);
+			dload(c, 8);
+			c.add(Opcode.DADD);
+			dstore(c, 6);
+			dload(c, 12);
+			dload(c, 2);
+			c.add(Opcode.DADD);
+			dstore(c, 8);
+			emitComplexLog(c, refs, cp, 6, 8);
+			dstore(c, 8);
+			dstore(c, 6);
+			dload(c, 6);
+			emitDoubleConst(c, cp, 2.0);
+			c.add(Opcode.DMUL);
+			dload(c, 8);
+			emitDoubleConst(c, cp, 2.0);
+			c.add(Opcode.DMUL);
+		}
+		else if (op == U1_ATANH) {
+			// atanh(z) = (log(1+z) - log(1-z)) / 2, the difference of the principal
+			// logs -- the log of the quotient answers the other edge of the cut.
+			c.add(Opcode.DCONST_1);
+			dload(c, 2);
+			c.add(Opcode.DADD);
+			dstore(c, 6);
+			emitComplexLog(c, refs, cp, 6, 4);
+			dstore(c, 8);
+			dstore(c, 6);
+			c.add(Opcode.DCONST_1);
+			dload(c, 2);
+			c.add(Opcode.DSUB);
+			dstore(c, 14);
+			dload(c, 4);
+			c.add(Opcode.DNEG);
+			dstore(c, 4);
+			emitComplexLog(c, refs, cp, 14, 4);
+			dstore(c, 4);
+			dstore(c, 14);
+			dload(c, 6);
+			dload(c, 14);
+			c.add(Opcode.DSUB);
+			emitDoubleConst(c, cp, 2.0);
+			c.add(Opcode.DDIV);
+			dload(c, 8);
+			dload(c, 4);
+			c.add(Opcode.DSUB);
+			emitDoubleConst(c, cp, 2.0);
+			c.add(Opcode.DDIV);
+		}
+		else if (op == U1_CIS) {
+			dload(c, 4);
+			c.add(Opcode.DNEG);
+			callMath(c, refs, cp, "exp", "(D)D");
+			dstore(c, 6);
+			dload(c, 6);
+			dload(c, 2);
+			callMath(c, refs, cp, "cos", "(D)D");
+			c.add(Opcode.DMUL);
+			dload(c, 6);
+			dload(c, 2);
 			callMath(c, refs, cp, "sin", "(D)D");
 			c.add(Opcode.DMUL);
 		}

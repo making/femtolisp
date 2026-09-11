@@ -31,7 +31,11 @@ in generated helpers so nothing duplicates `_rat`/`_norm`/`_dbl`.
   arithmetic), `_cneg` (separate from `_csub`-from-zero: `0.0 - 0.0` is
   `+0.0`, `-0.0` is not), `_csqrt` (negatives root into the plane),
   `_cpow` (exact integer powers by squaring, else `exp(w*log z)`),
-  `_cu1` (the 11 unary math functions by int opcode), `_cconjugate`,
+  `_cu1` (the 15 unary math functions by int opcode: `asinh`, `acosh`, `atanh`
+  have hand-rolled real arms -- `java.lang.Math` has no inverse hyperbolic --
+  and `acosh`/`atanh` cross a real argument outside their domain into the
+  complex arm at `(x, +0.0)`, the way `cis` always answers the arm),
+  `_cconjugate`,
   `_ccmpb` (throw-on-holder then delegate), `_cphase`, and the `#C(re im)`
   printer arms (parts recurse through the same renderer).
   The holder class file travels exactly then (`needsComplexRuntime`).

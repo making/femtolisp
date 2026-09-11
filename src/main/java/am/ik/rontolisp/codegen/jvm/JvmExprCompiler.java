@@ -1619,6 +1619,8 @@ final class JvmExprCompiler {
 					}
 				}
 				case LispNames.SQRT -> JvmComplexCompiler.compileSqrt(cons, ctx, className);
+				case LispNames.CIS, LispNames.ASINH, LispNames.ACOSH, LispNames.ATANH ->
+					JvmMathFnCompiler.compileAlwaysComplex(cons, ctx, className, sym.name());
 				case LispNames.EXP, LispNames.LOG, LispNames.SIN, LispNames.COS, LispNames.TAN, LispNames.ASIN,
 						LispNames.ACOS, LispNames.ATAN, LispNames.SINH, LispNames.COSH, LispNames.TANH ->
 					JvmMathFnCompiler.compile(cons, ctx, className, sym.name());

@@ -347,6 +347,18 @@ public final class LispNames {
 	/** The {@code tanh} built-in function. */
 	public static final String TANH = "TANH";
 
+	/** The {@code cis} built-in function. */
+	public static final String CIS = "CIS";
+
+	/** The {@code asinh} built-in function. */
+	public static final String ASINH = "ASINH";
+
+	/** The {@code acosh} built-in function. */
+	public static final String ACOSH = "ACOSH";
+
+	/** The {@code atanh} built-in function. */
+	public static final String ATANH = "ATANH";
+
 	/** The {@code gcd} built-in function. */
 	public static final String GCD = "GCD";
 

@@ -287,6 +287,8 @@ page.
 | `sin` `cos` `tan` | `(sin 0)`, `(cos 0)` | `0.0`, `1.0` (interpreter/JVM use `Math.sin`/`cos`/`tan`, WASM a software approximation) |
 | `asin` `acos` `atan` | `(atan 0)` | `0.0` (all backends -- WASM uses a software approximation) |
 | `sinh` `cosh` `tanh` | `(tanh 0)` | `0.0` (all backends -- WASM derives all three from its software `exp`) |
+| `asinh` `acosh` `atanh` | `(asinh 0)`, `(acosh 1)`, `(atanh 0)` | `0.0` (inverse hyperbolics; a real argument outside the domain crosses into the plane, WASM a software approximation) |
+| `cis` | `(cis 0)` | `#C(1.0 0.0)` (the unit-circle point; always answers a complex) |
 | `gcd` | `(gcd 12 18)`, `(gcd 24 36 60)` | `6`, `12` (variadic; greatest common divisor, `(gcd)` is `0`) |
 | `lcm` | `(lcm 4 6)`, `(lcm 2 3 4)` | `12`, `12` (variadic; least common multiple; `0` if any argument is `0`, `(lcm)` is `1`) |
 | `signum` | `(signum -5)`, `(signum 3.5)` | `-1`, `1.0` (sign, preserving integer/float type) |

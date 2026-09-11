@@ -99,6 +99,35 @@ final class JvmMathFnCompiler {
 		JvmEmitHelper.boxDouble(ctx);
 	}
 
+	/**
+	 * The four functions whose REAL arguments can answer a complex (acosh/atanh escape
+	 * their real domain, cis always does), plus the asinh whose real arm is hand-rolled
+	 * because {@code java.lang.Math} has no inverse hyperbolic: every call site goes
+	 * through {@code _cu1}, like {@code sqrt} through {@code _csqrt}.
+	 * @param cons the call form
+	 * @param ctx the compile context
+	 * @param className the class being emitted
+	 * @param name one of {@code ASINH}, {@code ACOSH}, {@code ATANH}, {@code CIS}
+	 */
+	static void compileAlwaysComplex(LispCons cons, JvmLispCompiler.Ctx ctx, String className, String name) {
+		List<LispVal> args = cons.toList();
+		int got = args.size() - 1;
+		if (got != 1) {
+			throw new UnsupportedOperationException(name + " expects 1 argument(s), got " + got);
+		}
+		JvmExprCompiler.compileExpr(args.get(1), ctx, className);
+		ctx.emit(Opcode.BIPUSH);
+		ctx.emit(switch (name) {
+			case LispNames.ASINH -> JvmComplexRuntimeBuilder.U1_ASINH;
+			case LispNames.ACOSH -> JvmComplexRuntimeBuilder.U1_ACOSH;
+			case LispNames.ATANH -> JvmComplexRuntimeBuilder.U1_ATANH;
+			case LispNames.CIS -> JvmComplexRuntimeBuilder.U1_CIS;
+			default -> throw new IllegalArgumentException("not an always-complex-capable unary: " + name);
+		});
+		ctx.emit(Opcode.INVOKESTATIC);
+		ctx.emitU2(JvmComplexCompiler.complexOp(ctx, className, JvmComplexRuntimeBuilder.U1).index());
+	}
+
 	/** The {@code _cu1} opcode selecting the formula for a Lisp name. */
 	private static int u1Op(String name) {
 		return switch (name) {

@@ -1915,6 +1915,10 @@ final class WasmExprCompiler {
 				case LispNames.GET_UNIVERSAL_TIME, LispNames.GET_INTERNAL_REAL_TIME, LispNames.GET_INTERNAL_RUN_TIME ->
 					WasmTimeCompiler.compile(cons, ctx, sym.name());
 				case LispNames.SQRT -> WasmComplexCompiler.compileSqrt(cons, ctx);
+				case LispNames.CIS -> WasmComplexCompiler.compileCis(cons, ctx);
+				case LispNames.ASINH -> WasmComplexCompiler.compileAsinh(cons, ctx);
+				case LispNames.ACOSH -> WasmComplexCompiler.compileAcosh(cons, ctx);
+				case LispNames.ATANH -> WasmComplexCompiler.compileAtanh(cons, ctx);
 				case LispNames.EXP -> {
 					if (WasmComplexCompiler.hasComplex(cons)) {
 						WasmComplexCompiler.compileUnaryMath(cons, ctx, sym.name());

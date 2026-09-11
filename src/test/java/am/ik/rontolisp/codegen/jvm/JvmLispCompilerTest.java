@@ -7134,6 +7134,49 @@ class JvmLispCompilerTest {
 	}
 
 	@Test
+	void compileAndRunCisAndInverseHyperbolicReal() throws Exception {
+		// The interpreter's hand-rolled real formulas, bytecode term for term --
+		// these pins are the interpreter's measured bits, not ideals.
+		assertThat(compileAndRun("(print (cis 0d0))")).isEqualTo("#C(1.0 0.0)");
+		assertThat(compileAndRun("(print (cis 1d0))")).isEqualTo("#C(0.5403023058681398 0.8414709848078965)");
+		assertThat(compileAndRun("(print (asinh -2d0))")).isEqualTo("-1.4436354751788103");
+		assertThat(compileAndRun("(print (asinh 0d0))")).isEqualTo("0.0");
+		assertThat(compileAndRun("(print (asinh 1d0))")).isEqualTo("0.881373587019543");
+		assertThat(compileAndRun("(print (acosh 1d0))")).isEqualTo("0.0");
+		assertThat(compileAndRun("(print (acosh 2d0))")).isEqualTo("1.3169578969248166");
+		assertThat(compileAndRun("(print (acosh 1.0d18))")).isEqualTo("42.13967885445277");
+		assertThat(compileAndRun("(print (atanh -0.5d0))")).isEqualTo("-0.5493061443340548");
+		assertThat(compileAndRun("(print (atanh 0d0))")).isEqualTo("0.0");
+		assertThat(compileAndRun("(print (atanh 0.5d0))")).isEqualTo("0.5493061443340548");
+		// Domain escape: the real arm crosses into the plane like sqrt of a negative.
+		assertThat(compileAndRun("(print (acosh 0d0))")).isEqualTo("#C(0.0 1.5707963267948966)");
+		assertThat(compileAndRun("(print (atanh 2d0))")).isEqualTo("#C(0.5493061443340548 1.5707963267948966)");
+		// First-class references reach the same _cu1 helpers the direct calls emit.
+		assertThat(compileAndRun("(print (funcall #'acosh 2d0))")).isEqualTo("1.3169578969248166");
+		assertThat(compileAndRun("(print (mapcar #'cis (list 0d0 1d0)))"))
+			.isEqualTo("(#C(1.0 0.0) #C(0.5403023058681398 0.8414709848078965))");
+	}
+
+	@Test
+	void compileAndRunInverseHyperbolicComplex() throws Exception {
+		assertThat(compileAndRun("(print (asinh #c(1d0 1d0)))")).isEqualTo("#C(1.0612750619050357 0.6662394324925153)");
+		assertThat(compileAndRun("(print (asinh #c(0d0 2d0)))")).isEqualTo("#C(1.3169578969248166 1.5707963267948966)");
+		// The sheet flip: without the -log(s - z) branch this lands on +2.06..., the
+		// wrong side of the cut.
+		assertThat(compileAndRun("(print (asinh #c(0d0 -4d0)))"))
+			.isEqualTo("#C(-2.0634370688955608 -1.5707963267948966)");
+		assertThat(compileAndRun("(print (acosh #c(1d0 1d0)))")).isEqualTo("#C(1.0612750619050355 0.9045568943023813)");
+		// The signed zero of the imaginary part picks the sheet at the cut.
+		assertThat(compileAndRun("(print (acosh #c(0d0 0d0)))")).isEqualTo("#C(0.0 1.5707963267948966)");
+		assertThat(compileAndRun("(print (acosh #c(0d0 -0d0)))")).isEqualTo("#C(0.0 -1.5707963267948966)");
+		assertThat(compileAndRun("(print (acosh #c(-4d0 0d0)))")).isEqualTo("#C(2.0634370688955603 3.141592653589793)");
+		assertThat(compileAndRun("(print (atanh #c(1d0 1d0)))")).isEqualTo("#C(0.4023594781085251 1.0172219678978514)");
+		assertThat(compileAndRun("(print (atanh #c(2d0 0d0)))")).isEqualTo("#C(0.5493061443340548 1.5707963267948966)");
+		assertThat(compileAndRun("(print (atanh #c(2d0 -0d0)))"))
+			.isEqualTo("#C(0.5493061443340548 -1.5707963267948966)");
+	}
+
+	@Test
 	void compileAndRunComplexEquality() throws Exception {
 		assertThat(compileAndRun("(print (= #c(1 2) #c(1 2)))")).isEqualTo("T");
 		assertThat(compileAndRun("(print (= 2.0 #c(2.0 0.0)))")).isEqualTo("T");

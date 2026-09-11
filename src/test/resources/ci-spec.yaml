@@ -4028,6 +4028,32 @@ cases:
       0.0
       0.0
       1.0
+  # cis and the inverse hyperbolics: exact anchors only -- the nonzero values and
+  # the plane arms group log differently per backend (pinned per backend in the
+  # compiler test suites), but each zero point answers exactly and cis of 0 is the
+  # exact unit-circle point on every backend.
+  - name: cis-inverse-hyperbolic-exact-cross-backend-cases
+    source: |
+      (print (cis 0))
+      (print (asinh 0))
+      (print (acosh 1))
+      (print (atanh 0))
+    expected: |
+      #C(1.0 0.0)
+      0.0
+      0.0
+      0.0
+  # A pure imaginary argument lands on the imaginary axis, where the WASM atan2
+  # quadrant assembly used to answer the imaginary part itself (.todo/766). pi/2
+  # is the constant the assembly answers there and the log's magnitude is
+  # hypot(0, 1) = 1, so both rows are exact on every backend.
+  - name: pure-imaginary-phase-and-log-cross-backend-cases
+    source: |
+      (print (phase #c(0d0 1d0)))
+      (print (log #c(0d0 1d0)))
+    expected: |
+      1.5707963267948966
+      #C(0.0 1.5707963267948966)
   # The comparison-select ufuncs (maximum/minimum/clip/relu): every value is a select of an
   # exact input, so all four backends print identically -- including the -0.0/0.0
   # tie, where the strict comparison keeps the SECOND operand.

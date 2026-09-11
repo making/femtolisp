@@ -1384,9 +1384,11 @@ public final class JvmLispCompiler implements LispCompiler {
 		// BuiltinFunctionWrappers). The designator spelling counts, like the
 		// reference gate above. #'upgraded-complex-part-type joins them: its body
 		// probes (subtypep <var> 'real), which compiles to the gated
-		// %subtypep-runtime.
+		// %subtypep-runtime. The cis/asinh/acosh/atanh wrappers join too: their
+		// bodies call the gated _cu1 with the new selectors.
 		for (String op : List.of(LispNames.COMPLEX, LispNames.CONJUGATE, LispNames.SQRT, LispNames.PHASE,
-				LispNames.UPGRADED_COMPLEX_PART_TYPE)) {
+				LispNames.UPGRADED_COMPLEX_PART_TYPE, LispNames.CIS, LispNames.ASINH, LispNames.ACOSH,
+				LispNames.ATANH)) {
 			if (!referencesFunctionDesignator(program, closRegistry, op)) {
 				wrapperExcludes.add(op);
 			}
@@ -1710,12 +1712,16 @@ public final class JvmLispCompiler implements LispCompiler {
 		// Complex numbers (.kb/jvm-complex.md): the _c* helpers are emitted only
 		// when the program may create a complex -- a #C literal, a
 		// complex/conjugate call, or a sqrt, which can root a negative into the
-		// plane. forcedGroups carries the verdict of a previous run whose scan
-		// under-predicted this gate (see compile(List)); it never turns the gate
-		// OFF. The holder travels exactly then (needsComplexRuntime below), so a
-		// complex-free program keeps its single-file output.
+		// plane (cis/asinh/acosh/atanh join the sqrt case: their real arms run
+		// through _cu1 and can cross into the plane). forcedGroups carries the
+		// verdict of a previous run whose scan under-predicted this gate (see
+		// compile(List)); it never turns the gate OFF. The holder travels exactly
+		// then (needsComplexRuntime below), so a complex-free program keeps its
+		// single-file output.
 		boolean usesComplex = LispMacroExpander.mayCreateComplex(program, closRegistry)
-				|| programUsesSymbol(program, LispNames.SQRT)
+				|| programUsesSymbol(program, LispNames.SQRT) || programUsesSymbol(program, LispNames.CIS)
+				|| programUsesSymbol(program, LispNames.ASINH) || programUsesSymbol(program, LispNames.ACOSH)
+				|| programUsesSymbol(program, LispNames.ATANH)
 				|| referencesFunctionDesignator(program, closRegistry, LispNames.COMPLEX)
 				|| referencesFunctionDesignator(program, closRegistry, LispNames.CONJUGATE)
 				|| referencesFunctionDesignator(program, closRegistry, LispNames.PHASE)
