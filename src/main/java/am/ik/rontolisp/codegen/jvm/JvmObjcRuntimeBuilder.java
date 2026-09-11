@@ -88,8 +88,8 @@ final class JvmObjcRuntimeBuilder {
 	 */
 	private static final List<String> OBJC_CLASSES = List.of("ObjcException", "MainThread", "MainThread$Slot",
 			"ObjcClasses", "ObjcClasses$Bound", "ObjcClasses$Method", "ObjcClasses$Shape", "ObjcClasses$Spec",
-			"ObjcRuntime", "ObjcRuntime$1", "ObjcRuntime$Out", "ObjcRuntime$Sent", "TypeEncoding", "TypeEncoding$Kind",
-			"TypeEncoding$Parser", "TypeEncoding$Type");
+			"VariadicSelectors", "ObjcRuntime", "ObjcRuntime$1", "ObjcRuntime$Out", "ObjcRuntime$Sent",
+			"ObjcRuntime$Signature", "TypeEncoding", "TypeEncoding$Kind", "TypeEncoding$Parser", "TypeEncoding$Type");
 
 	/** The emitted init helper method name. */
 	static final String INIT_METHOD = "_objcInit";

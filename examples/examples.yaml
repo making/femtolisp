@@ -640,7 +640,8 @@ examples:
     os: [mac]
     note: >-
       the only macos/ example that opens nothing -- introspection, key-value
-      coding, a class defined at run time whose isEqual: Foundation calls -- so
+      coding, the variadic selectors whose encoding describes their fixed-arity
+      twin, a class defined at run time whose isEqual: Foundation calls -- so
       it is the one whose OUTPUT can be checked, which is what os: [mac] is for:
       the Objective-C runtime is macOS-only and this harness runs everywhere, so
       the RUN legs gate on the platform and the jvm-compile leg does not. That
@@ -657,6 +658,9 @@ examples:
         - "<- NSString <- NSObject"
         - "-[NSString rangeOfString:]   returns {_NSRange=QQ}, takes @ : @"
         - "so rangeOfString: answers    (10 1)"
+        - "arrayWithObjects: built      Lisp, Smalltalk, Objective-C"
+        - "one argument, one element    1"
+        - "stringWithFormat: answers    the hand has 3 entries, 5.8% of the deck"
         - "valueForKey: \"length\"    11, 4, 9"
         - "keyPath \"@max.length\"    11"
         - "sorted by \"length\"       Lisp, Smalltalk, Objective-C"

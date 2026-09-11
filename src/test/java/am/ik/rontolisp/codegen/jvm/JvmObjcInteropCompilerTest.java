@@ -260,6 +260,22 @@ class JvmObjcInteropCompilerTest {
 
 	@Test
 	@EnabledOnOs(OS.MAC)
+	void aVariadicSelectorTakesItsWholeArgumentListHereToo() throws Exception {
+		assumeTrue(ObjcInterop.available(), ObjcInterop.description());
+		// The variadic table is am.ik.objc's own, so it travels in the blob rather than
+		// being restated by the compiled bridge: the same program that would kill the
+		// interpreter answers the same here.
+		assertThat(compileAndRun("""
+				(print (objc:send (objc:send "NSArray" "arrayWithObjects:" (objc:string "a") (objc:string "b"))
+				                  "count"))
+				(print (objc:send (objc:send "NSString" "stringWithFormat:" (objc:string "%@ %ld %.2f")
+				                             (objc:string "x") 42 3.5)
+				                  "UTF8String"))
+				""")).isEqualTo("2\n\"x 42 3.50\"");
+	}
+
+	@Test
+	@EnabledOnOs(OS.MAC)
 	void aClassDefinedAtRunTimeRunsItsLispMethodOnTheMainThread() throws Exception {
 		assumeTrue(ObjcInterop.available(), ObjcInterop.description());
 		// The method is applied from an upcall, with the receiver and the argument

@@ -2,6 +2,7 @@ package am.ik.rontolisp.eval;
 
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
+import java.util.concurrent.TimeUnit;
 
 import am.ik.rontolisp.LispDoubleFloatArray;
 import am.ik.rontolisp.LispFunction;
@@ -11,6 +12,7 @@ import am.ik.rontolisp.LispSingleFloatArray;
 import am.ik.rontolisp.LispVal;
 import am.ik.rontolisp.reader.LispReader;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.condition.EnabledIf;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -41,8 +43,22 @@ import static org.assertj.core.api.Assumptions.assumeThat;
  * does without the flag. (4) The CHAIN: with {@code --blas} and {@code --simd} on too the
  * device is asked first, and what it declines lands on the best CPU path enabled rather
  * than on the scalar defun.
+ *
+ * <p>
+ * <b>Every method here is on a five-minute clock.</b> The ORACLE leg of each assertion is
+ * the interpreted defun at the device's own floor, so this class costs minutes where
+ * every sibling costs seconds, and on Metal -- whose floors are 4 to 16 times CUDA's --
+ * those minutes are enough that a full {@code ./mvnw test} looks STOPPED rather than slow
+ * (a whole run was killed on the strength of it). The timeout is what tells the two
+ * apart: slow finishes, stopped fails with a stack. It runs on a SEPARATE thread
+ * deliberately -- the default {@code SAME_THREAD} mode only interrupts, and the
+ * evaluator's loops poll no interrupt flag, so a spinning interpreted {@code while} would
+ * ignore it and hang exactly as before. Five minutes is about three times the slowest
+ * method here (93 s on an M4 Max inside a full run, 2026-09-11); what the class costs,
+ * what was cut from it and what deliberately was not is in {@code .kb/gpu.md}.
  */
 @EnabledIf("am.ik.rontolisp.eval.LinalgGpuTest#gpuIsAvailable")
+@Timeout(value = 5, unit = TimeUnit.MINUTES, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
 class LinalgGpuTest {
 
 	static boolean gpuIsAvailable() {
@@ -90,6 +106,33 @@ class LinalgGpuTest {
 	private static int slabSide(int batch) {
 		int n = (int) Math.ceil(Math.cbrt((double) am.ik.gpu.GpuThresholds.minWork() / batch));
 		return Math.max(16, (n + n / 8 + 3) / 4 * 4);
+	}
+
+	/**
+	 * The side of a square above the STRIDED threshold in force -- the shape every
+	 * program below is built at that needs an operand the device really HOLDS. A
+	 * broadcast add over a square this size is what uploads one: the offer rule is
+	 * {@code count >= threshold || resident} ({@code Gpu#worthOrResident}), so the first
+	 * accepted call has to clear the floor by itself and everything after it rides on the
+	 * residency.
+	 *
+	 * <p>
+	 * The margin over the floor is 25%, not the 2x this was in six copied-out
+	 * expressions, and it is the cheapest knob in the class: the gate counts the RESULT's
+	 * own elements ({@code Gpu#stridedCount}, the product of the square's dimensions), so
+	 * 25% clears it exactly as surely as 2x does -- while every interpreted oracle leg is
+	 * LINEAR in that count and pays the margin in full. Measured 2026-09-11 on an M4 Max
+	 * (Metal, strided floor 262144): the six programs sized here were 223 s of the
+	 * class's 545.
+	 * @return the square's side, a multiple of 16
+	 */
+	private static int residentSide() {
+		long threshold = am.ik.gpu.GpuThresholds.stridedMinElements();
+		// Both shipped backends offer the tier, so the sentinel is not reachable today;
+		// clamped rather than multiplied because sqrt(1.25 * Long.MAX_VALUE) overflows
+		// the int this returns (.kb/test-execution.md, the Long.MAX_VALUE trap).
+		long elements = threshold == Long.MAX_VALUE ? 262144 : threshold + threshold / 4;
+		return 16 * (int) Math.ceil(Math.sqrt((double) elements) / 16);
 	}
 
 	/**
@@ -456,9 +499,15 @@ class LinalgGpuTest {
 		return am.ik.gpu.GpuThresholds.matvecMinElements() < Long.MAX_VALUE;
 	}
 
-	/** The side of a square matrix comfortably over the GEMV threshold in force. */
+	/**
+	 * The side of a square matrix over the GEMV threshold in force, with the same 25%
+	 * margin -- and for the same reason -- {@link #residentSide} carries. Every caller
+	 * stands behind {@link #takesMatvec}, which is where the {@code never} sentinel is
+	 * answered: unguarded, the arithmetic here would overflow on it.
+	 */
 	private static int matvecSide() {
-		return 16 * (int) Math.ceil(Math.sqrt(2.0 * am.ik.gpu.GpuThresholds.matvecMinElements()) / 16);
+		long threshold = am.ik.gpu.GpuThresholds.matvecMinElements();
+		return 16 * (int) Math.ceil(Math.sqrt((double) (threshold + threshold / 4)) / 16);
 	}
 
 	/**
@@ -481,7 +530,13 @@ class LinalgGpuTest {
 	void theMatrixByVectorProductMatchesTheScalarOracleOnExactInputsOnceResident() {
 		assumeThat(takesMatvec()).as("this device keeps resident copies").isTrue();
 		int side = matvecSide();
-		assertMatchesScalarOracle(exactMatvec(side, option()));
+		// The DEFAULT width, and then the one the hardware is for. Where there is no
+		// double the two are the same program and the second leg was the first one run
+		// again -- half this method's wall for nothing, over a matrix sized off the GEMV
+		// floor (measured 2026-09-11: 37.4 s of the class's 545 on Metal).
+		if (DOUBLES) {
+			assertMatchesScalarOracle(exactMatvec(side, ""));
+		}
 		assertMatchesScalarOracle(exactMatvec(side, " :element-type 'single-float"));
 	}
 
@@ -1293,16 +1348,22 @@ class LinalgGpuTest {
 	/**
 	 * Every in-place writer of a packed float array there is, each followed by the same
 	 * bit-identical device member over the array it wrote, so that a writer the residency
-	 * invalidation does not see shows up as a wrong sum. The first call makes both
-	 * operands resident; {@code check} then prints a sum the oracle must print too.
-	 * {@code %la-scale} / {@code %la-scatter-rows} / {@code %la-adam-step} /
-	 * {@code %la-rng-fill} and the {@code vec:} {@code -into} family are the kernels that
-	 * bypass the element setter under {@code --simd}, which is why the program is run
-	 * with that flag as well as without it. {@code fill} and {@code replace} are not here
-	 * because the interpreter does not accept a packed array for either; on the JVM they
-	 * expand to the setter this program already exercises. {@code read-sequence} over a
-	 * binary file IS here: its bulk primitive writes the storage behind the setter's back
-	 * on both backends, and it is how a model's weights arrive ({@code examples/llm}).
+	 * invalidation does not see shows up as a wrong sum. The first pair of calls makes
+	 * both operands resident; {@code check-m} and {@code check-v} then print a sum the
+	 * oracle must print too -- one for the MATRIX and one for the VECTOR, and each writer
+	 * is followed by the one whose array it wrote. That is the whole claim (a stale
+	 * resident copy of the array just written is what the sum sees), and printing both
+	 * sums after every writer -- which is what this did -- doubled the cost of the
+	 * class's most expensive method for a sum over an array nothing had touched (measured
+	 * 2026-09-11 on an M4 Max: 115.7 s of the class's 545). {@code %la-scale} /
+	 * {@code %la-scatter-rows} / {@code %la-adam-step} / {@code %la-rng-fill} and the
+	 * {@code vec:} {@code -into} family are the kernels that bypass the element setter
+	 * under {@code --simd}, which is why the program is run with that flag as well as
+	 * without it. {@code fill} and {@code replace} are not here because the interpreter
+	 * does not accept a packed array for either; on the JVM they expand to the setter
+	 * this program already exercises. {@code read-sequence} over a binary file IS here:
+	 * its bulk primitive writes the storage behind the setter's back on both backends,
+	 * and it is how a model's weights arrive ({@code examples/llm}).
 	 */
 	private static String residencyWriters(int side, String type, String file) {
 		int n = side * side;
@@ -1311,30 +1372,31 @@ class LinalgGpuTest {
 				(defparameter *row* (linalg:reshape (linalg:arange 1 %d%s) '(1 %d)))
 				(defparameter *v* (linalg:arange 1 %d%s))
 				(defparameter *one* (linalg:ones '(1)%s))
-				(defun check (tag)
-				  (format t "~a ~a ~a~%%" tag (linalg:sum (linalg:add *a* *row*)) (linalg:sum (linalg:add *v* *one*))))
-				(check "resident")
-				(setf (aref *a* 3 4) 0.5) (check "aset")
-				(setf (row-major-aref *a* 777) -1.25) (check "row-major-aset")
-				(setf (aref *row* 0 5) 100) (check "aset-other-operand")
-				(setf (aref *v* 10) 3) (check "aset-vector")
-				(setf (row-major-aref *v* 11) 4) (check "row-major-aset-vector")
-				(linalg::%%la-scale *a* 3) (check "la-scale")
-				(linalg::%%la-scale *v* 0.5) (check "la-scale-vector")
-				(linalg::%%la-scatter-rows *a* (linalg:ones '(2 %d)%s) #d(1.0 5.0)) (check "la-scatter-rows")
+				(defun check-m (tag) (format t "~a ~a~%%" tag (linalg:sum (linalg:add *a* *row*))))
+				(defun check-v (tag) (format t "~a ~a~%%" tag (linalg:sum (linalg:add *v* *one*))))
+				(check-m "resident") (check-v "resident-vector")
+				(setf (aref *a* 3 4) 0.5) (check-m "aset")
+				(setf (row-major-aref *a* 777) -1.25) (check-m "row-major-aset")
+				(setf (aref *row* 0 5) 100) (check-m "aset-other-operand")
+				(setf (aref *v* 10) 3) (check-v "aset-vector")
+				(setf (row-major-aref *v* 11) 4) (check-v "row-major-aset-vector")
+				(linalg::%%la-scale *a* 3) (check-m "la-scale")
+				(linalg::%%la-scale *v* 0.5) (check-v "la-scale-vector")
+				(linalg::%%la-scatter-rows *a* (linalg:ones '(2 %d)%s) #d(1.0 5.0)) (check-m "la-scatter-rows")
 				(linalg::%%la-adam-step *a* (linalg:ones '(%d %d)%s) (linalg:zeros '(%d %d)%s) (linalg:zeros '(%d %d)%s)
 				                        #d(0.01 0.0 0.0 0.9 0.1 0.999 0.001 0.00000001 1.0 1.0 0.0))
-				(check "la-adam-step")
-				(linalg::%%la-rng-fill *a* #d(11.0 22.0 33.0) 0 0.0 1.0) (check "la-rng-fill")
-				(linalg::%%la-rng-fill *v* #d(44.0 55.0 66.0) 1 0.0 1.0) (check "la-rng-fill-vector")
-				(vec:scale-into *v* *v* 2) (check "vec-scale-into")
-				(vec:add-into *v* *v* *v*) (check "vec-add-into")
-				(vec:negative-into *v* *v*) (check "vec-negative-into")
-				(vec:clip-into *v* *v* -1 1) (check "vec-clip-into")
-				(vec:matvec-into *v* (linalg:ones '(%d 1)%s) *one*) (check "vec-matvec-into")
-				(with-open-file (s "%s" :element-type '(unsigned-byte 8)) (read-sequence *v* s)) (check "read-sequence")
-				""".formatted(n + 1, type, side, side, side + 1, type, side, n + 1, type, type, side, type, side, side,
-				type, side, side, type, side, side, type, n, type, file);
+				(check-m "la-adam-step")
+				(linalg::%%la-rng-fill *a* #d(11.0 22.0 33.0) 0 0.0 1.0) (check-m "la-rng-fill")
+				(linalg::%%la-rng-fill *v* #d(44.0 55.0 66.0) 1 0.0 1.0) (check-v "la-rng-fill-vector")
+				(vec:scale-into *v* *v* 2) (check-v "vec-scale-into")
+				(vec:add-into *v* *v* *v*) (check-v "vec-add-into")
+				(vec:negative-into *v* *v*) (check-v "vec-negative-into")
+				(vec:clip-into *v* *v* -1 1) (check-v "vec-clip-into")
+				(vec:matvec-into *v* (linalg:ones '(%d 1)%s) *one*) (check-v "vec-matvec-into")
+				(with-open-file (s "%s" :element-type '(unsigned-byte 8)) (read-sequence *v* s)) (check-v "read-sequence")
+				"""
+			.formatted(n + 1, type, side, side, side + 1, type, side, n + 1, type, type, side, type, side, side, type,
+					side, side, type, side, side, type, n, type, file);
 	}
 
 	/**
@@ -1359,9 +1421,7 @@ class LinalgGpuTest {
 
 	@Test
 	void everyEnumeratedWriterInvalidatesTheResidentCopy() throws java.io.IOException {
-		// The side of a square above the strided threshold, so the broadcast add really
-		// goes to the device and both operands really are resident afterwards.
-		int side = 16 * (int) Math.ceil(Math.sqrt(2.0 * am.ik.gpu.GpuThresholds.stridedMinElements()) / 16);
+		int side = residentSide();
 		java.nio.file.Path file = residencyFile(side, !DOUBLES);
 		String program = residencyWriters(side, option(), file.toString());
 		String oracle = output(program, false, false);
@@ -1429,7 +1489,7 @@ class LinalgGpuTest {
 
 	@Test
 	void everyEnumeratedReaderMaterializesTheDeviceResult() throws java.io.IOException {
-		int side = 16 * (int) Math.ceil(Math.sqrt(2.0 * am.ik.gpu.GpuThresholds.stridedMinElements()) / 16);
+		int side = residentSide();
 		java.nio.file.Path file = java.nio.file.Files.createTempFile("lazy", ".bin");
 		String program = residencyReaders(side, option(), file.toString());
 		String oracle = output(program, false, false);
@@ -1445,7 +1505,7 @@ class LinalgGpuTest {
 		assumeThat(am.ik.gpu.GpuThresholds.lazyResultsOn())
 			.as("lazy results pay on this backend (CUDA, and Metal since todo-495)")
 			.isTrue();
-		int side = 16 * (int) Math.ceil(Math.sqrt(2.0 * am.ik.gpu.GpuThresholds.stridedMinElements()) / 16);
+		int side = residentSide();
 		String program = """
 				(defparameter *a* (linalg:reshape (linalg:arange 1 %d%s) '(%d %d)))
 				(defparameter *row* (linalg:reshape (linalg:arange 1 %d%s) '(1 %d)))
@@ -1526,7 +1586,7 @@ class LinalgGpuTest {
 
 	@Test
 	void theResidentTierRunsOverAResidentOperandAndLandsOnTheCpuKernelsBits() {
-		int side = 16 * (int) Math.ceil(Math.sqrt(2.0 * am.ik.gpu.GpuThresholds.stridedMinElements()) / 16);
+		int side = residentSide();
 		String program = residentTier(side, option());
 		String oracle = output(program, false, false);
 		assertThat(oracle).contains("equal ").contains("adam ").contains("chain ");
@@ -1569,7 +1629,7 @@ class LinalgGpuTest {
 	 */
 	@Test
 	void theIndexTierRunsOverAResidentTableAndLandsOnTheCpuKernelsBits() {
-		int side = 16 * (int) Math.ceil(Math.sqrt(2.0 * am.ik.gpu.GpuThresholds.stridedMinElements()) / 16);
+		int side = residentSide();
 		String program = indexTier(side, option());
 		String oracle = output(program, false, false);
 		assertThat(oracle).contains("take ").contains("pick ").contains("scatter ");
@@ -1607,7 +1667,7 @@ class LinalgGpuTest {
 	 */
 	@Test
 	void theClipNormFoldsInBlocksOnTheDeviceCloseToTheSequentialSumAndReproducibly() {
-		int side = 16 * (int) Math.ceil(Math.sqrt(2.0 * am.ik.gpu.GpuThresholds.stridedMinElements()) / 16);
+		int side = residentSide();
 		// The gradient has to be RESIDENT, which is the whole of this member's offer
 		// rule: %la-sum-squares asks the cache and declines outright when the operand is
 		// not there, and so does the scalar %la-scale that produced it. Built as

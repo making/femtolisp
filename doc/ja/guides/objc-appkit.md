@@ -178,6 +178,25 @@ CL-USER> (objc:send (objc:send "NLLanguageRecognizer" "dominantLanguageForString
 
 receiver が応答しないセレクタ、引数の個数違い、宣言型に合わない引数はクラッシュではなく `error` になります。`performSelector...` メッセージの答えは捨てられます (その型はターゲットメソッドのもので、バインディングからは見えません)。ブロック、共用体、ビットフィールドはこの第一段階の範囲外で、それらを取るセレクタは名前を挙げて拒否されます。
 
+### 宣言が呼び出しのすべてではない唯一のケース
+
+ランタイムが印を付けてくれないのが可変長引数 (variadic) のセレクタです。
+`+[NSArray arrayWithObjects:]` と `+[NSArray arrayWithObject:]` はどちらも `@@:@` とバイト単位で同一に宣言されており、両者を区別する情報はどこにもありません。しかし Apple シリコンではこの違いが呼び出しそのものです。可変長引数はスタックで渡され、固定引数はレジスタで渡されるからです。
+
+そこでこの一群は名前で知られています。nil 終端のコンストラクタ (`arrayWithObjects:`、`initWithObjects:`、`setWithObjects:`、`orderedSetWithObjects:`、`dictionaryWithObjectsAndKeys:`、`initWithObjectsAndKeys:`) と、書式文字列の一族 (`stringWithFormat:`、`initWithFormat:`、`localizedStringWithFormat:`、`stringByAppendingFormat:`、`appendFormat:`、`predicateWithFormat:`、`raise:format:`) です。いずれも宣言された引数の個数を超えていくつでも引数を取り (オブジェクト、文字列、整数、浮動小数点数)、`nil` 終端子はバインディングが付けます。呼び出し側が書くものではありません。
+
+```console
+CL-USER> (objc:send (objc:send "NSArray" "arrayWithObjects:"
+                      (objc:string "a") (objc:string "b") (objc:string "c")) "count")
+3
+CL-USER> (objc:send (objc:send "NSString" "stringWithFormat:"
+                      (objc:string "%@ has %ld items, %.1f%% full")
+                      (objc:string "cache") 3 62.5) "UTF8String")
+"cache has 3 items, 62.5% full"
+```
+
+`arrayWithObjects:count:` は意図的にこの一族に含めていません。本物の配列と個数を取る、任意サイズのコレクションを作る固定引数の方法だからです。プログラム自身が宣言した可変長引数メソッドも表の外であり、それをバインディングが予見する手段はありません。
+
 ### バイト列と `:error` 出力引数
 
 汎用のメッセージ送信だけでは表現できないものが 2 つあります。メモリブロックと出力引数で
@@ -289,6 +308,8 @@ in this binary; register it under foreign.downcalls in reachability-metadata.jso
 
 JVM は事前に何も登録せずどんな形でもバインドするので、バイナリを作る前にプログラムが何を送るかを知る場所は `java -jar` です。
 
+可変長引数の呼び出しは別個の登録になるため、バイナリはその有界なグリッドも提供します。宣言された引数を超えて 11 個まで (バインディングが付ける `nil` 終端子を含めて 12 個)、うち先頭 3 個までは数、残りはオブジェクトです。これより長い、あるいは数がこれより多いリストは同じようにシグナルします。
+
 ## JVM クラスへのコンパイル
 
 同じプログラムは `.class` や `.jar` にコンパイルでき、素の `java` ランチャで動きます。ランチャはプロセスの最初のスレッドを自分でイベントループに留めます:
@@ -307,4 +328,5 @@ $ java -jar counter.jar
 - macOS のみ: インタプリタ (`java -jar`、または `rontolisp` バイナリ) とコンパイル済み `.class` / `.jar`。`.wasm` は不可で、`objc:` / `appkit:` の参照は両 WASM バックエンドでコンパイルエラーです。
 - アプリケーションバンドルのないプロセスには Dock アイコンもメニューバーもありません。Cmd-Q はなく、最後のウィンドウを閉じても終了しません — REPL がプロセスです。
 - コールバックの形は上の閉じた集合です。構造体や整数の引数を持つデリゲートメソッド、ブロックを取るセレクタは、この段階にはない段を必要とします。
+- 扱える可変長引数セレクタは上の表のものです。プログラム自身が宣言したものは含まれず、ランタイムにはそれを判別する手段がありません。
 - Apple シリコン向け。Intel Mac では 2 レジスタより広い構造体は `objc_msgSend_stret` で返され、バインディングはそれを選びますが動作確認はしていません。

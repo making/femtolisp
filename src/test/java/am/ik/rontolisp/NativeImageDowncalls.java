@@ -111,6 +111,27 @@ public final class NativeImageDowncalls {
 	}
 
 	/**
+	 * The VARIADIC downcall shapes with no entry in the checked-in file. A variadic
+	 * registration is a different stub than the same shape without one -- on the Apple
+	 * arm64 ABI a variadic argument travels on the stack where a fixed one travels in a
+	 * register -- so the spelling carries the split.
+	 * @param shapes the shapes bound with {@code Linker.Option.firstVariadicArg}
+	 * @param firstVariadicArg the index every one of them was bound at
+	 * @return the unregistered ones, spelled as the file spells them
+	 */
+	public static List<String> missingVariadic(Set<FunctionDescriptor> shapes, int firstVariadicArg) {
+		Set<String> registered = registered();
+		List<String> missing = new ArrayList<>();
+		for (FunctionDescriptor descriptor : shapes) {
+			String signature = signature(descriptor, false) + " variadic@" + firstVariadicArg;
+			if (!registered.contains(signature)) {
+				missing.add(signature);
+			}
+		}
+		return missing;
+	}
+
+	/**
 	 * The upcall shapes with no entry in the checked-in file: what a native image would
 	 * refuse to build a stub for. An upcall stub is registered under
 	 * {@code foreign.upcalls}, separately from the downcalls, and has no critical option.
@@ -133,6 +154,15 @@ public final class NativeImageDowncalls {
 		return registered("downcalls");
 	}
 
+	/**
+	 * Every VARIADIC {@code foreign.downcalls} entry, so a test can pin the file and the
+	 * rule that generated it against each other in both directions.
+	 * @return the entries, spelled as {@link #missingVariadic} spells them
+	 */
+	public static List<String> registeredVariadic() {
+		return registered().stream().filter(entry -> entry.contains(" variadic@")).toList();
+	}
+
 	private static Set<String> registered(String section) {
 		JsonNode downcalls = JsonMapper.builder().build().readTree(read(METADATA)).path("foreign").path(section);
 		assertThat(downcalls.size()).as("foreign.%s entries in %s", section, METADATA).isPositive();
@@ -146,8 +176,11 @@ public final class NativeImageDowncalls {
 			// it, and only allowHeapAccess makes the one a heap segment can be passed to.
 			boolean critical = entry.path("options").path("critical").path("allowHeapAccess").asBoolean(false);
 			boolean capture = entry.path("options").path("captureCallState").asBoolean(false);
+			// A variadic registration is its own stub: the same layouts called with a
+			// different ABI, so it never answers for the fixed-arity entry or vice versa.
+			JsonNode variadic = entry.path("options").path("firstVariadicArg");
 			registered.add(signature(alias(entry.path("returnType").asString("void")), parameters, critical)
-					+ (capture ? " capture" : ""));
+					+ (capture ? " capture" : "") + (variadic.isMissingNode() ? "" : " variadic@" + variadic.asInt()));
 		}
 		return registered;
 	}

@@ -4,6 +4,7 @@ import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.MemoryLayout;
 import java.lang.foreign.PaddingLayout;
 import java.lang.foreign.StructLayout;
+import java.lang.foreign.ValueLayout;
 import java.util.List;
 
 import am.ik.objc.TypeEncoding.Kind;
@@ -84,6 +85,28 @@ class TypeEncodingTest {
 		assertThatThrownBy(() -> TypeEncoding.parse("v24@0:8?16")).isInstanceOf(ObjcException.class)
 			.hasMessageContaining("function pointer");
 		assertThatThrownBy(() -> TypeEncoding.parse("")).isInstanceOf(ObjcException.class);
+	}
+
+	@Test
+	void aVariadicSelectorIsTheOneEncodingThatDoesNotDescribeItsCall() {
+		// +[NSArray arrayWithObjects:] and +[NSArray arrayWithObject:] are declared byte
+		// for byte the same, so the encoding cannot tell them apart and the difference
+		// -- a stack slot against a register -- is the whole call. The variadic half is
+		// appended from the TABLE of known names, never read out of the encoding.
+		TypeEncoding encoding = TypeEncoding.parse("@24@0:8@16");
+		assertThat(TypeEncoding.spelling(encoding.descriptor())).isEqualTo("void*(void*,void*,void*)");
+		assertThat(TypeEncoding.spelling(encoding.descriptor(
+				List.of(ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_DOUBLE, ValueLayout.ADDRESS))))
+			.isEqualTo("void*(void*,void*,void*,void*,jlong,jdouble,void*)");
+		assertThat(encoding.argumentTypes()).hasSize(3);
+		assertThat(VariadicSelectors.isVariadic("arrayWithObjects:")).isTrue();
+		assertThat(VariadicSelectors.isVariadic("arrayWithObject:")).isFalse();
+		// The fixed-arity way to build an array of any size takes a real C array and a
+		// count, and must never be given the variadic treatment.
+		assertThat(VariadicSelectors.isVariadic("arrayWithObjects:count:")).isFalse();
+		assertThat(VariadicSelectors.all()).contains("stringWithFormat:", "dictionaryWithObjectsAndKeys:",
+				"appendFormat:", "raise:format:");
+		assertThat(VariadicSelectors.all()).allSatisfy(selector -> assertThat(selector).endsWith(":"));
 	}
 
 	@Test

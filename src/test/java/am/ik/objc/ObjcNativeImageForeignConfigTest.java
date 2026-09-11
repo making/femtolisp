@@ -1,8 +1,11 @@
 package am.ik.objc;
 
 import java.lang.foreign.FunctionDescriptor;
+import java.lang.foreign.MemoryLayout;
 import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -320,6 +323,168 @@ class ObjcNativeImageForeignConfigTest {
 			.as("objc_msgSend shapes the widget layer sends with no entry in the native-image metadata -- the "
 					+ "binary signals on them, so (appkit:window ...) fails there and works on the JVM")
 			.isEmpty();
+	}
+
+	// --- the variadic grid ------------------------------------------------------------
+
+	/**
+	 * The three fixed halves every selector in {@link VariadicSelectors} is sent through:
+	 * an object-returning one-argument class method ({@code arrayWithObjects:},
+	 * {@code stringWithFormat:} and most of the rest), the same shape returning void
+	 * ({@code appendFormat:}) and the two-argument void one
+	 * ({@code +[NSException raise:format:]}). Their variadic split is the fixed argument
+	 * count, receiver and selector included.
+	 */
+	private static final List<FunctionDescriptor> VARIADIC_BASES = List.of(
+			FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS),
+			FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS), FunctionDescriptor
+				.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+
+	/** The carriers {@code ObjcRuntime} picks a variadic argument's layout from. */
+	private static final List<MemoryLayout> CARRIERS = List.of(ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+			ValueLayout.JAVA_DOUBLE);
+
+	/** Variadic arguments per call, the binding's own nil terminator included. */
+	private static final int MAX_VARIADIC = 12;
+
+	/**
+	 * Up to this many, a variadic argument may be any carrier; past it, only an object.
+	 */
+	private static final int MIXED_VARIADIC = 4;
+
+	/**
+	 * The grid the file registers, in its generation order: each base crossed with every
+	 * variadic tail. The LAST variadic argument is always {@code void*}, because the
+	 * binding appends the nil terminator itself -- which is what keeps this finite enough
+	 * to be worth writing down.
+	 * @return the shape and the index its variadic list starts at
+	 */
+	private static List<Object[]> variadicGrid() {
+		List<Object[]> grid = new ArrayList<>();
+		for (FunctionDescriptor base : VARIADIC_BASES) {
+			for (List<MemoryLayout> tail : variadicTails()) {
+				grid.add(new Object[] { base.appendArgumentLayouts(tail.toArray(MemoryLayout[]::new)),
+						base.argumentLayouts().size() });
+			}
+		}
+		return grid;
+	}
+
+	private static List<List<MemoryLayout>> variadicTails() {
+		List<List<MemoryLayout>> tails = new ArrayList<>();
+		for (int n = 1; n <= MAX_VARIADIC; n++) {
+			if (n > MIXED_VARIADIC) {
+				tails.add(Collections.nCopies(n, ValueLayout.ADDRESS));
+				continue;
+			}
+			for (List<MemoryLayout> head : carrierTuples(n - 1)) {
+				List<MemoryLayout> tail = new ArrayList<>(head);
+				tail.add(ValueLayout.ADDRESS);
+				tails.add(tail);
+			}
+		}
+		return tails;
+	}
+
+	private static List<List<MemoryLayout>> carrierTuples(int length) {
+		List<List<MemoryLayout>> all = new ArrayList<>();
+		all.add(List.of());
+		for (int i = 0; i < length; i++) {
+			List<List<MemoryLayout>> next = new ArrayList<>();
+			for (List<MemoryLayout> prefix : all) {
+				for (MemoryLayout carrier : CARRIERS) {
+					List<MemoryLayout> one = new ArrayList<>(prefix);
+					one.add(carrier);
+					next.add(one);
+				}
+			}
+			all = next;
+		}
+		return all;
+	}
+
+	/**
+	 * The file's variadic entries and the rule above, pinned against each other in both
+	 * directions -- an entry the rule does not generate is as wrong as a shape the file
+	 * does not carry, since the rule is what a regeneration would write.
+	 */
+	@Test
+	void theVariadicGridIsExactlyWhatTheFileRegisters() {
+		List<String> expected = new ArrayList<>();
+		for (Object[] row : variadicGrid()) {
+			expected.add(NativeImageDowncalls.signature((FunctionDescriptor) row[0], false) + " variadic@" + row[1]);
+		}
+		assertThat(expected).hasSize(144).doesNotHaveDuplicates();
+		assertThat(NativeImageDowncalls.registeredVariadic())
+			.as("the variadic objc_msgSend entries in the native-image metadata -- a variadic call is its own "
+					+ "stub, so a shape outside this grid signals in the binary naming the entry to add")
+			.containsExactlyInAnyOrderElementsOf(expected);
+	}
+
+	/**
+	 * Every selector in the table, resolved against this macOS: each one exists, and its
+	 * DECLARED half is one of the three bases the grid is built on -- the encoding is
+	 * what {@link ObjcRuntime#send} appends the variadic list to, so a selector whose
+	 * fixed half is something else would be sent through a shape nothing registered.
+	 */
+	@Test
+	@EnabledOnOs(OS.MAC)
+	void everyVariadicSelectorHasOneOfTheGridsBaseShapes() {
+		assumeTrue(ObjcRuntime.available(), ObjcRuntime.description());
+		ObjcRuntime runtime = ObjcRuntime.get();
+		List<String> unresolved = new ArrayList<>();
+		List<String> offGrid = new ArrayList<>();
+		for (String[] row : VARIADIC_OWNERS) {
+			MemorySegment cls = runtime.objcClass(row[0]);
+			MemorySegment owner = "class".equals(row[2]) ? runtime.classOf(cls) : cls;
+			String raw = runtime.rawEncoding(owner, row[1]);
+			if (raw == null) {
+				unresolved.add(row[0] + " " + row[1]);
+				continue;
+			}
+			if (!VARIADIC_BASES.contains(TypeEncoding.parse(raw).descriptor())) {
+				offGrid.add(row[0] + " " + row[1] + ": " + raw);
+			}
+		}
+		assertThat(unresolved).as("variadic selectors this macOS does not declare").isEmpty();
+		assertThat(offGrid).as("variadic selectors whose fixed half is outside the registered grid").isEmpty();
+		assertThat(VARIADIC_OWNERS.stream().map(row -> row[1]))
+			.as("a selector in the table with no owner here is one this test never resolved")
+			.containsExactlyInAnyOrderElementsOf(VariadicSelectors.all());
+	}
+
+	/**
+	 * The class each variadic selector is resolved against. The table itself is names
+	 * only -- a selector is global in Objective-C -- so this is the test's own half.
+	 */
+	private static final List<String[]> VARIADIC_OWNERS = List.of(cls("NSArray", "arrayWithObjects:"),
+			inst("NSArray", "initWithObjects:"), cls("NSSet", "setWithObjects:"),
+			cls("NSOrderedSet", "orderedSetWithObjects:"), cls("NSDictionary", "dictionaryWithObjectsAndKeys:"),
+			inst("NSDictionary", "initWithObjectsAndKeys:"), cls("NSString", "stringWithFormat:"),
+			inst("NSString", "initWithFormat:"), cls("NSString", "localizedStringWithFormat:"),
+			inst("NSString", "stringByAppendingFormat:"), inst("NSMutableString", "appendFormat:"),
+			cls("NSPredicate", "predicateWithFormat:"), cls("NSException", "raise:format:"));
+
+	/**
+	 * Every variadic shape a real send actually binds, against the same file: the grid
+	 * above is a rule, and this is the binding walking into it.
+	 */
+	@Test
+	@EnabledOnOs(OS.MAC)
+	void aVariadicSendBindsAShapeTheBinaryServes() {
+		assumeTrue(ObjcRuntime.available(), ObjcRuntime.description());
+		ObjcRuntime runtime = ObjcRuntime.get();
+		runtime.mainThread().sync(() -> {
+			runtime.send(runtime.objcClass("NSArray"), "arrayWithObjects:", "a", "b", "c");
+			runtime.send(runtime.objcClass("NSString"), "stringWithFormat:", "%@ %ld %.2f", "x", 42L, 2.5d);
+			return null;
+		});
+		for (ObjcRuntime.Signature signature : runtime.variadicSignatures()) {
+			assertThat(
+					NativeImageDowncalls.missingVariadic(Set.of(signature.descriptor()), signature.firstVariadicArg()))
+				.as("a variadic shape the binding bound with no entry in the native-image metadata")
+				.isEmpty();
+		}
 	}
 
 }

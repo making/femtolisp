@@ -6,9 +6,10 @@
 ;;;; its own type declaration, a value is reached by a string key, and a class can be born
 ;;;; after the program started. That is the deal a Lisp already makes, so the two meet
 ;;;; with no glue in between: this program passes selectors around as strings, walks class
-;;;; hierarchies it did not know, reads a method's type encoding out of the runtime,
-;;;; reaches values by key, and hands Foundation a class whose methods are Lisp closures
-;;;; -- which Foundation then calls, from inside its own collection code.
+;;;; hierarchies it did not know, reads a method's type encoding out of the runtime, sends
+;;;; the one family of selectors that encoding does not describe, reaches values by key,
+;;;; and hands Foundation a class whose methods are Lisp closures -- which Foundation then
+;;;; calls, from inside its own collection code.
 ;;;;
 ;;;; No window, no nib, no header file: it prints to the terminal and ends by itself. Its
 ;;;; companion `counter.lisp` is the other half of the package, the AppKit one. macOS
@@ -116,14 +117,47 @@
 (format t "~28a ~a~%" "so rangeOfString: answers"
         (objc:send (objc:string "Objective-C") "rangeOfString:" "C"))
 
-;;; 4. A value is reached by a string key
+;;; 4. A declaration that is not the whole call
+;;;
+;;; Every method describes itself -- except a variadic one, which is declared exactly like
+;;; its fixed-arity twin. `+[NSArray arrayWithObjects:]` and `+[NSArray arrayWithObject:]`
+;;; are both `@@:@`, and no encoding anywhere says which is which; on Apple silicon that
+;;; difference is the whole call, since a variadic argument travels on the stack where a
+;;; fixed one travels in a register. So `objc:send` knows the family by NAME: the
+;;; nil-terminated constructors and the format-string one take as many arguments as you
+;;; give them past the declared arity, and the nil terminator is the binding's own.
+
+(format t "~%== 4. a variadic selector takes the whole list ==~%")
+
+(defvar *dialects*
+  (objc:send "NSArray" "arrayWithObjects:" (objc:string "Lisp")
+             (objc:string "Smalltalk") (objc:string "Objective-C")))
+
+(format t "~28a ~a~%" "arrayWithObjects: built" (joined *dialects*))
+
+;; The same declaration as arrayWithObject:, and one argument is still a one-element list
+;; rather than a dead process.
+(defvar *one* (objc:send "NSArray" "arrayWithObjects:" (objc:string "only")))
+
+(format t "~28a ~a~%" "one argument, one element" (objc:send *one* "count"))
+
+;; A format argument's carrier is picked from the VALUE, which is what %@, %ld and %f read
+;; back out of the argument list.
+(format t "~28a ~a~%" "stringWithFormat: answers"
+        (utf8
+         (objc:send "NSString" "stringWithFormat:"
+                    (objc:string "%@ has %ld entries, %.1f%% of the deck")
+                    (objc:string "the hand") (objc:send *dialects* "count")
+                    5.75)))
+
+;;; 5. A value is reached by a string key
 ;;;
 ;;; Key-value coding resolves an accessor by name at run time, and over a collection the
 ;;; key means more than one lookup: `valueForKey:` maps it across the elements, a key path
 ;;; with an operator folds them, and a sort descriptor orders them by a key the program
 ;;; only ever holds as text.
 
-(format t "~%== 4. a value is a string key ==~%")
+(format t "~%== 5. a value is a string key ==~%")
 
 (defvar *languages* (objc:send "NSMutableArray" "array"))
 
@@ -150,7 +184,7 @@
         (show (objc:send *dictionary* "valueForKey:" "author"))
         (show (objc:send *dictionary* "valueForKey:" "year")))
 
-;;; 5. A class defined at run time, whose methods are Lisp closures
+;;; 6. A class defined at run time, whose methods are Lisp closures
 ;;;
 ;;; `objc:define-class` registers a real class with the runtime; its methods are Lisp
 ;;; functions that receive the receiver first. It declares no instance variables, so the
@@ -161,7 +195,7 @@
 ;;; from inside `containsObject:` and `indexOfObject:`, to an object whose answer is a
 ;;; closure written in Lisp.
 
-(format t "~%== 5. Foundation calls back into Lisp ==~%")
+(format t "~%== 6. Foundation calls back into Lisp ==~%")
 
 (defvar *ranks* (make-hash-table))
 
@@ -191,14 +225,14 @@
 (format t "indexOfObject: a seven -> ~a~%"
         (objc:send *hand* "indexOfObject:" (card "seven")))
 
-;;; 6. Delivered by name, to a receiver the sender never sees
+;;; 7. Delivered by name, to a receiver the sender never sees
 ;;;
 ;;; The notification centre is the runtime's habit taken to its end: the poster names a
 ;;; string, the observer names a string and a selector, and neither knows the other's
 ;;; type. Here the observer is an instance of a class that did not exist a moment ago, and
 ;;; the selector runs a closure.
 
-(format t "~%== 6. a notification, observed by a Lisp closure ==~%")
+(format t "~%== 7. a notification, observed by a Lisp closure ==~%")
 
 (defvar *observer-class*
   (objc:define-class "LispObserver"
