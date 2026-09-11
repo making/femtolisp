@@ -9213,7 +9213,7 @@ public final class LispNames {
 	 * {@code uiop:with-input (var &optional value) body...} -- binds {@code var} to an
 	 * input stream coerced from {@code value} (a stream designator, string or pathname)
 	 * and runs the body. A built-in {@code LispMacroExpander} expansion into
-	 * {@link #CALL_WITH_INPUT}, like {@link #WITH_CURRENT_DIRECTORY} is into its
+	 * {@link #CALL_WITH_INPUT_INTERNAL}, like {@link #WITH_CURRENT_DIRECTORY} is into its
 	 * call-with function.
 	 */
 	public static final String WITH_INPUT = "WITH-INPUT";
@@ -9233,7 +9233,8 @@ public final class LispNames {
 	/**
 	 * {@code uiop:with-output (var &optional value &key element-type) body...} -- binds
 	 * {@code var} to an output stream coerced from {@code value} and runs the body. A
-	 * built-in {@code LispMacroExpander} expansion into {@link #CALL_WITH_OUTPUT}.
+	 * built-in {@code LispMacroExpander} expansion into
+	 * {@link #CALL_WITH_OUTPUT_INTERNAL}.
 	 */
 	public static final String WITH_OUTPUT = "WITH-OUTPUT";
 
