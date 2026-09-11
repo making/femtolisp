@@ -270,16 +270,65 @@ which is byte-for-byte what it was.
   wrappers are now `unaryOptionalSecond` (the presence dispatch is exact: neither an
   omitted base nor an omitted `x` can be spelled `nil`).
 
-**Measured against SBCL 2.2.9 (2026-09-11, `linux/amd64`), one row of `.todo/762`'s
-table does not land**: `(log -8d0 2d0)` is `#C(2.9999999999999996 4.532360141827194)`
-here and `#C(3.0 4.532360141827194)` in SBCL. The cause is not `log` -- it is complex
-DIVISION. This implementation's is the naive `(ac+bd)/(c^2+d^2)`; SBCL's is Smith's,
-whose real divisor reduces to a part-wise `a/c, b/c` with ONE rounding instead of three.
-`(/ #c(2.0794415416798357d0 3.141592653589793d0) 0.6931471805599453d0)` alone shows it,
-with no logarithm in sight. Fixing it is `.todo/779`, not this item: the quotient IS the
-definition of `(log n base)`, so the pin here is the identity
-`(log n b)` = `(/ (log n) (log b))`, which holds on every backend and improves with the
-division rather than around it.
+The pin here is the identity `(log n b)` = `(/ (log n) (log b))`, which holds on every
+backend. It was chosen because one row of `.todo/762`'s acceptance table did NOT land
+when it was written -- `(log -8d0 2d0)` was `#C(2.9999999999999996 4.532360141827194)`
+against SBCL's `#C(3.0 4.532360141827194)` -- and the cause had no logarithm in it: the
+complex DIVISION was the naive denominator form. The identity improved WITH the division
+when `.todo/779` replaced it (below) rather than having to be re-pinned around it.
+
+## Complex division is Smith's form (`.todo/779`, 2026-09-11)
+
+`(a+bi)/(c+di)` in FLOATS folds on whichever divisor part is larger, never on the
+`c^2+d^2` denominator:
+
+```
+|c| >= |d| :  r = d/c,  den = c + d*r,  re = (a + b*r)/den,  im = (b - a*r)/den
+|c| <  |d| :  r = c/d,  den = c*r + d,  re = (a*r + b)/den,  im = (b*r - a)/den
+```
+
+Two properties, and a program notices both. A REAL divisor makes `d`, `r` and the
+correction zero, so each part is ONE rounded division instead of three -- which is what
+puts `(log -8d0 2d0)` on SBCL's `#C(3.0 4.532360141827194)`. And the only quantity ever
+squared is the smaller part over the larger, so nothing intermediate leaves the range the
+operands live in: the denominator form overflowed above `|c| ~ 1.3e154` and flushed to
+zero below `~1.5e-162`, answering `#C(NaN NaN)` for `(/ #c(1d200 1d200) #c(1d200 1d200))`
+and for the `1d-200` twin, both of which are `#C(1.0 0.0)`.
+
+Measured against SBCL 2.2.9 on `linux/amd64`, 2026-09-11: this form reproduces SBCL's
+answer on every finite row probed (the two range cases, `#c(3 4)`/`#c(4 3)` either side
+of the fold, a pure-imaginary divisor, a real dividend, `1d300`/`1d-300` divisors) --
+SBCL computes the same form. The one deliberate DIVERGENCE is the zero divisor: SBCL's
+FPU traps, so `(/ #c(1d0 2d0) 0d0)` signals `DIVISION-BY-ZERO` and
+`(/ #c(1d0 2d0) #c(0d0 0d0))` `FLOATING-POINT-INVALID-OPERATION`, where this runtime does
+not trap and answers `#C(NaN NaN)` -- `r` is `0/0` and every part follows. That is the
+value the denominator form answered too, so the existing pin did not move; a `d == 0.0`
+special case would have made it `#C(Infinity Infinity)`, which claims an answer where
+there is none.
+
+Three implementations, one form, and they must agree: `Environment.smithDivide` (the
+interpreter's float arm of `divComplex`), `JvmComplexRuntimeBuilder.buildDiv`'s float
+tail, and `WasmComplexRuntimeBuilder.buildDivBody`'s float arm -- WASM keeps the whole
+exact path on the `_rat_*` helpers below it and branches into raw `f64` instructions when
+any of the four parts is a float, so its digits ARE the JVM's here (unlike the software
+log core's). The EXACT (rational) path of all three is untouched and still divides by
+`c^2+d^2`: rationals neither round nor overflow, and `exactDivComplex`'s zero-divisor
+funnel answers where it always did. Pinning tests:
+`LispEvaluatorTest#evalComplexFloatDivisionIsSmithsForm`,
+`JvmLispCompilerTest#compileAndRunComplexFloatDivisionIsSmithsForm` (a differential
+against the interpreter) and
+`WasmLispCompilerIntegrationTest#compileAndRunComplexFloatDivisionIsSmithsForm`.
+
+The WASM leg of that test found a defect of its own, in the SHARED front end:
+`compiler/DoubleValuedForms.certainlyDouble` scanned an operator's arguments in one pass
+and answered true at the first literal double, so `(+ 3d0 #c(1d0 2d0))` was "certainly a
+double" -- it never reached the complex. The JVM ignores the predicate, but
+`WasmPrintCompiler` uses it to skip the value dispatch, and its `ref.cast` to
+`TYPE_FLOAT` TRAPPED the module (a hard wasmtime "cast failure", not a catchable error)
+for any float literal standing LEFT of a complex. The complex scan is now a pass of its
+own, ahead of the double scan;
+`WasmLispCompilerIntegrationTest#staticallyTypedPrintArgumentsPrintWhatTheValueDispatchWouldHave`
+carries the four shapes.
 
 ## Known corners (documented, not fixed here)
 

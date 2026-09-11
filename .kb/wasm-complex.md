@@ -75,8 +75,13 @@ correctly rendered in EH mode. Complex PARTS -- always real -- flow through
 the same function everywhere else, per `.kb/wasm-shared-coercion.md`.
 
 `DoubleValuedForms.certainlyDouble` answers false for a float-contagious call
-with a complex operand: `(+ #c(1 2) 1.5)` answers a complex, and the printer
-would otherwise cast it to `TYPE_FLOAT` and trap. Int-fusion refuses a tree
+with a complex operand ANYWHERE: `(+ #c(1 2) 1.5)` answers a complex, and the
+printer would otherwise cast it to `TYPE_FLOAT` and trap. It scanned the
+operands in one pass until 2026-09-11 (`.todo/779`) and answered true at the
+first literal double, so a complex to the RIGHT of one was never reached and
+`(princ (+ 3d0 #c(1d0 2d0)))` trapped the module with a wasmtime "cast
+failure" -- not the catchable landing the corner above describes. The complex
+scan is a pass of its own now, ahead of the double scan. Int-fusion refuses a tree
 carrying a syntactic complex outright (`WasmIntFusionCompiler.tryCompile`,
 `tryCompileRaw` and the `compileRawStore` raw path all bail on
 `containsComplex`, the JVM twin's identical gate): a complex literal or
@@ -201,6 +206,27 @@ NaN -- the one documented place where that answer survives.
   the quotient, so `(log 8 2)` is within ~1e-9 of `3.0` rather than equal to it,
   and `ci-spec.yaml`'s `atan2-and-log-base` pins the contract (the exact axes, the
   identity against `phase`, the magnitude and the TYPE) rather than digits.
+
+## `_c_div`'s float arm is Smith's form (`.todo/779`, 2026-09-11)
+
+The form, why it is not the `c^2+d^2` denominator, and the SBCL measurement are
+`.kb/jvm-complex.md`'s "Complex division is Smith's form" -- one form, three
+implementations, changed together. What is this backend's alone:
+
+- The whole body used to be ONE path over the `_rat_*` helpers, which absorb float
+  contagion for free. Smith's fold cannot ride them (`r = d/c` would make an exact
+  ratio and the comparison `|c| >= |d|` has no `_rat_` spelling that is cheaper
+  than the fold), so the body now BRANCHES: any of the four parts a `TYPE_FLOAT`
+  coerces all four through the one shared `_as_f64` and computes the fold in raw
+  `f64` instructions (`f64.abs`, `f64.ge`, `f64.div`), boxing the two parts back
+  through `_c_complex`. Locals 9-14 are that arm's raw parts, `r` and `den`.
+- The EXACT path below it is byte-for-byte what it was, denominator included: it
+  now only ever sees exact parts, where nothing rounds or overflows, and a zero
+  divisor still fails inside `_rat_div` the way a real `(/ x 0)` does.
+- Raw `f64` instructions round exactly as the JVM's `DDIV`/`DMUL` do, so unlike
+  everything that goes through the software log core, the two backends agree BIT
+  for bit on a float complex quotient. `WasmLispCompilerIntegrationTest#compileAndRunComplexFloatDivisionIsSmithsForm`
+  therefore pins digits, not tolerances.
 
 ## Known corners (documented, matching the JVM where stated)
 

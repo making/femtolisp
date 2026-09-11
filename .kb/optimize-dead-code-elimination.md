@@ -207,8 +207,12 @@ certainly-DOUBLE form unboxes the `TYPE_FLOAT` struct and calls `_print_f64_no_n
 strictly narrower than `hasDoubleLiteral`; only for the hard-coded standard output, since an
 explicit stream or an active `*standard-output*` rebinding renders to a string first).
 **The two predicates are the whole risk surface** -- a form wrongly admitted prints as the wrong
-type rather than failing -- so a new entry is earned by checking every backend's emission for that
-operator. Pinned by `staticallyTypedPrintArgumentsPrintWhatTheValueDispatchWouldHave`, ci-spec
+type rather than failing, or worse: `certainlyDouble` scanned the operands in ONE pass and answered
+true at the first literal double, so a complex standing to its right was never reached and
+`(princ (+ 3d0 #c(1d0 2d0)))` TRAPPED the module on the `ref.cast` to `TYPE_FLOAT` (2026-09-11,
+`.todo/779`; the complex scan is now a pass of its own, ahead of the double scan). A new entry is
+earned by checking every backend's emission for that operator, and a new disqualifying TYPE by
+checking it over every operand. Pinned by `staticallyTypedPrintArgumentsPrintWhatTheValueDispatchWouldHave`, ci-spec
 `statically-typed-print-arguments`.
 
 ### `%string-concat` byte-copies instead of rendering through the value printer

@@ -7851,10 +7851,9 @@ public final class Environment implements Scope {
 			}
 			for (int i = start; i < args.size(); i++) {
 				double[] p = complexDoubleParts(args.get(i));
-				double denom = p[0] * p[0] + p[1] * p[1];
-				double next = (re * p[0] + im * p[1]) / denom;
-				im = (im * p[0] - re * p[1]) / denom;
-				re = next;
+				double[] quotient = smithDivide(re, im, p[0], p[1]);
+				re = quotient[0];
+				im = quotient[1];
 			}
 			return LispComplex.valueOf(new LispDouble(re), new LispDouble(im));
 		}
@@ -7876,8 +7875,38 @@ public final class Environment implements Scope {
 		return LispComplex.valueOf(re, im);
 	}
 
+	// (a+bi)/(c+di) in FLOATS by Smith's form: fold on whichever divisor part is
+	// larger, so the only quantity ever squared is the smaller part over the larger
+	// and nothing intermediate leaves the range the operands themselves live in. The
+	// c^2+d^2 denominator this replaced overflows above |c| ~ 1.3e154 and flushes to
+	// zero below ~1.5e-162, where both operands are perfectly representable:
+	// (/ #c(1d200 1d200) #c(1d200 1d200)) answered #C(NaN NaN) and is 1.0 here.
+	// A REAL divisor makes d, and with it r, zero and den c, so both parts reduce to
+	// ONE rounded division instead of three -- which is why (log -8d0 2d0) lands on
+	// SBCL's #C(3.0 4.532360141827194) where the denominator form answered
+	// 2.9999999999999996 for the real part. SBCL 2.2.9 computes this same form
+	// (measured on linux/amd64, 2026-09-11, every row of .kb/jvm-complex.md's table).
+	// A zero FLOAT divisor keeps the NaN the denominator form answered -- r is 0/0
+	// and every part follows -- rather than the part-wise infinity a d == 0.0 special
+	// case would produce: SBCL signals DIVISION-BY-ZERO there because its FPU traps,
+	// this runtime does not trap, and a non-answer is the honest image of a signal.
+	// The compiled twins are JvmComplexRuntimeBuilder.buildDiv's float tail and
+	// WasmComplexRuntimeBuilder.buildDivBody's float arm; all three must agree.
+	private static double[] smithDivide(double a, double b, double c, double d) {
+		if (Math.abs(c) >= Math.abs(d)) {
+			double r = d / c;
+			double den = c + d * r;
+			return new double[] { (a + b * r) / den, (b - a * r) / den };
+		}
+		double r = c / d;
+		double den = c * r + d;
+		return new double[] { (a * r + b) / den, (b * r - a) / den };
+	}
+
 	// (a+bi)/(c+di) exactly: the denominator c^2+d^2 is real, so both parts divide
-	// by it. A zero divisor signals division-by-zero, like real (/ x 0).
+	// by it. Exact rationals neither overflow nor round, so the float arm's Smith
+	// fold buys nothing here. A zero divisor signals division-by-zero, like real
+	// (/ x 0).
 	private static LispVal[] exactDivComplex(LispVal a, LispVal b, LispVal c, LispVal d) {
 		LispVal denom = exactAdd(exactMul(c, c), exactMul(d, d));
 		if (isZeroReal(denom)) {

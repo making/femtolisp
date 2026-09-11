@@ -59,13 +59,19 @@ public final class DoubleValuedForms {
 			return false;
 		}
 		List<LispVal> parts = call.toList();
+		// A complex operand answers a complex, not a double -- even beside a literal
+		// double argument -- so the form is not certainly double (the same gate the
+		// JVM backend steers its complex arithmetic on). EVERY operand is scanned
+		// before the literal double may decide: one interleaved pass returned true
+		// for (+ 3d0 #c(1d0 2d0)) on the double it met FIRST, never reaching the
+		// complex, and the WASM printer's ref.cast to TYPE_FLOAT then trapped on the
+		// complex struct instead of printing #C(4.0 2.0).
 		for (int i = 1; i < parts.size(); i++) {
-			// A complex operand answers a complex, not a double -- even beside a
-			// literal double argument -- so the form is not certainly double (the
-			// same gate the JVM backend steers its complex arithmetic on).
 			if (am.ik.rontolisp.macro.LispMacroExpander.containsComplex(parts.get(i))) {
 				return false;
 			}
+		}
+		for (int i = 1; i < parts.size(); i++) {
 			if (parts.get(i) instanceof LispDouble) {
 				return true;
 			}
