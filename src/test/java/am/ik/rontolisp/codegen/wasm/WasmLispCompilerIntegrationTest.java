@@ -13385,6 +13385,69 @@ class WasmLispCompilerIntegrationTest {
 	}
 
 	@Test
+	void compileAndRunComplexAsinAcosOnTheBranchCut() throws Exception {
+		// The mirror of LispEvaluatorTest#evalComplexAsinAcosOnTheBranchCut: asin and
+		// acos cut the real axis outside [-1, 1], the side is decided by the REAL part
+		// (quadrant IV above +1, quadrant II below -1), and the sign of an imaginary
+		// ZERO does not move it. WASM is the approximate backend, so the magnitudes
+		// float within 1e-9 -- what the pin is actually for is the SIGN, which the
+		// sign-of-the-zero rule these replaced got wrong on half the rows.
+		String[] out = compileAndRun("""
+				(print (realpart (asin #c(2d0 0d0))))
+				(print (imagpart (asin #c(2d0 0d0))))
+				(print (imagpart (asin #c(2d0 -0d0))))
+				(print (realpart (asin #c(-4d0 0d0))))
+				(print (imagpart (asin #c(-4d0 0d0))))
+				(print (imagpart (asin #c(-4d0 -0d0))))
+				(print (realpart (acos #c(2d0 0d0))))
+				(print (imagpart (acos #c(2d0 0d0))))
+				(print (imagpart (acos #c(2d0 -0d0))))
+				(print (realpart (acos #c(-4d0 0d0))))
+				(print (imagpart (acos #c(-4d0 0d0))))
+				(print (imagpart (acos #c(-4d0 -0d0))))
+				""").split("\n");
+		assertThat(Double.parseDouble(out[0])).isCloseTo(1.5707963267948966, within(1e-9));
+		assertThat(Double.parseDouble(out[1])).isCloseTo(-1.3169578969248166, within(1e-9));
+		assertThat(Double.parseDouble(out[2])).isCloseTo(-1.3169578969248166, within(1e-9));
+		assertThat(Double.parseDouble(out[3])).isCloseTo(-1.5707963267948966, within(1e-9));
+		assertThat(Double.parseDouble(out[4])).isCloseTo(2.0634370688955608, within(1e-9));
+		assertThat(Double.parseDouble(out[5])).isCloseTo(2.0634370688955608, within(1e-9));
+		assertThat(Double.parseDouble(out[6])).isCloseTo(0.0, within(1e-9));
+		assertThat(Double.parseDouble(out[7])).isCloseTo(1.3169578969248166, within(1e-9));
+		assertThat(Double.parseDouble(out[8])).isCloseTo(1.3169578969248166, within(1e-9));
+		assertThat(Double.parseDouble(out[9])).isCloseTo(3.141592653589793, within(1e-9));
+		assertThat(Double.parseDouble(out[10])).isCloseTo(-2.0634370688955608, within(1e-9));
+		assertThat(Double.parseDouble(out[11])).isCloseTo(-2.0634370688955608, within(1e-9));
+	}
+
+	@Test
+	void compileAndRunComplexAsinAcosOfARealArgumentAnswerAnExactZero() throws Exception {
+		// A zero has no tolerance: an exactly real argument inside [-1, 1] answers an
+		// exactly real value here too, because Kahan's asinh argument is a difference
+		// of zeros and the software asinh core answers 0 at 0.
+		String[] out = compileAndRun("""
+				(print (imagpart (asin (complex -0.5d0 0d0))))
+				(print (imagpart (asin (complex 0.5d0 0d0))))
+				(print (asin (complex 0d0 0d0)))
+				(print (imagpart (asin (complex 1d0 0d0))))
+				(print (imagpart (acos (complex -0.5d0 0d0))))
+				(print (imagpart (acos (complex 0.5d0 0d0))))
+				(print (acos (complex 1d0 0d0)))
+				(print (realpart (asin (complex 0.5d0 0d0))))
+				(print (realpart (acos (complex 0.5d0 0d0))))
+				""").split("\n");
+		assertThat(out[0]).isEqualTo("0.0");
+		assertThat(out[1]).isEqualTo("0.0");
+		assertThat(out[2]).isEqualTo("#C(0.0 0.0)");
+		assertThat(out[3]).isEqualTo("0.0");
+		assertThat(out[4]).isEqualTo("0.0");
+		assertThat(out[5]).isEqualTo("0.0");
+		assertThat(out[6]).isEqualTo("#C(0.0 0.0)");
+		assertThat(Double.parseDouble(out[7])).isCloseTo(0.5235987755982989, within(1e-9));
+		assertThat(Double.parseDouble(out[8])).isCloseTo(1.0471975511965979, within(1e-9));
+	}
+
+	@Test
 	void compileAndRunComplexPhaseOnTheImaginaryAxis() throws Exception {
 		// The atan2 quadrant assembly answered the imaginary part ITSELF over a
 		// +0 real part (.todo/766); pi/2 is the constant it answers there, so the

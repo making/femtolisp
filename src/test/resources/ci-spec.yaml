@@ -16019,6 +16019,61 @@ cases:
       #C(0.6 0.8)
       0
       0.0
+  - name: complex-asin-acos-branch-cut
+    # asin/acos cut the real axis outside [-1, 1]: the value ON the cut is the one
+    # continuous with quadrant IV above +1 and quadrant II below -1, and the sign of an
+    # imaginary ZERO does not move it (where sqrt and log let it). The transcendental
+    # digits differ between the backends, so what travels here is the contract: the two
+    # zero signs answer ONE value, that value's imaginary part has the sign the cut
+    # names, and a real argument inside [-1, 1] answers an exact zero.
+    source: |
+      (print (= (asin #c(2d0 0d0)) (asin #c(2d0 -0d0))))
+      (print (= (asin #c(-4d0 0d0)) (asin #c(-4d0 -0d0))))
+      (print (= (acos #c(2d0 0d0)) (acos #c(2d0 -0d0))))
+      (print (= (acos #c(-4d0 0d0)) (acos #c(-4d0 -0d0))))
+      (print (minusp (imagpart (asin #c(2d0 0d0)))))
+      (print (plusp (imagpart (asin #c(-4d0 0d0)))))
+      (print (plusp (imagpart (acos #c(2d0 0d0)))))
+      (print (minusp (imagpart (acos #c(-4d0 0d0)))))
+      (print (imagpart (asin (complex 0.5d0 0d0))))
+      (print (imagpart (acos (complex -0.5d0 0d0))))
+      (print (asin (complex 0d0 0d0)))
+      (print (acos (complex 1d0 0d0)))
+    expected: |
+      T
+      T
+      T
+      T
+      T
+      T
+      T
+      T
+      0.0
+      0.0
+      #C(0.0 0.0)
+      #C(0.0 0.0)
+  - name: complex-tan-tanh-are-quotients
+    # tan and tanh are sin/cos and sinh/cosh DIVIDED, and a backend that loses the
+    # denominator answers the NUMERATOR -- a plausible number, not an error. The JVM did
+    # exactly that (|cos z|^2 written over cos z's real part), so (tan #c(1d0 0d0))
+    # answered sin 1 and (tanh #c(1d0 0d0)) sinh 1. The transcendental digits differ
+    # between the backends, so what travels here is the identity: each axis of the
+    # complex function IS the real function of that family, and the quotient off the
+    # axes is the quotient.
+    source: |
+      (print (< (abs (- (realpart (tan #c(1d0 0d0))) (tan 1d0))) 1d-15))
+      (print (< (abs (- (imagpart (tan #c(0d0 1d0))) (tanh 1d0))) 1d-15))
+      (print (< (abs (- (realpart (tanh #c(1d0 0d0))) (tanh 1d0))) 1d-15))
+      (print (< (abs (- (imagpart (tanh #c(0d0 1d0))) (tan 1d0))) 1d-15))
+      (print (< (abs (- (tan #c(1d0 1d0)) (/ (sin #c(1d0 1d0)) (cos #c(1d0 1d0))))) 1d-15))
+      (print (< (abs (- (tanh #c(1d0 1d0)) (/ (sinh #c(1d0 1d0)) (cosh #c(1d0 1d0))))) 1d-15))
+    expected: |
+      T
+      T
+      T
+      T
+      T
+      T
   - name: complex-binary-arithmetic
     source: |
       (print (+ #c(1 1/2) #c(1 1/3)))

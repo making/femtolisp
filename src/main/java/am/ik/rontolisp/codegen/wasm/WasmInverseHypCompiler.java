@@ -11,15 +11,16 @@ import am.ik.wasm.Type;
  * there, like the sqrt site's).
  *
  * <p>
- * The grouping differs from the interpreter's at the ulp level -- {@code asinh} and
- * {@code acosh} take {@code log(|x| + sqrt(x^2 +- 1))} where the interpreter splits at 2
- * and uses glibc's {@code log(2x)} middle branch, and {@code atanh} halves
- * {@code log((1+x)/(1-x))} where the interpreter differences two {@code log1p}s (the
- * grouping behind SBCL's complex path). WASM is the approximate backend these numbers are
- * tested with {@code isCloseTo} for; the exact anchors are the zero points, which each
- * formula answers exactly (the log core answers 0 at 1, and {@code sqrt(0) = 0}). The
- * squaring runs only below 1e154, where it cannot overflow; beyond, {@code log(a) + ln 2}
- * stands in for {@code log(2a)} within an ulp.
+ * The grouping differs from the interpreter's at the ulp level -- {@code asinh} takes the
+ * interpreter's own one log over {@code |x| + sqrt(x^2 + 1)} but squares where it hypots,
+ * {@code acosh} takes that same shape where the interpreter splits at 2 and uses glibc's
+ * {@code log(2x)} middle branch, and {@code atanh} halves {@code log((1+x)/(1-x))} where
+ * the interpreter differences two {@code log1p}s (the grouping behind SBCL's complex
+ * path). WASM is the approximate backend these numbers are tested with {@code isCloseTo}
+ * for; the exact anchors are the zero points, which each formula answers exactly (the log
+ * core answers 0 at 1, and {@code sqrt(0) = 0}). The squaring runs only below 1e154,
+ * where it cannot overflow; beyond, {@code log(a) + ln 2} stands in for {@code log(2a)}
+ * within an ulp.
  */
 final class WasmInverseHypCompiler {
 

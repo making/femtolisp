@@ -117,6 +117,26 @@ exp/log/sin/cos/sinh/cosh/atan cores, so like every WASM transcendental they
 are close but not bit-exact: pinned with `isCloseTo`, everything else
 print-compared (`WasmLispCompilerIntegrationTest.compileAndRunComplex*`).
 
+## asin/acos: the branch cut is the contract, not the digits
+
+The cut rule is one rule for all three implementations and lives in
+`.kb/jvm-complex.md` ("The asin/acos branch cut"): Kahan's form over
+`u = sqrt(1 - z)` and `v = sqrt(1 + z)`, whose `0.0 - im` / `0.0 + im` make an
+imaginary zero of either sign land on ONE sheet, so the side of the cut is the
+real part's and `(asin #c(2d0 0d0))` equals `(asin #c(2d0 -0d0))`.
+`emitAsinAcosRootsInto` builds the pair; the real parts go through the software
+`emitAtan2Into` and the imaginary parts through `WasmInverseHypCompiler`'s
+asinh core, so the magnitudes carry this backend's usual ~1e-11 and are pinned
+with `isCloseTo`.
+
+The ZEROS are exact here too, and have no tolerance: a real argument inside
+`[-1, 1]` leaves both roots real, the asinh argument is a difference of zeros,
+and the asinh core answers `0` at `0` -- `(asin (complex 0d0 0d0))` prints
+`#C(0.0 0.0)` on every backend. What the E2E case
+(`ci-spec.yaml`'s `complex-asin-acos-branch-cut`) compares is exactly that: the
+two zero signs answering one value, the sign of the imaginary part on the cut,
+and the exact zeros.
+
 ## The scalar backend refuses
 
 `--no-gc` has no complex representation (`.todo/037-number-extensions.md`):

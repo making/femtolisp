@@ -1172,69 +1172,90 @@ final class WasmComplexCompiler {
 		emitComplexDivF64(ctx, sRe, sIm, cRe, cIm, reOut, imOut);
 	}
 
-	// asin(z) = -i*log(i*z + sqrt(1-z^2)).
-	private static void emitComplexAsinInto(WasmLispCompiler.Ctx ctx, int reBox, int imBox, int reOut, int imOut) {
-		// z2 = (re^2-im^2, 2*re*im), boxed per component.
-		WasmExpCompiler.unboxF64Local(ctx, reBox);
-		WasmExpCompiler.unboxF64Local(ctx, reBox);
-		ctx.writer.write(Instruction.F64_MUL);
-		WasmExpCompiler.unboxF64Local(ctx, imBox);
-		WasmExpCompiler.unboxF64Local(ctx, imBox);
-		ctx.writer.write(Instruction.F64_MUL);
-		ctx.writer.write(Instruction.F64_SUB);
-		int z2Re = boxF64Temp(ctx);
-		f64Const(ctx, 2.0);
-		WasmExpCompiler.unboxF64Local(ctx, reBox);
-		ctx.writer.write(Instruction.F64_MUL);
-		WasmExpCompiler.unboxF64Local(ctx, imBox);
-		ctx.writer.write(Instruction.F64_MUL);
-		int z2Im = boxF64Temp(ctx);
-		// s = sqrt(1-z2re, -z2im).
+	// The two roots Kahan's asin and acos are both assembled from: u = sqrt(1 - z)
+	// into the first pair of boxed out-slots and v = sqrt(1 + z) into the second.
+	// Both imaginary parts are taken against a +0.0 exactly as the interpreter's
+	// 0.0 - im / 0.0 + im do -- that is what leaves an imaginary zero of EITHER sign
+	// on the same sheet, so the side of the branch cut is decided by the real part
+	// alone (`.kb/wasm-complex.md`).
+	private static void emitAsinAcosRootsInto(WasmLispCompiler.Ctx ctx, int reBox, int imBox, int uRe, int uIm, int vRe,
+			int vIm) {
 		f64Const(ctx, 1.0);
-		WasmExpCompiler.unboxF64Local(ctx, z2Re);
+		WasmExpCompiler.unboxF64Local(ctx, reBox);
 		ctx.writer.write(Instruction.F64_SUB);
-		int sArgRe = boxF64Temp(ctx);
-		WasmExpCompiler.unboxF64Local(ctx, z2Im);
-		ctx.writer.write(Instruction.F64_NEG);
-		int sArgIm = boxF64Temp(ctx);
-		int sRe = ctx.allocTemp();
-		int sIm = ctx.allocTemp();
-		emitComplexSqrtInto(ctx, sArgRe, sArgIm, sRe, sIm);
-		// l = log(-im+s0, re+s1); answer (l1, -l0).
-		WasmExpCompiler.unboxF64Local(ctx, sRe);
+		int uArgRe = boxF64Temp(ctx);
+		f64Const(ctx, 0.0);
 		WasmExpCompiler.unboxF64Local(ctx, imBox);
 		ctx.writer.write(Instruction.F64_SUB);
-		int lArgRe = boxF64Temp(ctx);
+		int uArgIm = boxF64Temp(ctx);
+		emitComplexSqrtInto(ctx, uArgRe, uArgIm, uRe, uIm);
+		f64Const(ctx, 1.0);
 		WasmExpCompiler.unboxF64Local(ctx, reBox);
-		WasmExpCompiler.unboxF64Local(ctx, sIm);
 		ctx.writer.write(Instruction.F64_ADD);
-		int lArgIm = boxF64Temp(ctx);
-		int lRe = ctx.allocTemp();
-		int lIm = ctx.allocTemp();
-		emitComplexLogInto(ctx, lArgRe, lArgIm, lRe, lIm);
-		getLocal(ctx, lIm);
-		ctx.writer.write(Instruction.SET_LOCAL);
-		ctx.writer.writeUnsignedLeb128(reOut);
-		WasmExpCompiler.unboxF64Local(ctx, lRe);
-		ctx.writer.write(Instruction.F64_NEG);
+		int vArgRe = boxF64Temp(ctx);
+		f64Const(ctx, 0.0);
+		WasmExpCompiler.unboxF64Local(ctx, imBox);
+		ctx.writer.write(Instruction.F64_ADD);
+		int vArgIm = boxF64Temp(ctx);
+		emitComplexSqrtInto(ctx, vArgRe, vArgIm, vRe, vIm);
+	}
+
+	// asin(z) = (atan2(re, Re(u*v)), asinh(Im(conj(u)*v))) -- Kahan's form, the
+	// interpreter's. A real argument inside [-1, 1] leaves both roots real, so the
+	// asinh argument is a difference of zeros and the imaginary part is EXACTLY zero.
+	private static void emitComplexAsinInto(WasmLispCompiler.Ctx ctx, int reBox, int imBox, int reOut, int imOut) {
+		int uRe = ctx.allocTemp();
+		int uIm = ctx.allocTemp();
+		int vRe = ctx.allocTemp();
+		int vIm = ctx.allocTemp();
+		emitAsinAcosRootsInto(ctx, reBox, imBox, uRe, uIm, vRe, vIm);
+		WasmExpCompiler.unboxF64Local(ctx, uRe);
+		WasmExpCompiler.unboxF64Local(ctx, vRe);
+		ctx.writer.write(Instruction.F64_MUL);
+		WasmExpCompiler.unboxF64Local(ctx, uIm);
+		WasmExpCompiler.unboxF64Local(ctx, vIm);
+		ctx.writer.write(Instruction.F64_MUL);
+		ctx.writer.write(Instruction.F64_SUB);
+		int prod = boxF64Temp(ctx);
+		emitAtan2Into(ctx, reBox, prod, reOut);
+		WasmExpCompiler.unboxF64Local(ctx, uRe);
+		WasmExpCompiler.unboxF64Local(ctx, vIm);
+		ctx.writer.write(Instruction.F64_MUL);
+		WasmExpCompiler.unboxF64Local(ctx, uIm);
+		WasmExpCompiler.unboxF64Local(ctx, vRe);
+		ctx.writer.write(Instruction.F64_MUL);
+		ctx.writer.write(Instruction.F64_SUB);
+		WasmInverseHypCompiler.emitAsinhRealF64(ctx);
 		WasmExpCompiler.boxF64(ctx);
 		ctx.writer.write(Instruction.SET_LOCAL);
 		ctx.writer.writeUnsignedLeb128(imOut);
 	}
 
-	// acos(z) = (pi/2 - asin0, -asin1).
+	// acos(z) = (2*atan2(Re(u), Re(v)), asinh(Im(conj(v)*u))) over the same two roots
+	// -- not pi/2 - asin(z), which would carry asin's real part into a quantity that
+	// is exactly 0 or pi on the cut.
 	private static void emitComplexAcosInto(WasmLispCompiler.Ctx ctx, int reBox, int imBox, int reOut, int imOut) {
-		int aRe = ctx.allocTemp();
-		int aIm = ctx.allocTemp();
-		emitComplexAsinInto(ctx, reBox, imBox, aRe, aIm);
-		f64Const(ctx, Math.PI / 2);
-		WasmExpCompiler.unboxF64Local(ctx, aRe);
-		ctx.writer.write(Instruction.F64_SUB);
+		int uRe = ctx.allocTemp();
+		int uIm = ctx.allocTemp();
+		int vRe = ctx.allocTemp();
+		int vIm = ctx.allocTemp();
+		emitAsinAcosRootsInto(ctx, reBox, imBox, uRe, uIm, vRe, vIm);
+		int half = ctx.allocTemp();
+		emitAtan2Into(ctx, uRe, vRe, half);
+		f64Const(ctx, 2.0);
+		WasmExpCompiler.unboxF64Local(ctx, half);
+		ctx.writer.write(Instruction.F64_MUL);
 		WasmExpCompiler.boxF64(ctx);
 		ctx.writer.write(Instruction.SET_LOCAL);
 		ctx.writer.writeUnsignedLeb128(reOut);
-		WasmExpCompiler.unboxF64Local(ctx, aIm);
-		ctx.writer.write(Instruction.F64_NEG);
+		WasmExpCompiler.unboxF64Local(ctx, vRe);
+		WasmExpCompiler.unboxF64Local(ctx, uIm);
+		ctx.writer.write(Instruction.F64_MUL);
+		WasmExpCompiler.unboxF64Local(ctx, vIm);
+		WasmExpCompiler.unboxF64Local(ctx, uRe);
+		ctx.writer.write(Instruction.F64_MUL);
+		ctx.writer.write(Instruction.F64_SUB);
+		WasmInverseHypCompiler.emitAsinhRealF64(ctx);
 		WasmExpCompiler.boxF64(ctx);
 		ctx.writer.write(Instruction.SET_LOCAL);
 		ctx.writer.writeUnsignedLeb128(imOut);
