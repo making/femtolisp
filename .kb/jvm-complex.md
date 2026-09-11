@@ -105,6 +105,20 @@ aarch64 (2026-09-10, the defect behind the deleted `.todo/756`, which was
 the interpreter's own `Math` values (`Double.toString(Math.exp(1))`), never a
 printed digit string, and only the platform-exact answers keep literals.
 
+`Math.log` splits the same way, and the split reaches the COMPLEX answers
+through `complexLog`'s `log(hypot(...))`: `Math.log(3.0)` is
+`1.0986122886681098` on x64 (correctly rounded) and `1.0986122886681096` on
+aarch64, so `(atanh 2)` answers `0.5493061443340549` / `...548` and
+`(acosh #c(1 1))` `1.0612750619050357` / `...355` -- x64 landing on SBCL's
+digits, aarch64 one ulp below them (2026-09-11, measured on the interpreter and
+on `-o Probe.class` under `linux/amd64`; it was `./mvnw test` red on CI with the
+literals, green on every aarch64 box). Only `Math.log` moves: the moduli it is
+handed (`sqrt`/`hypot`) are the same doubles everywhere, so these pins spell the
+call -- `"#C(" + Math.log(3.0) / 2 + " ...)"`,
+`2 * Math.log(1.7000157758867898)` for the acosh sqrt-sum modulus -- and the
+round trips (`(cosh (acosh #c(1 1)))`) assert closeness to the argument within
+2 ulps, which is what a round trip actually pins.
+
 Pinning tests: `JvmLispCompilerTest#compileAndRunComplex*` (mirrors
 `LispEvaluatorTest`'s `evalComplex*` case for case);
 `JvmRuntimeClassFilesTest` covers the holder's travelling list.

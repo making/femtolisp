@@ -36,6 +36,7 @@ import org.junit.jupiter.api.io.TempDir;
 import static java.util.stream.Collectors.joining;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.within;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 class LispEvaluatorTest {
@@ -3033,10 +3034,12 @@ class LispEvaluatorTest {
 	void evalInverseHyperbolicDomainEscape() {
 		// Real arguments outside the function's real domain cross into the plane
 		// (SBCL parity) -- the escape .todo/763 covers for log/asin/acos. The atanh
-		// real part answers ...548 (log(hypot) grouping), SBCL's ...549 (it halves
-		// log(9)) is one ulp up.
+		// real part is the log(hypot) grouping's (log 3)/2, and the last ulp of that
+		// log is the PLATFORM's, not the formula's: x64 rounds ln 3 correctly (landing
+		// on SBCL's ...549, which halves log 9) where aarch64 lands one low
+		// (.kb/jvm-complex.md). So the pin spells the call, never a box's digits.
 		assertThat(eval("(acosh 0d0)").print()).isEqualTo("#C(0.0 1.5707963267948966)");
-		assertThat(eval("(atanh 2d0)").print()).isEqualTo("#C(0.5493061443340548 1.5707963267948966)");
+		assertThat(eval("(atanh 2d0)").print()).isEqualTo("#C(" + Math.log(3.0) / 2 + " 1.5707963267948966)");
 	}
 
 	@Test
@@ -3045,9 +3048,12 @@ class LispEvaluatorTest {
 		assertThat(eval("(asinh #c(0d0 2d0))").print()).isEqualTo("#C(1.3169578969248166 1.5707963267948966)");
 		assertThat(eval("(asinh #c(0d0 -4d0))").print()).isEqualTo("#C(-2.0634370688955608 -1.5707963267948966)");
 		assertThat(eval("(sinh (asinh #c(1d0 1d0)))").print()).isEqualTo("#C(1.0 1.0000000000000002)");
-		// The ANSI form over log(hypot)/atan2 answers ...355 here; SBCL's ...357 (its
-		// clog squares instead of hypot-ing) is one ulp up.
-		assertThat(eval("(acosh #c(1d0 1d0))").print()).isEqualTo("#C(1.0612750619050355 0.9045568943023813)");
+		// The ANSI form's real part is 2*log of the sqrt sum's modulus. The modulus is
+		// the same double everywhere (sqrt and hypot are), Math.log's last ulp is the
+		// platform's -- x64 lands on SBCL's ...357 (its clog squares instead of
+		// hypot-ing), aarch64 one below -- so the pin spells the log call.
+		assertThat(eval("(acosh #c(1d0 1d0))").print())
+			.isEqualTo("#C(" + 2 * Math.log(1.7000157758867898) + " 0.9045568943023813)");
 		assertThat(eval("(acosh #c(0d0 0d0))").print()).isEqualTo("#C(0.0 1.5707963267948966)");
 		assertThat(eval("(acosh #c(0d0 -0d0))").print()).isEqualTo("#C(0.0 -1.5707963267948966)");
 		assertThat(eval("(acosh #c(-4d0 0d0))").print()).isEqualTo("#C(2.0634370688955603 3.141592653589793)");
@@ -3055,12 +3061,22 @@ class LispEvaluatorTest {
 		// real part, against CLHS's stated range (real part >= 0). This is what the
 		// ANSI formula produces; the SBCL deviation is 761's measurement, not a pin.
 		assertThat(eval("(acosh #c(-4d0 -0d0))").print()).isEqualTo("#C(2.0634370688955603 -3.141592653589793)");
-		assertThat(eval("(cosh (acosh #c(1d0 1d0)))").print()).isEqualTo("#C(1.0 0.9999999999999998)");
+		// The round trip returns the argument to within an ulp on both parts; WHICH
+		// ulp follows the platform's Math.log through acosh's real part, so the trip's
+		// accuracy is the pin and the digits are not.
+		assertThat(((LispDouble) eval("(realpart (cosh (acosh #c(1d0 1d0))))")).value()).isCloseTo(1.0,
+				within(2 * Math.ulp(1.0)));
+		assertThat(((LispDouble) eval("(imagpart (cosh (acosh #c(1d0 1d0))))")).value()).isCloseTo(1.0,
+				within(2 * Math.ulp(1.0)));
 		assertThat(eval("(atanh #c(1d0 1d0))").print()).isEqualTo("#C(0.4023594781085251 1.0172219678978514)");
-		assertThat(eval("(atanh #c(2d0 0d0))").print()).isEqualTo("#C(0.5493061443340548 1.5707963267948966)");
-		assertThat(eval("(atanh #c(2d0 -0d0))").print()).isEqualTo("#C(0.5493061443340548 -1.5707963267948966)");
-		assertThat(eval("(atanh #c(-4d0 0d0))").print()).isEqualTo("#C(-0.25541281188299536 1.5707963267948966)");
-		assertThat(eval("(atanh #c(-4d0 -0d0))").print()).isEqualTo("#C(-0.25541281188299536 -1.5707963267948966)");
+		// Both atanh real parts are differences of principal logs -- (log 3)/2 and
+		// (log 3 - log 5)/2 -- so they carry the platform's last ulp of Math.log.
+		assertThat(eval("(atanh #c(2d0 0d0))").print()).isEqualTo("#C(" + Math.log(3.0) / 2 + " 1.5707963267948966)");
+		assertThat(eval("(atanh #c(2d0 -0d0))").print()).isEqualTo("#C(" + Math.log(3.0) / 2 + " -1.5707963267948966)");
+		assertThat(eval("(atanh #c(-4d0 0d0))").print())
+			.isEqualTo("#C(" + (Math.log(3.0) - Math.log(5.0)) / 2 + " 1.5707963267948966)");
+		assertThat(eval("(atanh #c(-4d0 -0d0))").print())
+			.isEqualTo("#C(" + (Math.log(3.0) - Math.log(5.0)) / 2 + " -1.5707963267948966)");
 		assertThat(eval("(tanh (atanh #c(1d0 1d0)))").print()).isEqualTo("#C(1.0000000000000002 1.0)");
 	}
 

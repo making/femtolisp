@@ -7394,8 +7394,11 @@ class JvmLispCompilerTest {
 		assertThat(compileAndRun("(print (atanh 0d0))")).isEqualTo("0.0");
 		assertThat(compileAndRun("(print (atanh 0.5d0))")).isEqualTo("0.5493061443340548");
 		// Domain escape: the real arm crosses into the plane like sqrt of a negative.
+		// The real part is the plane path's (log 3)/2, whose last ulp is the
+		// PLATFORM's Math.log (x64 rounds ln 3 correctly, aarch64 one low --
+		// .kb/jvm-complex.md), so the pin spells the call the emitted code makes.
 		assertThat(compileAndRun("(print (acosh 0d0))")).isEqualTo("#C(0.0 1.5707963267948966)");
-		assertThat(compileAndRun("(print (atanh 2d0))")).isEqualTo("#C(0.5493061443340548 1.5707963267948966)");
+		assertThat(compileAndRun("(print (atanh 2d0))")).isEqualTo("#C(" + Math.log(3.0) / 2 + " 1.5707963267948966)");
 		// First-class references reach the same _cu1 helpers the direct calls emit.
 		assertThat(compileAndRun("(print (funcall #'acosh 2d0))")).isEqualTo("1.3169578969248166");
 		assertThat(compileAndRun("(print (mapcar #'cis (list 0d0 1d0)))"))
@@ -7410,15 +7413,19 @@ class JvmLispCompilerTest {
 		// wrong side of the cut.
 		assertThat(compileAndRun("(print (asinh #c(0d0 -4d0)))"))
 			.isEqualTo("#C(-2.0634370688955608 -1.5707963267948966)");
-		assertThat(compileAndRun("(print (acosh #c(1d0 1d0)))")).isEqualTo("#C(1.0612750619050355 0.9045568943023813)");
+		// 2*log of the sqrt sum's modulus: the modulus is the same double on every
+		// platform, its log's last ulp is the platform's (x64 lands on SBCL's ...357).
+		assertThat(compileAndRun("(print (acosh #c(1d0 1d0)))"))
+			.isEqualTo("#C(" + 2 * Math.log(1.7000157758867898) + " 0.9045568943023813)");
 		// The signed zero of the imaginary part picks the sheet at the cut.
 		assertThat(compileAndRun("(print (acosh #c(0d0 0d0)))")).isEqualTo("#C(0.0 1.5707963267948966)");
 		assertThat(compileAndRun("(print (acosh #c(0d0 -0d0)))")).isEqualTo("#C(0.0 -1.5707963267948966)");
 		assertThat(compileAndRun("(print (acosh #c(-4d0 0d0)))")).isEqualTo("#C(2.0634370688955603 3.141592653589793)");
 		assertThat(compileAndRun("(print (atanh #c(1d0 1d0)))")).isEqualTo("#C(0.4023594781085251 1.0172219678978514)");
-		assertThat(compileAndRun("(print (atanh #c(2d0 0d0)))")).isEqualTo("#C(0.5493061443340548 1.5707963267948966)");
+		assertThat(compileAndRun("(print (atanh #c(2d0 0d0)))"))
+			.isEqualTo("#C(" + Math.log(3.0) / 2 + " 1.5707963267948966)");
 		assertThat(compileAndRun("(print (atanh #c(2d0 -0d0)))"))
-			.isEqualTo("#C(0.5493061443340548 -1.5707963267948966)");
+			.isEqualTo("#C(" + Math.log(3.0) / 2 + " -1.5707963267948966)");
 	}
 
 	@Test
