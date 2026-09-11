@@ -48,6 +48,12 @@ version: 47.0.3
   `775`; the driver concatenates every case into ONE program, so the run's live set grew
   on that day. Whether the ceiling, the factor, or a `--simd`-only allocation is what
   gives is NOT established -- nobody has measured the live set.
+- **No ordinary run covers this leg**: `CiSpecE2eTest` runs ZERO tests without
+  `-Drontolisp.binary`, so `./mvnw test` is green whatever this leg does, and nothing
+  dates the regression. Independently reproduced the same day from `.todo/779`'s side
+  (two runs, same leg, same message, a native binary built from that item's tree), which
+  is also why the fix has to end with the leg reachable -- a size-bounded `--simd` case
+  the ordinary suite runs, or a CI job that runs the binary legs -- or it rots again.
 
 ## What to answer first
 
