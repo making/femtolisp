@@ -60,6 +60,11 @@ repeated — one green run is not evidence — capturing, when it recurs:
   is the branch where the POPULATION is what grew, and nothing catches it because every
   bound scales with it.
 
+  Attempted once on 2026-09-11 (macOS aarch64, 16 cores, at `b2dc21d22`) and killed part
+  way through at the machine owner's request -- the fans. Nothing hung and nothing threw
+  before it was killed, so that run carries NO information either way: it is not a green
+  repetition, and the machine is not available for further repeats.
+
 **2. The recurrence has a narrower search space than it looks.** The arity ladders are
 built BEFORE the spread dispatcher, from a SUBSET of its targets, in the same
 `buildDispatch`; every one of them completed. So the largest funcId belonged to a callable
