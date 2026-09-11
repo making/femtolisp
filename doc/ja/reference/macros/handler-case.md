@@ -39,5 +39,5 @@
 ```lisp
 (handler-case (remove 1 '(1 2 3) :bogus 4)
   (program-error (e) (princ-to-string e))
-  (error (e) :plain)) ; => "REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY, got: :BOGUS"
+  (error (e) :plain)) ; => "REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY/:START/:END/:COUNT/:FROM-END, got: :BOGUS"
 ```

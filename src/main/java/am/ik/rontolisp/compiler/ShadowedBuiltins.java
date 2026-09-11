@@ -90,7 +90,8 @@ public final class ShadowedBuiltins {
 	 * keeps must be a {@code LispFunction} in a fresh global environment.
 	 */
 	private static final Set<String> EXPANSION_LOWERED = Set.of(LispNames.NE, LispNames.ASSOC, LispNames.ASSOC_IF,
-			LispNames.COUNT_IF, LispNames.DELETE_IF, LispNames.DELETE_IF_NOT, LispNames.EVERY,
+			LispNames.COUNT, LispNames.COUNT_IF, LispNames.REMOVE, LispNames.DELETE, LispNames.SUBSTITUTE,
+			LispNames.NSUBSTITUTE, LispNames.DELETE_IF, LispNames.DELETE_IF_NOT, LispNames.EVERY,
 			LispNames.FILE_WRITE_DATE, LispNames.FIND, LispNames.FIND_IF, LispNames.FIND_IF_NOT, LispNames.FIND_PACKAGE,
 			LispNames.FORMAT, LispNames.FUNCALL, LispNames.MAPC, LispNames.MAPCAN, LispNames.MAPCAR, LispNames.MAPCON,
 			LispNames.MAPHASH, LispNames.MAPL, LispNames.MAPLIST, LispNames.MEMBER, LispNames.MEMBER_IF,

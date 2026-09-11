@@ -1,8 +1,8 @@
 # nsubstitute-if
 
-`(nsubstitute-if new predicate list &key key)`
+`(nsubstitute-if new predicate list &key key start end count from-end)`
 
-The destructive variant of [`substitute-if`](substitute-if.md): rewrites the `car` of every cons whose element satisfies the predicate and returns the (possibly mutated) original list. The cons cells are reused, so any other reference to the list observes the change. A vector or string argument has no cons cells to rewrite, so it comes back as a fresh sequence instead, matching `substitute-if`.
+The destructive variant of [`substitute-if`](substitute-if.md): rewrites the `car` of every cons whose element satisfies the predicate and returns the (possibly mutated) original list. The cons cells are reused, so any other reference to the list observes the change. A vector or string argument has no cons cells to rewrite, so it comes back as a fresh sequence instead, matching `substitute-if`. `:start`/`:end` bound the scanned subsequence -- an element outside it is neither tested nor acted on -- `:count` caps how many matches are acted on, and `:from-end` reverses the order the elements are visited, so with `:count` the matches taken are the last ones.
 
 ```lisp
 (nsubstitute-if 0 #'oddp (list 1 2 3 4 5)) ; => (0 2 0 4 0)
@@ -14,4 +14,8 @@ The destructive variant of [`substitute-if`](substitute-if.md): rewrites the `ca
 
 ```lisp
 (nsubstitute-if 0 #'oddp (vector 1 2 3)) ; => #(0 2 0)
+```
+
+```lisp
+(nsubstitute-if 0 #'oddp (list 1 2 3) :count 1 :from-end t) ; => (1 2 0)
 ```

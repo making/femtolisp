@@ -686,6 +686,45 @@ class LispMacroExpanderTest {
 			.isEqualTo("REMOVE expects a value after :BAD");
 	}
 
+	@Test
+	void aBoundedSequenceScanEmitsOnlyTheScaffoldingItsKeywordsAskFor() {
+		// CLHS 17.2.1's bounding keywords are lowered PIECEWISE: a call that spells none
+		// of them must expand to exactly the loop it always did -- no element index, no
+		// count budget, no reversed walk, no length -- so every existing call site keeps
+		// its size. The pieces then arrive one keyword at a time.
+		String plain = removeExpansionOf("(remove 'a lst)");
+		assertThat(plain).doesNotContain("|__remove_i|")
+			.doesNotContain("|__remove_left|")
+			.doesNotContain("(REVERSE ")
+			.doesNotContain("(LENGTH ");
+		String counted = removeExpansionOf("(remove 'a lst :count 2)");
+		assertThat(counted).contains("|__remove_left|")
+			.doesNotContain("|__remove_i|")
+			.doesNotContain("(REVERSE ")
+			.doesNotContain("(LENGTH ");
+		// :start/:end are an INDEX bound on the walk, never a (subseq ...) handed to it:
+		// the excluded elements must not reach the :test or :key designator, and a
+		// subsequence would have to be built before the first element was looked at.
+		String bounded = removeExpansionOf("(remove 'a lst :start 1 :end 3)");
+		assertThat(bounded).contains("|__remove_i|")
+			.doesNotContain("(SUBSEQ ")
+			.doesNotContain("|__remove_left|")
+			.doesNotContain("(REVERSE ")
+			.doesNotContain("(LENGTH ");
+		// :from-end is served by reversing the walked list and running the SAME forward
+		// loop: the bounds are mapped into the reversed walk's own coordinates, and the
+		// closing nreverse becomes conditional instead of a second loop appearing.
+		String reversed = removeExpansionOf("(remove 'a lst :from-end t :count 1 :start 1)");
+		assertThat(reversed).contains("(REVERSE |__remove_seq|)")
+			.contains("(LENGTH |__remove_seq|)")
+			.contains("|__remove_left|")
+			.contains("|__remove_i|");
+	}
+
+	private static String removeExpansionOf(String call) {
+		return LispMacroExpander.expandRemove((LispCons) LispReader.readAllFromString(call).get(0)).print();
+	}
+
 	private static @org.jspecify.annotations.Nullable String problemOf(String call) {
 		LispCons cons = (LispCons) LispReader.readAllFromString(call).get(0);
 		return LispMacroExpander.keywordTailProblem("REMOVE", cons.toList(), 3,

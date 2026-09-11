@@ -7235,6 +7235,51 @@ class WasmLispCompilerIntegrationTest {
 	}
 
 	@Test
+	void sequenceBoundingKeywords() throws Exception {
+		// CLHS 17.2.1's :start/:end/:count/:from-end over the count/remove/substitute
+		// family (.kb/sequence-bounding-keywords.md). :from-end is the interesting half:
+		// it reverses the WALK, which decides which matches a :count keeps and the order
+		// the :key designator is called in (the counting :key below), and a destructive
+		// spelling must still rewrite the argument's own cells -- which is why the list
+		// is read back. The first-class calls at the end go through the family's
+		// keyword-forwarding wrapper.
+		String source = """
+				(print (remove 'a '(a b a c a) :count 2 :from-end t))
+				(print (remove 'a '(a b a c a) :start 1 :end 3))
+				(print (remove-if-not #'evenp '(1 2 3 4 5 6) :count 2 :from-end t))
+				(print (substitute 'x 'a '(a b a c a) :count 1 :from-end t))
+				(print (substitute-if 'x #'evenp '(1 2 3 4) :count 1 :from-end t))
+				(print (substitute #\\x #\\a "abaa" :count 1 :from-end t))
+				(print (count 1 '(1 1 1 1 1 2 1 1) :start 2 :end 7))
+				(print (count-if-not #'evenp '(1 2 3 4 5 6) :start 2))
+				(let ((c 0))
+				  (print (count 1 '(1 2 3 7 4 5 7 6 2 8) :from-end t
+				                :key (lambda (x) (prog1 (- x c) (setq c (+ c 1)))))))
+				(let ((l (list 'a 'b 'a)))
+				  (print (nsubstitute 'x 'a l :count 1 :from-end t))
+				  (print l))
+				(print (delete-if #'evenp (list 1 2 3 4) :count 1 :from-end t))
+				(print (funcall #'remove 'a '(a b a) :count 1 :from-end t))
+				(print (apply #'substitute 'x 'a '(a b a) '(:count 1 :from-end t)))
+				""";
+		assertThat(compileAndRunPrelude(source)).isEqualTo("""
+				(A B C)
+				(A B C A)
+				(1 2 4 6)
+				(A B A C X)
+				(1 2 3 X)
+				"abax"
+				4
+				2
+				3
+				(A B X)
+				(A B X)
+				(1 2 3)
+				(A B)
+				(A B X)""");
+	}
+
+	@Test
 	void sequenceOpRuntimeArmRouting() throws Exception {
 		// The narrowing gate of .kb/sequence-op-runtimes.md, from both sides IN ONE
 		// PROGRAM: sites whose destination this compile proves to be an array call the
@@ -20819,7 +20864,7 @@ class WasmLispCompilerIntegrationTest {
 						"""))
 			.isEqualTo("""
 					:PROGRAM-ERROR
-					"REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY, got: :BOGUS"
+					"REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY/:START/:END/:COUNT/:FROM-END, got: :BOGUS"
 					:ODD-TAIL
 					:RD
 					:UNKNOWN-KEY
@@ -20833,7 +20878,8 @@ class WasmLispCompilerIntegrationTest {
 		assertThat(compileComponentAndRun("""
 				(print (handler-case (remove 1 '(1 2 3) :bogus 4) (program-error (c) (princ-to-string c))))
 				(print (remove 'a '(a b c a d) :bad t :allow-other-keys t))
-				""")).isEqualTo("\"REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY, got: :BOGUS\"\n(B C D)");
+				""")).isEqualTo(
+				"\"REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY/:START/:END/:COUNT/:FROM-END, got: :BOGUS\"\n(B C D)");
 	}
 
 	@Test
@@ -20841,8 +20887,8 @@ class WasmLispCompilerIntegrationTest {
 		assertThat(compileAndRunEhExpectTrap("""
 				(print (handler-case (error "warm") (error (e) :ok)))
 				(print (length (remove 1 '(1 2 3) :bogus 4)))
-				"""))
-			.contains("Unhandled condition: REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY, got: :BOGUS");
+				""")).contains(
+				"Unhandled condition: REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY/:START/:END/:COUNT/:FROM-END, got: :BOGUS");
 	}
 
 	@Test

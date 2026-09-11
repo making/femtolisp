@@ -4388,6 +4388,12 @@ public final class LispNames {
 	 */
 	public static final String FROM_END_KEYWORD = ":FROM-END";
 
+	/**
+	 * The {@code :count} keyword recognized by the {@code remove} / {@code substitute}
+	 * family: the number of matching elements to act on, {@code nil} meaning every one.
+	 */
+	public static final String COUNT_KEYWORD = ":COUNT";
+
 	/** The {@code :input} keyword (open a file for reading). */
 	public static final String INPUT_KEYWORD = ":INPUT";
 

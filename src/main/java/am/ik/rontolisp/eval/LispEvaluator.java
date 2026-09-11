@@ -2728,13 +2728,26 @@ public final class LispEvaluator {
 				args -> positionScanValues(LispNames.POSITION_IF, args, PositionScanMode.PREDICATE, false)));
 		this.globalEnv.defineFunction(LispNames.POSITION_IF_NOT, new LispFunction(LispNames.POSITION_IF_NOT,
 				args -> positionScanValues(LispNames.POSITION_IF_NOT, args, PositionScanMode.PREDICATE_NOT, false)));
-		this.globalEnv.defineFunction(LispNames.COUNT_IF, new LispFunction(LispNames.COUNT_IF, args -> {
-			if (args.size() != 2) {
-				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
-						LispNames.COUNT_IF + " expects 2 arguments, got " + args.size());
-			}
-			return countIfValues(args.get(0), Environment.seqAsList(args.get(1)));
-		}));
+		// count/count-if and the whole remove/substitute family run one shared scan
+		// (sequenceScanValues) -- the runtime twin of the expander's, so a first-class
+		// #'remove and a (remove ...) call form take the same keywords and decide the
+		// same way. They are registered HERE, not in Environment, because the :test and
+		// :key designators are applied through the evaluator.
+		this.globalEnv.defineFunction(LispNames.COUNT, new LispFunction(LispNames.COUNT,
+				args -> sequenceScanValues(LispNames.COUNT, args, SeqScanMode.ITEM, SeqScanAction.COUNT, false)));
+		this.globalEnv.defineFunction(LispNames.COUNT_IF,
+				new LispFunction(LispNames.COUNT_IF, args -> sequenceScanValues(LispNames.COUNT_IF, args,
+						SeqScanMode.PREDICATE, SeqScanAction.COUNT, false)));
+		this.globalEnv.defineFunction(LispNames.REMOVE, new LispFunction(LispNames.REMOVE,
+				args -> sequenceScanValues(LispNames.REMOVE, args, SeqScanMode.ITEM, SeqScanAction.REMOVE, false)));
+		this.globalEnv.defineFunction(LispNames.DELETE, new LispFunction(LispNames.DELETE,
+				args -> sequenceScanValues(LispNames.DELETE, args, SeqScanMode.ITEM, SeqScanAction.REMOVE, true)));
+		this.globalEnv.defineFunction(LispNames.SUBSTITUTE,
+				new LispFunction(LispNames.SUBSTITUTE, args -> sequenceScanValues(LispNames.SUBSTITUTE, args,
+						SeqScanMode.ITEM, SeqScanAction.SUBSTITUTE, false)));
+		this.globalEnv.defineFunction(LispNames.NSUBSTITUTE,
+				new LispFunction(LispNames.NSUBSTITUTE, args -> sequenceScanValues(LispNames.NSUBSTITUTE, args,
+						SeqScanMode.ITEM, SeqScanAction.SUBSTITUTE, true)));
 		this.globalEnv.defineFunction(LispNames.MEMBER_IF, new LispFunction(LispNames.MEMBER_IF, args -> {
 			if (args.size() != 2) {
 				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
@@ -2826,55 +2839,39 @@ public final class LispEvaluator {
 			}
 			return LispNil.INSTANCE;
 		}));
-		this.globalEnv.defineFunction(LispNames.REMOVE_IF, new LispFunction(LispNames.REMOVE_IF, args -> {
-			if (args.size() < 2) {
-				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
-						LispNames.REMOVE_IF + " expects 2 arguments, got " + args.size());
-			}
-			requireKeyKeyword(LispNames.REMOVE_IF, args, 2);
-			return Environment.seqResult(args.get(1), removeIfValues(args.get(0), Environment.seqAsList(args.get(1)),
-					false, optionalKeywordArg(args, 2, LispNames.KEY_KEYWORD)));
-		}));
-		this.globalEnv.defineFunction(LispNames.REMOVE_IF_NOT, new LispFunction(LispNames.REMOVE_IF_NOT, args -> {
-			if (args.size() < 2) {
-				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
-						LispNames.REMOVE_IF_NOT + " expects 2 arguments, got " + args.size());
-			}
-			requireKeyKeyword(LispNames.REMOVE_IF_NOT, args, 2);
-			return Environment.seqResult(args.get(1), removeIfValues(args.get(0), Environment.seqAsList(args.get(1)),
-					true, optionalKeywordArg(args, 2, LispNames.KEY_KEYWORD)));
-		}));
+		this.globalEnv.defineFunction(LispNames.REMOVE_IF,
+				new LispFunction(LispNames.REMOVE_IF, args -> sequenceScanValues(LispNames.REMOVE_IF, args,
+						SeqScanMode.PREDICATE, SeqScanAction.REMOVE, false)));
+		this.globalEnv.defineFunction(LispNames.REMOVE_IF_NOT,
+				new LispFunction(LispNames.REMOVE_IF_NOT, args -> sequenceScanValues(LispNames.REMOVE_IF_NOT, args,
+						SeqScanMode.PREDICATE_NOT, SeqScanAction.REMOVE, false)));
 		// substitute-if/-if-not and their destructive n- twins: like substitute, but the
 		// element is selected by a predicate instead of an eql comparison. Registered
 		// here
 		// rather than in Environment because they call back into apply (the :key selector
 		// and the predicate itself).
 		this.globalEnv.defineFunction(LispNames.SUBSTITUTE_IF,
-				new LispFunction(LispNames.SUBSTITUTE_IF, args -> substituteIfValues(LispNames.SUBSTITUTE_IF, args)));
-		this.globalEnv.defineFunction(LispNames.SUBSTITUTE_IF_NOT, new LispFunction(LispNames.SUBSTITUTE_IF_NOT,
-				args -> substituteIfValues(LispNames.SUBSTITUTE_IF_NOT, args)));
-		this.globalEnv.defineFunction(LispNames.NSUBSTITUTE_IF, new LispFunction(LispNames.NSUBSTITUTE_IF,
-				args -> nsubstituteIfValues(LispNames.NSUBSTITUTE_IF, args)));
-		this.globalEnv.defineFunction(LispNames.NSUBSTITUTE_IF_NOT, new LispFunction(LispNames.NSUBSTITUTE_IF_NOT,
-				args -> nsubstituteIfValues(LispNames.NSUBSTITUTE_IF_NOT, args)));
+				new LispFunction(LispNames.SUBSTITUTE_IF, args -> sequenceScanValues(LispNames.SUBSTITUTE_IF, args,
+						SeqScanMode.PREDICATE, SeqScanAction.SUBSTITUTE, false)));
+		this.globalEnv.defineFunction(LispNames.SUBSTITUTE_IF_NOT,
+				new LispFunction(LispNames.SUBSTITUTE_IF_NOT, args -> sequenceScanValues(LispNames.SUBSTITUTE_IF_NOT,
+						args, SeqScanMode.PREDICATE_NOT, SeqScanAction.SUBSTITUTE, false)));
+		this.globalEnv.defineFunction(LispNames.NSUBSTITUTE_IF,
+				new LispFunction(LispNames.NSUBSTITUTE_IF, args -> sequenceScanValues(LispNames.NSUBSTITUTE_IF, args,
+						SeqScanMode.PREDICATE, SeqScanAction.SUBSTITUTE, true)));
+		this.globalEnv.defineFunction(LispNames.NSUBSTITUTE_IF_NOT,
+				new LispFunction(LispNames.NSUBSTITUTE_IF_NOT, args -> sequenceScanValues(LispNames.NSUBSTITUTE_IF_NOT,
+						args, SeqScanMode.PREDICATE_NOT, SeqScanAction.SUBSTITUTE, true)));
 		// delete-if/delete-if-not are the destructive variants of
 		// remove-if/remove-if-not:
 		// splice out matching cells in place (Common Lisp semantics; use the return
 		// value).
-		this.globalEnv.defineFunction(LispNames.DELETE_IF, new LispFunction(LispNames.DELETE_IF, args -> {
-			if (args.size() != 2) {
-				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
-						LispNames.DELETE_IF + " expects 2 arguments, got " + args.size());
-			}
-			return deleteIfValues(args.get(0), args.get(1), true);
-		}));
-		this.globalEnv.defineFunction(LispNames.DELETE_IF_NOT, new LispFunction(LispNames.DELETE_IF_NOT, args -> {
-			if (args.size() != 2) {
-				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
-						LispNames.DELETE_IF_NOT + " expects 2 arguments, got " + args.size());
-			}
-			return deleteIfValues(args.get(0), args.get(1), false);
-		}));
+		this.globalEnv.defineFunction(LispNames.DELETE_IF,
+				new LispFunction(LispNames.DELETE_IF, args -> sequenceScanValues(LispNames.DELETE_IF, args,
+						SeqScanMode.PREDICATE, SeqScanAction.REMOVE, true)));
+		this.globalEnv.defineFunction(LispNames.DELETE_IF_NOT,
+				new LispFunction(LispNames.DELETE_IF_NOT, args -> sequenceScanValues(LispNames.DELETE_IF_NOT, args,
+						SeqScanMode.PREDICATE_NOT, SeqScanAction.REMOVE, true)));
 		this.globalEnv.defineFunction(LispNames.MAPCAN, new LispFunction(LispNames.MAPCAN,
 				args -> mapcanValues(args.get(0), requireMapLists(LispNames.MAPCAN, args), false)));
 		this.globalEnv.defineFunction(LispNames.SORT, new LispFunction(LispNames.SORT, args -> {
@@ -10106,19 +10103,6 @@ public final class LispEvaluator {
 		return null;
 	}
 
-	// Return the number of elements satisfying the predicate (Common Lisp count-if),
-	// as an integer. Like count but tests with the predicate rather than eql.
-	private LispVal countIfValues(LispVal predicate, LispVal list) {
-		long count = 0;
-		while (list instanceof LispCons cell) {
-			if (isTruthy(apply(predicate, List.of(cell.car()), this.globalEnv))) {
-				count++;
-			}
-			list = cell.cdr();
-		}
-		return new LispInteger(count);
-	}
-
 	// Return the tail of the list starting at the first element satisfying the predicate
 	// (Common Lisp member-if), or nil. Like find-if but yields the cons rather than the
 	// element.
@@ -10158,93 +10142,6 @@ public final class LispEvaluator {
 		return LispNil.INSTANCE;
 	}
 
-	// Return a fresh list of the elements that are kept (Common Lisp
-	// remove-if/remove-if-not semantics, no keyword arguments). When keepWhenTrue is
-	// false (remove-if) elements failing the predicate are kept; when true
-	// (remove-if-not) elements satisfying the predicate are kept.
-	private LispVal removeIfValues(LispVal predicate, LispVal list, boolean keepWhenTrue) {
-		return removeIfValues(predicate, list, keepWhenTrue, null);
-	}
-
-	// The predicate sees the keyed value (:key selector); the kept elements are the
-	// originals, like remove's.
-	private LispVal removeIfValues(LispVal predicate, LispVal list, boolean keepWhenTrue, @Nullable LispVal keyFn) {
-		List<LispVal> kept = new ArrayList<>();
-		LispVal cursor = list;
-		while (cursor instanceof LispCons cell) {
-			LispVal probe = keyFn == null ? cell.car() : apply(keyFn, List.of(cell.car()), this.globalEnv);
-			if (isTruthy(apply(predicate, List.of(probe), this.globalEnv)) == keepWhenTrue) {
-				kept.add(cell.car());
-			}
-			cursor = cell.cdr();
-		}
-		LispVal result = LispNil.INSTANCE;
-		for (int i = kept.size() - 1; i >= 0; i--) {
-			result = new LispCons(kept.get(i), result);
-		}
-		return result;
-	}
-
-	// (substitute-if new pred seq &key key) and its -if-not complement: a fresh sequence
-	// whose elements satisfying (resp. failing) the predicate are replaced by new. The
-	// result keeps the argument's sequence kind, like substitute.
-	private LispVal substituteIfValues(String name, List<LispVal> args) {
-		if (args.size() < 3) {
-			throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
-					name + " expects at least 3 arguments, got " + args.size());
-		}
-		requireKeyKeyword(name, args, 3);
-		LispVal keyFn = optionalKeywordArg(args, 3, LispNames.KEY_KEYWORD);
-		boolean negated = LispNames.SUBSTITUTE_IF_NOT.equals(name);
-		LispVal newItem = args.get(0);
-		LispVal predicate = args.get(1);
-		List<LispVal> out = new ArrayList<>();
-		LispVal cursor = Environment.seqAsList(args.get(2));
-		while (cursor instanceof LispCons cell) {
-			out.add(matchesSubstituteIf(predicate, keyFn, cell.car()) != negated ? newItem : cell.car());
-			cursor = cell.cdr();
-		}
-		LispVal result = LispNil.INSTANCE;
-		for (int i = out.size() - 1; i >= 0; i--) {
-			result = new LispCons(out.get(i), result);
-		}
-		return Environment.seqResult(args.get(2), result);
-	}
-
-	// The destructive twins: rewrite the matching cars in place and return the (possibly
-	// mutated) original list. A vector/string argument has no cons cells to rewrite --
-	// CLHS lets a destructive form answer a FRESH sequence instead, so it routes through
-	// substitute-if's own vector/string handling rather than silently no-op'ing
-	// (.todo/623).
-	private LispVal nsubstituteIfValues(String name, List<LispVal> args) {
-		if (args.size() < 3) {
-			throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
-					name + " expects at least 3 arguments, got " + args.size());
-		}
-		requireKeyKeyword(name, args, 3);
-		boolean negated = LispNames.NSUBSTITUTE_IF_NOT.equals(name);
-		LispVal list = args.get(2);
-		if (!(list instanceof LispCons) && !(list instanceof LispNil)) {
-			return substituteIfValues(negated ? LispNames.SUBSTITUTE_IF_NOT : LispNames.SUBSTITUTE_IF, args);
-		}
-		LispVal keyFn = optionalKeywordArg(args, 3, LispNames.KEY_KEYWORD);
-		LispVal newItem = args.get(0);
-		LispVal predicate = args.get(1);
-		LispVal cursor = list;
-		while (cursor instanceof LispCons cell) {
-			if (matchesSubstituteIf(predicate, keyFn, cell.car()) != negated) {
-				cell.setCar(newItem);
-			}
-			cursor = cell.cdr();
-		}
-		return list;
-	}
-
-	private boolean matchesSubstituteIf(LispVal predicate, @Nullable LispVal keyFn, LispVal element) {
-		LispVal selected = (keyFn == null) ? element : apply(keyFn, List.of(element), this.globalEnv);
-		return isTruthy(apply(predicate, List.of(selected), this.globalEnv));
-	}
-
 	// The -if family takes :key only (no :test -- the predicate IS the test), so its
 	// keyword tail gets its own validator rather than requireTestKeyKeywords.
 	private static void requireKeyKeyword(String name, List<LispVal> args, int start) {
@@ -10263,41 +10160,6 @@ public final class LispEvaluator {
 		if (problem != null) {
 			throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME, problem);
 		}
-	}
-
-	// Destructively splice out every cell whose car satisfies the predicate
-	// (deleteWhenTrue) or fails it (delete-if-not). The surviving cells are reused and
-	// the
-	// new head is returned (Common Lisp semantics). A vector/string argument has no cons
-	// cells to splice -- CLHS lets a destructive form answer a FRESH sequence instead, so
-	// it routes through remove-if/remove-if-not's own vector/string handling rather than
-	// silently no-op'ing (.todo/623).
-	private LispVal deleteIfValues(LispVal predicate, LispVal list, boolean deleteWhenTrue) {
-		if (!(list instanceof LispCons) && !(list instanceof LispNil)) {
-			return Environment.seqResult(list, removeIfValues(predicate, Environment.seqAsList(list), !deleteWhenTrue));
-		}
-		LispVal head = list;
-		// Drop matching cells from the front by advancing the head.
-		while (head instanceof LispCons cell
-				&& isTruthy(apply(predicate, List.of(cell.car()), this.globalEnv)) == deleteWhenTrue) {
-			head = cell.cdr();
-		}
-		if (!(head instanceof LispCons headCell)) {
-			return head;
-		}
-		// Splice out matching cells in the interior.
-		LispCons prev = headCell;
-		LispVal cursor = headCell.cdr();
-		while (cursor instanceof LispCons cell) {
-			if (isTruthy(apply(predicate, List.of(cell.car()), this.globalEnv)) == deleteWhenTrue) {
-				prev.setCdr(cell.cdr());
-			}
-			else {
-				prev = cell;
-			}
-			cursor = cell.cdr();
-		}
-		return head;
 	}
 
 	private LispVal reduceValues(LispVal function, LispVal accumulator, LispVal list) {
@@ -11008,16 +10870,206 @@ public final class LispEvaluator {
 	}
 
 	private RuntimeTest runtimeTest(List<LispVal> args, int start) {
-		LispVal test = optionalKeywordArg(args, start, LispNames.TEST_KEYWORD);
+		// A nil VALUE is the absent designator, the same reading the expansion gives a
+		// literal (remove 'a x :test nil): CL's default is eql either way.
+		LispVal test = presentKeyword(args, start, LispNames.TEST_KEYWORD);
 		if (test != null) {
 			return new RuntimeTest(test, false);
 		}
-		LispVal testNot = optionalKeywordArg(args, start, LispNames.TEST_NOT_KEYWORD);
+		LispVal testNot = presentKeyword(args, start, LispNames.TEST_NOT_KEYWORD);
 		return testNot != null ? new RuntimeTest(testNot, true) : new RuntimeTest(new LispSymbol(LispNames.EQL), false);
 	}
 
 	private boolean testMatches(RuntimeTest test, LispVal a, LispVal b) {
 		return test.negated() != isTruthy(apply(test.fn(), List.of(a, b), this.globalEnv));
+	}
+
+	/** The match flavor of a first-class {@code remove}/{@code substitute}/count scan. */
+	private enum SeqScanMode {
+
+		/** The operand is an ITEM, compared by :test / :test-not. */
+		ITEM,
+		/** The operand is a PREDICATE ({@code remove-if}, {@code count-if}, ...). */
+		PREDICATE,
+		/** The operand is a NEGATED predicate (the {@code -if-not} spellings). */
+		PREDICATE_NOT
+
+	}
+
+	/** What a first-class scan does with the elements it accepts. */
+	private enum SeqScanAction {
+
+		/** {@code count} / {@code count-if}: answer how many there were. */
+		COUNT,
+		/** {@code remove} / {@code delete} and their -if spellings: drop them. */
+		REMOVE,
+		/** {@code substitute} / {@code nsubstitute} and theirs: replace them. */
+		SUBSTITUTE
+
+	}
+
+	/**
+	 * The runtime counterpart of the expander's bounded scan
+	 * ({@code LispMacroExpander.SeqScanScaffold}) for the whole
+	 * {@code count}/{@code remove}/{@code substitute} family, first-class use included:
+	 * one walk honoring {@code :test}/{@code :test-not}/{@code :key} and CLHS 17.2.1's
+	 * {@code :start}/{@code :end}/{@code :count}/{@code :from-end}, so
+	 * {@code (funcall #'remove x l :count 1)} decides exactly what {@code (remove x l
+	 * :count 1)} decides.
+	 *
+	 * <p>
+	 * {@code :from-end} reverses the order the elements are VISITED in, not merely which
+	 * matches a {@code :count} keeps: the {@code :test} and {@code :key} designators are
+	 * called in that order, which a side-effecting one sees (ANSI's count-list.9).
+	 * Elements outside {@code :start}/{@code :end}, and every element once the count is
+	 * spent, are never handed to a designator at all.
+	 *
+	 * <p>
+	 * A DESTRUCTIVE spelling over a list rewrites that list's own cons cells --
+	 * {@code rplaca} for the substitute family, a {@code rplacd} splice for
+	 * {@code delete}. The splice runs only when no bounding keyword was given, matching
+	 * what the compile paths do with a bounded {@code delete} (CLHS lets a destructive
+	 * operator answer a fresh sequence, and the caller must use the RESULT either way).
+	 * @param name the operator, for the messages
+	 * @param args the evaluated arguments
+	 * @param mode how an element is matched
+	 * @param action what a matching element gets
+	 * @param destructive whether this is the {@code n-} / {@code delete} spelling
+	 * @return the operator's value
+	 */
+	private LispVal sequenceScanValues(String name, List<LispVal> args, SeqScanMode mode, SeqScanAction action,
+			boolean destructive) {
+		int seqIndex = action == SeqScanAction.SUBSTITUTE ? 2 : 1;
+		if (args.size() <= seqIndex) {
+			throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+					name + " expects at least " + (seqIndex + 1) + " arguments, got " + args.size());
+		}
+		int tail = seqIndex + 1;
+		List<String> allowed = new ArrayList<>();
+		if (mode == SeqScanMode.ITEM) {
+			allowed.add(LispNames.TEST_KEYWORD);
+			allowed.add(LispNames.TEST_NOT_KEYWORD);
+		}
+		allowed.add(LispNames.KEY_KEYWORD);
+		allowed.add(LispNames.START_KEYWORD);
+		allowed.add(LispNames.END_KEYWORD);
+		if (action != SeqScanAction.COUNT) {
+			allowed.add(LispNames.COUNT_KEYWORD);
+		}
+		allowed.add(LispNames.FROM_END_KEYWORD);
+		requireKeywordTail(name, args, tail, allowed);
+		LispVal keyFn = presentKeyword(args, tail, LispNames.KEY_KEYWORD);
+		LispVal startValue = presentKeyword(args, tail, LispNames.START_KEYWORD);
+		LispVal endValue = presentKeyword(args, tail, LispNames.END_KEYWORD);
+		LispVal countValue = action == SeqScanAction.COUNT ? null : presentKeyword(args, tail, LispNames.COUNT_KEYWORD);
+		boolean fromEnd = presentKeyword(args, tail, LispNames.FROM_END_KEYWORD) != null;
+		long start = startValue == null ? 0 : Environment.requireIndex(name, startValue);
+		Long end = endValue == null ? null : (long) Environment.requireIndex(name, endValue);
+		// CLHS 17.2.1: a negative :count acts as zero, a nil one as no limit at all.
+		Long budget = countValue == null ? null : Math.max(0L, requireCount(name, countValue));
+		LispVal operand = args.get(seqIndex - 1);
+		LispVal original = args.get(seqIndex);
+		boolean listArgument = original instanceof LispCons || original instanceof LispNil;
+		List<LispVal> elements = new ArrayList<>();
+		List<LispCons> cells = new ArrayList<>();
+		for (LispVal cursor = Environment.seqAsList(original); cursor instanceof LispCons cell; cursor = cell.cdr()) {
+			elements.add(cell.car());
+			if (listArgument) {
+				cells.add(cell);
+			}
+		}
+		int size = elements.size();
+		long last = end == null ? size : Math.min(end, size);
+		boolean[] acted = new boolean[size];
+		RuntimeTest test = runtimeTest(args, tail);
+		int hits = 0;
+		for (int step = 0; step < size; step++) {
+			int index = fromEnd ? size - 1 - step : step;
+			if (index < start || index >= last) {
+				continue;
+			}
+			if (budget != null && budget <= 0) {
+				break;
+			}
+			LispVal element = elements.get(index);
+			LispVal probe = keyFn == null ? element : apply(keyFn, List.of(element), this.globalEnv);
+			boolean match = switch (mode) {
+				case ITEM -> testMatches(test, operand, probe);
+				case PREDICATE -> isTruthy(apply(operand, List.of(probe), this.globalEnv));
+				case PREDICATE_NOT -> !isTruthy(apply(operand, List.of(probe), this.globalEnv));
+			};
+			if (match) {
+				acted[index] = true;
+				hits++;
+				if (budget != null) {
+					budget--;
+				}
+			}
+		}
+		if (action == SeqScanAction.COUNT) {
+			return new LispInteger(hits);
+		}
+		if (destructive && listArgument && action == SeqScanAction.SUBSTITUTE) {
+			for (int i = 0; i < size; i++) {
+				if (acted[i]) {
+					cells.get(i).setCar(args.get(0));
+				}
+			}
+			return original;
+		}
+		if (destructive && listArgument && action == SeqScanAction.REMOVE && startValue == null && endValue == null
+				&& countValue == null && !fromEnd) {
+			// The splice: the surviving cons cells are rewired and reused, and the new
+			// head comes back (Common Lisp semantics -- use the return value).
+			LispCons head = null;
+			LispCons tip = null;
+			for (int i = 0; i < size; i++) {
+				if (acted[i]) {
+					continue;
+				}
+				LispCons cell = cells.get(i);
+				if (tip == null) {
+					head = cell;
+				}
+				else {
+					tip.setCdr(cell);
+				}
+				tip = cell;
+			}
+			if (tip != null) {
+				tip.setCdr(LispNil.INSTANCE);
+			}
+			return head == null ? LispNil.INSTANCE : head;
+		}
+		LispVal result = LispNil.INSTANCE;
+		for (int i = size - 1; i >= 0; i--) {
+			if (action == SeqScanAction.SUBSTITUTE) {
+				result = new LispCons(acted[i] ? args.get(0) : elements.get(i), result);
+			}
+			else if (!acted[i]) {
+				result = new LispCons(elements.get(i), result);
+			}
+		}
+		return Environment.seqResult(original, result);
+	}
+
+	// A keyword argument's value, or null when it is absent OR nil: CL's own default for
+	// every keyword this family takes is what a nil value asks for (:start nil is 0,
+	// :end nil is the whole sequence, :count nil is no limit, :key nil is identity),
+	// so the two spellings collapse here exactly as they do in the expansion.
+	private static @Nullable LispVal presentKeyword(List<LispVal> args, int start, String keyword) {
+		LispVal value = optionalKeywordArg(args, start, keyword);
+		return value == null || value instanceof LispNil ? null : value;
+	}
+
+	// The :count argument as an integer; CLHS 17.2.1 reads a negative one as zero, which
+	// the caller clamps.
+	private static long requireCount(String name, LispVal value) {
+		if (value instanceof LispInteger integer) {
+			return integer.value();
+		}
+		throw LispEvalException.ofClass(ClosRegistry.TYPE_ERROR_CLASS_NAME,
+				name + " expects an integer :count, got: " + value.print());
 	}
 
 	// Validates the keyword tail of a sequence/alist call: keyword/value pairs only, and
