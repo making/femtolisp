@@ -5249,7 +5249,7 @@ public final class LispMacroExpander {
 	 * <pre>
 	 * (complement fn) ->
 	 *   (let ((__complement_fn fn))
-	 *     (lambda (&optional (__complement_a0 nil __complement_p0) ...)
+	 *     (lambda (&amp;optional (__complement_a0 nil __complement_p0) ...)
 	 *       (not (if __complement_p2 (funcall __complement_fn __complement_a0 __complement_a1 __complement_a2)
 	 *              (if __complement_p1 (funcall __complement_fn __complement_a0 __complement_a1)
 	 *                (if __complement_p0 (funcall __complement_fn __complement_a0)
