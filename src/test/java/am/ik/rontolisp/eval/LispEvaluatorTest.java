@@ -2497,6 +2497,86 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void evalComplexAsinAcosOnTheBranchCut() {
+		// asin and acos cut the real axis outside [-1, 1], and CLHS fixes which side
+		// the value ON the cut is continuous with by the sign of the REAL part:
+		// quadrant IV above +1, quadrant II below -1. The sign of an imaginary ZERO
+		// does NOT move it (SBCL parity, `.kb/jvm-complex.md`) -- unlike sqrt and log,
+		// where it does -- so both zero signs are pinned here and the contract cannot
+		// drift back. The real parts are atan2's exact on-axis answers; the imaginary
+		// magnitudes are asinh of the sqrt product, whose last ulp is the PLATFORM's
+		// Math.log, so they spell the call the code makes.
+		String asinAboveOne = "#C(1.5707963267948966 " + -Math.log(3.7320508075688767) + ")";
+		assertThat(eval("(asin #c(2d0 0d0))").print()).isEqualTo(asinAboveOne);
+		assertThat(eval("(asin #c(2d0 -0d0))").print()).isEqualTo(asinAboveOne);
+		String asinBelowMinusOne = "#C(-1.5707963267948966 " + Math.log(7.872983346207417) + ")";
+		assertThat(eval("(asin #c(-4d0 0d0))").print()).isEqualTo(asinBelowMinusOne);
+		assertThat(eval("(asin #c(-4d0 -0d0))").print()).isEqualTo(asinBelowMinusOne);
+		String acosAboveOne = "#C(0.0 " + Math.log(3.7320508075688767) + ")";
+		assertThat(eval("(acos #c(2d0 0d0))").print()).isEqualTo(acosAboveOne);
+		assertThat(eval("(acos #c(2d0 -0d0))").print()).isEqualTo(acosAboveOne);
+		String acosBelowMinusOne = "#C(3.141592653589793 " + -Math.log(7.872983346207417) + ")";
+		assertThat(eval("(acos #c(-4d0 0d0))").print()).isEqualTo(acosBelowMinusOne);
+		assertThat(eval("(acos #c(-4d0 -0d0))").print()).isEqualTo(acosBelowMinusOne);
+		// Off the cut nothing is ambiguous: the limit from the quadrant the cut is
+		// continuous with carries the SAME imaginary part as the value on it, and the
+		// limit from the other side carries its negation.
+		assertThat(eval("(asin (complex 2d0 -1d-10))").print())
+			.isEqualTo("#C(1.5707963267371616 " + -Math.log(3.7320508075688767) + ")");
+		assertThat(eval("(asin (complex 2d0 1d-10))").print())
+			.isEqualTo("#C(1.5707963267371616 " + Math.log(3.7320508075688767) + ")");
+		assertThat(eval("(asin (complex -4d0 1d-10))").print())
+			.isEqualTo("#C(-1.5707963267690768 " + Math.log(7.872983346207417) + ")");
+		assertThat(eval("(asin (complex -4d0 -1d-10))").print())
+			.isEqualTo("#C(-1.5707963267690768 " + -Math.log(7.872983346207417) + ")");
+	}
+
+	@Test
+	void evalComplexAsinAcosOfARealArgumentAnswerAnExactZero() {
+		// A complex argument on the real axis inside [-1, 1] answers an EXACTLY real
+		// value: the imaginary part is a difference of zeros fed to asinh, which
+		// answers +0.0 for it. (The -i*log(i*z + sqrt(1 - z^2)) form this replaced
+		// leaked 2^-53 out of the logarithm instead.)
+		assertThat(eval("(asin (complex -0.5d0 0d0))").print()).isEqualTo("#C(-0.5235987755982989 0.0)");
+		assertThat(eval("(asin (complex 0.5d0 0d0))").print()).isEqualTo("#C(0.5235987755982989 0.0)");
+		assertThat(eval("(asin (complex 0d0 0d0))").print()).isEqualTo("#C(0.0 0.0)");
+		assertThat(eval("(asin (complex 1d0 0d0))").print()).isEqualTo("#C(1.5707963267948966 0.0)");
+		assertThat(eval("(asin (complex -1d0 0d0))").print()).isEqualTo("#C(-1.5707963267948966 0.0)");
+		assertThat(eval("(acos (complex -0.5d0 0d0))").print()).isEqualTo("#C(2.0943951023931953 0.0)");
+		assertThat(eval("(acos (complex 0.5d0 0d0))").print()).isEqualTo("#C(1.0471975511965979 0.0)");
+		assertThat(eval("(acos (complex 0d0 0d0))").print()).isEqualTo("#C(1.5707963267948966 0.0)");
+		assertThat(eval("(acos (complex 1d0 0d0))").print()).isEqualTo("#C(0.0 0.0)");
+		assertThat(eval("(acos (complex -1d0 0d0))").print()).isEqualTo("#C(3.141592653589793 0.0)");
+		// asin(z) = -i*asinh(i*z) and acos(z) = -i*acosh(z) hold to the BIT against the
+		// inverse hyperbolics pinned above, which the old formula missed by 2 ulp.
+		assertThat(eval("(asin #c(0d0 1d0))").print()).isEqualTo("#C(0.0 0.881373587019543)");
+		assertThat(eval("(asin #c(1d0 1d0))").print())
+			.isEqualTo("#C(0.6662394324925153 " + Math.log(2.890053638263964) + ")");
+		assertThat(eval("(acos #c(0d0 1d0))").print()).isEqualTo("#C(1.5707963267948966 -0.881373587019543)");
+		assertThat(eval("(acos #c(1d0 1d0))").print())
+			.isEqualTo("#C(0.9045568943023813 " + -Math.log(2.890053638263964) + ")");
+	}
+
+	@Test
+	void evalComplexAsinAcosRoundTrip() {
+		// sin(asin z) and cos(acos z) return z, on the cut as well as off it. Which
+		// ulp they land on follows the platform's Math.log through the asinh, so the
+		// accuracy is the pin and the digits are not.
+		for (String z : List.of("#c(0d0 1d0)", "#c(1d0 1d0)", "#c(2d0 0d0)", "#c(-4d0 0d0)")) {
+			double re = ((LispDouble) eval("(realpart " + z + ")")).value();
+			double im = ((LispDouble) eval("(imagpart " + z + ")")).value();
+			assertThat(((LispDouble) eval("(realpart (sin (asin " + z + ")))")).value()).isCloseTo(re,
+					within(4 * Math.ulp(Math.max(Math.abs(re), 1.0))));
+			assertThat(((LispDouble) eval("(imagpart (sin (asin " + z + ")))")).value()).isCloseTo(im,
+					within(4 * Math.ulp(Math.max(Math.abs(im), 1.0))));
+			assertThat(((LispDouble) eval("(realpart (cos (acos " + z + ")))")).value()).isCloseTo(re,
+					within(4 * Math.ulp(Math.max(Math.abs(re), 1.0))));
+			assertThat(((LispDouble) eval("(imagpart (cos (acos " + z + ")))")).value()).isCloseTo(im,
+					within(4 * Math.ulp(Math.max(Math.abs(im), 1.0))));
+		}
+	}
+
+	@Test
 	void evalComplexFirstClass() {
 		assertThat(eval("(funcall #'complex 1 2)").print()).isEqualTo("#C(1 2)");
 		assertThat(eval("(funcall #'conjugate #c(1 2))").print()).isEqualTo("#C(1 -2)");

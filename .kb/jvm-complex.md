@@ -89,6 +89,60 @@ genuinely missing file. Pinning test:
   the JVM (their bodies call gated helpers; an ungated wrapper would force the
   group into every program). `fboundp` still answers from the static registry.
 
+## The asin/acos branch cut, and their exact real axis (`.todo/764`, 2026-09-11)
+
+`asin` and `acos` cut the real axis outside `[-1, 1]`, and the value ON the cut
+is the one CLHS names: continuous with quadrant IV above `+1`, quadrant II
+below `-1`. **The side is decided by the sign of the REAL part; the sign of an
+imaginary ZERO is discarded** -- `(asin #c(2d0 0d0))` and `(asin #c(2d0 -0d0))`
+are ONE value, `#C(1.5707963267948966 -1.3169578969248166)`, SBCL's for both.
+That is the opposite of `sqrt`, `log` and `acosh`, where the imaginary zero's
+sign picks the sheet (`(sqrt #c(-1d0 -0d0))` is `#C(0.0 -1.0)`), and the split
+is deliberate: SBCL and CLHS agree here, and a program that means one side of
+an asin cut has to say which side anyway.
+
+All three implementations (`Environment.complexAsin`/`complexAcos`, `_cu1`'s
+`U1_ASIN`/`U1_ACOS`, `WasmComplexCompiler.emitComplexAsinInto`/`...Acos...`)
+run Kahan's form over the two roots `u = sqrt(1 - z)` and `v = sqrt(1 + z)`:
+
+```
+asin z = (atan2(re, Re(u*v)),    asinh(Im(conj(u)*v)))
+acos z = (2*atan2(Re(u), Re(v)), asinh(Im(conj(v)*u)))
+```
+
+Both properties fall out of it, which is why no arm special-cases the axis:
+
+- **The cut**: the imaginary parts of `1 - z` and `1 + z` are computed as
+  `0.0 - im` and `0.0 + im`, and IEEE makes BOTH `+0.0` for either signed zero,
+  so `u` and `v` stay on one sheet whatever sign the argument's zero had.
+- **The real axis**: a real argument inside `[-1, 1]` leaves both roots real,
+  so asinh's argument is a difference of zeros and the imaginary part is
+  EXACTLY `0.0`. Deriving acos as `pi/2 - asin z` would lose both -- it
+  answered `#C(1.0471975511965976 -1.1102230246251565e-16)` for
+  `(acos (complex 0.5d0 0d0))` where SBCL (and this) answer
+  `#C(1.0471975511965979 0.0)`.
+- **Accuracy**: `asin z` and `asinh(i*z)` now agree to the BIT, so
+  `(asin #c(1 1))`'s imaginary part IS `(asinh #c(1 1))`'s real part and
+  `(sin (asin #c(0d0 1d0)))` is exactly `#C(0.0 1.0)`. The
+  `-i*log(i*z + sqrt(1 - z^2))` form this replaced was 2 ulp off there.
+
+`asinh`'s real arm is the imaginary part of every one of those, so its grouping
+is their accuracy: the large branch is ONE log over `|x| + hypot(|x|, 1)`, not
+`log |x| + log(1 + hypot(1/|x|, 1))`, whose two roundings land a ulp high on 18%
+of the arguments above 1 (measured 2026-09-11 against 60-digit BigDecimal; it is
+what kept `(asin #c(-4d0 0d0))` a ulp off SBCL). Only the SUM can overflow, so
+the huge rung is acosh's, at the same `8.5e307`; `(asinh 1d0)` and `(asinh 2d0)`
+are unmoved by the regrouping.
+
+Pinning tests: `LispEvaluatorTest#evalComplexAsinAcosOnTheBranchCut`,
+`#evalComplexAsinAcosOfARealArgumentAnswerAnExactZero` and
+`#evalComplexAsinAcosRoundTrip`, mirrored by
+`JvmLispCompilerTest#compileAndRunComplexAsinAcos*` and
+`WasmLispCompilerIntegrationTest#compileAndRunComplexAsinAcos*`; the
+four-backend leg is `ci-spec.yaml`'s `complex-asin-acos-branch-cut`, which pins
+the CONTRACT (one value for both zero signs, the cut's sign, the exact zeros)
+rather than digits the backends round differently.
+
 ## Known corners (documented, not fixed here)
 
 A complex arriving only through a variable beside a double literal takes the

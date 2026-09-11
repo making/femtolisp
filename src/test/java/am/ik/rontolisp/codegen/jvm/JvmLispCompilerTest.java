@@ -7540,6 +7540,57 @@ class JvmLispCompilerTest {
 	}
 
 	@Test
+	void compileAndRunComplexAsinAcosOnTheBranchCut() throws Exception {
+		// The mirror of LispEvaluatorTest#evalComplexAsinAcosOnTheBranchCut: the side of
+		// the cut is decided by the REAL part (quadrant IV above +1, quadrant II below
+		// -1) and an imaginary ZERO's sign does not move it. Both signs are pinned so
+		// the _cu1 arms cannot drift back. The real parts are atan2's exact on-axis
+		// answers; the imaginary magnitudes spell the platform's own Math.log through
+		// asinh, which x64 and aarch64 round differently in the last ulp.
+		String above = Double.toString(Math.log(3.7320508075688767));
+		String below = Double.toString(Math.log(7.872983346207417));
+		assertThat(compileAndRun("""
+				(print (asin #c(2d0 0d0)))
+				(print (asin #c(2d0 -0d0)))
+				(print (asin #c(-4d0 0d0)))
+				(print (asin #c(-4d0 -0d0)))
+				(print (acos #c(2d0 0d0)))
+				(print (acos #c(2d0 -0d0)))
+				(print (acos #c(-4d0 0d0)))
+				(print (acos #c(-4d0 -0d0)))
+				""")).isEqualTo(String.join("\n", "#C(1.5707963267948966 -" + above + ")",
+				"#C(1.5707963267948966 -" + above + ")", "#C(-1.5707963267948966 " + below + ")",
+				"#C(-1.5707963267948966 " + below + ")", "#C(0.0 " + above + ")", "#C(0.0 " + above + ")",
+				"#C(3.141592653589793 -" + below + ")", "#C(3.141592653589793 -" + below + ")"));
+	}
+
+	@Test
+	void compileAndRunComplexAsinAcosOfARealArgumentAnswerAnExactZero() throws Exception {
+		// The mirror of
+		// LispEvaluatorTest#evalComplexAsinAcosOfARealArgumentAnswerAnExactZero: inside
+		// [-1, 1] the imaginary part is an EXACT zero, and the #c(1 1) rows agree to the
+		// bit with the asinh/acosh pins above (asin z = -i*asinh(i*z), acos z = -i*acosh
+		// z).
+		String oneOne = Double.toString(Math.log(2.890053638263964));
+		assertThat(compileAndRun("""
+				(print (asin (complex -0.5d0 0d0)))
+				(print (asin (complex 0.5d0 0d0)))
+				(print (asin (complex 0d0 0d0)))
+				(print (asin (complex 1d0 0d0)))
+				(print (acos (complex -0.5d0 0d0)))
+				(print (acos (complex 0.5d0 0d0)))
+				(print (acos (complex 1d0 0d0)))
+				(print (asin #c(0d0 1d0)))
+				(print (asin #c(1d0 1d0)))
+				(print (acos #c(0d0 1d0)))
+				(print (acos #c(1d0 1d0)))
+				""")).isEqualTo(String.join("\n", "#C(-0.5235987755982989 0.0)", "#C(0.5235987755982989 0.0)",
+				"#C(0.0 0.0)", "#C(1.5707963267948966 0.0)", "#C(2.0943951023931953 0.0)", "#C(1.0471975511965979 0.0)",
+				"#C(0.0 0.0)", "#C(0.0 0.881373587019543)", "#C(0.6662394324925153 " + oneOne + ")",
+				"#C(1.5707963267948966 -0.881373587019543)", "#C(0.9045568943023813 -" + oneOne + ")"));
+	}
+
+	@Test
 	void compileAndRunComplexFirstClass() throws Exception {
 		assertThat(compileAndRun("(print (funcall #'complex 1 2))")).isEqualTo("#C(1 2)");
 		assertThat(compileAndRun("(print (funcall #'conjugate #c(1 2)))")).isEqualTo("#C(1 -2)");

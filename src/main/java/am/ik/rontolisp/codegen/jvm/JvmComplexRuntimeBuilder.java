@@ -1316,46 +1316,33 @@ final class JvmComplexRuntimeBuilder {
 	}
 
 	/**
-	 * The asin sub-formula into {@code r0Slot}/{@code r1Slot}: s = sqrt(1-z^2), l =
-	 * log(-im+s0, re+s1), answering (l1, -l0). Uses {@code t0Slot}/{@code t1Slot} and one
-	 * more double slot for the sqrt inputs.
+	 * The two roots Kahan's asin and acos are both assembled from: u = sqrt(1 - z) into
+	 * {@code u0Slot}/{@code u1Slot} and v = sqrt(1 + z) into {@code v0Slot}/
+	 * {@code v1Slot}, each rooted in place through {@code tSlot}. Both imaginary parts
+	 * are taken against a {@code +0.0} exactly as the interpreter's {@code 0.0 - im} /
+	 * {@code 0.0 + im} do: that is what leaves an imaginary zero of EITHER sign on the
+	 * same sheet, so the side of the branch cut is decided by the real part alone.
 	 */
-	private static void emitAsinInto(List<Integer> c, Refs refs, ConstantPool cp, int reSlot, int imSlot, int r0Slot,
-			int r1Slot, int t0Slot, int t1Slot, int inSlot) {
+	private static void emitAsinAcosRootsInto(List<Integer> c, Refs refs, ConstantPool cp, int reSlot, int imSlot,
+			int u0Slot, int u1Slot, int v0Slot, int v1Slot, int tSlot) {
+		c.add(Opcode.DCONST_1);
 		dload(c, reSlot);
-		dload(c, reSlot);
-		c.add(Opcode.DMUL);
-		dload(c, imSlot);
-		dload(c, imSlot);
-		c.add(Opcode.DMUL);
 		c.add(Opcode.DSUB);
-		dstore(c, t0Slot);
-		dload(c, reSlot);
+		dstore(c, u0Slot);
+		c.add(Opcode.DCONST_0);
 		dload(c, imSlot);
-		c.add(Opcode.DMUL);
-		emitDoubleConst(c, cp, 2.0);
-		c.add(Opcode.DMUL);
-		dstore(c, t1Slot);
-		emitDoubleConst(c, cp, 1.0);
-		dload(c, t0Slot);
 		c.add(Opcode.DSUB);
-		dstore(c, inSlot);
-		dload(c, t1Slot);
-		c.add(Opcode.DNEG);
-		dstore(c, t1Slot);
-		emitComplexSqrtInto(c, refs, cp, inSlot, t1Slot, r0Slot, r1Slot, t0Slot);
-		dload(c, imSlot);
-		c.add(Opcode.DNEG);
-		dload(c, r0Slot);
-		c.add(Opcode.DADD);
-		dstore(c, t0Slot);
+		dstore(c, u1Slot);
+		emitComplexSqrtInto(c, refs, cp, u0Slot, u1Slot, u0Slot, u1Slot, tSlot);
+		c.add(Opcode.DCONST_1);
 		dload(c, reSlot);
-		dload(c, r1Slot);
 		c.add(Opcode.DADD);
-		dstore(c, t1Slot);
-		emitComplexLog(c, refs, cp, t0Slot, t1Slot);
-		dstore(c, r1Slot);
-		dstore(c, r0Slot);
+		dstore(c, v0Slot);
+		c.add(Opcode.DCONST_0);
+		dload(c, imSlot);
+		c.add(Opcode.DADD);
+		dstore(c, v1Slot);
+		emitComplexSqrtInto(c, refs, cp, v0Slot, v1Slot, v0Slot, v1Slot, tSlot);
 	}
 
 	// _cu1(Object x, int op): the unary math functions. A complex operand
@@ -1480,14 +1467,17 @@ final class JvmComplexRuntimeBuilder {
 		// cis answers a complex for every operand: the +0.0 arm is exact (e^0 = 1, and
 		// 1.0 * is the identity), matching the interpreter's direct (cos x, sin x).
 		emitRealAsComplex(c, refs, cp, U1_CIS);
-		return new ComplexMethod(name, desc, c, 8, 16, List.of());
+		// 12 stack slots: the asin/acos arms hold their finished real part (2) while
+		// the asinh sub-formula runs (8 of its own) before the pair is boxed.
+		return new ComplexMethod(name, desc, c, 12, 16, List.of());
 	}
 
 	/**
 	 * The real arm of {@code asinh} -- the double in {@code slot} as its argument, the
-	 * result on the stack. The interpreter's two branches: the |x| &lt;= 1 log1p form
-	 * (accurate near zero), and log |x| + log(1 + hypot(1/|x|, 1)) beyond (never squaring
-	 * past the float range).
+	 * result on the stack, {@code slot 6} as its scratch. The interpreter's three
+	 * branches: the |x| &lt;= 1 log1p form (accurate near zero), one log over |x| +
+	 * hypot(|x|, 1) beyond (the sum cancels nothing above 1, and the hypot cannot
+	 * overflow), and log |x| + log 2 past 8.5e307, where the SUM would.
 	 */
 	private static void emitAsinhRealF64(List<Integer> c, Refs refs, ConstantPool cp, int slot) {
 		dload(c, slot);
@@ -1512,16 +1502,23 @@ final class JvmComplexRuntimeBuilder {
 		int sign = jump(c, Opcode.GOTO);
 		patch(c, large);
 		dload(c, 6);
-		callMath(c, refs, cp, "log", "(D)D");
-		c.add(Opcode.DCONST_1);
+		emitDoubleConst(c, cp, 8.5e307);
+		c.add(Opcode.DCMPL);
+		int huge = jump(c, Opcode.IFGE);
 		dload(c, 6);
-		c.add(Opcode.DDIV);
+		dload(c, 6);
 		c.add(Opcode.DCONST_1);
 		callMath(c, refs, cp, "hypot", "(DD)D");
-		c.add(Opcode.DCONST_1);
 		c.add(Opcode.DADD);
 		callMath(c, refs, cp, "log", "(D)D");
+		int sign2 = jump(c, Opcode.GOTO);
+		patch(c, huge);
+		dload(c, 6);
+		callMath(c, refs, cp, "log", "(D)D");
+		emitDoubleConst(c, cp, 2.0);
+		callMath(c, refs, cp, "log", "(D)D");
 		c.add(Opcode.DADD);
+		patch(c, sign2);
 		patch(c, sign);
 		dload(c, slot);
 		callMath(c, refs, cp, "copySign", "(DD)D");
@@ -1722,18 +1719,48 @@ final class JvmComplexRuntimeBuilder {
 			c.add(Opcode.DDIV);
 		}
 		else if (op == U1_ASIN) {
-			emitAsinInto(c, refs, cp, 2, 4, 10, 12, 6, 8, 14);
-			dload(c, 12);
+			// asin(z) = (atan2(re, Re(u*v)), asinh(Im(conj(u)*v))): the interpreter's
+			// Kahan form, term for term. The asinh argument goes to slot 14 first --
+			// emitAsinhRealF64 keeps its own scratch in slot 6, which is u's real part.
+			emitAsinAcosRootsInto(c, refs, cp, 2, 4, 6, 8, 10, 12, 14);
+			dload(c, 2);
+			dload(c, 6);
 			dload(c, 10);
-			c.add(Opcode.DNEG);
+			c.add(Opcode.DMUL);
+			dload(c, 8);
+			dload(c, 12);
+			c.add(Opcode.DMUL);
+			c.add(Opcode.DSUB);
+			callMath(c, refs, cp, "atan2", "(DD)D");
+			dload(c, 6);
+			dload(c, 12);
+			c.add(Opcode.DMUL);
+			dload(c, 8);
+			dload(c, 10);
+			c.add(Opcode.DMUL);
+			c.add(Opcode.DSUB);
+			dstore(c, 14);
+			emitAsinhRealF64(c, refs, cp, 14);
 		}
 		else if (op == U1_ACOS) {
-			emitAsinInto(c, refs, cp, 2, 4, 10, 12, 6, 8, 14);
-			emitDoubleConst(c, cp, Math.PI / 2);
+			// acos(z) = (2*atan2(Re(u), Re(v)), asinh(Im(conj(v)*u))) over the same two
+			// roots -- not pi/2 - asin(z), which would carry asin's real part into a
+			// quantity that is exactly 0 or pi on the cut.
+			emitAsinAcosRootsInto(c, refs, cp, 2, 4, 6, 8, 10, 12, 14);
+			emitDoubleConst(c, cp, 2.0);
+			dload(c, 6);
 			dload(c, 10);
-			c.add(Opcode.DSUB);
+			callMath(c, refs, cp, "atan2", "(DD)D");
+			c.add(Opcode.DMUL);
+			dload(c, 10);
+			dload(c, 8);
+			c.add(Opcode.DMUL);
 			dload(c, 12);
-			c.add(Opcode.DNEG);
+			dload(c, 6);
+			c.add(Opcode.DMUL);
+			c.add(Opcode.DSUB);
+			dstore(c, 14);
+			emitAsinhRealF64(c, refs, cp, 14);
 		}
 		else if (op == U1_ATAN) {
 			emitDoubleConst(c, cp, 1.0);

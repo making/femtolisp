@@ -7993,18 +7993,28 @@ public final class Environment implements Scope {
 		return new double[] { (s[0] * c[0] + s[1] * c[1]) / denom, (s[1] * c[0] - s[0] * c[1]) / denom };
 	}
 
-	// asin(z) = -i*log(i*z + sqrt(1-z^2)).
+	// asin(z) = (atan2(re, Re(u*v)), asinh(Im(conj(u)*v))) with u = sqrt(1-z) and
+	// v = sqrt(1+z) -- Kahan's form, and SBCL's. It fixes the branch cut and the real
+	// axis at once. THE CUT: the 1-/1+ subtractions are taken against an imaginary
+	// +0.0, so an imaginary zero of EITHER sign leaves u and v on the same sheet and
+	// the side of the cut is decided by the real part alone, as CLHS requires
+	// (quadrant IV above +1, quadrant II below -1). THE AXIS: for a real argument
+	// inside [-1, 1] both roots are real, so asinh's argument is a difference of
+	// zeros and the result is exactly real -- where -i*log(i*z + sqrt(1 - z^2))
+	// leaked 2^-53 out of the logarithm.
 	private static double[] complexAsin(double re, double im) {
-		double z2re = re * re - im * im;
-		double z2im = 2 * re * im;
-		double[] s = complexSqrt(1 - z2re, -z2im);
-		double[] l = complexLog(-im + s[0], re + s[1]);
-		return new double[] { l[1], -l[0] };
+		double[] u = complexSqrt(1 - re, 0.0 - im);
+		double[] v = complexSqrt(1 + re, 0.0 + im);
+		return new double[] { Math.atan2(re, u[0] * v[0] - u[1] * v[1]), asinhReal(u[0] * v[1] - u[1] * v[0]) };
 	}
 
+	// acos(z) = (2*atan2(Re(u), Re(v)), asinh(Im(conj(v)*u))) over the same two roots
+	// -- NOT pi/2 - asin(z), which would carry asin's real part (and its error) into
+	// a quantity that is exactly 0 or pi on the cut.
 	private static double[] complexAcos(double re, double im) {
-		double[] a = complexAsin(re, im);
-		return new double[] { Math.PI / 2 - a[0], -a[1] };
+		double[] u = complexSqrt(1 - re, 0.0 - im);
+		double[] v = complexSqrt(1 + re, 0.0 + im);
+		return new double[] { 2 * Math.atan2(u[0], v[0]), asinhReal(v[0] * u[1] - v[1] * u[0]) };
 	}
 
 	// atan(z) = (i/2)*(log(1-i*z) - log(1+i*z)).
@@ -8032,14 +8042,21 @@ public final class Environment implements Scope {
 	// java.lang.Math has no inverse hyperbolics -- these are the real arms the JVM
 	// _cu1 helper bytecodes term for term (identical Math calls, identical bits), and
 	// they are overflow-safe: the small branch (|x| <= 1) keeps log1p's accuracy near
-	// zero, the large branch never squares past the float range.
+	// zero, the large branch never squares past the float range. It is also the
+	// imaginary part of every complex asin/acos, so its grouping is their accuracy:
+	// ONE log over the sum (which cancels nothing above 1, and whose hypot cannot
+	// overflow) beats log a + log(1 + hypot(1/a, 1)), whose two roundings land a ulp
+	// high on 18% of the arguments above 1 (measured 2026-09-11). Only the sum can
+	// overflow, so the huge rung is acosh's, at the same 8.5e307.
 	private static double asinhReal(double x) {
 		double a = Math.abs(x);
 		if (a <= 1.0) {
 			return Math.copySign(Math.log1p(a + (a * a) / (1.0 + Math.hypot(a, 1.0))), x);
 		}
-		double inv = 1.0 / a;
-		return Math.copySign(Math.log(a) + Math.log(1.0 + Math.hypot(inv, 1.0)), x);
+		if (a < 8.5e307) {
+			return Math.copySign(Math.log(a + Math.hypot(a, 1.0)), x);
+		}
+		return Math.copySign(Math.log(a) + Math.log(2.0), x);
 	}
 
 	// acosh for x >= 1 only (the caller routes x < 1 into the plane). Three branches:

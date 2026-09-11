@@ -15933,6 +15933,39 @@ cases:
       #C(0.6 0.8)
       0
       0.0
+  - name: complex-asin-acos-branch-cut
+    # asin/acos cut the real axis outside [-1, 1]: the value ON the cut is the one
+    # continuous with quadrant IV above +1 and quadrant II below -1, and the sign of an
+    # imaginary ZERO does not move it (where sqrt and log let it). The transcendental
+    # digits differ between the backends, so what travels here is the contract: the two
+    # zero signs answer ONE value, that value's imaginary part has the sign the cut
+    # names, and a real argument inside [-1, 1] answers an exact zero.
+    source: |
+      (print (= (asin #c(2d0 0d0)) (asin #c(2d0 -0d0))))
+      (print (= (asin #c(-4d0 0d0)) (asin #c(-4d0 -0d0))))
+      (print (= (acos #c(2d0 0d0)) (acos #c(2d0 -0d0))))
+      (print (= (acos #c(-4d0 0d0)) (acos #c(-4d0 -0d0))))
+      (print (minusp (imagpart (asin #c(2d0 0d0)))))
+      (print (plusp (imagpart (asin #c(-4d0 0d0)))))
+      (print (plusp (imagpart (acos #c(2d0 0d0)))))
+      (print (minusp (imagpart (acos #c(-4d0 0d0)))))
+      (print (imagpart (asin (complex 0.5d0 0d0))))
+      (print (imagpart (acos (complex -0.5d0 0d0))))
+      (print (asin (complex 0d0 0d0)))
+      (print (acos (complex 1d0 0d0)))
+    expected: |
+      T
+      T
+      T
+      T
+      T
+      T
+      T
+      T
+      0.0
+      0.0
+      #C(0.0 0.0)
+      #C(0.0 0.0)
   - name: complex-binary-arithmetic
     source: |
       (print (+ #c(1 1/2) #c(1 1/3)))
