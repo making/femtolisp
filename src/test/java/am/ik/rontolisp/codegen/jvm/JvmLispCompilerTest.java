@@ -1268,7 +1268,7 @@ class JvmLispCompilerTest {
 						"""))
 			.isEqualTo("""
 					:PROGRAM-ERROR
-					"REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY, got: :BOGUS"
+					"REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY/:START/:END/:COUNT/:FROM-END, got: :BOGUS"
 					:ODD-TAIL
 					:NOT-A-KEYWORD
 					:RD
@@ -1301,11 +1301,11 @@ class JvmLispCompilerTest {
 		}
 		assertThat(err.toString().trim()).isEqualTo(
 				"""
-						warning: REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY, got: :BOGUS; compiled as a call-time program-error
-						Unhandled condition: REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY, got: :BOGUS""");
+						warning: REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY/:START/:END/:COUNT/:FROM-END, got: :BOGUS; compiled as a call-time program-error
+						Unhandled condition: REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY/:START/:END/:COUNT/:FROM-END, got: :BOGUS""");
 		assertThat(cause).isInstanceOf(InvocationTargetException.class);
-		assertThat(((InvocationTargetException) cause).getTargetException())
-			.hasMessage("REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY, got: :BOGUS");
+		assertThat(((InvocationTargetException) cause).getTargetException()).hasMessage(
+				"REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY/:START/:END/:COUNT/:FROM-END, got: :BOGUS");
 	}
 
 	@Test
@@ -6651,6 +6651,51 @@ class JvmLispCompilerTest {
 			.isEqualTo("aXYaa");
 		assertThat(compileAndRun("(princ (replace \"aaaaa\" \"XY\"))")).isEqualTo("XYaaa");
 		assertThat(compileAndRun("(princ (funcall #'replace \"aaaaa\" \"XY\"))")).isEqualTo("XYaaa");
+	}
+
+	@Test
+	void compileAndRunSequenceBoundingKeywords() throws Exception {
+		// CLHS 17.2.1's :start/:end/:count/:from-end over the count/remove/substitute
+		// family (.kb/sequence-bounding-keywords.md). :from-end is the interesting half:
+		// it reverses the WALK, which decides which matches a :count keeps and the order
+		// the :key designator is called in (the counting :key below), and a destructive
+		// spelling must still rewrite the argument's own cells -- which is why the list
+		// is read back. The first-class calls at the end go through the family's
+		// keyword-forwarding wrapper.
+		String source = """
+				(print (remove 'a '(a b a c a) :count 2 :from-end t))
+				(print (remove 'a '(a b a c a) :start 1 :end 3))
+				(print (remove-if-not #'evenp '(1 2 3 4 5 6) :count 2 :from-end t))
+				(print (substitute 'x 'a '(a b a c a) :count 1 :from-end t))
+				(print (substitute-if 'x #'evenp '(1 2 3 4) :count 1 :from-end t))
+				(print (substitute #\\x #\\a "abaa" :count 1 :from-end t))
+				(print (count 1 '(1 1 1 1 1 2 1 1) :start 2 :end 7))
+				(print (count-if-not #'evenp '(1 2 3 4 5 6) :start 2))
+				(let ((c 0))
+				  (print (count 1 '(1 2 3 7 4 5 7 6 2 8) :from-end t
+				                :key (lambda (x) (prog1 (- x c) (setq c (+ c 1)))))))
+				(let ((l (list 'a 'b 'a)))
+				  (print (nsubstitute 'x 'a l :count 1 :from-end t))
+				  (print l))
+				(print (delete-if #'evenp (list 1 2 3 4) :count 1 :from-end t))
+				(print (funcall #'remove 'a '(a b a) :count 1 :from-end t))
+				(print (apply #'substitute 'x 'a '(a b a) '(:count 1 :from-end t)))
+				""";
+		assertThat(compileAndRun(source)).isEqualTo("""
+				(A B C)
+				(A B C A)
+				(1 2 4 6)
+				(A B A C X)
+				(1 2 3 X)
+				"abax"
+				4
+				2
+				3
+				(A B X)
+				(A B X)
+				(1 2 3)
+				(A B)
+				(A B X)""");
 	}
 
 	@Test

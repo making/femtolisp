@@ -84,6 +84,7 @@ deliberate boundaries the audit must not undo: user-facing operator catalogues l
 - [seq-conversion-runtime.md](seq-conversion-runtime.md) -- the literal sequence conversions (`coerce` to `'list`/`'string`/`'vector`)
 - [seq-coerce-runtime.md](seq-coerce-runtime.md) -- the interpreter converts a sequence in Java, not through an interpreted `map`
 - [sequence-op-runtimes.md](sequence-op-runtimes.md) -- `replace`/`fill`/`map-into` as shared callees
+- [sequence-bounding-keywords.md](sequence-bounding-keywords.md) -- `:start`/`:end`/`:count`/`:from-end` across the count/remove/substitute family
 - [string-write-runtime.md](string-write-runtime.md) -- the shared string arm behind every rank-1 element write
 - [integer-bitwise-fast-paths.md](integer-bitwise-fast-paths.md) -- fixnum fast paths for the logical/shift operators and the byte-specifier fold
 - [jzon-cl-additions.md](jzon-cl-additions.md) -- the jzon-driven all-backend CL additions

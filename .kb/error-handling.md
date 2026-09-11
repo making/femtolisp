@@ -604,7 +604,8 @@ operands select -- `(+ 1 nil)` exact, `(+ 1.5 nil)` float.
 ## Argument-shape errors signal a catchable program-error
 **Invariant: a keyword the operator does not accept, an odd keyword tail and a non-keyword in
 keyword position signal a CATCHABLE `program-error` carrying one text -- `REMOVE expects keyword
-arguments :TEST/:TEST-NOT/:KEY, got: :BOGUS` -- on all four backends, from a call form and from a
+arguments :TEST/:TEST-NOT/:KEY/:START/:END/:COUNT/:FROM-END, got: :BOGUS` -- on all four backends,
+from a call form and from a
 first-class call alike, and `:allow-other-keys` suppresses the check per CLHS 3.4.1.4.1.1.** They
 used to leave the expander as `IllegalArgumentException`s no `handler-case` could see (the ANSI
 report's two top rows: 370 + 299 lost forms) and to fail the COMPILE on the compiled backends.
@@ -655,14 +656,17 @@ report's two top rows: 370 + 299 lost forms) and to fail the COMPILE on the comp
   expects ...`, `Environment.requireArgCount*` and every inline `X expects N arguments, got M` built-in
   check are `program-error`s (the ANSI suite's next six rows). **The compiled backends do NOT signal a
   wrong-arity `funcall`/`apply` at all** -- the JVM dispatcher answers nil, wasm-GC traps
-  (`.todo/735`); only a DIRECT call is checked, at compile time. First-class `#'remove` stays
-  fixed-arity everywhere (the one-arity wrapper rule, [lambda-lists.md](lambda-lists.md)), so the
-  first-class twins are pinned on `#'member` / `#'find` / `#'position`.
+  (`.todo/735`); only a DIRECT call is checked, at compile time. The first-class twins are pinned on
+  `#'member` / `#'find` / `#'position` and, since the family took the bounding keywords, on
+  `#'remove` too -- its wrapper now forwards a keyword tail instead of taking a fixed two arguments
+  ([sequence-bounding-keywords.md](sequence-bounding-keywords.md)).
 - ANSI `sequences` chapter, interpreter, 2026-09-08 (`ansi-test/measure.sh sequences`): 1,850 /
   2,454 pass with 849 forms lost before; 2,191 / 3,274 pass with 29 lost after. The
-  `X expects keyword arguments ...` rows that remain (350 + 228) are now counted test ERRORS naming
+  `X expects keyword arguments ...` rows that remained (350 + 228) were counted test ERRORS naming
   real gaps -- `:count`/`:start`/`:end`/`:from-end` on the substitute / remove family, `:from-end`
-  on `count` (`.todo/736`) -- where they used to be forms the driver could not evaluate.
+  on `count` -- rather than forms the driver could not evaluate. Those gaps are closed
+  ([sequence-bounding-keywords.md](sequence-bounding-keywords.md), 2026-09-11): 2,861 / 3,287 pass,
+  166 fail, 265 error -- +657 tests, no test that passed before failing after.
 
 ## Out of scope (still)
 The interactive debugger (`break`, `*debugger-hook*`, rendering a restart's `:report` or running its

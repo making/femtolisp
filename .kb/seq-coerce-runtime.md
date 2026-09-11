@@ -54,6 +54,14 @@ declining-primitive shape of `.kb/binary-sequence-io.md`, in Java:
 - `Environment.seqAsList` (the same conversion for natively-registered
   `#'position`, `reverse`, `count`, ...) reads the buffer slot by slot, not by
   rebuilding the Java `String` through `value()` (`.kb/string-index-cost.md`).
+  **"The same conversion" was false for a rank-1 `LispFloatArray` until
+  2026-09-11**: it had no arm and fell through to "return the value unchanged", so
+  every natively-registered scan saw a `#f(...)` vector as an EMPTY sequence and
+  answered silently -- `(count-if #'zerop #f(0.0 1.0 0.0))` 0, `(reverse #f(1.0
+  2.0))` NIL (ANSI count-if.special-vector.3). A missing arm here fails quiet; the
+  expansion's own `(coerce x 'list)` had the arm all along, so the two paths
+  disagreed only for the operators the interpreter answers in Java. `seqResult`
+  grew the matching arm (a general vector, the packed-integer rule).
 
 Each arm reproduces its `expandCoerce` body exactly, oddities included:
 

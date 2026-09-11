@@ -4429,14 +4429,16 @@ class LispEvaluatorTest {
 
 	@Test
 	void evalSequenceFunctionsRejectUnknownKeywords() {
-		// Unsupported keywords (:from-end, :start, ...) are rejected loudly rather than
-		// silently ignored. The find family is NOT among them any more: it shares the
-		// position family's scan and so takes the whole keyword set (see
-		// evalFindFamilyTakesThePositionKeywordSet).
+		// Unsupported keywords are rejected loudly rather than silently ignored. The
+		// find family is NOT among them any more: it shares the position family's scan
+		// and so takes the whole keyword set (see
+		// evalFindFamilyTakesThePositionKeywordSet), and neither is the
+		// remove/substitute family, which takes CLHS 17.2.1's bounding set (see
+		// evalSequenceScansTakeTheBoundingKeywords).
 		assertThatThrownBy(() -> eval("(assoc 1 '((1 . a)) :from-end t)")).isInstanceOf(RuntimeException.class)
 			.hasMessageContaining(":TEST/:TEST-NOT/:KEY");
-		assertThatThrownBy(() -> eval("(remove 1 '(1 2) :count 1)")).isInstanceOf(RuntimeException.class)
-			.hasMessageContaining(":TEST/:TEST-NOT/:KEY");
+		assertThatThrownBy(() -> eval("(remove 1 '(1 2) :bogus 1)")).isInstanceOf(RuntimeException.class)
+			.hasMessageContaining(":TEST/:TEST-NOT/:KEY/:START/:END/:COUNT/:FROM-END");
 		assertThatThrownBy(() -> eval("(find 1 '(1 2) :count 1)")).isInstanceOf(RuntimeException.class)
 			.hasMessageContaining(":FROM-END");
 	}
@@ -4478,6 +4480,62 @@ class LispEvaluatorTest {
 		// ... including as first-class values, where the keywords arrive at run time.
 		assertThat(eval("(apply #'find 3 '(1 2 3 4 3) '(:from-end t))").print()).isEqualTo("3");
 		assertThat(eval("(funcall #'find-if #'evenp '(1 3 4 6 7) :from-end t)").print()).isEqualTo("6");
+	}
+
+	@Test
+	void evalSequenceScansTakeTheBoundingKeywords() {
+		// CLHS 17.2.1's :start/:end/:count/:from-end across the whole
+		// count/remove/substitute family, in call position and first-class, where the
+		// two run different code (the shared expansion and its runtime twin) and must
+		// agree.
+		assertThat(eval("(remove 'a '(a b a c a) :count 2)").print()).isEqualTo("(B C A)");
+		assertThat(eval("(remove 'a '(a b a c a) :count 2 :from-end t)").print()).isEqualTo("(A B C)");
+		assertThat(eval("(remove 'a '(a b a c a) :start 1)").print()).isEqualTo("(A B C)");
+		assertThat(eval("(remove 'a '(a b a c a) :start 1 :end 3)").print()).isEqualTo("(A B C A)");
+		// A negative count acts as zero; a nil one is no limit at all.
+		assertThat(eval("(remove 'a '(a b a) :count -1)").print()).isEqualTo("(A B A)");
+		assertThat(eval("(remove 'a '(a b a) :count nil)").print()).isEqualTo("(B)");
+		assertThat(eval("(remove-if #'evenp '(1 2 3 4 5 6) :count 2)").print()).isEqualTo("(1 3 5 6)");
+		assertThat(eval("(remove-if-not #'evenp '(1 2 3 4 5 6) :count 2 :from-end t)").print()).isEqualTo("(1 2 4 6)");
+		assertThat(eval("(substitute 'x 'a '(a b a c a) :count 1)").print()).isEqualTo("(X B A C A)");
+		assertThat(eval("(substitute 'x 'a '(a b a c a) :count 1 :from-end t)").print()).isEqualTo("(A B A C X)");
+		assertThat(eval("(substitute 'x 'a '(a a a a) :start 1 :end 3)").print()).isEqualTo("(A X X A)");
+		assertThat(eval("(substitute-if 'x #'evenp '(1 2 3 4) :count 1 :from-end t)").print()).isEqualTo("(1 2 3 X)");
+		assertThat(eval("(substitute-if-not 'x #'evenp '(1 2 3 4) :count 1)").print()).isEqualTo("(X 2 3 4)");
+		assertThat(eval("(count 1 '(1 1 1 1 1 2 1 1) :start 2 :end 7)").print()).isEqualTo("4");
+		assertThat(eval("(count-if #'evenp '(1 2 3 4 5 6) :start 2 :end 4)").print()).isEqualTo("1");
+		assertThat(eval("(count-if-not #'evenp '(1 2 3 4 5 6) :start 2)").print()).isEqualTo("2");
+		// :from-end cannot change a COUNT -- but it decides the order the :key and
+		// :test designators are called in, which a side-effecting one sees (ANSI's
+		// count-list.9 is this exact program).
+		assertThat(evalMulti("""
+				(let ((c 0))
+				  (count 1 '(1 2 3 7 4 5 7 6 2 8) :from-end t
+				         :key (lambda (x) (prog1 (- x c) (setq c (+ c 1))))))
+				""").print()).isEqualTo("3");
+		// The destructive spellings keep rewriting the argument's own cells, bounded or
+		// not: a reversed walk visits THOSE cells backwards rather than a fresh
+		// reverse's.
+		assertThat(evalMulti("(let ((x (list 'a 'b 'a))) (nsubstitute 'x 'a x :count 1 :from-end t) x)").print())
+			.isEqualTo("(A B X)");
+		assertThat(eval("(nsubstitute-if 0 #'evenp (list 1 2 3 4) :count 1 :from-end t)").print())
+			.isEqualTo("(1 2 3 0)");
+		assertThat(eval("(delete 'a (list 'a 'b 'a) :count 1)").print()).isEqualTo("(B A)");
+		assertThat(eval("(delete-if #'evenp (list 1 2 3 4) :count 1 :from-end t)").print()).isEqualTo("(1 2 3)");
+		// First-class use takes the same set, through the runtime twin of the scan.
+		assertThat(eval("(funcall #'remove 'a '(a b a) :count 1 :from-end t)").print()).isEqualTo("(A B)");
+		assertThat(eval("(apply #'substitute 'x 'a '(a b a) '(:count 1 :from-end t))").print()).isEqualTo("(A B X)");
+		assertThat(eval("(funcall #'count-if #'evenp '(1 2 3 4) :start 2)").print()).isEqualTo("1");
+		assertThat(eval("(funcall #'remove-if #'evenp '(1 2 3 4) :count 1)").print()).isEqualTo("(1 3 4)");
+		assertThat(eval("(funcall #'nsubstitute-if 0 #'evenp (list 1 2 3 4) :count 1)").print()).isEqualTo("(1 0 3 4)");
+		// A nil designator is the ABSENT one, not a function to call: CL's defaults are
+		// eql and identity, and ANSI spells (remove 'a x :key nil).
+		assertThat(eval("(remove 'a '(a b a) :key nil :test nil)").print()).isEqualTo("(B)");
+		assertThat(eval("(funcall #'remove 'a '(a b a) :key nil :test nil)").print()).isEqualTo("(B)");
+		// A string or vector argument comes back in its own representation.
+		assertThat(eval("(remove #\\a \"abaa\" :count 2)").print()).isEqualTo("\"ba\"");
+		assertThat(eval("(substitute #\\x #\\a \"abaa\" :count 1 :from-end t)").print()).isEqualTo("\"abax\"");
+		assertThat(eval("(count #\\a \"abaa\" :start 1)").print()).isEqualTo("2");
 	}
 
 	@Test
@@ -8165,9 +8223,10 @@ class LispEvaluatorTest {
 		assertThat(eval("(nsubstitute-if 0 #'oddp (list 1 2 3))").print()).isEqualTo("(0 2 0)");
 		assertThat(eval("(nsubstitute-if-not 0 #'oddp (list 1 2 3))").print()).isEqualTo("(1 0 3)");
 		assertThat(evalMulti("(funcall #'substitute-if 0 #'oddp '(1 2 3))").print()).isEqualTo("(0 2 0)");
-		// The -if family takes :key only; the predicate IS the test.
+		// The -if family takes :key and the bounding keywords, never :test/:test-not --
+		// the predicate IS the test.
 		assertThatThrownBy(() -> eval("(substitute-if 0 #'oddp '(1) :test #'eql)"))
-			.hasMessageContaining("expects keyword arguments :KEY, got: :TEST");
+			.hasMessageContaining("expects keyword arguments :KEY/:START/:END/:COUNT/:FROM-END, got: :TEST");
 	}
 
 	@Test
@@ -10940,7 +10999,8 @@ class LispEvaluatorTest {
 				"(handler-case (remove 1 '(1 2 3) :bogus 4) (program-error (c) :program-error) (error (c) :plain))")
 			.print()).isEqualTo(":PROGRAM-ERROR");
 		assertThat(eval("(handler-case (remove 1 '(1 2 3) :bogus 4) (error (c) (princ-to-string c)))").print())
-			.isEqualTo("\"REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY, got: :BOGUS\"");
+			.isEqualTo(
+					"\"REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY/:START/:END/:COUNT/:FROM-END, got: :BOGUS\"");
 		assertThat(eval("(handler-case (find 1 '(1 2) :key) (program-error (c) :odd-tail))").print())
 			.isEqualTo(":ODD-TAIL");
 		assertThat(eval("(handler-case (remove 'a nil 'bad t) (program-error (c) :not-a-keyword))").print())

@@ -3328,6 +3328,18 @@ public final class Environment implements Scope {
 			}
 			return result;
 		}
+		// A rank-1 PACKED FLOAT array is a sequence too -- the compile paths reach its
+		// elements through (coerce x 'list) and the interpreter used to hand the array
+		// itself back here, so every list-walking sequence scan silently saw an EMPTY
+		// sequence (ANSI count-if.special-vector.3 counts 0 of the 3 zeros in a #f
+		// vector).
+		if (val instanceof LispFloatArray packed && packed.rank() == 1) {
+			LispVal result = LispNil.INSTANCE;
+			for (int i = packed.totalSize() - 1; i >= 0; i--) {
+				result = new LispCons(packed.readFlat(i), result);
+			}
+			return result;
+		}
 		return val;
 	}
 
@@ -3361,6 +3373,16 @@ public final class Environment implements Scope {
 			}
 			LispVal[] data = flat.toArray(new LispVal[0]);
 			return new LispArray(new int[] { data.length }, data);
+		}
+		if (original instanceof LispFloatArray packed && packed.rank() == 1) {
+			// A general vector, on the packed-integer arm's rule below.
+			List<LispVal> flat = new ArrayList<>();
+			LispVal cur = list;
+			while (cur instanceof LispCons cell) {
+				flat.add(cell.car());
+				cur = cell.cdr();
+			}
+			return new LispArray(new int[] { flat.size() }, flat.toArray(new LispVal[0]));
 		}
 		if (original instanceof LispIntVector) {
 			// A general vector, NOT a packed rebuild: the compile backends' sequence
@@ -3433,49 +3455,6 @@ public final class Environment implements Scope {
 			return iv;
 		}
 		return seqResult(original, list);
-	}
-
-	/**
-	 * {@code remove}: a fresh sequence, in {@code original}'s own representation, with
-	 * every element {@code eq}/{@code eql} to {@code item} dropped. Shared with
-	 * {@code delete}'s vector/string arm ({@code .todo/623}): CLHS lets a destructive
-	 * form answer a fresh sequence, so a non-list argument -- which has no cons cells to
-	 * splice in place -- routes through this instead of silently no-op'ing.
-	 */
-	private static LispVal removeValues(LispVal item, LispVal original) {
-		List<LispVal> kept = new ArrayList<>();
-		LispVal cur = seqAsList(original);
-		while (cur instanceof LispCons cell) {
-			if (!isEq(item, cell.car())) {
-				kept.add(cell.car());
-			}
-			cur = cell.cdr();
-		}
-		LispVal result = LispNil.INSTANCE;
-		for (int i = kept.size() - 1; i >= 0; i--) {
-			result = new LispCons(kept.get(i), result);
-		}
-		return seqResult(original, result);
-	}
-
-	/**
-	 * {@code substitute}: a fresh sequence, in {@code original}'s own representation,
-	 * with every element {@code eq}/{@code eql} to {@code oldItem} replaced by
-	 * {@code newItem}. Shared with {@code nsubstitute}'s vector/string arm, the same
-	 * latitude {@link #removeValues} documents.
-	 */
-	private static LispVal substituteValues(LispVal newItem, LispVal oldItem, LispVal original) {
-		List<LispVal> out = new ArrayList<>();
-		LispVal cur = seqAsList(original);
-		while (cur instanceof LispCons cell) {
-			out.add(isEq(oldItem, cell.car()) ? newItem : cell.car());
-			cur = cell.cdr();
-		}
-		LispVal result = LispNil.INSTANCE;
-		for (int i = out.size() - 1; i >= 0; i--) {
-			result = new LispCons(out.get(i), result);
-		}
-		return seqResult(original, result);
 	}
 
 	/**
@@ -3566,19 +3545,9 @@ public final class Environment implements Scope {
 		// find (and find-if/-if-not, position and its two) are registered in
 		// LispEvaluator so the :test/:test-not/:key keyword designators can be applied
 		// through the evaluator; the find family shares the position family's scan.
-		env.defineFunction(LispNames.COUNT, new LispFunction(LispNames.COUNT, args -> {
-			requireArgCount(LispNames.COUNT, args, 2);
-			LispVal item = args.get(0);
-			LispVal cur = seqAsList(args.get(1));
-			long count = 0;
-			while (cur instanceof LispCons cell) {
-				if (isEq(item, cell.car())) {
-					count++;
-				}
-				cur = cell.cdr();
-			}
-			return new LispInteger(count);
-		}));
+		// count, remove, delete, substitute and nsubstitute are registered in
+		// LispEvaluator too: they take the :test/:test-not/:key designators and CLHS
+		// 17.2.1's bounding keywords, which the evaluator's shared scan applies.
 		// assoc/rassoc are registered in LispEvaluator: their :test keyword needs
 		// `apply`.
 		env.defineFunction(LispNames.ACONS, new LispFunction(LispNames.ACONS, args -> {
@@ -3649,71 +3618,6 @@ public final class Environment implements Scope {
 				cur = ((LispCons) cur).cdr();
 			}
 			return cur;
-		}));
-		env.defineFunction(LispNames.REMOVE, new LispFunction(LispNames.REMOVE, args -> {
-			requireArgCount(LispNames.REMOVE, args, 2);
-			return removeValues(args.get(0), args.get(1));
-		}));
-		// delete is the destructive variant of remove: splice out matching cells in place
-		// (Common Lisp semantics; use the return value since the head may change). A
-		// vector/string argument has no cons cells to splice -- CLHS lets a destructive
-		// form answer a FRESH sequence instead, so it routes through remove's own
-		// vector/string handling rather than silently no-op'ing (.todo/623).
-		env.defineFunction(LispNames.DELETE, new LispFunction(LispNames.DELETE, args -> {
-			requireArgCount(LispNames.DELETE, args, 2);
-			LispVal item = args.get(0);
-			LispVal head = args.get(1);
-			if (!(head instanceof LispCons) && !(head instanceof LispNil)) {
-				return removeValues(item, head);
-			}
-			// Drop matching cells from the front by advancing the head.
-			while (head instanceof LispCons cell && isEq(item, cell.car())) {
-				head = cell.cdr();
-			}
-			if (!(head instanceof LispCons headCell)) {
-				return head;
-			}
-			// Splice out matching cells in the interior.
-			LispCons prev = headCell;
-			LispVal cur = headCell.cdr();
-			while (cur instanceof LispCons cell) {
-				if (isEq(item, cell.car())) {
-					prev.setCdr(cell.cdr());
-				}
-				else {
-					prev = cell;
-				}
-				cur = cell.cdr();
-			}
-			return head;
-		}));
-		// substitute new old list: return a fresh copy with every element eql to old
-		// replaced by new (non-destructive).
-		LispFunction substitute = new LispFunction(LispNames.SUBSTITUTE, args -> {
-			requireArgCount(LispNames.SUBSTITUTE, args, 3);
-			return substituteValues(args.get(0), args.get(1), args.get(2));
-		});
-		env.defineFunction(LispNames.SUBSTITUTE, substitute);
-		// nsubstitute is the destructive variant: rewrite matching cars in place and
-		// return the (possibly mutated) original list (Common Lisp semantics). A
-		// vector/string argument routes through substitute's own vector/string handling,
-		// the same latitude delete takes above (.todo/623).
-		env.defineFunction(LispNames.NSUBSTITUTE, new LispFunction(LispNames.NSUBSTITUTE, args -> {
-			requireArgCount(LispNames.NSUBSTITUTE, args, 3);
-			LispVal newItem = args.get(0);
-			LispVal oldItem = args.get(1);
-			LispVal list = args.get(2);
-			if (!(list instanceof LispCons) && !(list instanceof LispNil)) {
-				return substituteValues(newItem, oldItem, list);
-			}
-			LispVal cur = list;
-			while (cur instanceof LispCons cell) {
-				if (isEq(oldItem, cell.car())) {
-					cell.setCar(newItem);
-				}
-				cur = cell.cdr();
-			}
-			return list;
 		}));
 		env.defineFunction(LispNames.BUTLAST, new LispFunction(LispNames.BUTLAST, args -> {
 			requireArgCount(LispNames.BUTLAST, args, 1);

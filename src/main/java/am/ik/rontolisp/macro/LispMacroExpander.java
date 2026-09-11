@@ -4788,6 +4788,23 @@ public final class LispMacroExpander {
 				LispNames.KEY_KEYWORD);
 	}
 
+	// The same for a remove/substitute-family call, which adds CLHS 17.2.1's bounding
+	// and counting set to the designators (see SeqScanBounds).
+	private static @Nullable LispVal boundedTestKeyKeywordTailError(LispCons call, String name, List<LispVal> parts,
+			int start) {
+		return keywordTailError(call, name, parts, start, LispNames.TEST_KEYWORD, LispNames.TEST_NOT_KEYWORD,
+				LispNames.KEY_KEYWORD, LispNames.START_KEYWORD, LispNames.END_KEYWORD, LispNames.COUNT_KEYWORD,
+				LispNames.FROM_END_KEYWORD);
+	}
+
+	// The same for the -if / -if-not spellings, which take no :test/:test-not (the
+	// predicate IS the test).
+	private static @Nullable LispVal boundedKeyKeywordTailError(LispCons call, String name, List<LispVal> parts,
+			int start) {
+		return keywordTailError(call, name, parts, start, LispNames.KEY_KEYWORD, LispNames.START_KEYWORD,
+				LispNames.END_KEYWORD, LispNames.COUNT_KEYWORD, LispNames.FROM_END_KEYWORD);
+	}
+
 	/**
 	 * The {@code :test} / {@code :test-not} designator of a sequence or alist call. CL
 	 * specifies the pair as one equality decision -- {@code :test-not fn} matches exactly
@@ -4801,21 +4818,26 @@ public final class LispMacroExpander {
 	}
 
 	// The :test / :test-not pair of a call's keyword tail, starting at index `start`.
+	// A literal nil is the ABSENT designator (the eql default), like :key's.
 	private static TestSpec testSpec(List<LispVal> parts, int start) {
 		LispVal test = keywordValue(parts, start, LispNames.TEST_KEYWORD);
-		if (test != null) {
+		if (test != null && !isLiteralNil(test)) {
 			return new TestSpec(test, false);
 		}
 		LispVal testNot = keywordValue(parts, start, LispNames.TEST_NOT_KEYWORD);
-		return new TestSpec(testNot, testNot != null);
+		boolean present = testNot != null && !isLiteralNil(testNot);
+		return new TestSpec(present ? testNot : null, present);
 	}
 
 	// Applies the :key selector form to an element form ((funcall key elem)), or returns
 	// the element form unchanged when no :key was given. Like the member/assoc :test
 	// designator, the key designator is inlined at each use site so a literal
 	// 'name/#'name resolves through the compilers' function-designator normalization.
+	// A literal nil is the ABSENT designator, not a function to call: CL's own default
+	// for every :key is identity, and (remove 'a x :key nil) is a spelling ANSI uses.
 	private static LispVal keyedForm(@Nullable LispVal keyForm, LispVal elemForm) {
-		return keyForm == null ? elemForm : listToCons(List.of(new LispSymbol(LispNames.FUNCALL), keyForm, elemForm));
+		return keyForm == null || isLiteralNil(keyForm) ? elemForm
+				: listToCons(List.of(new LispSymbol(LispNames.FUNCALL), keyForm, elemForm));
 	}
 
 	// Builds the equality form of a sequence/alist scan: (eql item elem) by default,
@@ -5389,6 +5411,304 @@ public final class LispMacroExpander {
 		return makeLet(item.name(), parts.get(1), result);
 	}
 
+	/**
+	 * CLHS 17.2.1's bounding and counting keywords as the FORMS a call spelled them with
+	 * (null = the keyword is absent): {@code :start} / {@code :end} bound the scanned
+	 * subsequence -- an element outside it is neither tested nor acted on --
+	 * {@code :count} caps how many matches are acted on, and {@code :from-end} REVERSES
+	 * the order the elements are visited in.
+	 *
+	 * <p>
+	 * The last is not merely a tie-break for {@code :count}: a side-effecting
+	 * {@code :test} or {@code :key} sees the reversed order with no {@code :count} in
+	 * sight -- ANSI's {@code substitute-list.21} and {@code count-list.9} pin exactly
+	 * that -- so no scan in this family may accept it and scan forward anyway.
+	 */
+	private record SeqScanBounds(@Nullable LispVal start, @Nullable LispVal end, @Nullable LispVal count,
+			@Nullable LispVal fromEnd) {
+
+		/** None of them: the scan expands to the loop it always did. */
+		static final SeqScanBounds NONE = new SeqScanBounds(null, null, null, null);
+
+		boolean absent() {
+			return this.start == null && this.end == null && this.count == null && this.fromEnd == null;
+		}
+
+		/** Whether the scan must carry an element INDEX to honor :start / :end. */
+		boolean indexed() {
+			return this.start != null || this.end != null;
+		}
+
+	}
+
+	/**
+	 * The bounding keywords of a call's tail from {@code start}; {@code counted} is false
+	 * for the operators that have no {@code :count} ({@code count} itself).
+	 * @param parts the call's elements
+	 * @param start the index its keyword tail begins at
+	 * @param counted whether the operator takes {@code :count}
+	 * @return the keyword forms
+	 */
+	private static SeqScanBounds seqScanBounds(List<LispVal> parts, int start, boolean counted) {
+		return new SeqScanBounds(keywordValue(parts, start, LispNames.START_KEYWORD),
+				keywordValue(parts, start, LispNames.END_KEYWORD),
+				counted ? keywordValue(parts, start, LispNames.COUNT_KEYWORD) : null,
+				keywordValue(parts, start, LispNames.FROM_END_KEYWORD));
+	}
+
+	/**
+	 * The scaffolding a bounded, counted or reversed list scan needs, emitted PIECEWISE:
+	 * every part is absent when its keyword was, so {@code (remove x l)} expands to
+	 * exactly the loop it always did and only a call that spells a keyword pays for one.
+	 *
+	 * <p>
+	 * The design turns on one choice: {@code :from-end} is served by REVERSING the walked
+	 * list and running the same forward loop, never by a second loop walking backwards.
+	 * The element order, the order the {@code :test} / {@code :key} designators are
+	 * called in and the order a {@code :count} budget is spent in then all follow from
+	 * the walk; the accumulator a reversed walk builds is already in the answer's order,
+	 * so the closing {@code nreverse} is what becomes conditional.
+	 * {@code :start}/{@code :end} are mapped into the walk's own coordinates
+	 * ({@code [len-end, len-start)} when reversed), so the loop body never learns which
+	 * direction it is running in.
+	 *
+	 * <p>
+	 * A DESTRUCTIVE scan ({@code cells}) walks a list OF THE ARGUMENT'S CONS CELLS
+	 * instead, built in the same two directions by the same trick -- a reversed walk over
+	 * a fresh {@code reverse} would rewrite cells nobody can see. It is built only when
+	 * {@code :from-end} is spelled at all; every other bounded destructive scan walks the
+	 * argument itself and pays nothing.
+	 */
+	private static final class SeqScanScaffold {
+
+		private final SeqScanBounds bounds;
+
+		private final LispVal listForm;
+
+		private final boolean cellList;
+
+		private final LispSymbol seq;
+
+		private final LispSymbol walk;
+
+		private final LispSymbol fromEnd;
+
+		private final LispSymbol len;
+
+		private final LispSymbol startv;
+
+		private final LispSymbol endv;
+
+		private final LispSymbol lo;
+
+		private final LispSymbol hi;
+
+		private final LispSymbol countv;
+
+		private final LispSymbol idx;
+
+		private final LispSymbol budget;
+
+		private final String prefix;
+
+		SeqScanScaffold(SeqScanBounds bounds, LispVal listForm, String prefix, boolean cells) {
+			this.bounds = bounds;
+			this.listForm = listForm;
+			this.prefix = prefix;
+			this.cellList = cells && bounds.fromEnd() != null;
+			this.seq = new LispSymbol(prefix + "_seq");
+			this.walk = new LispSymbol(prefix + "_walk");
+			this.fromEnd = new LispSymbol(prefix + "_from");
+			this.len = new LispSymbol(prefix + "_len");
+			this.startv = new LispSymbol(prefix + "_sv");
+			this.endv = new LispSymbol(prefix + "_ev");
+			this.lo = new LispSymbol(prefix + "_lo");
+			this.hi = new LispSymbol(prefix + "_hi");
+			this.countv = new LispSymbol(prefix + "_cv");
+			this.idx = new LispSymbol(prefix + "_i");
+			this.budget = new LispSymbol(prefix + "_left");
+		}
+
+		/** The form the loop's cursor starts from. */
+		LispVal cursorInit() {
+			if (this.bounds.absent()) {
+				return this.listForm;
+			}
+			return this.bounds.fromEnd() == null ? this.seq : this.walk;
+		}
+
+		/** The cons cell the cursor stands on -- a destructive scan's write target. */
+		LispVal cellOf(LispSymbol cursor) {
+			return this.cellList ? callOf(LispNames.CAR, cursor) : cursor;
+		}
+
+		/** The element the cursor stands on. */
+		LispVal elementOf(LispSymbol cursor) {
+			return callOf(LispNames.CAR, cellOf(cursor));
+		}
+
+		/** The scan's extra do-loop bindings: the element index and the count budget. */
+		void addBindings(List<LispVal> bindings) {
+			if (this.bounds.indexed()) {
+				bindings.add(listToCons(List.of(this.idx, new LispInteger(0),
+						listToCons(List.of(new LispSymbol(LispNames.ADD), this.idx, new LispInteger(1))))));
+			}
+			if (this.bounds.count() != null) {
+				// nil is "no limit"; CLHS 17.2.1 reads a negative count as zero.
+				bindings.add(listToCons(List.of(this.budget,
+						makeIf(this.countv,
+								listToCons(List.of(new LispSymbol(LispNames.MAX), this.countv, new LispInteger(0))),
+								LispNil.INSTANCE))));
+			}
+		}
+
+		/**
+		 * The loop's body (or its accumulated value): {@code acted} when the element is
+		 * in range, within budget and matches -- the budget spent on the way -- and
+		 * {@code kept} otherwise. The guard is evaluated BEFORE the match form, so a
+		 * {@code :test} or {@code :key} designator is never called on an element outside
+		 * {@code :start}/{@code :end} or past an exhausted {@code :count}.
+		 */
+		LispVal select(LispVal match, LispVal acted, LispVal kept, boolean actOnMatch) {
+			LispVal spend = spendForm();
+			LispVal onAct = spend == null ? acted : listToCons(List.of(new LispSymbol(LispNames.PROGN), spend, acted));
+			LispVal inner = actOnMatch ? makeIf(match, onAct, kept) : makeIf(match, kept, onAct);
+			LispVal guard = guardForm();
+			return guard == null ? inner : makeIf(guard, inner, kept);
+		}
+
+		/** The scan's answer: a REVERSED walk's accumulator is already in order. */
+		LispVal finish(LispVal acc) {
+			return this.bounds.fromEnd() == null ? nreverseListForm(acc)
+					: makeIf(this.fromEnd, acc, nreverseListForm(acc));
+		}
+
+		/** Wraps the scan in the let* chain binding everything the loop reads. */
+		LispVal wrap(LispVal body) {
+			if (this.bounds.absent()) {
+				return body;
+			}
+			LispVal result = body;
+			if (needsHi()) {
+				result = makeLet(this.hi.name(), hiInit(), result);
+			}
+			if (needsLo()) {
+				result = makeLet(this.lo.name(), loInit(), result);
+			}
+			if (this.bounds.indexed() && this.bounds.fromEnd() != null) {
+				result = makeLet(this.len.name(), callOf(LispNames.LENGTH, this.seq), result);
+			}
+			if (this.bounds.fromEnd() != null) {
+				result = makeLet(this.walk.name(), walkInit(), result);
+			}
+			// The keyword VALUES bind outermost, each evaluated exactly once and before
+			// the walk they shape.
+			if (this.bounds.count() != null) {
+				result = makeLet(this.countv.name(), this.bounds.count(), result);
+			}
+			if (this.bounds.fromEnd() != null) {
+				result = makeLet(this.fromEnd.name(), this.bounds.fromEnd(), result);
+			}
+			if (this.bounds.end() != null) {
+				result = makeLet(this.endv.name(), this.bounds.end(), result);
+			}
+			if (this.bounds.start() != null) {
+				result = makeLet(this.startv.name(), this.bounds.start(), result);
+			}
+			return makeLet(this.seq.name(), this.listForm, result);
+		}
+
+		private boolean needsLo() {
+			return this.bounds.indexed() && (this.bounds.start() != null || this.bounds.fromEnd() != null);
+		}
+
+		private boolean needsHi() {
+			return this.bounds.indexed() && (this.bounds.end() != null || this.bounds.fromEnd() != null);
+		}
+
+		// The walked list: the argument, its reverse, or -- destructively -- the list of
+		// its cons cells in the direction the scan runs.
+		private LispVal walkInit() {
+			if (!this.cellList) {
+				return makeIf(this.fromEnd, callOf(LispNames.REVERSE, this.seq), this.seq);
+			}
+			LispSymbol cell = new LispSymbol(this.prefix + "_cc");
+			LispSymbol acc = new LispSymbol(this.prefix + "_ca");
+			LispVal bindings = listToCons(
+					List.of(listToCons(List.of(cell, this.seq, callOf(LispNames.CDR, cell))), listToCons(List.of(acc,
+							LispNil.INSTANCE, listToCons(List.of(new LispSymbol(LispNames.CONS), cell, acc))))));
+			LispVal endClause = listToCons(
+					List.of(callOf(LispNames.ATOM, cell), makeIf(this.fromEnd, acc, nreverseListForm(acc))));
+			return expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause)));
+		}
+
+		// The forward :start, defaulting to 0 -- a nil value is the default too, which is
+		// how (count x l :start nil) reads.
+		private LispVal forwardStart() {
+			return this.bounds.start() == null ? new LispInteger(0)
+					: makeIf(this.startv, this.startv, new LispInteger(0));
+		}
+
+		// The forward :end; nil is "to the end of the sequence".
+		private LispVal forwardEnd() {
+			return this.bounds.end() == null ? LispNil.INSTANCE : this.endv;
+		}
+
+		private LispVal loInit() {
+			if (this.bounds.fromEnd() == null) {
+				return forwardStart();
+			}
+			LispVal reversed = this.bounds.end() == null ? new LispInteger(0) : makeIf(this.endv,
+					listToCons(List.of(new LispSymbol(LispNames.SUB), this.len, this.endv)), new LispInteger(0));
+			return makeIf(this.fromEnd, reversed, forwardStart());
+		}
+
+		private LispVal hiInit() {
+			if (this.bounds.fromEnd() == null) {
+				return forwardEnd();
+			}
+			return makeIf(this.fromEnd, listToCons(List.of(new LispSymbol(LispNames.SUB), this.len, forwardStart())),
+					forwardEnd());
+		}
+
+		private @Nullable LispVal guardForm() {
+			List<LispVal> tests = new ArrayList<>();
+			if (needsLo()) {
+				tests.add(listToCons(List.of(new LispSymbol(LispNames.GE), this.idx, this.lo)));
+			}
+			if (needsHi()) {
+				tests.add(makeIf(this.hi, listToCons(List.of(new LispSymbol(LispNames.LT), this.idx, this.hi)),
+						LispTrue.INSTANCE));
+			}
+			if (this.bounds.count() != null) {
+				tests.add(makeIf(this.budget,
+						listToCons(List.of(new LispSymbol(LispNames.GT), this.budget, new LispInteger(0))),
+						LispTrue.INSTANCE));
+			}
+			if (tests.isEmpty()) {
+				return null;
+			}
+			if (tests.size() == 1) {
+				return tests.get(0);
+			}
+			List<LispVal> conjunction = new ArrayList<>();
+			conjunction.add(new LispSymbol(LispNames.AND));
+			conjunction.addAll(tests);
+			return listToCons(conjunction);
+		}
+
+		private @Nullable LispVal spendForm() {
+			if (this.bounds.count() == null) {
+				return null;
+			}
+			return makeIf(this.budget,
+					listToCons(List.of(new LispSymbol(LispNames.SETQ), this.budget,
+							listToCons(List.of(new LispSymbol(LispNames.SUB), this.budget, new LispInteger(1))))),
+					LispNil.INSTANCE);
+		}
+
+	}
+
 	// Validates a keyword/value argument tail against the operator's allowed keyword
 	// set; anything else is rejected loudly rather than silently ignored.
 	// The affix in the same case as the base name: all-uppercase bases (the upcase
@@ -5563,74 +5883,80 @@ public final class LispMacroExpander {
 	/**
 	 * Expands (count item lst) into a do scan returning the number of elements
 	 * {@code eql} to the item. Like {@code position} but accumulates a count of all
-	 * matches rather than returning the first index.
+	 * matches rather than returning the first index, and it takes the same keyword set.
 	 * @param cons the count expression
 	 * @return the expanded expression
 	 */
 	public static LispVal expandCount(LispCons cons) {
 		List<LispVal> parts = cons.toList();
 		LispVal keywordError = keywordTailError(cons, LispNames.COUNT, parts, 3, LispNames.TEST_KEYWORD,
-				LispNames.TEST_NOT_KEYWORD, LispNames.KEY_KEYWORD, LispNames.START_KEYWORD, LispNames.END_KEYWORD);
+				LispNames.TEST_NOT_KEYWORD, LispNames.KEY_KEYWORD, LispNames.START_KEYWORD, LispNames.END_KEYWORD,
+				LispNames.FROM_END_KEYWORD);
 		if (keywordError != null) {
 			return keywordError;
 		}
 		TestSpec testForm = testSpec(parts, 3);
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
-		// :start/:end restrict the scan to a subsequence, the same way reduce's do
-		// (subseq accepts a nil end). esrap's line/column report counts newlines with
-		// (count #\Newline text :end position).
-		LispVal startForm = keywordValue(parts, 3, LispNames.START_KEYWORD);
-		LispVal endForm = keywordValue(parts, 3, LispNames.END_KEYWORD);
-		LispVal seqForm = parts.get(2);
-		if (startForm != null || endForm != null) {
-			seqForm = listToCons(List.of(new LispSymbol(LispNames.SUBSEQ), seqForm,
-					startForm == null ? new LispInteger(0) : startForm, endForm == null ? LispNil.INSTANCE : endForm));
-		}
 		LispSymbol item = new LispSymbol("__count_item");
-		LispSymbol n = new LispSymbol("__count_n");
-		LispSymbol cur = new LispSymbol("__count_cur");
-		// (do ((__count_item item) (__count_n 0)
-		// (__count_cur lst (cdr __count_cur)))
-		// ((atom __count_cur) __count_n)
-		// (if (eql __count_item (car __count_cur))
-		// (setq __count_n (+ __count_n 1)) nil))
-		LispVal bindings = listToCons(
-				List.of(listToCons(List.of(item, parts.get(1))), listToCons(List.of(n, new LispInteger(0))),
-						listToCons(List.of(cur, seqAsListForm(seqForm), callOf(LispNames.CDR, cur)))));
-		LispVal endClause = listToCons(List.of(callOf(LispNames.ATOM, cur), n));
-		LispVal match = testMatchForm(testForm, item, keyedForm(keyForm, callOf(LispNames.CAR, cur)));
-		LispVal increment = listToCons(List.of(new LispSymbol(LispNames.ADD), n, new LispInteger(1)));
-		LispVal incrementStep = listToCons(List.of(new LispSymbol(LispNames.SETQ), n, increment));
-		LispVal body = makeIf(match, incrementStep, LispNil.INSTANCE);
-		return expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body)));
+		return countScan(seqScanBounds(parts, 3, false), item, parts.get(1), parts.get(2), "__count",
+				elem -> testMatchForm(testForm, item, keyedForm(keyForm, elem)));
 	}
 
 	/**
 	 * Expands (count-if pred lst) into a do scan returning the number of elements for
 	 * which the predicate is true. Like {@code count} but tests each element with
-	 * {@code (funcall pred element)} rather than {@code eql}.
+	 * {@code (funcall pred element)} rather than {@code eql}, so it takes {@code :key}
+	 * and the bounding keywords but no {@code :test} (the predicate IS the test).
 	 * @param cons the count-if expression
 	 * @return the expanded expression
 	 */
 	public static LispVal expandCountIf(LispCons cons) {
 		List<LispVal> parts = cons.toList();
+		LispVal keywordError = keywordTailError(cons, LispNames.COUNT_IF, parts, 3, LispNames.KEY_KEYWORD,
+				LispNames.START_KEYWORD, LispNames.END_KEYWORD, LispNames.FROM_END_KEYWORD);
+		if (keywordError != null) {
+			return keywordError;
+		}
+		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol pred = new LispSymbol("__countif_pred");
-		LispSymbol n = new LispSymbol("__countif_n");
-		LispSymbol cur = new LispSymbol("__countif_cur");
-		// (do ((__countif_pred pred) (__countif_n 0)
-		// (__countif_cur lst (cdr __countif_cur)))
-		// ((atom __countif_cur) __countif_n)
-		// (if (funcall __countif_pred (car __countif_cur))
-		// (setq __countif_n (+ __countif_n 1)) nil))
-		LispVal bindings = listToCons(
-				List.of(listToCons(List.of(pred, parts.get(1))), listToCons(List.of(n, new LispInteger(0))),
-						listToCons(List.of(cur, seqAsListForm(parts.get(2)), callOf(LispNames.CDR, cur)))));
+		return countScan(seqScanBounds(parts, 3, false), pred, parts.get(1), parts.get(2), "__countif",
+				elem -> listToCons(List.of(new LispSymbol(LispNames.FUNCALL), pred, keyedForm(keyForm, elem))));
+	}
+
+	/**
+	 * The scan {@code count} and {@code count-if} share: the operand binds first (the
+	 * item, or the predicate), then one walk over the sequence-as-list increments a
+	 * counter at every element the match form accepts.
+	 *
+	 * <p>
+	 * {@code :start}/{@code :end} bound the walk BY INDEX rather than by handing the scan
+	 * a {@code (subseq ...)}: the excluded elements must never reach the {@code :test} or
+	 * {@code :key} designator, and a subsequence would have to be built whole before the
+	 * first element was looked at. {@code :from-end} reverses the walk -- it cannot
+	 * change a count, but it decides the order the designators are called in, which a
+	 * side-effecting one sees (ANSI's count-list.9).
+	 *
+	 * <pre>
+	 * (do ((__count_item item) (__count_n 0) (__count_cur &lt;seq-as-list&gt; (cdr __count_cur)))
+	 *     ((atom __count_cur) __count_n)
+	 *   (if MATCH (setq __count_n (+ __count_n 1)) nil))
+	 * </pre>
+	 */
+	private static LispVal countScan(SeqScanBounds bounds, LispSymbol operand, LispVal operandInit, LispVal seqForm,
+			String prefix, java.util.function.UnaryOperator<LispVal> matchOf) {
+		SeqScanScaffold scan = new SeqScanScaffold(bounds, seqAsListForm(seqForm), prefix, false);
+		LispSymbol n = new LispSymbol(prefix + "_n");
+		LispSymbol cur = new LispSymbol(prefix + "_cur");
+		List<LispVal> bindings = new ArrayList<>(
+				List.of(listToCons(List.of(operand, operandInit)), listToCons(List.of(n, new LispInteger(0))),
+						listToCons(List.of(cur, scan.cursorInit(), callOf(LispNames.CDR, cur)))));
+		scan.addBindings(bindings);
 		LispVal endClause = listToCons(List.of(callOf(LispNames.ATOM, cur), n));
-		LispVal test = listToCons(List.of(new LispSymbol(LispNames.FUNCALL), pred, callOf(LispNames.CAR, cur)));
-		LispVal increment = listToCons(List.of(new LispSymbol(LispNames.ADD), n, new LispInteger(1)));
-		LispVal incrementStep = listToCons(List.of(new LispSymbol(LispNames.SETQ), n, increment));
-		LispVal body = makeIf(test, incrementStep, LispNil.INSTANCE);
-		return expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body)));
+		LispVal increment = listToCons(List.of(new LispSymbol(LispNames.SETQ), n,
+				listToCons(List.of(new LispSymbol(LispNames.ADD), n, new LispInteger(1)))));
+		LispVal body = scan.select(matchOf.apply(scan.elementOf(cur)), increment, LispNil.INSTANCE, true);
+		return scan.wrap(expandDo(
+				(LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), listToCons(bindings), endClause, body))));
 	}
 
 	/**
@@ -6448,19 +6774,20 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandRemove(LispCons cons, boolean arraysExist) {
 		List<LispVal> parts = cons.toList();
-		LispVal keywordError = testKeyKeywordTailError(cons, LispNames.REMOVE, parts, 3);
+		LispVal keywordError = boundedTestKeyKeywordTailError(cons, LispNames.REMOVE, parts, 3);
 		if (keywordError != null) {
 			return keywordError;
 		}
 		TestSpec testForm = testSpec(parts, 3);
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
+		SeqScanBounds bounds = seqScanBounds(parts, 3, true);
 		LispSymbol item = new LispSymbol("__remove_item");
 		// The item binds outside the string dispatch to keep the argument evaluation
 		// order (item, then sequence); the filter's do rebinds it to itself.
 		return makeLet(item.name(), parts.get(1),
 				seqResultDispatchForm(parts.get(2),
 						lst -> expandFilter(item, item, lst, "__remove",
-								elem -> testMatchForm(testForm, item, keyedForm(keyForm, elem)), false),
+								elem -> testMatchForm(testForm, item, keyedForm(keyForm, elem)), false, bounds),
 						arraysExist, false));
 	}
 
@@ -6484,16 +6811,17 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandRemoveIf(LispCons cons, boolean arraysExist) {
 		List<LispVal> parts = cons.toList();
-		LispVal keywordError = keywordTailError(cons, LispNames.REMOVE_IF, parts, 3, LispNames.KEY_KEYWORD);
+		LispVal keywordError = boundedKeyKeywordTailError(cons, LispNames.REMOVE_IF, parts, 3);
 		if (keywordError != null) {
 			return keywordError;
 		}
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
+		SeqScanBounds bounds = seqScanBounds(parts, 3, true);
 		LispSymbol pred = new LispSymbol("__removeif_pred");
 		return makeLet(pred.name(), parts.get(1),
 				seqResultDispatchForm(parts.get(2), lst -> expandFilter(pred, pred, lst, "__removeif",
 						elem -> listToCons(List.of(new LispSymbol(LispNames.FUNCALL), pred, keyedForm(keyForm, elem))),
-						false), arraysExist, false));
+						false, bounds), arraysExist, false));
 	}
 
 	/**
@@ -6516,16 +6844,17 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandRemoveIfNot(LispCons cons, boolean arraysExist) {
 		List<LispVal> parts = cons.toList();
-		LispVal keywordError = keywordTailError(cons, LispNames.REMOVE_IF_NOT, parts, 3, LispNames.KEY_KEYWORD);
+		LispVal keywordError = boundedKeyKeywordTailError(cons, LispNames.REMOVE_IF_NOT, parts, 3);
 		if (keywordError != null) {
 			return keywordError;
 		}
 		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
+		SeqScanBounds bounds = seqScanBounds(parts, 3, true);
 		LispSymbol pred = new LispSymbol("__removeifnot_pred");
 		return makeLet(pred.name(), parts.get(1),
 				seqResultDispatchForm(parts.get(2), lst -> expandFilter(pred, pred, lst, "__removeifnot",
 						elem -> listToCons(List.of(new LispSymbol(LispNames.FUNCALL), pred, keyedForm(keyForm, elem))),
-						true), arraysExist, false));
+						true, bounds), arraysExist, false));
 	}
 
 	/**
@@ -6550,16 +6879,15 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandSubstitute(LispCons cons, boolean arraysExist) {
 		List<LispVal> parts = cons.toList();
-		LispVal keywordError = testKeyKeywordTailError(cons, LispNames.SUBSTITUTE, parts, 4);
+		LispVal keywordError = boundedTestKeyKeywordTailError(cons, LispNames.SUBSTITUTE, parts, 4);
 		if (keywordError != null) {
 			return keywordError;
 		}
 		TestSpec testForm = testSpec(parts, 4);
 		LispVal keyForm = keywordValue(parts, 4, LispNames.KEY_KEYWORD);
+		SeqScanBounds bounds = seqScanBounds(parts, 4, true);
 		LispSymbol newItem = new LispSymbol("__subst_new");
 		LispSymbol oldItem = new LispSymbol("__subst_old");
-		LispSymbol acc = new LispSymbol("__subst_acc");
-		LispSymbol cur = new LispSymbol("__subst_cur");
 		// (do ((__subst_acc nil) (__subst_cur lst (cdr __subst_cur)))
 		// ((atom __subst_cur) (reverse __subst_acc))
 		// (setq __subst_acc
@@ -6567,16 +6895,10 @@ public final class LispMacroExpander {
 		// __subst_acc)))
 		// The new/old items bind outside the string dispatch to keep the argument
 		// evaluation order (new, old, then sequence).
-		LispVal scan = seqResultDispatchForm(parts.get(3), lst -> {
-			LispVal bindings = listToCons(List.of(listToCons(List.of(acc, LispNil.INSTANCE)),
-					listToCons(List.of(cur, lst, callOf(LispNames.CDR, cur)))));
-			LispVal endClause = listToCons(List.of(callOf(LispNames.ATOM, cur), nreverseListForm(acc)));
-			LispVal match = testMatchForm(testForm, oldItem, keyedForm(keyForm, callOf(LispNames.CAR, cur)));
-			LispVal chosen = makeIf(match, newItem, callOf(LispNames.CAR, cur));
-			LispVal body = listToCons(List.of(new LispSymbol(LispNames.SETQ), acc,
-					listToCons(List.of(new LispSymbol(LispNames.CONS), chosen, acc))));
-			return expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body)));
-		}, arraysExist, false);
+		LispVal scan = seqResultDispatchForm(parts.get(3),
+				lst -> substituteScan(newItem, lst, "__subst",
+						elem -> testMatchForm(testForm, oldItem, keyedForm(keyForm, elem)), true, bounds),
+				arraysExist, false);
 		return makeLet(newItem.name(), parts.get(1), makeLet(oldItem.name(), parts.get(2), scan));
 	}
 
@@ -6603,31 +6925,24 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandNsubstitute(LispCons cons, boolean arraysExist) {
 		List<LispVal> parts = cons.toList();
-		LispVal keywordError = testKeyKeywordTailError(cons, LispNames.NSUBSTITUTE, parts, 4);
+		LispVal keywordError = boundedTestKeyKeywordTailError(cons, LispNames.NSUBSTITUTE, parts, 4);
 		if (keywordError != null) {
 			return keywordError;
 		}
 		TestSpec testForm = testSpec(parts, 4);
 		LispVal keyForm = keywordValue(parts, 4, LispNames.KEY_KEYWORD);
+		SeqScanBounds bounds = seqScanBounds(parts, 4, true);
 		LispSymbol newItem = new LispSymbol("__nsub_new");
 		LispSymbol oldItem = new LispSymbol("__nsub_old");
 		LispSymbol lst = new LispSymbol("__nsub_lst");
-		LispSymbol cur = new LispSymbol("__nsub_cur");
 		// (let ((__nsub_cur nil))
 		// (setq __nsub_cur __nsub_lst)
 		// (while (consp __nsub_cur)
 		// (if (eql __nsub_old (car __nsub_cur)) (rplaca __nsub_cur __nsub_new) nil)
 		// (setq __nsub_cur (cdr __nsub_cur)))
 		// __nsub_lst)
-		LispVal initCur = listToCons(List.of(new LispSymbol(LispNames.SETQ), cur, lst));
-		LispVal whileTest = listToCons(List.of(new LispSymbol(LispNames.CONSP), cur));
-		LispVal match = testMatchForm(testForm, oldItem, keyedForm(keyForm, callOf(LispNames.CAR, cur)));
-		LispVal replace = listToCons(List.of(new LispSymbol(LispNames.RPLACA), cur, newItem));
-		LispVal ifExpr = makeIf(match, replace, LispNil.INSTANCE);
-		LispVal advance = listToCons(List.of(new LispSymbol(LispNames.SETQ), cur, callOf(LispNames.CDR, cur)));
-		LispVal whileExpr = listToCons(List.of(new LispSymbol(LispNames.WHILE), whileTest, ifExpr, advance));
-		LispVal listForm = listToCons(List.of(new LispSymbol(LispNames.LET),
-				listToCons(List.of(listToCons(List.of(cur, LispNil.INSTANCE)))), initCur, whileExpr, lst));
+		LispVal listForm = nsubstituteScan(newItem, lst, "__nsub",
+				elem -> testMatchForm(testForm, oldItem, keyedForm(keyForm, elem)), true, bounds);
 		// A vector/string argument has no cons cells to rplaca -- CLHS lets a destructive
 		// form answer a FRESH sequence instead, so it routes through substitute's own
 		// vector/string handling: (substitute new old lst :test ... :key ...)
@@ -6702,30 +7017,22 @@ public final class LispMacroExpander {
 	public static LispVal expandSubstituteIf(LispCons cons, boolean arraysExist, boolean negated) {
 		String name = negated ? LispNames.SUBSTITUTE_IF_NOT : LispNames.SUBSTITUTE_IF;
 		List<LispVal> parts = cons.toList();
-		LispVal keywordError = keywordTailError(cons, name, parts, 4, LispNames.KEY_KEYWORD);
+		LispVal keywordError = boundedKeyKeywordTailError(cons, name, parts, 4);
 		if (keywordError != null) {
 			return keywordError;
 		}
 		LispVal keyForm = keywordValue(parts, 4, LispNames.KEY_KEYWORD);
+		SeqScanBounds bounds = seqScanBounds(parts, 4, true);
 		LispSymbol newItem = new LispSymbol("__substif_new");
 		LispSymbol pred = new LispSymbol("__substif_pred");
-		LispSymbol acc = new LispSymbol("__substif_acc");
-		LispSymbol cur = new LispSymbol("__substif_cur");
 		// The new item and the predicate bind outside the string dispatch to keep the
 		// argument evaluation order (new, predicate, then sequence) -- expandSubstitute's
 		// shape with (funcall pred elem) in place of the eql test.
-		LispVal scan = seqResultDispatchForm(parts.get(3), lst -> {
-			LispVal bindings = listToCons(List.of(listToCons(List.of(acc, LispNil.INSTANCE)),
-					listToCons(List.of(cur, lst, callOf(LispNames.CDR, cur)))));
-			LispVal endClause = listToCons(List.of(callOf(LispNames.ATOM, cur), nreverseListForm(acc)));
-			LispVal match = listToCons(
-					List.of(new LispSymbol(LispNames.FUNCALL), pred, keyedForm(keyForm, callOf(LispNames.CAR, cur))));
-			LispVal chosen = negated ? makeIf(match, callOf(LispNames.CAR, cur), newItem)
-					: makeIf(match, newItem, callOf(LispNames.CAR, cur));
-			LispVal body = listToCons(List.of(new LispSymbol(LispNames.SETQ), acc,
-					listToCons(List.of(new LispSymbol(LispNames.CONS), chosen, acc))));
-			return expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body)));
-		}, arraysExist, false);
+		LispVal scan = seqResultDispatchForm(parts.get(3),
+				lst -> substituteScan(newItem, lst, "__substif",
+						elem -> listToCons(List.of(new LispSymbol(LispNames.FUNCALL), pred, keyedForm(keyForm, elem))),
+						!negated, bounds),
+				arraysExist, false);
 		return makeLet(newItem.name(), parts.get(1), makeLet(pred.name(), parts.get(2), scan));
 	}
 
@@ -6776,25 +7083,18 @@ public final class LispMacroExpander {
 	private static LispVal expandNsubstituteIf(LispCons cons, boolean arraysExist, boolean negated) {
 		String name = negated ? LispNames.NSUBSTITUTE_IF_NOT : LispNames.NSUBSTITUTE_IF;
 		List<LispVal> parts = cons.toList();
-		LispVal keywordError = keywordTailError(cons, name, parts, 4, LispNames.KEY_KEYWORD);
+		LispVal keywordError = boundedKeyKeywordTailError(cons, name, parts, 4);
 		if (keywordError != null) {
 			return keywordError;
 		}
 		LispVal keyForm = keywordValue(parts, 4, LispNames.KEY_KEYWORD);
+		SeqScanBounds bounds = seqScanBounds(parts, 4, true);
 		LispSymbol newItem = new LispSymbol("__nsubif_new");
 		LispSymbol pred = new LispSymbol("__nsubif_pred");
 		LispSymbol lst = new LispSymbol("__nsubif_lst");
-		LispSymbol cur = new LispSymbol("__nsubif_cur");
-		LispVal initCur = listToCons(List.of(new LispSymbol(LispNames.SETQ), cur, lst));
-		LispVal whileTest = listToCons(List.of(new LispSymbol(LispNames.CONSP), cur));
-		LispVal match = listToCons(
-				List.of(new LispSymbol(LispNames.FUNCALL), pred, keyedForm(keyForm, callOf(LispNames.CAR, cur))));
-		LispVal replace = listToCons(List.of(new LispSymbol(LispNames.RPLACA), cur, newItem));
-		LispVal ifExpr = negated ? makeIf(match, LispNil.INSTANCE, replace) : makeIf(match, replace, LispNil.INSTANCE);
-		LispVal advance = listToCons(List.of(new LispSymbol(LispNames.SETQ), cur, callOf(LispNames.CDR, cur)));
-		LispVal whileExpr = listToCons(List.of(new LispSymbol(LispNames.WHILE), whileTest, ifExpr, advance));
-		LispVal listForm = listToCons(List.of(new LispSymbol(LispNames.LET),
-				listToCons(List.of(listToCons(List.of(cur, LispNil.INSTANCE)))), initCur, whileExpr, lst));
+		LispVal listForm = nsubstituteScan(newItem, lst, "__nsubif",
+				elem -> listToCons(List.of(new LispSymbol(LispNames.FUNCALL), pred, keyedForm(keyForm, elem))),
+				!negated, bounds);
 		// A vector/string argument routes through substitute-if's own vector/string
 		// handling (.todo/623): (substitute-if new pred lst :key ...) / -if-not.
 		List<LispVal> substIfParts = new ArrayList<>(parts);
@@ -6828,7 +7128,7 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandDelete(LispCons cons, boolean arraysExist) {
 		List<LispVal> parts = cons.toList();
-		LispVal keywordError = testKeyKeywordTailError(cons, LispNames.DELETE, parts, 3);
+		LispVal keywordError = boundedTestKeyKeywordTailError(cons, LispNames.DELETE, parts, 3);
 		if (keywordError != null) {
 			return keywordError;
 		}
@@ -6846,6 +7146,15 @@ public final class LispMacroExpander {
 		removeParts.set(1, item);
 		removeParts.set(2, seq);
 		LispVal nonListForm = expandRemove((LispCons) listToCons(removeParts), arraysExist);
+		if (!seqScanBounds(parts, 3, true).absent()) {
+			// A bounded, counted or reversed delete answers a FRESH sequence: CLHS lets a
+			// destructive operator do that (the caller must use the RESULT), and the
+			// splice
+			// below cannot serve :from-end, whose cells would have to be visited
+			// backwards
+			// through a singly linked spine.
+			return makeLet(item.name(), parts.get(1), makeLet(seq.name(), parts.get(2), nonListForm));
+		}
 		LispVal dispatch = deleteOrSubstituteDispatch(seq, parts.get(2), listForm, nonListForm, arraysExist);
 		return makeLet(item.name(), parts.get(1), dispatch);
 	}
@@ -6869,10 +7178,15 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandDeleteIf(LispCons cons, boolean arraysExist) {
 		List<LispVal> parts = cons.toList();
+		LispVal keywordError = boundedKeyKeywordTailError(cons, LispNames.DELETE_IF, parts, 3);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		LispSymbol pred = new LispSymbol("__deleteif_pred");
 		LispSymbol seq = new LispSymbol("__deleteif_seq");
+		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispVal listForm = expandDeleteFilter(pred, pred, seq, "__deleteif",
-				elem -> listToCons(List.of(new LispSymbol(LispNames.FUNCALL), pred, elem)), true);
+				elem -> listToCons(List.of(new LispSymbol(LispNames.FUNCALL), pred, keyedForm(keyForm, elem))), true);
 		// A vector/string argument routes through remove-if's own vector/string handling
 		// (.todo/623): (remove-if pred seq).
 		List<LispVal> removeIfParts = new ArrayList<>(parts);
@@ -6880,6 +7194,15 @@ public final class LispMacroExpander {
 		removeIfParts.set(1, pred);
 		removeIfParts.set(2, seq);
 		LispVal nonListForm = expandRemoveIf((LispCons) listToCons(removeIfParts), arraysExist);
+		if (!seqScanBounds(parts, 3, true).absent()) {
+			// A bounded, counted or reversed delete answers a FRESH sequence: CLHS lets a
+			// destructive operator do that (the caller must use the RESULT), and the
+			// splice
+			// below cannot serve :from-end, whose cells would have to be visited
+			// backwards
+			// through a singly linked spine.
+			return makeLet(pred.name(), parts.get(1), makeLet(seq.name(), parts.get(2), nonListForm));
+		}
 		LispVal dispatch = deleteOrSubstituteDispatch(seq, parts.get(2), listForm, nonListForm, arraysExist);
 		return makeLet(pred.name(), parts.get(1), dispatch);
 	}
@@ -6903,10 +7226,15 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandDeleteIfNot(LispCons cons, boolean arraysExist) {
 		List<LispVal> parts = cons.toList();
+		LispVal keywordError = boundedKeyKeywordTailError(cons, LispNames.DELETE_IF_NOT, parts, 3);
+		if (keywordError != null) {
+			return keywordError;
+		}
 		LispSymbol pred = new LispSymbol("__deleteifnot_pred");
 		LispSymbol seq = new LispSymbol("__deleteifnot_seq");
+		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispVal listForm = expandDeleteFilter(pred, pred, seq, "__deleteifnot",
-				elem -> listToCons(List.of(new LispSymbol(LispNames.FUNCALL), pred, elem)), false);
+				elem -> listToCons(List.of(new LispSymbol(LispNames.FUNCALL), pred, keyedForm(keyForm, elem))), false);
 		// A vector/string argument routes through remove-if-not's own vector/string
 		// handling (.todo/623): (remove-if-not pred seq).
 		List<LispVal> removeIfNotParts = new ArrayList<>(parts);
@@ -6914,6 +7242,15 @@ public final class LispMacroExpander {
 		removeIfNotParts.set(1, pred);
 		removeIfNotParts.set(2, seq);
 		LispVal nonListForm = expandRemoveIfNot((LispCons) listToCons(removeIfNotParts), arraysExist);
+		if (!seqScanBounds(parts, 3, true).absent()) {
+			// A bounded, counted or reversed delete answers a FRESH sequence: CLHS lets a
+			// destructive operator do that (the caller must use the RESULT), and the
+			// splice
+			// below cannot serve :from-end, whose cells would have to be visited
+			// backwards
+			// through a singly linked spine.
+			return makeLet(pred.name(), parts.get(1), makeLet(seq.name(), parts.get(2), nonListForm));
+		}
 		LispVal dispatch = deleteOrSubstituteDispatch(seq, parts.get(2), listForm, nonListForm, arraysExist);
 		return makeLet(pred.name(), parts.get(1), dispatch);
 	}
@@ -6980,22 +7317,87 @@ public final class LispMacroExpander {
 	 * kept when the match is true ({@code remove-if-not}).
 	 */
 	private static LispVal expandFilter(LispSymbol operand, LispVal operandInit, LispVal list, String prefix,
-			java.util.function.UnaryOperator<LispVal> matchOf, boolean keepWhenMatch) {
+			java.util.function.UnaryOperator<LispVal> matchOf, boolean keepWhenMatch, SeqScanBounds bounds) {
+		SeqScanScaffold scan = new SeqScanScaffold(bounds, list, prefix, false);
 		LispSymbol acc = new LispSymbol(prefix + "_acc");
 		LispSymbol cur = new LispSymbol(prefix + "_cur");
-		LispVal match = matchOf.apply(callOf(LispNames.CAR, cur));
+		LispVal element = scan.elementOf(cur);
+		LispVal match = matchOf.apply(element);
 		// (do ((operand operandInit) (acc nil) (cur list (cdr cur)))
 		// ((atom cur) (reverse acc))
 		// (if match nil (setq acc (cons (car cur) acc)))) ; keepWhenMatch swaps the
 		// branches
-		LispVal bindings = listToCons(
+		List<LispVal> bindings = new ArrayList<>(
 				List.of(listToCons(List.of(operand, operandInit)), listToCons(List.of(acc, LispNil.INSTANCE)),
-						listToCons(List.of(cur, list, callOf(LispNames.CDR, cur)))));
-		LispVal endClause = listToCons(List.of(callOf(LispNames.ATOM, cur), nreverseListForm(acc)));
+						listToCons(List.of(cur, scan.cursorInit(), callOf(LispNames.CDR, cur)))));
+		scan.addBindings(bindings);
+		LispVal endClause = listToCons(List.of(callOf(LispNames.ATOM, cur), scan.finish(acc)));
 		LispVal keep = listToCons(List.of(new LispSymbol(LispNames.SETQ), acc,
-				listToCons(List.of(new LispSymbol(LispNames.CONS), callOf(LispNames.CAR, cur), acc))));
-		LispVal body = keepWhenMatch ? makeIf(match, keep, LispNil.INSTANCE) : makeIf(match, LispNil.INSTANCE, keep);
-		return expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body)));
+				listToCons(List.of(new LispSymbol(LispNames.CONS), element, acc))));
+		LispVal body = scan.select(match, LispNil.INSTANCE, keep, !keepWhenMatch);
+		return scan.wrap(expandDo(
+				(LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), listToCons(bindings), endClause, body))));
+	}
+
+	/**
+	 * The scan the six {@code substitute} spellings share when they answer a FRESH
+	 * sequence: the same walk as {@link #expandFilter}, accumulating the new item in
+	 * place of every element the match form accepts and the element itself otherwise. The
+	 * {@code :key} selector applies to the scanned element only -- what is accumulated is
+	 * the original.
+	 */
+	private static LispVal substituteScan(LispVal newItem, LispVal list, String prefix,
+			java.util.function.UnaryOperator<LispVal> matchOf, boolean replaceWhenMatch, SeqScanBounds bounds) {
+		SeqScanScaffold scan = new SeqScanScaffold(bounds, list, prefix, false);
+		LispSymbol acc = new LispSymbol(prefix + "_acc");
+		LispSymbol cur = new LispSymbol(prefix + "_cur");
+		LispVal element = scan.elementOf(cur);
+		List<LispVal> bindings = new ArrayList<>(List.of(listToCons(List.of(acc, LispNil.INSTANCE)),
+				listToCons(List.of(cur, scan.cursorInit(), callOf(LispNames.CDR, cur)))));
+		scan.addBindings(bindings);
+		LispVal endClause = listToCons(List.of(callOf(LispNames.ATOM, cur), scan.finish(acc)));
+		LispVal chosen = scan.select(matchOf.apply(element), newItem, element, replaceWhenMatch);
+		LispVal body = listToCons(List.of(new LispSymbol(LispNames.SETQ), acc,
+				listToCons(List.of(new LispSymbol(LispNames.CONS), chosen, acc))));
+		return scan.wrap(expandDo(
+				(LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), listToCons(bindings), endClause, body))));
+	}
+
+	/**
+	 * The in-place rewrite the destructive {@code nsubstitute} spellings share over a
+	 * LIST argument: every cons cell the match form accepts has its {@code car} replaced,
+	 * and the argument itself comes back. With no bounding keyword this is the plain
+	 * cursor walk it always was; with one it becomes the shared scan, which under
+	 * {@code :from-end} walks the argument's own cells backwards ({@code cells} true) --
+	 * reversing the LIST would hand it fresh cells whose rewrite nobody can see.
+	 */
+	private static LispVal nsubstituteScan(LispVal newItem, LispSymbol list, String prefix,
+			java.util.function.UnaryOperator<LispVal> matchOf, boolean replaceWhenMatch, SeqScanBounds bounds) {
+		LispSymbol cur = new LispSymbol(prefix + "_cur");
+		if (bounds.absent()) {
+			// (let ((cur nil)) (setq cur lst)
+			// (while (consp cur) (if match (rplaca cur new) nil) (setq cur (cdr cur)))
+			// lst)
+			LispVal initCur = listToCons(List.of(new LispSymbol(LispNames.SETQ), cur, list));
+			LispVal whileTest = listToCons(List.of(new LispSymbol(LispNames.CONSP), cur));
+			LispVal match = matchOf.apply(callOf(LispNames.CAR, cur));
+			LispVal replace = listToCons(List.of(new LispSymbol(LispNames.RPLACA), cur, newItem));
+			LispVal ifExpr = replaceWhenMatch ? makeIf(match, replace, LispNil.INSTANCE)
+					: makeIf(match, LispNil.INSTANCE, replace);
+			LispVal advance = listToCons(List.of(new LispSymbol(LispNames.SETQ), cur, callOf(LispNames.CDR, cur)));
+			LispVal whileExpr = listToCons(List.of(new LispSymbol(LispNames.WHILE), whileTest, ifExpr, advance));
+			return listToCons(List.of(new LispSymbol(LispNames.LET),
+					listToCons(List.of(listToCons(List.of(cur, LispNil.INSTANCE)))), initCur, whileExpr, list));
+		}
+		SeqScanScaffold scan = new SeqScanScaffold(bounds, list, prefix, true);
+		List<LispVal> bindings = new ArrayList<>(
+				List.of(listToCons(List.of(cur, scan.cursorInit(), callOf(LispNames.CDR, cur)))));
+		scan.addBindings(bindings);
+		LispVal endClause = listToCons(List.of(callOf(LispNames.ATOM, cur), list));
+		LispVal replace = listToCons(List.of(new LispSymbol(LispNames.RPLACA), scan.cellOf(cur), newItem));
+		LispVal body = scan.select(matchOf.apply(scan.elementOf(cur)), replace, LispNil.INSTANCE, replaceWhenMatch);
+		return scan.wrap(expandDo(
+				(LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), listToCons(bindings), endClause, body))));
 	}
 
 	/**

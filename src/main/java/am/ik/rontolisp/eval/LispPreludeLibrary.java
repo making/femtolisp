@@ -2218,26 +2218,18 @@ public final class LispPreludeLibrary {
 				        (setq h2 (if (consp h2) (cdr h2) h2))
 				        (when ok (setq result pos))))))
 				""");
-		// count-if-not takes the full CL keyword set, unlike count-if (whose two-argument
-		// expansion is inlined per site, which is a known gap). :from-end only
-		// reorders the predicate calls, which cannot change a count, so it is accepted
-		// and the scan stays forward. A LIST is walked with a cursor rather than indexed
-		// with elt -- elt on a list is an nth walk from the head, so the obvious loop
-		// would be quadratic.
+		// count-if-not is count-if over the complemented predicate: count-if now carries
+		// the whole keyword set itself (:key and CLHS 17.2.1's bounding keywords), so the
+		// only thing left to spell here is the negation. :from-end is NOT a no-op for a
+		// count -- it reverses the order the predicate and :key designator are called in,
+		// which a side-effecting one sees (ANSI's count-list.9) -- so it is forwarded,
+		// not swallowed. A nil :key is defaulted here because the expansion inlines the
+		// designator and would call nil.
 		SOURCES.put(LispNames.COUNT_IF_NOT, """
 				(defun count-if-not (predicate sequence &key from-end (start 0) end key)
-				  (let* ((lst (listp sequence))
-				         (e (or end (length sequence)))
-				         (i (or start 0))
-				         (cell (if lst (nthcdr i sequence) nil))
-				         (n 0))
-				    (while (and (< i e) (or (not lst) cell))
-				      (let ((x (if lst (car cell) (elt sequence i))))
-				        (unless (funcall predicate (if key (funcall key x) x))
-				          (setq n (+ n 1))))
-				      (setq cell (cdr cell))
-				      (setq i (+ i 1)))
-				    n))
+				  (count-if (lambda (x) (not (funcall predicate x))) sequence
+				            :key (if key key #'identity)
+				            :start (if start start 0) :end end :from-end from-end))
 				""");
 		// set-exclusive-or: the symmetric difference. Both scans call the shared matcher
 		// with the list-1 element FIRST, so an asymmetric :test/:test-not sees the same

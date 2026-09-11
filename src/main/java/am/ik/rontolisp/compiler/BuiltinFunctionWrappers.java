@@ -893,6 +893,56 @@ public final class BuiltinFunctionWrappers {
 		return callV(LispNames.FUNCTION, new LispSymbol(fn));
 	}
 
+	/**
+	 * Variadic wrapper for the {@code count} / {@code remove} / {@code substitute}
+	 * family, on {@code positionFamily}'s model: the runtime keywords are re-extracted
+	 * with {@code getf} and fed back into the CALL-POSITION expansion, so first-class use
+	 * through {@code apply} carries the whole
+	 * {@code :test}/{@code :test-not}/{@code :key}/{@code :start}/{@code :end}/
+	 * {@code :count}/{@code :from-end} set instead of the two or three fixed arguments
+	 * the wrapper used to take. A {@code :test-not} is normalized to a complemented
+	 * {@code :test}; the {@code -if}/{@code -if-not} spellings take neither ({@code item}
+	 * false), and {@code count} itself has no {@code :count} ({@code counted} false).
+	 * @param name the operator
+	 * @param item whether the operator compares an ITEM (so takes :test / :test-not)
+	 * @param counted whether the operator takes :count
+	 * @param operands how many arguments precede the sequence (2 for the substitute
+	 * family's new item plus its item/predicate)
+	 */
+	private static WrapperDef sequenceScanFamily(String name, boolean item, boolean counted, int operands) {
+		List<String> lambdaList = new ArrayList<>();
+		List<LispVal> callParts = new ArrayList<>();
+		callParts.add(new LispSymbol(name));
+		for (int i = 0; i < operands; i++) {
+			String arg = "a" + i;
+			lambdaList.add(arg);
+			callParts.add(new LispSymbol(arg));
+		}
+		lambdaList.add("seq");
+		lambdaList.add(LispNames.LAMBDA_REST);
+		lambdaList.add("kw");
+		callParts.add(new LispSymbol("seq"));
+		if (item) {
+			callParts.add(new LispSymbol(LispNames.TEST_KEYWORD));
+			callParts.add(listToCons(List.of(new LispSymbol(LispNames.IF), getfKw(LispNames.TEST_NOT_KEYWORD),
+					callV(LispNames.COMPLEMENT, getfKw(LispNames.TEST_NOT_KEYWORD)),
+					getfKwOr(LispNames.TEST_KEYWORD, sharpQuote(LispNames.EQL)))));
+		}
+		callParts.add(new LispSymbol(LispNames.KEY_KEYWORD));
+		callParts.add(getfKwOr(LispNames.KEY_KEYWORD, sharpQuote(LispNames.IDENTITY)));
+		callParts.add(new LispSymbol(LispNames.START_KEYWORD));
+		callParts.add(getfKwOr(LispNames.START_KEYWORD, new LispInteger(0)));
+		callParts.add(new LispSymbol(LispNames.END_KEYWORD));
+		callParts.add(getfKw(LispNames.END_KEYWORD));
+		if (counted) {
+			callParts.add(new LispSymbol(LispNames.COUNT_KEYWORD));
+			callParts.add(getfKw(LispNames.COUNT_KEYWORD));
+		}
+		callParts.add(new LispSymbol(LispNames.FROM_END_KEYWORD));
+		callParts.add(getfKw(LispNames.FROM_END_KEYWORD));
+		return new WrapperDef(name, lambdaList, List.of(listToCons(callParts)));
+	}
+
 	// Variadic wrapper for the position family: the runtime keywords are re-extracted
 	// with getf and fed back into the call-position expansion, so first-class use
 	// through apply supports the full :test/:test-not/:key/:start/:end/:from-end set
@@ -1385,23 +1435,31 @@ public final class BuiltinFunctionWrappers {
 			unary(LispNames.BUTLAST), binary(LispNames.MEMBER), binary(LispNames.MEMBER_IF), binary(LispNames.FIND),
 			binary(LispNames.FIND_IF), binary(LispNames.FIND_IF_NOT), positionFamily(LispNames.POSITION, true),
 			positionFamily(LispNames.POSITION_IF, false), positionFamily(LispNames.POSITION_IF_NOT, false),
-			binary(LispNames.COUNT), binary(LispNames.COUNT_IF), binary(LispNames.ASSOC), binary(LispNames.ASSOC_IF),
-			binary(LispNames.RASSOC), binary(LispNames.RASSOC_IF), ternary(LispNames.ACONS), binary(LispNames.PAIRLIS),
-			unary(LispNames.COPY_ALIST), binaryOptionalThird(LispNames.GETF), unary(LispNames.REMOVE_DUPLICATES),
-			unary(LispNames.DELETE_DUPLICATES), variadicNconc(), unary(LispNames.IDENTITY), unary(LispNames.COPY_LIST),
-			unary(LispNames.NREVERSE), unary(LispNames.MAKE_LIST), binary(LispNames.UNION),
-			binary(LispNames.INTERSECTION), binary(LispNames.SET_DIFFERENCE), binary(LispNames.ADJOIN),
-			binary(LispNames.SUBSETP),
+			sequenceScanFamily(LispNames.COUNT, true, false, 1),
+			sequenceScanFamily(LispNames.COUNT_IF, false, false, 1), binary(LispNames.ASSOC),
+			binary(LispNames.ASSOC_IF), binary(LispNames.RASSOC), binary(LispNames.RASSOC_IF), ternary(LispNames.ACONS),
+			binary(LispNames.PAIRLIS), unary(LispNames.COPY_ALIST), binaryOptionalThird(LispNames.GETF),
+			unary(LispNames.REMOVE_DUPLICATES), unary(LispNames.DELETE_DUPLICATES), variadicNconc(),
+			unary(LispNames.IDENTITY), unary(LispNames.COPY_LIST), unary(LispNames.NREVERSE),
+			unary(LispNames.MAKE_LIST), binary(LispNames.UNION), binary(LispNames.INTERSECTION),
+			binary(LispNames.SET_DIFFERENCE), binary(LispNames.ADJOIN), binary(LispNames.SUBSETP),
 			// every/some carry ANY number of sequences, the same as in call position,
 			// and notany/notevery are their complements over the same walk.
 			everySomeWrapper(LispNames.EVERY, true), everySomeWrapper(LispNames.SOME, false),
 			everySomeWrapper(LispNames.NOTANY, false, true), everySomeWrapper(LispNames.NOTEVERY, true, true),
-			binary(LispNames.REMOVE), binary(LispNames.REMOVE_IF), binary(LispNames.REMOVE_IF_NOT),
-			binary(LispNames.DELETE), binary(LispNames.DELETE_IF), binary(LispNames.DELETE_IF_NOT),
-			ternary(LispNames.SUBSTITUTE), ternary(LispNames.NSUBSTITUTE), ternary(LispNames.SUBSTITUTE_IF),
-			ternary(LispNames.SUBSTITUTE_IF_NOT), ternary(LispNames.NSUBSTITUTE_IF),
-			ternary(LispNames.NSUBSTITUTE_IF_NOT), binary(LispNames.SORT), variadicStableSort(),
-			unary(LispNames.COPY_SEQ),
+			sequenceScanFamily(LispNames.REMOVE, true, true, 1),
+			sequenceScanFamily(LispNames.REMOVE_IF, false, true, 1),
+			sequenceScanFamily(LispNames.REMOVE_IF_NOT, false, true, 1),
+			sequenceScanFamily(LispNames.DELETE, true, true, 1),
+			sequenceScanFamily(LispNames.DELETE_IF, false, true, 1),
+			sequenceScanFamily(LispNames.DELETE_IF_NOT, false, true, 1),
+			sequenceScanFamily(LispNames.SUBSTITUTE, true, true, 2),
+			sequenceScanFamily(LispNames.NSUBSTITUTE, true, true, 2),
+			sequenceScanFamily(LispNames.SUBSTITUTE_IF, false, true, 2),
+			sequenceScanFamily(LispNames.SUBSTITUTE_IF_NOT, false, true, 2),
+			sequenceScanFamily(LispNames.NSUBSTITUTE_IF, false, true, 2),
+			sequenceScanFamily(LispNames.NSUBSTITUTE_IF_NOT, false, true, 2), binary(LispNames.SORT),
+			variadicStableSort(), unary(LispNames.COPY_SEQ),
 			// The mapping family as first-class values (alexandria hands #'mapcar to
 			// its own combinators). Every member carries ANY number of lists, the same
 			// as in call position -- see mapFamilyWrapper.

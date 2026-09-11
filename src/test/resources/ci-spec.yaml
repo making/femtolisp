@@ -588,6 +588,70 @@ cases:
       "abXYef"
       (1 9 9)
       "abzzef"
+  # CLHS 17.2.1's bounding keywords across the count/remove/substitute family
+  # (.kb/sequence-bounding-keywords.md): :start/:end bound the scanned subsequence,
+  # :count caps the matches acted on, and :from-end REVERSES the walk -- which
+  # decides which matches a :count keeps AND the order the :test/:key designators
+  # are called in. The destructive spellings rewrite the argument's own cells, so
+  # this case reads the argument back after each. All four backends run one shared
+  # expansion, and the first-class calls at the end run the interpreter's runtime
+  # twin of it (a compiled #'remove goes through its keyword-forwarding wrapper).
+  - name: sequence-bounding-keywords
+    source: |
+      (print (remove 'a '(a b a c a) :count 2))
+      (print (remove 'a '(a b a c a) :count 2 :from-end t))
+      (print (remove 'a '(a b a c a) :start 1 :end 3))
+      (print (remove 'a '(a b a) :count -1))
+      (print (remove-if #'evenp '(1 2 3 4 5 6) :count 2))
+      (print (remove-if-not #'evenp '(1 2 3 4 5 6) :count 2 :from-end t))
+      (print (substitute 'x 'a '(a b a c a) :count 1 :from-end t))
+      (print (substitute 'x 'a '(a a a a) :start 1 :end 3))
+      (print (substitute-if 'x #'evenp '(1 2 3 4) :count 1 :from-end t))
+      (print (substitute-if-not 'x #'evenp '(1 2 3 4) :count 1))
+      (print (substitute #\x #\a "abaa" :count 1 :from-end t))
+      (print (remove #\a "abaa" :count 2))
+      (print (count 1 '(1 1 1 1 1 2 1 1) :start 2 :end 7))
+      (print (count-if #'evenp '(1 2 3 4 5 6) :start 2 :end 4))
+      (print (count-if-not #'evenp '(1 2 3 4 5 6) :start 2))
+      (let ((ci-sbk-c 0))
+        (print (count 1 '(1 2 3 7 4 5 7 6 2 8) :from-end t
+                      :key (lambda (x) (prog1 (- x ci-sbk-c) (setq ci-sbk-c (+ ci-sbk-c 1)))))))
+      (let ((ci-sbk-l (list 'a 'b 'a)))
+        (print (nsubstitute 'x 'a ci-sbk-l :count 1 :from-end t))
+        (print ci-sbk-l))
+      (print (nsubstitute-if 0 #'evenp (list 1 2 3 4) :count 1 :from-end t))
+      (print (delete 'a (list 'a 'b 'a) :count 1))
+      (print (delete-if #'evenp (list 1 2 3 4) :count 1 :from-end t))
+      (print (funcall #'remove 'a '(a b a) :count 1 :from-end t))
+      (print (apply #'substitute 'x 'a '(a b a) '(:count 1 :from-end t)))
+      (print (funcall #'count-if #'evenp '(1 2 3 4) :start 2))
+      (print (funcall #'remove-if #'evenp '(1 2 3 4) :count 1))
+    expected: |
+      (B C A)
+      (A B C)
+      (A B C A)
+      (A B A)
+      (1 3 5 6)
+      (1 2 4 6)
+      (A B A C X)
+      (A X X A)
+      (1 2 3 X)
+      (X 2 3 4)
+      "abax"
+      "ba"
+      4
+      1
+      2
+      3
+      (A B X)
+      (A B X)
+      (1 2 3 0)
+      (B A)
+      (1 2 3)
+      (A B)
+      (A B X)
+      1
+      (1 3 4)
   # The interpreter answers (coerce x 'list|'string|'vector) in Java for the
   # representations it can serve identically and DECLINES the rest to the shared
   # expansion (.kb/seq-coerce-runtime.md); the compile paths keep the expansion
@@ -15530,7 +15594,7 @@ cases:
       (print (funcall (lambda (x &key y) (list x y)) 1 :z 2 :allow-other-keys t))
     expected: |
       :PROGRAM-ERROR
-      "REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY, got: :BOGUS"
+      "REMOVE expects keyword arguments :TEST/:TEST-NOT/:KEY/:START/:END/:COUNT/:FROM-END, got: :BOGUS"
       :ODD-TAIL
       :NOT-A-KEYWORD
       :RD
