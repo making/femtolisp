@@ -143,6 +143,36 @@ four-backend leg is `ci-spec.yaml`'s `complex-asin-acos-branch-cut`, which pins
 the CONTRACT (one value for both zero signs, the cut's sign, the exact zeros)
 rather than digits the backends round differently.
 
+## `_cu1`'s shared frame, and the differential over all fifteen arms (`.todo/765`, 2026-09-11)
+
+The fifteen unary arms are one method over one frame: the operand's parts in
+slots 2 and 4, scratch in 6, 8, 10, 12 and 14. Nothing separates the arms, so an
+arm that writes a second quantity over a slot it still needs does not fail --
+it answers a **plausible wrong number**. `tan`/`tanh` did, for as long as they
+existed: `|cos z|^2` was stored over `cos z`'s real part in slot 14, turning the
+quotient into `(s.re*|c|^2 + s.im*c.im)/|c|^2`, which on the real axis is the
+NUMERATOR. `(tan #c(1d0 0d0))` answered `sin 1` and `(tanh #c(1d0 0d0))`
+`sinh 1` -- values a digit-string test reads as "some transcendental". `|c|^2`
+now lives in slot 10, and the arm's comment names all five live quantities and
+their slots.
+
+Which arms were wrong was measured, not assumed (2026-09-11, `linux/amd64`):
+all fifteen functions at seven points -- `#c(1 1)`, `#c(-1.5 0.25)`,
+`#c(0.5 -2)`, the two axes `#c(0 1)`/`#c(1 0)` and the two reals off the cut
+`#c(-4 0)`/`#c(2 0)` -- compiled and compared to the interpreter line for line.
+Only `tan` and `tanh` differed, on every one of their seven points; the other
+thirteen were byte-identical, `acos` included (`.todo/764` had replaced its
+body wholesale with the Kahan form, which fixed the slot swap the sweep
+originally found there). That census is now the pinning test
+`JvmLispCompilerTest#compileAndRunComplexUnaryMathMirrorsTheInterpreterArmForArm`:
+it runs the generated program through `LispEvaluator` and asserts the compiled
+output IS the interpreter's, which is the only pin the platform's `Math`
+rounding cannot invalidate. A differential only sees disagreement, so both ends
+carry an anchor against the real functions
+(`LispEvaluatorTest#evalComplexTanTanhAreQuotientsOnEveryAxis`, and the
+four-backend leg `ci-spec.yaml`'s `complex-tan-tanh-are-quotients`, which pins
+the identity rather than digits the backends round differently).
+
 ## Known corners (documented, not fixed here)
 
 A complex arriving only through a variable beside a double literal takes the

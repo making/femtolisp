@@ -193,6 +193,18 @@ class JvmLispCompilerTest {
 			.process(am.ik.rontolisp.eval.UserMacroExpander.expand(LispReader.readAllFromString(lispCode))));
 	}
 
+	// The reference half of a differential: the same source through the INTERPRETER, so a
+	// compiled answer can be pinned against the implementation it must mirror instead of
+	// against a digit string the platform's Math rounding owns (.kb/jvm-complex.md).
+	private String interpret(String lispCode) {
+		ByteArrayOutputStream baos = new ByteArrayOutputStream();
+		am.ik.rontolisp.eval.LispEvaluator evaluator = new am.ik.rontolisp.eval.LispEvaluator(new PrintStream(baos));
+		for (LispVal expr : LispReader.readAllFromString(lispCode)) {
+			evaluator.eval(expr);
+		}
+		return baos.toString().trim();
+	}
+
 	// warn writes its "WARNING: ..." line to standard ERROR, which compileAndRun drops.
 	private String compileAndRunCapturingErr(String lispCode) throws Exception {
 		ByteArrayOutputStream err = new ByteArrayOutputStream();
@@ -7611,6 +7623,45 @@ class JvmLispCompilerTest {
 				"#C(0.0 0.0)", "#C(1.5707963267948966 0.0)", "#C(2.0943951023931953 0.0)", "#C(1.0471975511965979 0.0)",
 				"#C(0.0 0.0)", "#C(0.0 0.881373587019543)", "#C(0.6662394324925153 " + oneOne + ")",
 				"#C(1.5707963267948966 -0.881373587019543)", "#C(0.9045568943023813 -" + oneOne + ")"));
+	}
+
+	/** The fifteen unary math functions {@code _cu1} dispatches, in selector order. */
+	private static final List<String> COMPLEX_UNARY_FUNCTIONS = List.of("exp", "log", "sin", "cos", "tan", "asin",
+			"acos", "atan", "sinh", "cosh", "tanh", "asinh", "acosh", "atanh", "cis");
+
+	/**
+	 * Arguments that separate the arms: two general points, the two degenerate axes, a
+	 * negative real and a real outside the asin/acos/atanh cut.
+	 */
+	private static final List<String> COMPLEX_UNARY_ARGUMENTS = List.of("#c(1d0 1d0)", "#c(-1.5d0 0.25d0)",
+			"#c(0.5d0 -2d0)", "#c(0d0 1d0)", "#c(1d0 0d0)", "#c(-4d0 0d0)", "#c(2d0 0d0)");
+
+	@Test
+	void compileAndRunComplexUnaryMathMirrorsTheInterpreterArmForArm() throws Exception {
+		// _cu1's fifteen arms share ONE frame -- slots 6/8/10/12/14 are scratch -- and an
+		// arm that writes a second quantity over a slot it still needs answers a
+		// plausible number rather than failing. tan and tanh did exactly that for as long
+		// as they existed: |cos z|^2 landed on cos z's real part, so both degenerated to
+		// their numerator on the real axis and (tan #c(1d0 0d0)) answered sin 1
+		// (.todo/765). Every arm is therefore pinned against the INTERPRETER's own value,
+		// point by point, which no per-arm literal could do: the digits are the
+		// PLATFORM's Math rounding (.kb/jvm-complex.md), not a constant.
+		StringBuilder program = new StringBuilder();
+		for (String function : COMPLEX_UNARY_FUNCTIONS) {
+			for (String argument : COMPLEX_UNARY_ARGUMENTS) {
+				program.append("(print (").append(function).append(' ').append(argument).append("))\n");
+			}
+		}
+		String source = program.toString();
+		assertThat(compileAndRun(source)).isEqualTo(interpret(source));
+		// An anchor the mirror cannot supply: agreeing on a wrong value is still
+		// agreement, so each axis is checked against the REAL function it must be.
+		assertThat(compileAndRun("""
+				(print (< (abs (- (realpart (tan #c(1d0 0d0))) (tan 1d0))) 1d-15))
+				(print (< (abs (- (imagpart (tan #c(0d0 1d0))) (tanh 1d0))) 1d-15))
+				(print (< (abs (- (realpart (tanh #c(1d0 0d0))) (tanh 1d0))) 1d-15))
+				(print (< (abs (- (imagpart (tanh #c(0d0 1d0))) (tan 1d0))) 1d-15))
+				""")).isEqualTo(String.join("\n", "T", "T", "T", "T"));
 	}
 
 	@Test

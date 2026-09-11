@@ -15988,6 +15988,28 @@ cases:
       0.0
       #C(0.0 0.0)
       #C(0.0 0.0)
+  - name: complex-tan-tanh-are-quotients
+    # tan and tanh are sin/cos and sinh/cosh DIVIDED, and a backend that loses the
+    # denominator answers the NUMERATOR -- a plausible number, not an error. The JVM did
+    # exactly that (|cos z|^2 written over cos z's real part), so (tan #c(1d0 0d0))
+    # answered sin 1 and (tanh #c(1d0 0d0)) sinh 1. The transcendental digits differ
+    # between the backends, so what travels here is the identity: each axis of the
+    # complex function IS the real function of that family, and the quotient off the
+    # axes is the quotient.
+    source: |
+      (print (< (abs (- (realpart (tan #c(1d0 0d0))) (tan 1d0))) 1d-15))
+      (print (< (abs (- (imagpart (tan #c(0d0 1d0))) (tanh 1d0))) 1d-15))
+      (print (< (abs (- (realpart (tanh #c(1d0 0d0))) (tanh 1d0))) 1d-15))
+      (print (< (abs (- (imagpart (tanh #c(0d0 1d0))) (tan 1d0))) 1d-15))
+      (print (< (abs (- (tan #c(1d0 1d0)) (/ (sin #c(1d0 1d0)) (cos #c(1d0 1d0))))) 1d-15))
+      (print (< (abs (- (tanh #c(1d0 1d0)) (/ (sinh #c(1d0 1d0)) (cosh #c(1d0 1d0))))) 1d-15))
+    expected: |
+      T
+      T
+      T
+      T
+      T
+      T
   - name: complex-binary-arithmetic
     source: |
       (print (+ #c(1 1/2) #c(1 1/3)))

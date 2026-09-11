@@ -1659,6 +1659,8 @@ final class JvmComplexRuntimeBuilder {
 			// c = (hyp2(re)*trig1(im), -/+hyp1(re)*cis(im)) with the hyperbolic
 			// sine on the imaginary side for tan and the circular sine for tanh,
 			// matching complexSin/complexCos over complexSinh/complexCosh.
+			// Slots: s.re 6, s.im 8, c.re 14, c.im 2 (the operand's real part is dead by
+			// then), |c|^2 10 -- five live quantities, five distinct slots.
 			String hyp1 = op == U1_TAN ? "sin" : "sinh";
 			String hyp2 = op == U1_TAN ? "cos" : "cosh";
 			String trig1 = op == U1_TAN ? "cosh" : "cos";
@@ -1691,6 +1693,10 @@ final class JvmComplexRuntimeBuilder {
 				c.add(Opcode.DNEG);
 			}
 			dstore(c, 2);
+			// |c|^2 goes to slot 10, NOT over c.re in slot 14: the quotient below reads
+			// c.re four more times, and writing the modulus there turned both parts into
+			// (s.re*|c|^2 + s.im*c.im)/|c|^2, which degenerates to the NUMERATOR
+			// whenever c.im is zero -- tan of a real answered sin of it (.todo/765).
 			dload(c, 14);
 			dload(c, 14);
 			c.add(Opcode.DMUL);
@@ -1698,7 +1704,7 @@ final class JvmComplexRuntimeBuilder {
 			dload(c, 2);
 			c.add(Opcode.DMUL);
 			c.add(Opcode.DADD);
-			dstore(c, 14);
+			dstore(c, 10);
 			dload(c, 6);
 			dload(c, 14);
 			c.add(Opcode.DMUL);
@@ -1706,7 +1712,7 @@ final class JvmComplexRuntimeBuilder {
 			dload(c, 2);
 			c.add(Opcode.DMUL);
 			c.add(Opcode.DADD);
-			dload(c, 14);
+			dload(c, 10);
 			c.add(Opcode.DDIV);
 			dload(c, 8);
 			dload(c, 14);
@@ -1715,7 +1721,7 @@ final class JvmComplexRuntimeBuilder {
 			dload(c, 2);
 			c.add(Opcode.DMUL);
 			c.add(Opcode.DSUB);
-			dload(c, 14);
+			dload(c, 10);
 			c.add(Opcode.DDIV);
 		}
 		else if (op == U1_ASIN) {

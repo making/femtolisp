@@ -2577,6 +2577,31 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void evalComplexTanTanhAreQuotientsOnEveryAxis() {
+		// The reference half of
+		// JvmLispCompilerTest#compileAndRunComplexUnaryMathMirrorsTheInterpreterArmForArm:
+		// that differential can only see a DISAGREEMENT, so the value it agrees on is
+		// anchored here against the real functions. Each axis of complex tan/tanh is the
+		// real function of one family, and the JVM's slot reuse (.todo/765) broke exactly
+		// this: losing the denominator left the numerator, so tan of a real was sin of
+		// it. The digits are the platform's Math, so closeness is the pin.
+		assertThat(((LispDouble) eval("(realpart (tan #c(1d0 0d0)))")).value()).isCloseTo(Math.tan(1.0),
+				within(4 * Math.ulp(Math.tan(1.0))));
+		assertThat(((LispDouble) eval("(imagpart (tan #c(0d0 1d0)))")).value()).isCloseTo(Math.tanh(1.0),
+				within(4 * Math.ulp(1.0)));
+		assertThat(((LispDouble) eval("(realpart (tanh #c(1d0 0d0)))")).value()).isCloseTo(Math.tanh(1.0),
+				within(4 * Math.ulp(1.0)));
+		assertThat(((LispDouble) eval("(imagpart (tanh #c(0d0 1d0)))")).value()).isCloseTo(Math.tan(1.0),
+				within(4 * Math.ulp(Math.tan(1.0))));
+		// Off the axes both are still the quotient of their own sine by their own cosine.
+		assertThat(((LispDouble) eval("(abs (- (tan #c(1d0 1d0)) (/ (sin #c(1d0 1d0)) (cos #c(1d0 1d0)))))")).value())
+			.isCloseTo(0.0, within(1e-15));
+		assertThat(
+				((LispDouble) eval("(abs (- (tanh #c(1d0 1d0)) (/ (sinh #c(1d0 1d0)) (cosh #c(1d0 1d0)))))")).value())
+			.isCloseTo(0.0, within(1e-15));
+	}
+
+	@Test
 	void evalComplexFirstClass() {
 		assertThat(eval("(funcall #'complex 1 2)").print()).isEqualTo("#C(1 2)");
 		assertThat(eval("(funcall #'conjugate #c(1 2))").print()).isEqualTo("#C(1 -2)");
