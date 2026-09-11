@@ -4517,9 +4517,10 @@ class WasmLispCompilerIntegrationTest {
 		// JvmLispCompilerTest.compileAndRunUiopUnimplementedMacroDropsItsArgumentForms.
 		// The probe used to be with-current-directory; it grew its own expansion over
 		// call-with-current-directory, so the probe moved to a stream macro nothing
-		// implements yet.
+		// implements yet -- with-input-file until .todo/359 gave it one over
+		// call-with-input-file, with-null-input (.todo/360) now.
 		assertThat(compileAndRunProgram(am.ik.rontolisp.eval.LispPreludeLibrary.process(LispReader.readAllFromString("""
-				(print (handler-case (uiop:with-input-file (s "/tmp/x") (defun um-probe () 1))
+				(print (handler-case (uiop:with-null-input (s) (defun um-probe () 1))
 				         (uiop:not-implemented-error () :signalled)))
 				(print (fboundp 'um-probe))
 				""")))).isEqualTo("""
@@ -11548,6 +11549,71 @@ class WasmLispCompilerIntegrationTest {
 		// different adapter (the preview1 filestat is re-encoded from a lowered
 		// descriptor-stat), so the whole answer is verified there too.
 		assertThat(compileAndRunComponentWithDir(FILE_LENGTH_PROGRAM)).isEqualTo(FILE_LENGTH_EXPECTED);
+	}
+
+	@Test
+	void uiopStreamFileContentsAndSafeIoCompilesAndRuns() throws Exception {
+		// .todo/359: the "give me the contents" half of uiop/stream on this backend
+		// too -- the same program as the JVM twin
+		// (JvmLispCompilerTest#compileAndRunUiopStreamFileContentsAndSafeIo) over
+		// relative names in the preopened working directory. The passes are the CLI
+		// pipeline's: read is prelude rontolisp over read-char / unread-char, so the
+		// program needs the prelude splice AND the pushback-cell rewrite, in
+		// CompileFrontend's order -- then the --dir . run of compileAndRunWithDir.
+		String code = """
+				(uiop:with-output-file (out "w359s.txt")
+				  (write-line "hello" out) (write-line "world" out))
+				(print (uiop:read-file-lines "w359s.txt"))
+				(print (uiop:read-file-line "w359s.txt" :at 1))
+				(uiop:with-output-file (out "w359f.txt")
+				  (write-line "(defun w359-f (x) (* x 2))" out)
+				  (write-line "42" out))
+				(print (uiop:read-file-forms "w359f.txt"))
+				(print (uiop:safe-read-file-form "w359f.txt" :at 1))
+				(print (uiop:with-output (o nil) (write-string "xyz" o)))
+				(print (uiop:with-input (s "ab") (read-char s)))
+				(uiop:copy-file "w359s.txt" "w359c.txt")
+				(print (uiop:read-file-string "w359c.txt"))
+				(print (uiop:safe-read-from-string "(+ 1 2)"))
+				(print (uiop:eval-input "(+ 1 2) (* 3 4)"))
+				(print (uiop:eval-thunk "(+ 1 2)"))
+				(print (uiop:standard-eval-thunk "(+ 1 2)"))
+				(print (uiop:with-safe-io-syntax (:package :cl) *package*))
+				(uiop:with-output-file (out "w359o.txt")
+				  (uiop:println "a" out)
+				  (uiop:writeln '(1 2) :stream out)
+				  (uiop:format! out "n=~A~%" 7))
+				(print (uiop:read-file-lines "w359o.txt"))
+				(print (uiop:with-output (o nil) (write-string "q" o)))
+				(uiop:with-input-file (in "w359o.txt")
+				  (print (list (uiop:file-stream-p in) (uiop:file-or-synonym-stream-p in))))
+				""";
+		String expected = """
+				("hello" "world")
+				"world"
+				((DEFUN W359-F (X) (* X 2)) 42)
+				42
+				"xyz"
+				#\\a
+				"hello
+				world
+				"
+				(+ 1 2)
+				12
+				3
+				3
+				:CL
+				("a" "(1 2)" "n=7")
+				"q"
+				(T T)""";
+		List<LispVal> program = am.ik.rontolisp.eval.UnreadCharLibrary
+			.process(am.ik.rontolisp.eval.LispPreludeLibrary.process(LispReader.readAllFromString(code)));
+		byte[] wasmBytes = new WasmLispCompiler().compile(program);
+		wasmtime.copyFileToContainer(Transferable.of(wasmBytes), path("test.wasm"));
+		ExecResult result = wasmtime.execInContainer("bash", "-c",
+				"cd " + workDir() + " && wasmtime --wasm gc --wasm exceptions=y --dir . test.wasm");
+		assertThat(result.getExitCode()).as("exit code for: %s\nstderr: %s", code, result.getStderr()).isZero();
+		assertThat(result.getStdout().trim()).isEqualTo(expected);
 	}
 
 	@Test

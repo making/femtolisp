@@ -8686,6 +8686,64 @@ cases:
     expected: |
       "onetwo"
       "onetwo!"
+  - name: uiop-stream-file-contents-and-safe-io
+    # .todo/359: the "give me the contents" half of uiop/stream -- write a file,
+    # read it back through every slurper, and round-trip through with-output to a
+    # string. All four backends open relative paths against the process working
+    # directory (the driver preopens it for both WASM legs), so literal relative
+    # names are real opens everywhere, not compile-time bundles.
+    source: |
+      (uiop:with-output-file (out "u359.txt") (write-line "hello" out) (write-line "world" out))
+      (print (uiop:read-file-lines "u359.txt"))
+      (print (uiop:read-file-line "u359.txt" :at 1))
+      (uiop:with-output-file (out "u359-forms.txt")
+        (write-line "(defun u359-f (x) (* x 2))" out)
+        (write-line "42" out))
+      (print (uiop:read-file-forms "u359-forms.txt"))
+      (print (uiop:read-file-form "u359-forms.txt" :at 1))
+      (print (uiop:safe-read-file-form "u359-forms.txt" :at 1))
+      (print (uiop:with-output (o nil) (write-string "xyz" o)))
+      (print (uiop:output-string "abc"))
+      (print (uiop:input-string "abc"))
+      (print (uiop:with-input (s "ab") (read-char s)))
+      (uiop:copy-file "u359.txt" "u359-copy.txt")
+      (uiop:with-input-file (in "u359-copy.txt") (print (uiop:slurp-stream-string in)))
+      (print (uiop:safe-read-from-string "(+ 1 2)"))
+      (print (uiop:eval-input "(+ 1 2) (* 3 4)"))
+      (print (uiop:eval-thunk "(+ 1 2)"))
+      (print (uiop:standard-eval-thunk "(+ 1 2)"))
+      (uiop:with-output-file (out "u359-out.txt")
+        (uiop:println "a" out)
+        (uiop:writeln '(1 2) :stream out)
+        (uiop:format! out "n=~A~%" 7)
+        (uiop:safe-format! out "ok~%"))
+      (print (uiop:read-file-lines "u359-out.txt"))
+      (print (uiop:with-output (o nil) (write-string "q" o)))
+      (uiop:with-input-file (in "u359-out.txt")
+        (print (uiop:file-stream-p in))
+        (print (uiop:file-or-synonym-stream-p in)))
+      (uiop:finish-outputs)
+    expected: |
+      ("hello" "world")
+      "world"
+      ((DEFUN U359-F (X) (* X 2)) 42)
+      42
+      42
+      "xyz"
+      "abc"
+      "abc"
+      #\a
+      "hello
+      world
+      "
+      (+ 1 2)
+      12
+      3
+      3
+      ("a" "(1 2)" "n=7" "ok")
+      "q"
+      T
+      T
   - name: reading-past-end-of-file-answers-eof-every-time
     # A reader may keep asking after the end: read-line/read-char/read-byte answer
     # the eof-value again, and re-opening the file starts over. Preview 1 gives that

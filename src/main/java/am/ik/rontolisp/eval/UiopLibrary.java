@@ -373,11 +373,16 @@ public final class UiopLibrary {
 	}
 
 	/**
-	 * The definitions a uiop MACRO's expansion calls, per macro. Every one of these
-	 * expansions runs inside the expression compilers, long after this pass, so the names
-	 * it introduces never occur in the program this pass looks at -- without the table
-	 * the compiled program says {@code The function UIOP/UTILITY:X is undefined} at run
-	 * time while the interpreter (which lazy-loads on resolution) works.
+	 * The definitions a uiop member reaches without NAMING, per member. Most rows are a
+	 * uiop MACRO's expansion, which runs inside the expression compilers, long after this
+	 * pass, so the names it introduces never occur in the program this pass looks at --
+	 * without the table the compiled program says
+	 * {@code The function UIOP/UTILITY:X is undefined} at run time while the interpreter
+	 * (which lazy-loads on resolution) works. Three rows are FUNCTIONS instead
+	 * ({@code eval-input}, {@code input-string}, {@code output-string}): they name the
+	 * {@code %call-with-input} / {@code %call-with-output} prelude entries in their own
+	 * bodies, and the table carries the uiop names those helpers' pathname arms reach for
+	 * -- the same timing problem one step further along.
 	 *
 	 * <p>
 	 * Only the DIRECT callee needs listing: {@link #process}'s fixpoint pulls in whatever
@@ -389,19 +394,40 @@ public final class UiopLibrary {
 	 * ({@code LispPreludeLibrary.referencedBySurfaceForm} makes the mirror-image decision
 	 * for the prelude half).
 	 */
-	private static final Map<String, List<String>> MACRO_EXPANSION_CALLEES = Map.of(LispNames.WITH_TEMPORARY_FILE,
-			List.of(LispNames.ENSURE_DIRECTORY_PATHNAME, LispNames.DEFAULT_TEMPORARY_DIRECTORY,
-					LispNames.DELETE_FILE_IF_EXISTS),
-			LispNames.WITH_MUFFLED_CONDITIONS, List.of(LispNames.CALL_WITH_MUFFLED_CONDITIONS), LispNames.UIOP_DEBUG,
-			List.of(LispNames.LOAD_UIOP_DEBUG_UTILITY), LispNames.LATEST_TIMESTAMP_F,
-			List.of(LispNames.LATEST_TIMESTAMP),
+	private static final Map<String, List<String>> MACRO_EXPANSION_CALLEES = Map.ofEntries(
+			Map.entry(LispNames.WITH_TEMPORARY_FILE,
+					List.of(LispNames.ENSURE_DIRECTORY_PATHNAME, LispNames.DEFAULT_TEMPORARY_DIRECTORY,
+							LispNames.DELETE_FILE_IF_EXISTS)),
+			Map.entry(LispNames.WITH_MUFFLED_CONDITIONS, List.of(LispNames.CALL_WITH_MUFFLED_CONDITIONS)),
+			Map.entry(LispNames.UIOP_DEBUG, List.of(LispNames.LOAD_UIOP_DEBUG_UTILITY)),
+			Map.entry(LispNames.LATEST_TIMESTAMP_F, List.of(LispNames.LATEST_TIMESTAMP)),
 			// The no-defaults arm of with-pathname-defaults binds the *nil-pathname*
 			// VARIABLE -- a definition is a definition, so the same selection carries
 			// its defvar in.
-			LispNames.WITH_PATHNAME_DEFAULTS, List.of(LispNames.NIL_PATHNAME_VAR), LispNames.WITH_ENOUGH_PATHNAME,
-			List.of(LispNames.CALL_WITH_ENOUGH_PATHNAME), LispNames.WITH_FATAL_CONDITION_HANDLER,
-			List.of(LispNames.CALL_WITH_FATAL_CONDITION_HANDLER), LispNames.WITH_CURRENT_DIRECTORY,
-			List.of(LispNames.CALL_WITH_CURRENT_DIRECTORY));
+			Map.entry(LispNames.WITH_PATHNAME_DEFAULTS, List.of(LispNames.NIL_PATHNAME_VAR)),
+			Map.entry(LispNames.WITH_ENOUGH_PATHNAME, List.of(LispNames.CALL_WITH_ENOUGH_PATHNAME)),
+			Map.entry(LispNames.WITH_FATAL_CONDITION_HANDLER, List.of(LispNames.CALL_WITH_FATAL_CONDITION_HANDLER)),
+			Map.entry(LispNames.WITH_CURRENT_DIRECTORY, List.of(LispNames.CALL_WITH_CURRENT_DIRECTORY)),
+			// with-input / with-output expand over the %call-with-input /
+			// %call-with-output PRELUDE entries (upstream defines call-with-input
+			// and call-with-output but does not export them, so no uiop resource
+			// may define them); the pathname arm of each helper opens through
+			// call-with-input-file / call-with-output-file, which the program never
+			// names -- reading the designator here would duplicate the runtime
+			// rule, so both are pulled in unconditionally (the with-temporary-file
+			// :keep precedent above). The prelude halves live in
+			// LispPreludeLibrary.referencedBySurfaceForm. The three FUNCTION rows
+			// below are the same edge through the front door: eval-input,
+			// input-string and output-string name the prelude helpers in their own
+			// bodies, whose pathname arms the program likewise never names.
+			Map.entry(LispNames.WITH_INPUT, List.of(LispNames.CALL_WITH_INPUT_FILE)),
+			Map.entry(LispNames.WITH_OUTPUT, List.of(LispNames.CALL_WITH_OUTPUT_FILE)),
+			Map.entry(LispNames.EVAL_INPUT, List.of(LispNames.CALL_WITH_INPUT_FILE)),
+			Map.entry(LispNames.INPUT_STRING, List.of(LispNames.CALL_WITH_INPUT_FILE)),
+			Map.entry(LispNames.OUTPUT_STRING, List.of(LispNames.CALL_WITH_OUTPUT_FILE)),
+			Map.entry(LispNames.WITH_INPUT_FILE, List.of(LispNames.CALL_WITH_INPUT_FILE)),
+			Map.entry(LispNames.WITH_OUTPUT_FILE, List.of(LispNames.CALL_WITH_OUTPUT_FILE)),
+			Map.entry(LispNames.WITH_SAFE_IO_SYNTAX, List.of(LispNames.CALL_WITH_SAFE_IO_SYNTAX)));
 
 	/** Whether a definition the program never NAMES is nonetheless reached from it. */
 	private static boolean reachedBySurfaceForm(String name, Set<String> occurring) {

@@ -219,6 +219,20 @@ class LibraryDefunPrunerTest {
 	}
 
 	@Test
+	void uiopWithInputAndWithOutputKeepTheirPreludeHelpers() {
+		// The %call-with-input / %call-with-output prelude entries are reached from
+		// the with-input / with-output expansions, which run inside the expression
+		// compilers, after this walk -- without the surface-form roots the
+		// tree-shaker drops the very entries the splice just added, and the
+		// compiled program fails with "The function %CALL-WITH-INPUT is undefined"
+		// while the interpreter (and the pruner-free test harnesses) work.
+		assertThat(definedNames(spliceAndPrune("(print (uiop:with-input (s \"ab\") (read-char s)))")))
+			.contains("%CALL-WITH-INPUT", "UIOP/STREAM:CALL-WITH-INPUT-FILE");
+		assertThat(definedNames(spliceAndPrune("(print (uiop:with-output (o nil) (write-string \"q\" o)))")))
+			.contains("%CALL-WITH-OUTPUT", "UIOP/STREAM:CALL-WITH-OUTPUT-FILE");
+	}
+
+	@Test
 	void survivingFormsKeepTheirOrderAndPrinting() {
 		String source = "(print (linalg:to-list (linalg:zeros '(2))))";
 		List<LispVal> spliced = splice(source);

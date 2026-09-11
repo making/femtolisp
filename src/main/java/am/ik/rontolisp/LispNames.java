@@ -9181,6 +9181,111 @@ public final class LispNames {
 	public static final String CALL_WITH_CURRENT_DIRECTORY = "CALL-WITH-CURRENT-DIRECTORY";
 
 	/**
+	 * {@code uiop:with-input (var &optional value) body...} -- binds {@code var} to an
+	 * input stream coerced from {@code value} (a stream designator, string or pathname)
+	 * and runs the body. A built-in {@code LispMacroExpander} expansion into
+	 * {@link #CALL_WITH_INPUT}, like {@link #WITH_CURRENT_DIRECTORY} is into its
+	 * call-with function.
+	 */
+	public static final String WITH_INPUT = "WITH-INPUT";
+
+	/** The canonical package-qualified spelling of {@link #WITH_INPUT}. */
+	public static final String UIOP_WITH_INPUT_QUALIFIED = UIOP_STREAM_PKG + ":" + WITH_INPUT;
+
+	/**
+	 * {@code uiop:call-with-input input function} -- calls the function with an input
+	 * stream coerced from {@code input}. Upstream defines it but does not export it, so
+	 * it lives as the {@code %call-with-input} prelude entry rather than a uiop resource
+	 * definition (a resource may only define inventory names); the {@code with-input}
+	 * expansion and the exported designator readers call it.
+	 */
+	public static final String CALL_WITH_INPUT_INTERNAL = "%CALL-WITH-INPUT";
+
+	/**
+	 * {@code uiop:with-output (var &optional value &key element-type) body...} -- binds
+	 * {@code var} to an output stream coerced from {@code value} and runs the body. A
+	 * built-in {@code LispMacroExpander} expansion into {@link #CALL_WITH_OUTPUT}.
+	 */
+	public static final String WITH_OUTPUT = "WITH-OUTPUT";
+
+	/** The canonical package-qualified spelling of {@link #WITH_OUTPUT}. */
+	public static final String UIOP_WITH_OUTPUT_QUALIFIED = UIOP_STREAM_PKG + ":" + WITH_OUTPUT;
+
+	/**
+	 * {@code uiop:call-with-output output function} -- calls the function with an output
+	 * stream coerced from {@code output}. Upstream defines it but does not export it, so
+	 * it lives as the {@code %call-with-output} prelude entry rather than a uiop resource
+	 * definition; the {@code with-output} expansion and {@code output-string} call it.
+	 */
+	public static final String CALL_WITH_OUTPUT_INTERNAL = "%CALL-WITH-OUTPUT";
+
+	/**
+	 * {@code uiop:with-input-file (var pathname &rest keys) body...} -- opens the file
+	 * for input and runs the body with {@code var} bound to the stream. A built-in
+	 * {@code LispMacroExpander} expansion into {@link #CALL_WITH_INPUT_FILE}.
+	 */
+	public static final String WITH_INPUT_FILE = "WITH-INPUT-FILE";
+
+	/**
+	 * {@code uiop:call-with-input-file pathname thunk} -- opens the file for input and
+	 * calls the thunk with the stream. Lisp source ({@code uiop-stream.lisp}). Named here
+	 * because {@link #WITH_INPUT_FILE} expands into it.
+	 */
+	public static final String CALL_WITH_INPUT_FILE = "CALL-WITH-INPUT-FILE";
+
+	/**
+	 * {@code uiop:with-output-file (var pathname &rest keys) body...} -- opens the file
+	 * for output and runs the body with {@code var} bound to the stream. A built-in
+	 * {@code LispMacroExpander} expansion into {@link #CALL_WITH_OUTPUT_FILE}.
+	 */
+	public static final String WITH_OUTPUT_FILE = "WITH-OUTPUT-FILE";
+
+	/**
+	 * {@code uiop:call-with-output-file pathname thunk} -- opens the file for output and
+	 * calls the thunk with the stream. Lisp source ({@code uiop-stream.lisp}). Named here
+	 * because {@link #WITH_OUTPUT_FILE} expands into it.
+	 */
+	public static final String CALL_WITH_OUTPUT_FILE = "CALL-WITH-OUTPUT-FILE";
+
+	/**
+	 * {@code uiop:with-safe-io-syntax ((&key package) &rest body)} -- runs the body with
+	 * the safe reader options (standard syntax, {@code *package*} bound,
+	 * {@code *read-eval*} nil). A built-in {@code LispMacroExpander} expansion into
+	 * {@link #CALL_WITH_SAFE_IO_SYNTAX}.
+	 */
+	public static final String WITH_SAFE_IO_SYNTAX = "WITH-SAFE-IO-SYNTAX";
+
+	/**
+	 * {@code uiop:call-with-safe-io-syntax thunk} -- calls the thunk under the safe
+	 * reader options. Lisp source ({@code uiop-stream.lisp}). Named here because
+	 * {@link #WITH_SAFE_IO_SYNTAX} expands into it.
+	 */
+	public static final String CALL_WITH_SAFE_IO_SYNTAX = "CALL-WITH-SAFE-IO-SYNTAX";
+
+	/**
+	 * {@code uiop:eval-input input} -- read and evaluate forms from a stream designator.
+	 * Lisp source ({@code uiop-stream.lisp}) over the {@code %call-with-input} prelude
+	 * entry. Named here because its surface-form selection row opens through
+	 * {@link #CALL_WITH_INPUT_FILE}.
+	 */
+	public static final String EVAL_INPUT = "EVAL-INPUT";
+
+	/**
+	 * {@code uiop:input-string input} -- coerce an input designator to its contents. Lisp
+	 * source ({@code uiop-stream.lisp}) over the {@code %call-with-input} prelude entry.
+	 * Named here for the same selection row as {@link #EVAL_INPUT}.
+	 */
+	public static final String INPUT_STRING = "INPUT-STRING";
+
+	/**
+	 * {@code uiop:output-string string &optional output} -- print a string to an output
+	 * designator. Lisp source ({@code uiop-stream.lisp}) over the
+	 * {@code %call-with-output} prelude entry. Named here because its surface-form
+	 * selection row opens through {@link #CALL_WITH_OUTPUT_FILE}.
+	 */
+	public static final String OUTPUT_STRING = "OUTPUT-STRING";
+
+	/**
 	 * {@code uiop:*nil-pathname*} -- the neutral defaults pathname, {@code #P""} here.
 	 * Named because {@link #WITH_PATHNAME_DEFAULTS}'s no-defaults expansion references
 	 * it, which is also what makes {@code UiopLibrary} splice its {@code defvar}.

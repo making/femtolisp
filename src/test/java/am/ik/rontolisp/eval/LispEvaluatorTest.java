@@ -19108,6 +19108,136 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void evalUiopStreamFileContentsAndSafeIo(@TempDir Path tempDir) throws Exception {
+		// .todo/359: the "give me the contents" half of uiop/stream -- the openers,
+		// the designator coercions, the slurp family, the safe-IO syntax, the eval
+		// thunks, the copy pair and the print helpers. Same shape and expectations
+		// as the compile-path twins (JvmLispCompilerTest and the WASM integration
+		// test) and the uiop-stream-file-contents-and-safe-io ci-spec case.
+		Files.writeString(tempDir.resolve("s.txt"), "hello\nworld\n");
+		Files.writeString(tempDir.resolve("f.txt"), "(defun u359-f (x) (* x 2))\n42\n");
+		String dir = tempDir.toString().replace("\\", "\\\\");
+		assertThat(evalMulti("""
+				(list (uiop:read-file-lines "%1$s/s.txt")
+				      (uiop:read-file-line "%1$s/s.txt" :at 1)
+				      (uiop:read-file-forms "%1$s/f.txt")
+				      (uiop:read-file-form "%1$s/f.txt" :at 1)
+				      (uiop:safe-read-file-form "%1$s/f.txt" :at 1)
+				      (uiop:safe-read-file-line "%1$s/s.txt" :at 0))
+				""".formatted(dir)).print())
+			.isEqualTo("((\"hello\" \"world\") \"world\" ((DEFUN U359-F (X) (* X 2)) 42) 42 42 \"hello\")");
+		// The designator table: nil is the standard stream, t the terminal one, a
+		// string is a string stream, a pathname is opened; a stream is used as-is.
+		assertThat(evalMulti("""
+				(list (uiop:with-output (o nil) (write-string "xyz" o))
+				      (uiop:with-input (s "ab") (read-char s))
+				      (uiop:input-string "abc")
+				      (uiop:output-string "abc")
+				      (uiop:output-string "abc" nil)
+				      (uiop:with-output (o nil) (write-string "q" o))
+				      (with-output-to-string (s) (uiop:with-output (o s) (write-string "w" o))))
+				""").print()).isEqualTo("(\"xyz\" #\\a \"abc\" \"abc\" \"abc\" \"q\" \"w\")");
+		// A string has no honest append target (with-output-to-string is
+		// fresh-string only), so the string arm refuses loudly (.todo/359 lite).
+		assertThat(eval("(handler-case (uiop:with-output (o \"s\") o) (error () :signalled))").print())
+			.isEqualTo(":SIGNALLED");
+		// The macros are thin over the functions: with-input-file and
+		// with-output-file thread keys through, with-input and with-output reuse a
+		// binding when the value is absent.
+		assertThat(evalMulti("""
+				(let ((p "%1$s/w.txt"))
+				  (uiop:with-output-file (out p) (write-line "made" out))
+				  (list (uiop:read-file-lines p)
+				        (uiop:with-input-file (in p) (uiop:slurp-stream-string in))
+				        (uiop:with-input (s (pathname p)) (uiop:slurp-stream-lines s))
+				        (let ((s "z")) (uiop:with-input (s) (read-char s)))))
+				""".formatted(dir)).print()).isEqualTo("((\"made\") \"made\n\" (\"made\") #\\z)");
+		// Slurping a stream closes it (upstream's contract); the linewise copy
+		// ends every line with a terpri (read-line answers one value).
+		assertThat(evalMulti("""
+				(list (uiop:slurp-stream-lines (make-string-input-stream "a\\nb"))
+				      (uiop:slurp-stream-line (make-string-input-stream "a\\nb") :at 1)
+				      (uiop:slurp-stream-forms (make-string-input-stream "(+ 1 2) 3"))
+				      (uiop:slurp-stream-form (make-string-input-stream "(+ 1 2) 3") :at 1)
+				      (uiop:slurp-stream-string (make-string-input-stream "xy") :stripped t)
+				      (let ((out (make-string-output-stream)))
+				        (uiop:copy-stream-to-stream (make-string-input-stream "p\\nq") out :linewise t)
+				        (get-output-stream-string out)))
+				""").print()).isEqualTo("((\"a\" \"b\") \"b\" ((+ 1 2) 3) 3 \"xy\" \"p\nq\n\")");
+		// The copy pair is binary both ways, truncating the target.
+		assertThat(evalMulti("""
+				(let ((a "%1$s/a.bin") (b "%1$s/b.bin") (c "%1$s/c.bin"))
+				  (uiop:with-output-file (out a) (write-string "body" out))
+				  (uiop:copy-file a b)
+				  (uiop:concatenate-files (list a b) c)
+				  (uiop:read-file-string c))
+				""".formatted(dir)).print()).isEqualTo("\"bodybody\"");
+		// Safe syntax binds *package* and pins *read-eval* to nil, which the
+		// runtime read honors; safe-read-from-string slices :start/:end itself
+		// and answers the eof-value past the end.
+		assertThat(eval("(uiop:with-safe-io-syntax (:package :cl) *package*)").print()).isEqualTo(":CL");
+		assertThat(evalMulti("""
+				(handler-case (uiop:with-safe-io-syntax () (read-from-string "#.(+ 1 2)"))
+				  (error () :signalled))
+				""").print()).isEqualTo(":SIGNALLED");
+		assertThat(evalMulti("""
+				(list (uiop:safe-read-from-string "(+ 1 2)")
+				      (uiop:safe-read-from-string "xx(+ 1 2)" :start 2)
+				      (uiop:safe-read-from-string "(+ 1 2)xx" :end 7)
+				      (uiop:safe-read-from-string "" :eof-error-p nil :eof-value :eof)
+				      (uiop:call-with-safe-io-syntax (lambda () 7)))
+				""").print()).isEqualTo("((+ 1 2) (+ 1 2) (+ 1 2) :EOF 7)");
+		// Evaluating input: the last form's values win; a thunk is a function, a
+		// literal, a form, or source text.
+		assertThat(evalMulti("""
+				(list (uiop:eval-input "(+ 1 2) (* 3 4)")
+				      (uiop:eval-thunk "(+ 1 2)")
+				      (uiop:eval-thunk (lambda () 9))
+				      (uiop:eval-thunk '(+ 1 2))
+				      (uiop:eval-thunk 5)
+				      (uiop:standard-eval-thunk "(+ 1 2)")
+				      (uiop:standard-eval-thunk nil))
+				""").print()).isEqualTo("(12 3 9 3 5 3 NIL)");
+		// The print helpers return no values; safe-format! never signals, even at
+		// a closed stream.
+		assertThat(evalMulti("""
+				(let ((out (make-string-output-stream)))
+				  (list (uiop:println "a" out)
+				        (uiop:writeln '(1 2) :stream out)
+				        (uiop:format! out "n=~A~%" 7)
+				        (uiop:safe-format! out "ok~%")
+				        (uiop:finish-outputs out)
+				        (get-output-stream-string out)
+				        (uiop:safe-format! (close out) "lost")))
+				""").print()).isEqualTo("(NIL NIL NIL NIL NIL \"a\n(1 2)\nn=7\nok\n\" NIL)");
+		// Stream predicates: exact kind tests, recursing through synonyms. A
+		// synonym answers what its variable holds -- a designator like the T that
+		// *standard-output* holds is not a file stream, so only a synonym over a
+		// real file stream is one.
+		assertThat(evalMulti("""
+				(defvar *u359-holder* nil)
+				(with-open-file (f "%1$s/s.txt")
+				  (setq *u359-holder* f)
+				  (let ((syn (make-synonym-stream '*u359-holder*))
+				        (str (make-string-input-stream "x")))
+				    (list (uiop:file-stream-p f)
+				          (uiop:file-stream-p str)
+				          (uiop:file-or-synonym-stream-p f)
+				          (uiop:file-or-synonym-stream-p syn)
+				          (uiop:file-or-synonym-stream-p str)
+				          (uiop:file-or-synonym-stream-p (make-synonym-stream '*standard-output*)))))
+				""".formatted(dir)).print()).isEqualTo("(T NIL T T NIL NIL)");
+		// A pathname designator opens the file; a string designator is contents
+		// (upstream's table -- a string never names a file here).
+		assertThat(evalMulti("""
+				(let ((q "%1$s/q.txt"))
+				  (uiop:with-output (o (pathname q)) (write-string "pw" o))
+				  (list (uiop:read-file-string q)
+				        (uiop:with-input (s (pathname q)) (read-line s))))
+				""".formatted(dir)).print()).isEqualTo("(\"pw\" \"pw\")");
+	}
+
+	@Test
 	void evalUiopDeleteDirectoryTreeValidatesItsVictim() {
 		// rm -rf takes a validation predicate: no predicate and a failing one both
 		// signal parameter-error, and a missing directory signals unless :ignore.

@@ -109,6 +109,24 @@ class UiopLibraryTest {
 		// defun the program never names -- same rule, same reason.
 		assertThat(splicedNames("(uiop:with-current-directory (\"/tmp\") (print 1))"))
 			.contains("UIOP/FILESYSTEM:CALL-WITH-CURRENT-DIRECTORY");
+		// The five uiop/stream with-* macros (.todo/359) expand over their
+		// call-with-* functions the same way.
+		assertThat(splicedNames("(uiop:with-input-file (s \"x\") (print s))"))
+			.contains("UIOP/STREAM:CALL-WITH-INPUT-FILE");
+		assertThat(splicedNames("(uiop:with-output-file (s \"x\") (print s))"))
+			.contains("UIOP/STREAM:CALL-WITH-OUTPUT-FILE");
+		assertThat(splicedNames("(uiop:with-input (s \"x\") (print s))")).contains("UIOP/STREAM:CALL-WITH-INPUT-FILE");
+		assertThat(splicedNames("(uiop:with-output (s nil) (print s))")).contains("UIOP/STREAM:CALL-WITH-OUTPUT-FILE");
+		assertThat(splicedNames("(uiop:with-safe-io-syntax () (print 1))"))
+			.contains("UIOP/STREAM:CALL-WITH-SAFE-IO-SYNTAX");
+		// The three FUNCTION rows (.todo/359): eval-input, input-string and
+		// output-string name the %call-with-input / %call-with-output prelude
+		// entries in their own bodies, whose pathname arms open through the file
+		// openers the program never names -- the same edge through the front door.
+		assertThat(splicedNames("(print (uiop:eval-input \"(+ 1 2)\"))")).contains("UIOP/STREAM:CALL-WITH-INPUT-FILE");
+		assertThat(splicedNames("(print (uiop:input-string \"x\"))")).contains("UIOP/STREAM:CALL-WITH-INPUT-FILE");
+		assertThat(splicedNames("(print (uiop:output-string \"x\" nil))"))
+			.contains("UIOP/STREAM:CALL-WITH-OUTPUT-FILE");
 	}
 
 	@Test

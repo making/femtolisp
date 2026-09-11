@@ -2799,9 +2799,10 @@ class JvmLispCompilerTest {
 		// with (), the arguments are the nil literal and the bug is invisible. The
 		// probe used to be with-current-directory; it grew its own expansion over
 		// call-with-current-directory, so the probe moved to a stream macro nothing
-		// implements yet.
+		// implements yet -- with-input-file until .todo/359 gave it one over
+		// call-with-input-file, with-null-input (.todo/360) now.
 		assertThat(compileAndRun("""
-				(print (handler-case (uiop:with-input-file (s "/tmp/x") (defun um-probe () 1))
+				(print (handler-case (uiop:with-null-input (s) (defun um-probe () 1))
 				         (uiop:not-implemented-error () :signalled)))
 				(print (fboundp 'um-probe))
 				""")).isEqualTo("""
@@ -4264,30 +4265,30 @@ class JvmLispCompilerTest {
 		java.nio.file.Files.writeString(root.resolve("p.txt"), "p\n");
 		String d = root + "/";
 		assertThat(compileAndRun("""
-				(print (uiop:probe-file* "%1$s/p.txt"))
-				(print (uiop:probe-file* "%1$s/p.txt" :truename t))
-				(print (uiop:probe-file* "%1$s/missing"))
-				(print (uiop:truename* "%1$s/p.txt"))
-				(print (uiop:truename* "%1$s/missing"))
-				(print (uiop:directory* "%1$s/*.txt"))
-				(print (if (uiop:safe-file-write-date "%1$s/p.txt") 'dated 'undated))
-				(print (uiop:safe-file-write-date "%1$s/missing"))
-				(print (uiop:parse-native-namestring "/tmp/x"))
-				(print (string (uiop:inter-directory-separator)))
-				(print (uiop:split-native-pathnames-string "a:b::c"))
-				(progn (setf (uiop:getenv "JVM_UIOP_FS_TEST") "/tmp")
-				       (setf (uiop:getenv "JVM_UIOP_FS_PATHS") "/tmp:/var")
-				       (print (uiop:getenv-pathname "JVM_UIOP_FS_TEST"))
-				       (print (uiop:getenv-absolute-directories "JVM_UIOP_FS_PATHS")))
-				(print (list uiop:*resolve-symlinks* (uiop:resolve-symlinks "/a/b")
-				               (uiop:lisp-implementation-directory)))
-				(let ((base "%1$s/j-"))
-				  (uiop:ensure-all-directories-exist (list (concatenate 'string base "d/sub/f.txt")))
-				  (with-open-file (out (concatenate 'string base "d/sub/f.txt") :direction :output)
-				    (write-line "x" out))
-				  (print (if (uiop:probe-file* (concatenate 'string base "d/sub/f.txt")) 'made 'absent))
-				  (uiop:delete-directory-tree (concatenate 'string base "d/") :validate (constantly t))
-				  (print (uiop:directory-exists-p (concatenate 'string base "d/"))))
+					(print (uiop:probe-file* "%1$s/p.txt"))
+					(print (uiop:probe-file* "%1$s/p.txt" :truename t))
+					(print (uiop:probe-file* "%1$s/missing"))
+					(print (uiop:truename* "%1$s/p.txt"))
+					(print (uiop:truename* "%1$s/missing"))
+					(print (uiop:directory* "%1$s/*.txt"))
+					(print (if (uiop:safe-file-write-date "%1$s/p.txt") 'dated 'undated))
+					(print (uiop:safe-file-write-date "%1$s/missing"))
+					(print (uiop:parse-native-namestring "/tmp/x"))
+					(print (string (uiop:inter-directory-separator)))
+					(print (uiop:split-native-pathnames-string "a:b::c"))
+					(progn (setf (uiop:getenv "JVM_UIOP_FS_TEST") "/tmp")
+					       (setf (uiop:getenv "JVM_UIOP_FS_PATHS") "/tmp:/var")
+					       (print (uiop:getenv-pathname "JVM_UIOP_FS_TEST"))
+					       (print (uiop:getenv-absolute-directories "JVM_UIOP_FS_PATHS")))
+					(print (list uiop:*resolve-symlinks* (uiop:resolve-symlinks "/a/b")
+					               (uiop:lisp-implementation-directory)))
+					(let ((base "%1$s/j-"))
+					  (uiop:ensure-all-directories-exist (list (concatenate 'string base "d/sub/f.txt")))
+					  (with-open-file (out (concatenate 'string base "d/sub/f.txt") :direction :output)
+					    (write-line "x" out))
+					  (print (if (uiop:probe-file* (concatenate 'string base "d/sub/f.txt")) 'made 'absent))
+					  (uiop:delete-directory-tree (concatenate 'string base "d/") :validate (constantly t))
+					  (print (uiop:directory-exists-p (concatenate 'string base "d/"))))
 				(print (uiop:with-current-directory () :here))
 				(print (handler-case (uiop:with-current-directory ("/tmp") :never)
 				         (uiop:not-implemented-error () :signalled)))
@@ -4310,6 +4311,64 @@ class JvmLispCompilerTest {
 				NIL
 				:HERE
 				:SIGNALLED""".formatted(d));
+	}
+
+	@Test
+	void compileAndRunUiopStreamFileContentsAndSafeIo() throws Exception {
+		// .todo/359: the "give me the contents" half of uiop/stream -- the openers
+		// over the computed-option lowering, the designator coercions, the slurp
+		// family over prelude read, the safe-IO syntax, the eval thunks and the
+		// print helpers. Same shape and expectations as the interpreter test
+		// (LispEvaluatorTest#evalUiopStreamFileContentsAndSafeIo); paths are built
+		// at run time so no literal absolute path is bundled at compile time.
+		java.nio.file.Path root = java.nio.file.Files.createDirectory(tempDir.resolve("u359"));
+		String dir = root.toString().replace("\\", "\\\\");
+		assertThat(compileAndRunRead("""
+				(let ((base "%1$s/"))
+				  (uiop:with-output-file (out (concatenate 'string base "s.txt"))
+				    (write-line "hello" out) (write-line "world" out))
+				  (print (uiop:read-file-lines (concatenate 'string base "s.txt")))
+				  (print (uiop:read-file-line (concatenate 'string base "s.txt") :at 1))
+				  (uiop:with-output-file (out (concatenate 'string base "f.txt"))
+				    (write-line "(defun u359-f (x) (* x 2))" out)
+				    (write-line "42" out))
+				  (print (uiop:read-file-forms (concatenate 'string base "f.txt")))
+				  (print (uiop:safe-read-file-form (concatenate 'string base "f.txt") :at 1))
+				  (print (uiop:with-output (o nil) (write-string "xyz" o)))
+				  (print (uiop:with-input (s "ab") (read-char s)))
+				  (uiop:copy-file (concatenate 'string base "s.txt") (concatenate 'string base "c.txt"))
+				  (print (uiop:read-file-string (concatenate 'string base "c.txt")))
+				  (print (uiop:safe-read-from-string "(+ 1 2)"))
+				  (print (uiop:eval-input "(+ 1 2) (* 3 4)"))
+				  (print (uiop:eval-thunk "(+ 1 2)"))
+				  (print (uiop:standard-eval-thunk "(+ 1 2)"))
+				  (print (uiop:with-safe-io-syntax (:package :cl) *package*))
+				  (uiop:with-output-file (out (concatenate 'string base "o.txt"))
+				    (uiop:println "a" out)
+				    (uiop:writeln '(1 2) :stream out)
+				    (uiop:format! out "n=~A~%%" 7))
+				  (print (uiop:read-file-lines (concatenate 'string base "o.txt")))
+				  (print (uiop:with-output (o nil) (write-string "q" o)))
+				  (uiop:with-input-file (in (concatenate 'string base "o.txt"))
+				    (print (list (uiop:file-stream-p in) (uiop:file-or-synonym-stream-p in)))))
+				""".formatted(dir))).isEqualTo("""
+				("hello" "world")
+				"world"
+				((DEFUN U359-F (X) (* X 2)) 42)
+				42
+				"xyz"
+				#\\a
+				"hello
+				world
+				"
+				(+ 1 2)
+				12
+				3
+				3
+				:CL
+				("a" "(1 2)" "n=7")
+				"q"
+				(T T)""");
 	}
 
 	@Test

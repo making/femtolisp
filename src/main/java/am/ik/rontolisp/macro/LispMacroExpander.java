@@ -9728,7 +9728,9 @@ public final class LispMacroExpander {
 			LispNames.DEFINE_PACKAGE, LispNames.WITH_UPGRADABILITY, LispNames.NEST, LispNames.WHILE_COLLECTING,
 			LispNames.APPENDF, LispNames.LATEST_TIMESTAMP_F, LispNames.WITH_MUFFLED_CONDITIONS, LispNames.UIOP_DEBUG,
 			LispNames.COMPATFMT, LispNames.WITH_PATHNAME_DEFAULTS, LispNames.WITH_ENOUGH_PATHNAME, LispNames.OS_COND,
-			LispNames.WITH_CURRENT_DIRECTORY, LispNames.WITH_FATAL_CONDITION_HANDLER);
+			LispNames.WITH_CURRENT_DIRECTORY, LispNames.WITH_FATAL_CONDITION_HANDLER, LispNames.WITH_INPUT,
+			LispNames.WITH_OUTPUT, LispNames.WITH_INPUT_FILE, LispNames.WITH_OUTPUT_FILE,
+			LispNames.WITH_SAFE_IO_SYNTAX);
 
 	/**
 	 * If {@code cons} is a {@code (read-line ...)} call in CL's 2- or 3-argument shape
@@ -10390,6 +10392,193 @@ public final class LispMacroExpander {
 	}
 
 	/**
+	 * Expands {@code (uiop:with-input (var &optional value) body...)} into
+	 * {@code (%call-with-input value (lambda (var) body...))} -- upstream's own shape,
+	 * over the designator-coercing prelude entry (upstream defines
+	 * {@code call-with-input} but does not export it, so the helper is prelude, not
+	 * uiop). An absent value reuses the variable's current binding, exactly as upstream's
+	 * backquote places it.
+	 * @param cons the with-input expression
+	 * @return the expanded expression
+	 */
+	public static LispVal expandUiopWithInput(LispCons cons) {
+		List<LispVal> parts = cons.toList();
+		if (parts.size() < 2 || !(parts.get(1) instanceof LispCons spec)
+				|| !(spec.car() instanceof LispSymbol variable)) {
+			throw new UnsupportedOperationException(UiopExports.qualified(LispNames.WITH_INPUT)
+					+ " expects (with-input (var &optional value) body...): " + cons.print());
+		}
+		List<LispVal> specParts = spec.toList();
+		if (specParts.size() > 2) {
+			throw new UnsupportedOperationException(UiopExports.qualified(LispNames.WITH_INPUT)
+					+ " expects at most a variable and a value form: " + cons.print());
+		}
+		LispVal value = specParts.size() == 2 ? specParts.get(1) : variable;
+		List<LispVal> thunk = new java.util.ArrayList<>();
+		thunk.add(new LispSymbol(LispNames.LAMBDA));
+		thunk.add(listToCons(List.of(variable)));
+		thunk.addAll(parts.subList(2, parts.size()));
+		return listToCons(List.of(new LispSymbol(LispNames.CALL_WITH_INPUT_INTERNAL), value, listToCons(thunk)));
+	}
+
+	/**
+	 * Expands {@code (uiop:with-output (var &optional value &key element-type)
+	 * body...)} into {@code (%call-with-output value (lambda (var) body...)
+	 * [:element-type element-type])} -- upstream's own shape, over the
+	 * designator-coercing prelude entry (see {@link #expandUiopWithInput} for why it is
+	 * prelude).
+	 * @param cons the with-output expression
+	 * @return the expanded expression
+	 */
+	public static LispVal expandUiopWithOutput(LispCons cons) {
+		List<LispVal> parts = cons.toList();
+		if (parts.size() < 2 || !(parts.get(1) instanceof LispCons spec)
+				|| !(spec.car() instanceof LispSymbol variable)) {
+			throw new UnsupportedOperationException(UiopExports.qualified(LispNames.WITH_OUTPUT)
+					+ " expects (with-output (var &optional value &key element-type) body...): " + cons.print());
+		}
+		List<LispVal> specParts = spec.toList();
+		LispVal value = variable;
+		LispVal elementType = null;
+		for (int i = 1; i < specParts.size(); i++) {
+			if (specParts.get(i) instanceof LispSymbol key && ":ELEMENT-TYPE".equals(key.name())) {
+				if (i + 1 >= specParts.size() || elementType != null) {
+					throw new UnsupportedOperationException(UiopExports.qualified(LispNames.WITH_OUTPUT)
+							+ " expects :element-type once with a value: " + cons.print());
+				}
+				elementType = specParts.get(i + 1);
+				i++;
+			}
+			else if (i == 1) {
+				value = specParts.get(i);
+			}
+			else {
+				throw new UnsupportedOperationException(UiopExports.qualified(LispNames.WITH_OUTPUT)
+						+ " supports only :element-type after the value form: " + cons.print());
+			}
+		}
+		List<LispVal> thunk = new java.util.ArrayList<>();
+		thunk.add(new LispSymbol(LispNames.LAMBDA));
+		thunk.add(listToCons(List.of(variable)));
+		thunk.addAll(parts.subList(2, parts.size()));
+		List<LispVal> call = new java.util.ArrayList<>(
+				List.of(new LispSymbol(LispNames.CALL_WITH_OUTPUT_INTERNAL), value, listToCons(thunk)));
+		if (elementType != null) {
+			call.add(new LispSymbol(":ELEMENT-TYPE"));
+			call.add(elementType);
+		}
+		return listToCons(call);
+	}
+
+	/**
+	 * Expands {@code (uiop:with-input-file (var pathname &rest keys) body...)} into
+	 * {@code (uiop:call-with-input-file pathname (lambda (var) body...) keys...)} --
+	 * upstream's own shape, over the opening function in {@code uiop-stream.lisp}. The
+	 * keys are passed through untouched; the computed-option lowering behind
+	 * {@code with-open-file} validates them at run time.
+	 * @param cons the with-input-file expression
+	 * @return the expanded expression
+	 */
+	public static LispVal expandUiopWithInputFile(LispCons cons) {
+		List<LispVal> parts = cons.toList();
+		if (parts.size() < 2 || !(parts.get(1) instanceof LispCons spec)
+				|| !(spec.car() instanceof LispSymbol variable)) {
+			throw new UnsupportedOperationException(UiopExports.qualified(LispNames.WITH_INPUT_FILE)
+					+ " expects (with-input-file (var pathname &rest keys) body...): " + cons.print());
+		}
+		List<LispVal> specParts = spec.toList();
+		if (specParts.size() < 2) {
+			throw new UnsupportedOperationException(
+					UiopExports.qualified(LispNames.WITH_INPUT_FILE) + " expects a pathname form: " + cons.print());
+		}
+		List<LispVal> thunk = new java.util.ArrayList<>();
+		thunk.add(new LispSymbol(LispNames.LAMBDA));
+		thunk.add(listToCons(List.of(variable)));
+		thunk.addAll(parts.subList(2, parts.size()));
+		List<LispVal> call = new java.util.ArrayList<>(
+				List.of(new LispSymbol(UiopExports.qualified(LispNames.CALL_WITH_INPUT_FILE)), specParts.get(1),
+						listToCons(thunk)));
+		call.addAll(specParts.subList(2, specParts.size()));
+		return listToCons(call);
+	}
+
+	/**
+	 * Expands {@code (uiop:with-output-file (var pathname &rest keys) body...)} into
+	 * {@code (uiop:call-with-output-file pathname (lambda (var) body...) keys...)} --
+	 * upstream's own shape, over the opening function in {@code uiop-stream.lisp}.
+	 * @param cons the with-output-file expression
+	 * @return the expanded expression
+	 */
+	public static LispVal expandUiopWithOutputFile(LispCons cons) {
+		List<LispVal> parts = cons.toList();
+		if (parts.size() < 2 || !(parts.get(1) instanceof LispCons spec)
+				|| !(spec.car() instanceof LispSymbol variable)) {
+			throw new UnsupportedOperationException(UiopExports.qualified(LispNames.WITH_OUTPUT_FILE)
+					+ " expects (with-output-file (var pathname &rest keys) body...): " + cons.print());
+		}
+		List<LispVal> specParts = spec.toList();
+		if (specParts.size() < 2) {
+			throw new UnsupportedOperationException(
+					UiopExports.qualified(LispNames.WITH_OUTPUT_FILE) + " expects a pathname form: " + cons.print());
+		}
+		List<LispVal> thunk = new java.util.ArrayList<>();
+		thunk.add(new LispSymbol(LispNames.LAMBDA));
+		thunk.add(listToCons(List.of(variable)));
+		thunk.addAll(parts.subList(2, parts.size()));
+		List<LispVal> call = new java.util.ArrayList<>(
+				List.of(new LispSymbol(UiopExports.qualified(LispNames.CALL_WITH_OUTPUT_FILE)), specParts.get(1),
+						listToCons(thunk)));
+		call.addAll(specParts.subList(2, specParts.size()));
+		return listToCons(call);
+	}
+
+	/**
+	 * Expands {@code (uiop:with-safe-io-syntax ((&key package) &rest body))} into
+	 * {@code (uiop:call-with-safe-io-syntax (lambda () (let ((*package*)
+	 * (find-package package)) body...)))} -- upstream's own shape, over the binding
+	 * function in {@code uiop-stream.lisp}. The package form is evaluated once, inside
+	 * the call, exactly as upstream's backquote places it.
+	 * @param cons the with-safe-io-syntax expression
+	 * @return the expanded expression
+	 */
+	public static LispVal expandUiopWithSafeIoSyntax(LispCons cons) {
+		List<LispVal> parts = cons.toList();
+		if (parts.size() < 2 || !(parts.get(1) instanceof LispCons || parts.get(1) instanceof LispNil)) {
+			throw new UnsupportedOperationException(UiopExports.qualified(LispNames.WITH_SAFE_IO_SYNTAX)
+					+ " expects (with-safe-io-syntax ((&key package)) body...): " + cons.print());
+		}
+		List<LispVal> specParts = parts.get(1) instanceof LispCons specCons ? specCons.toList() : List.of();
+		LispVal pkg = new LispSymbol(":" + LispNames.CL_PKG);
+		for (int i = 0; i < specParts.size(); i++) {
+			if (specParts.get(i) instanceof LispSymbol key && ":PACKAGE".equals(key.name())) {
+				if (i + 1 >= specParts.size()) {
+					throw new UnsupportedOperationException(UiopExports.qualified(LispNames.WITH_SAFE_IO_SYNTAX)
+							+ " expects :package with a value: " + cons.print());
+				}
+				pkg = specParts.get(i + 1);
+				i++;
+			}
+			else {
+				throw new UnsupportedOperationException(UiopExports.qualified(LispNames.WITH_SAFE_IO_SYNTAX)
+						+ " supports only :package: " + cons.print());
+			}
+		}
+		List<LispVal> binding = new java.util.ArrayList<>();
+		binding.add(new LispSymbol(LispNames.PACKAGE_VAR));
+		binding.add(listToCons(List.of(new LispSymbol(LispNames.FIND_PACKAGE), pkg)));
+		List<LispVal> letForm = new java.util.ArrayList<>();
+		letForm.add(new LispSymbol(LispNames.LET));
+		letForm.add(listToCons(List.of(listToCons(binding))));
+		letForm.addAll(parts.subList(2, parts.size()));
+		List<LispVal> body = new java.util.ArrayList<>();
+		body.add(new LispSymbol(LispNames.LAMBDA));
+		body.add(LispNil.INSTANCE);
+		body.add(listToCons(letForm));
+		return listToCons(
+				List.of(new LispSymbol(UiopExports.qualified(LispNames.CALL_WITH_SAFE_IO_SYNTAX)), listToCons(body)));
+	}
+
+	/**
 	 * Expands {@code (uiop:uiop-debug key...)} into
 	 * {@code (uiop:load-uiop-debug-utility key...)}. Upstream additionally wraps it in an
 	 * {@code (eval-when (:compile-toplevel :load-toplevel :execute) ...)} so the debug
@@ -10471,6 +10660,11 @@ public final class LispMacroExpander {
 			case LispNames.WITH_PATHNAME_DEFAULTS -> expandUiopWithPathnameDefaults(cons);
 			case LispNames.WITH_ENOUGH_PATHNAME -> expandUiopWithEnoughPathname(cons);
 			case LispNames.WITH_CURRENT_DIRECTORY -> expandUiopWithCurrentDirectory(cons);
+			case LispNames.WITH_INPUT -> expandUiopWithInput(cons);
+			case LispNames.WITH_OUTPUT -> expandUiopWithOutput(cons);
+			case LispNames.WITH_INPUT_FILE -> expandUiopWithInputFile(cons);
+			case LispNames.WITH_OUTPUT_FILE -> expandUiopWithOutputFile(cons);
+			case LispNames.WITH_SAFE_IO_SYNTAX -> expandUiopWithSafeIoSyntax(cons);
 			case LispNames.UIOP_DEBUG -> expandUiopDebug(cons);
 			case LispNames.COMPATFMT -> expandUiopCompatfmt(cons);
 			// define-package is read-time surgery the package resolver performs, not an

@@ -199,6 +199,48 @@ signal names `CHDIR` on all four -- `getcwd` has no WASM answer), a nil dir just
 the thunk; the macro is a `LispMacroExpander` expansion over it (every uiop macro is),
 with the `MACRO_EXPANSION_CALLEES` row its expansion needs.
 
+`uiop/stream` part 1 (38/66, `uiop-stream.lisp` + five `LispMacroExpander`
+expansions, `.todo/359`) -- the "give me the contents" half: the `call-with-*`
+openers over the computed-option lowering behind `with-open-file` (upstream's
+own shape, so a function taking the options as arguments dispatches onto
+literal opens at run time), the `with-input` / `with-output` /
+`input-string` / `output-string` designator table in one helper each,
+`copy-stream-to-stream` / `concatenate-files` / `copy-file`,
+`slurp-stream-*` / `read-file-*`, `with-safe-io-syntax` /
+`call-with-safe-io-syntax` / `safe-read-from-string`, `eval-input` /
+`eval-thunk` / `standard-eval-thunk`, `file-stream-p` /
+`file-or-synonym-stream-p`, `finish-outputs` / `println` / `writeln` /
+`format!` / `safe-format!`. The five `with-*` are Java expansions over their
+functions -- except `with-input` / `with-output`, whose functions upstream
+defines but does NOT export: the table lives in the `%call-with-input` /
+`%call-with-output` prelude entries (a resource may only define inventory
+names), called by the expansions and by the exported designator readers, with
+the prelude surface-form rules beside `%temp-file-name`'s, the pathname
+arms' uiop rows (plus `eval-input` / `input-string` / `output-string`'s, the
+same edge through the front door) in `MACRO_EXPANSION_CALLEES`, and the two
+pruner roots beside `%temp-file-name`'s -- without the last the tree-shaker
+drops the entries the splice just added and only the pruner-free harnesses
+pass. Lite, one portable shape each: `:element-type` defaults to `'character` and `:external-format`
+to `:utf-8` (part 2's variables are still nil stubs the option check would
+refuse); `:if-exists` defaults to `:supersede` and `concatenate-files`
+spells it (upstream's `:error` / `:rename-and-delete` have no surface -- the
+lowering refuses `:error` loudly); `slurp-stream-forms` reads with `read`
+(no `read-preserving-whitespace` exists); `safe-read-from-string` reads
+through `with-input-from-string` + `read` (compile-path `read-from-string`
+takes one argument) and answers the object only; `call-with-output` over a
+string signals (`with-output-to-string` is fresh-string only); `:linewise`
+copy always ends lines with `terpri` (`read-line` answers one value);
+`*read-eval*` nil is honored on the interpreter while the compiled runtime
+readers refuse `#.` unconditionally (stricter, therefore safe).
+`safe-format!` never signals. `read-file-string` keeps its pinned chunked
+shape and is not redefined over the new openers. The slurp family and
+`copy-stream-to-stream` never close (upstream does): `close` signals on an
+already-closed stream here, so the upstream close-inside-plus-close-in-
+`with-open-file` composition would signal -- the owner (the file opener, the
+string-stream macro) closes exactly once, and a caller-owned stream handed
+directly to a slurper stays open. Part 2 (`.todo/360`) owns
+the other 28: temporary files, encodings, the standard streams.
+
 ## Selection, not pruning
 `UiopLibrary.process` prepends only the definitions the program reaches, to a fixpoint on a
 `PackageResolver.resolveProgram` copy. **`MACRO_EXPANSION_CALLEES` is the surface-form rule**

@@ -275,12 +275,15 @@ public final class LibraryDefunPruner {
 		// inside the expression compilers, after this walk.
 		// %make-array-et is reached from make-array's runtime-:element-type lowering,
 		// which also runs inside the expression compilers.
+		// %call-with-input / %call-with-output are reached from uiop:with-input's /
+		// uiop:with-output's expansions the same way (.todo/359).
 		for (String synthesized : List.of(LispNames.MAKE_BROADCAST_STREAM_INTERNAL, LispNames.TEMP_FILE_NAME,
 				LispNames.DELETE_FILE_IF_EXISTS, LispNames.STREAM_TARGET, LispNames.PRINT_CASED_INTERNAL,
 				LispNames.PRINT_CASE_FOLD_INTERNAL, LispNames.PRINT_RADIXED_INTERNAL, LispNames.PROBE_FILE,
 				LispNames.MAKE_ARRAY_ET_INTERNAL, LispNames.MAKE_ARRAY_ET_FP_INTERNAL,
 				LispNames.RUNTIME_PACKAGES_INTERNAL, LispNames.DO_SYMBOLS_LIST_INTERNAL,
-				LispNames.PACKAGE_SYMBOLS_WHERE_INTERNAL)) {
+				LispNames.PACKAGE_SYMBOLS_WHERE_INTERNAL, LispNames.CALL_WITH_INPUT_INTERNAL,
+				LispNames.CALL_WITH_OUTPUT_INTERNAL)) {
 			if (LispPreludeLibrary.referencedBySurfaceForm(synthesized, resolved, true)) {
 				roots.add(LispPreludeLibrary.definedName(synthesized));
 			}

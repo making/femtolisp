@@ -35,7 +35,7 @@ one member name:
 | [`uiop/os`](uiop/os.md) | host identity, the environment, the working directory | 22 / 22 |
 | [`uiop/pathname`](uiop/pathname.md) | the pathname algebra (`subpathname`, `parse-unix-namestring`, `enough-pathname`) | 50 / 50 |
 | [`uiop/filesystem`](uiop/filesystem.md) | probe, walk and mutate the file system | 32 / 32 |
-| `uiop/stream` | file contents, temporary files, encodings, the standard streams | 3 / 66 |
+| `uiop/stream` | file contents, temporary files, encodings, the standard streams | 38 / 66 |
 | [`uiop/image`](uiop/image.md) | exit, fatal conditions, the dump hooks, the command line | 30 / 30 |
 | `uiop/launch-program` | asynchronous subprocesses | 0 / 19 |
 | `uiop/run-program` | synchronous subprocesses | 0 / 7 |
@@ -70,15 +70,26 @@ honest identity, and the four mutating operations run where their primitives do
 | Function | Example | Result |
 |----------|---------|--------|
 | `uiop:read-file-string` | `(uiop:read-file-string "db/up.sql")` | the whole file as one string. Runs on every backend that can open a file for input. Lite: real UIOP's `&rest` keys are accepted and ignored (`:external-format` has no rontolisp surface — every backend reads UTF-8) |
+| `uiop:read-file-lines`, `uiop:read-file-line`, `uiop:read-file-forms`, `uiop:read-file-form` | `(uiop:read-file-lines "db/seed.sql")` | the file as lines, one line (`:at`), forms, one form (`:at`) — each over `call-with-input-file` and its `slurp-stream-*` reader |
+| `uiop:safe-read-file-line`, `uiop:safe-read-file-form`, `uiop:safe-read-from-string` | `(uiop:safe-read-from-string "(+ 1 2)")` | the safe-syntax readers: the file or string read under `with-safe-io-syntax` (`*read-eval*` nil). `safe-read-from-string` answers the object only |
+| `uiop:with-input-file`, `uiop:call-with-input-file`, `uiop:with-output-file`, `uiop:call-with-output-file` | `(uiop:with-output-file (out "x.txt") (write-line "hi" out))` | open the file and run the body/thunk with the stream. Lite: `:element-type` defaults to `'character`, `:external-format` to `:utf-8`, `:if-exists` to `:supersede` |
+| `uiop:with-input`, `uiop:input-string`, `uiop:with-output`, `uiop:output-string` | `(uiop:with-output (o nil) (write-string "x" o))` | coerce a stream designator (`nil`, `t`, a stream, a string, a pathname) to a stream. A `nil` output collects to a string; writing into a string signals |
+| `uiop:copy-file`, `uiop:concatenate-files`, `uiop:copy-stream-to-stream` | `(uiop:copy-file "a" "b")` | copy a file, concatenate files, copy a stream — binary both ways, truncating the target. The `:linewise` copy always ends lines with a newline |
+| `uiop:eval-input`, `uiop:eval-thunk`, `uiop:standard-eval-thunk` | `(uiop:eval-input "(+ 1 2) (* 3 4)")` | read and evaluate forms from a stream designator or string; the last form's values win |
+| `uiop:println`, `uiop:writeln`, `uiop:format!`, `uiop:safe-format!`, `uiop:finish-outputs` | `(uiop:println "hi")` | print with a trailing newline (`println` over `princ`, `writeln` over `write`), `format` flushed before and after, and the flush itself. `safe-format!` never signals |
+| `uiop:file-stream-p`, `uiop:file-or-synonym-stream-p` | `(uiop:file-stream-p s)` | exact kind tests over the stream value, recursing through synonym streams |
 | `uiop:compile-file-type` | `(uiop:compile-file-type)` | `nil` — the pathname type a compiled file carries. There is no `compile-file` here, so there is no such type, and a caller asking "is this path a fasl?" gets `no` for a source path |
 | `uiop:default-temporary-directory` | `(uiop:default-temporary-directory)` | `$TMPDIR` in directory form, or `#P"/tmp/"` when the environment is empty (both WASM backends without `--env`) |
 | `uiop:add-package-local-nickname` | `(uiop:add-package-local-nickname '#:j '#:com.example.pkg)` | register a package shorthand (lite: global, no per-package scoping). A literal top-level call is a compile-time directive, so it works on every backend |
 | `uiop:symbol-call` | `(uiop:symbol-call :cl :+ 1 2)` | look the name up in the package at run time and apply it — UIOP's late-binding call into a system the caller does not depend on |
 
-Three members outside the complete sub-packages are **macros**, expanded by the
+Eight members outside the complete sub-packages are **macros**, expanded by the
 compiler rather than called: `uiop:with-temporary-file`,
 [`uiop:with-deprecation`](macros/uiop-with-deprecation.md) and
 `uiop:define-package` (a literal top-level call is consumed like `defpackage`).
+The five `uiop/stream` ones — `uiop:with-input-file`, `uiop:with-output-file`,
+`uiop:with-input`, `uiop:with-output` and `uiop:with-safe-io-syntax` — expand
+over their `call-with-*` functions.
 `uiop/pathname`'s two macros — `uiop:with-pathname-defaults` and
 `uiop:with-enough-pathname` — are [on its page](uiop/pathname.md#relative-to-a-base).
 `uiop/filesystem`'s macro — `uiop:with-current-directory` — is

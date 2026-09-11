@@ -35,7 +35,7 @@
 | [`uiop/os`](uiop/os.md) | ホストの識別、環境変数、作業ディレクトリ | 22 / 22 |
 | [`uiop/pathname`](uiop/pathname.md) | パス名の代数 (`subpathname`、`parse-unix-namestring`、`enough-pathname`) | 50 / 50 |
 | [`uiop/filesystem`](uiop/filesystem.md) | ファイルシステムの探索・走査・変更 | 32 / 32 |
-| `uiop/stream` | ファイル内容、一時ファイル、エンコーディング、標準ストリーム | 3 / 66 |
+| `uiop/stream` | ファイル内容、一時ファイル、エンコーディング、標準ストリーム | 38 / 66 |
 | [`uiop/image`](uiop/image.md) | 終了、致命的コンディション、ダンプフック、コマンドライン | 30 / 30 |
 | `uiop/launch-program` | 非同期のサブプロセス | 0 / 19 |
 | `uiop/run-program` | 同期のサブプロセス | 0 / 7 |
@@ -69,15 +69,26 @@
 | 関数 | 例 | 結果 |
 |----------|---------|--------|
 | `uiop:read-file-string` | `(uiop:read-file-string "db/up.sql")` | ファイルの内容全体を 1 つの文字列として返します。ファイルを入力用に開けるすべてのバックエンドで動きます。lite 版: 本家 UIOP の `&rest` キーワードは受け付けて無視します (`:external-format` は rontolisp には存在せず、どのバックエンドも UTF-8 で読みます) |
+| `uiop:read-file-lines`, `uiop:read-file-line`, `uiop:read-file-forms`, `uiop:read-file-form` | `(uiop:read-file-lines "db/seed.sql")` | ファイルを行のリスト・1 行 (`:at`)・フォームのリスト・1 フォーム (`:at`) として読みます — いずれも `call-with-input-file` と対応する `slurp-stream-*` 読み取り経由です |
+| `uiop:safe-read-file-line`, `uiop:safe-read-file-form`, `uiop:safe-read-from-string` | `(uiop:safe-read-from-string "(+ 1 2)")` | 安全構文の読み取り群: `with-safe-io-syntax` (`*read-eval*` は nil) の下でファイルや文字列を読みます。`safe-read-from-string` はオブジェクトのみを返します |
+| `uiop:with-input-file`, `uiop:call-with-input-file`, `uiop:with-output-file`, `uiop:call-with-output-file` | `(uiop:with-output-file (out "x.txt") (write-line "hi" out))` | ファイルを開きストリームを本体・thunk に渡して実行します。lite 版: `:element-type` の既定は `'character`、`:external-format` は `:utf-8`、`:if-exists` は `:supersede` です |
+| `uiop:with-input`, `uiop:input-string`, `uiop:with-output`, `uiop:output-string` | `(uiop:with-output (o nil) (write-string "x" o))` | ストリーム指示子 (`nil`・`t`・ストリーム・文字列・パス名) をストリームに強制します。`nil` 出力は文字列に集めます。文字列への書き込みはシグナルします |
+| `uiop:copy-file`, `uiop:concatenate-files`, `uiop:copy-stream-to-stream` | `(uiop:copy-file "a" "b")` | ファイル複写・連結・ストリーム複写 — 双方向バイナリで、出力先は切り詰めます。`:linewise` 複写は常に行末に改行を付けます |
+| `uiop:eval-input`, `uiop:eval-thunk`, `uiop:standard-eval-thunk` | `(uiop:eval-input "(+ 1 2) (* 3 4)")` | ストリーム指示子や文字列からフォームを読み評価します。最後のフォームの値が答えです |
+| `uiop:println`, `uiop:writeln`, `uiop:format!`, `uiop:safe-format!`, `uiop:finish-outputs` | `(uiop:println "hi")` | 末尾改行付き出力 (`println` は `princ`・`writeln` は `write` 経由)、前後でフラッシュする `format`、フラッシュ本体。`safe-format!` は決してシグナルしません |
+| `uiop:file-stream-p`, `uiop:file-or-synonym-stream-p` | `(uiop:file-stream-p s)` | ストリーム値に対する厳密な種別判定で、同義ストリームを再帰的にたどります |
 | `uiop:compile-file-type` | `(uiop:compile-file-type)` | `nil` — コンパイル済みファイルが持つパス名の型。ここには `compile-file` が存在せずそのような型もないため、「このパスは fasl か?」を問う呼び出し側はソースパスに対して「いいえ」を得ます |
 | `uiop:default-temporary-directory` | `(uiop:default-temporary-directory)` | `$TMPDIR` をディレクトリ形式で。環境変数が空の場合 (`--env` なしの 2 つの WASM バックエンド) は `#P"/tmp/"` |
 | `uiop:add-package-local-nickname` | `(uiop:add-package-local-nickname '#:j '#:com.example.pkg)` | パッケージ短縮名を登録 (lite: グローバル、パッケージごとのスコープなし)。リテラルなトップレベル呼び出しはコンパイル時ディレクティブなので、すべてのバックエンドで動作します |
 | `uiop:symbol-call` | `(uiop:symbol-call :cl :+ 1 2)` | 実行時にパッケージから名前を引いて適用します — 依存関係に持たないシステムを呼ぶための UIOP の遅延束縛呼び出しです |
 
-完全実装済みサブパッケージ以外の 3 つのメンバは**マクロ**で、呼び出されるのではなく
+完全実装済みサブパッケージ以外の 8 つのメンバは**マクロ**で、呼び出されるのではなく
 コンパイラが展開します: `uiop:with-temporary-file`、
 [`uiop:with-deprecation`](macros/uiop-with-deprecation.md)、
 `uiop:define-package` (リテラルなトップレベル呼び出しは `defpackage` と同様に処理されます)。
+`uiop/stream` の 5 つ — `uiop:with-input-file`、`uiop:with-output-file`、
+`uiop:with-input`、`uiop:with-output`、`uiop:with-safe-io-syntax` — は対応する
+`call-with-*` 関数への展開です。
 `uiop/pathname` の 2 つのマクロ — `uiop:with-pathname-defaults` と
 `uiop:with-enough-pathname` — は[そのページ](uiop/pathname.md)にあります。
 `uiop/filesystem` のマクロ — `uiop:with-current-directory` — は

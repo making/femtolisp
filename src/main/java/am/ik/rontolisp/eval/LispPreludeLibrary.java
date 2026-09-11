@@ -1537,6 +1537,42 @@ public final class LispPreludeLibrary {
 				                                 %tfn-t)))
 				        (unless (probe-file %tfn-c) (setq %tfn-n %tfn-c))))))
 				""");
+		// The uiop/stream designator tables (.todo/359): upstream defines
+		// call-with-input and call-with-output but does NOT export them, so no
+		// uiop resource may define them -- they live here, called by the
+		// with-input / with-output Java expansions and by the exported designator
+		// readers (input-string, output-string, eval-input) in uiop-stream.lisp.
+		// A stream is used as-is, nil is the standard stream, t is the
+		// terminal/console stream, a string is a string stream, a pathname is
+		// opened. The string arm of the output side refuses loudly:
+		// with-output-to-string is fresh-string only (no fill-pointer append
+		// surface), so there is nothing honest to append to.
+		SOURCES.put(LispNames.CALL_WITH_INPUT_INTERNAL, """
+				(defun %call-with-input (%cwi-input %cwi-function &key ((:keys %cwi-keys)))
+				  (cond ((null %cwi-input) (funcall %cwi-function *standard-input*))
+				        ((eql %cwi-input t) (funcall %cwi-function *terminal-io*))
+				        ((streamp %cwi-input) (funcall %cwi-function %cwi-input))
+				        ((stringp %cwi-input)
+				         (with-input-from-string (%cwi-s %cwi-input)
+				           (funcall %cwi-function %cwi-s)))
+				        ((pathnamep %cwi-input)
+				         (apply #'uiop/stream:call-with-input-file %cwi-input %cwi-function %cwi-keys))
+				        (t (error "CALL-WITH-INPUT: invalid input designator ~S" %cwi-input))))
+				""");
+		SOURCES.put(LispNames.CALL_WITH_OUTPUT_INTERNAL, """
+				(defun %call-with-output (%cwo-output %cwo-function &key ((:element-type %cwo-element-type) 'character))
+				  (cond ((null %cwo-output)
+				         (with-output-to-string (%cwo-s) (funcall %cwo-function %cwo-s)))
+				        ((eql %cwo-output t) (funcall %cwo-function *standard-output*))
+				        ((streamp %cwo-output) (funcall %cwo-function %cwo-output))
+				        ((stringp %cwo-output)
+				         (error "CALL-WITH-OUTPUT: writing into a string is not supported on rontolisp: ~S"
+				                %cwo-output))
+				        ((pathnamep %cwo-output)
+				         (uiop/stream:call-with-output-file %cwo-output %cwo-function
+				                                            :element-type %cwo-element-type))
+				        (t (error "CALL-WITH-OUTPUT: invalid output designator ~S" %cwo-output))))
+				""");
 		SOURCES.put(LispNames.CHAR_NAME, """
 				(defun char-name (c)
 				  (let ((cp (char-code c)))
@@ -3166,6 +3202,19 @@ public final class LispPreludeLibrary {
 		// mirror-image decision for the uiop half of the same expansion.
 		if (LispNames.TEMP_FILE_NAME.equals(entry)) {
 			return referencesName(program, LispNames.UIOP_WITH_TEMPORARY_FILE_QUALIFIED, canonical);
+		}
+		// The entries uiop:with-input's and uiop:with-output's EXPANSIONS call
+		// (.todo/359). Same timing problem: the expansions run inside the
+		// expression compilers, long after this pass, so the reference this
+		// selection would look for does not exist yet. The uiop halves of the
+		// same expansions -- the pathname arms opening through
+		// call-with-input-file / call-with-output-file -- are covered by
+		// UiopLibrary's mirror-image table.
+		if (LispNames.CALL_WITH_INPUT_INTERNAL.equals(entry)) {
+			return referencesName(program, LispNames.UIOP_WITH_INPUT_QUALIFIED, canonical);
+		}
+		if (LispNames.CALL_WITH_OUTPUT_INTERNAL.equals(entry)) {
+			return referencesName(program, LispNames.UIOP_WITH_OUTPUT_QUALIFIED, canonical);
 		}
 		// The uiop lowerings expandUiopStubCall performs inside the expression
 		// compilers, after this pass: uiop:file-exists-p becomes (probe-file x) and
