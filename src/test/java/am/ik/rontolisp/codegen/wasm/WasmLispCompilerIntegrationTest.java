@@ -7280,6 +7280,33 @@ class WasmLispCompilerIntegrationTest {
 	}
 
 	@Test
+	void removeDuplicatesBoundingKeywords() throws Exception {
+		// remove-duplicates takes the same 17.2.1 set, but its window bounds which
+		// elements are CONSIDERED: one outside :start/:end is kept verbatim rather than
+		// dropped from the answer (.kb/sequence-bounding-keywords.md). The duplicate is
+		// looked for inside the window by index, on whichever side of the element the
+		// direction picks -- and the direction may be COMPUTED, which is one loop over
+		// two index bounds rather than two loops.
+		String source = """
+				(print (remove-duplicates '(0 1 2 3 1 2 3 9) :start 2 :end 6))
+				(print (remove-duplicates '(0 1 2 3 1 2 3 9) :start 2 :end 6 :from-end t))
+				(print (remove-duplicates '(0 1 2 3 1 2 3 9) :end 6))
+				(print (remove-duplicates "abcabc" :start 1))
+				(print (remove-duplicates '(a b c d a e f d g) :test-not #'eql))
+				(print (delete-duplicates (list 1 2 3 1 3 1 2 4) :start 0 :end nil))
+				(print (remove-duplicates '(1 2 1 3 2) :from-end (> 1 0)))
+				""";
+		assertThat(compileAndRunPrelude(source)).isEqualTo("""
+				(0 1 3 1 2 3 9)
+				(0 1 2 3 1 3 9)
+				(0 3 1 2 3 9)
+				"aabc"
+				(G)
+				(3 1 2 4)
+				(1 2 3)""");
+	}
+
+	@Test
 	void sequenceOpRuntimeArmRouting() throws Exception {
 		// The narrowing gate of .kb/sequence-op-runtimes.md, from both sides IN ONE
 		// PROGRAM: sites whose destination this compile proves to be an array call the

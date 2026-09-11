@@ -747,8 +747,49 @@ class LispMacroExpanderTest {
 			.contains("(FUNCALL |__remove_k3| |__remove_item| (CAR |__remove_cur|))");
 	}
 
+	@Test
+	void aBoundedRemoveDuplicatesLooksForTheDuplicateInsideTheWindow() {
+		// The piecewise rule, here too: a call that spells no bound and a LITERAL
+		// direction keeps the member-over-the-tail loop it always expanded to -- no
+		// element index, no inner bounded scan.
+		String plain = dedupExpansionOf("(remove-duplicates lst)");
+		assertThat(plain).contains("(MEMBER (CAR |__rd_cur|) (CDR |__rd_cur|))")
+			.doesNotContain("|__rd_i|")
+			.doesNotContain("(POSITION ");
+		assertThat(dedupExpansionOf("(remove-duplicates lst :from-end t)"))
+			.contains("(MEMBER (CAR |__rd_cur|) |__rd_acc|)")
+			.doesNotContain("|__rd_i|");
+		// :start/:end bound which elements are CONSIDERED: one outside the window is
+		// kept verbatim (the guard's else arm accumulates instead of skipping) and the
+		// duplicate is looked for by INDEX inside the window, never in a (subseq ...).
+		String bounded = dedupExpansionOf("(remove-duplicates lst :start 1 :end 3)");
+		assertThat(bounded)
+			.contains("(IF (AND (>= |__rd_i| |__rd_lo|) (IF |__rd_hi| (< |__rd_i| |__rd_hi|) T)) "
+					+ "(IF (POSITION (CAR |__rd_cur|) |__seq_lst| :START (+ |__rd_i| 1) :END |__rd_hi|) NIL "
+					+ "(SETQ |__rd_acc| (CONS (CAR |__rd_cur|) |__rd_acc|))) "
+					+ "(SETQ |__rd_acc| (CONS (CAR |__rd_cur|) |__rd_acc|)))")
+			.doesNotContain("(SUBSEQ ");
+		// :from-end moves that window to the other side of the element, keeping the
+		// FIRST occurrence ...
+		assertThat(dedupExpansionOf("(remove-duplicates lst :start 1 :from-end t)"))
+			.contains("(POSITION (CAR |__rd_cur|) |__seq_lst| :START |__rd_lo| :END |__rd_i|)");
+		// ... so a COMPUTED direction is a branch over those two index bounds rather
+		// than over two loops, which is why it no longer has to be a literal.
+		assertThat(dedupExpansionOf("(remove-duplicates lst :from-end (f))")).contains(
+				"(POSITION (CAR |__rd_cur|) |__seq_lst| :START (IF |__rd_dir| 0 (+ |__rd_i| 1)) :END (IF |__rd_dir| |__rd_i| NIL))");
+		// The :test-not pair forwards to the inner scan as it does to the inner member,
+		// and the :key is applied to the candidate before it (position's own :key covers
+		// the sequence side only).
+		assertThat(dedupExpansionOf("(remove-duplicates lst :end 3 :test-not #'eq :key #'car)")).contains(
+				"(POSITION (FUNCALL #'CAR (CAR |__rd_cur|)) |__seq_lst| :START (+ |__rd_i| 1) :END |__rd_hi| :TEST-NOT #'EQ :KEY #'CAR)");
+	}
+
 	private static String removeExpansionOf(String call) {
 		return LispMacroExpander.expandRemove((LispCons) LispReader.readAllFromString(call).get(0)).print();
+	}
+
+	private static String dedupExpansionOf(String call) {
+		return LispMacroExpander.expandRemoveDuplicates((LispCons) LispReader.readAllFromString(call).get(0)).print();
 	}
 
 	private static @org.jspecify.annotations.Nullable String problemOf(String call) {

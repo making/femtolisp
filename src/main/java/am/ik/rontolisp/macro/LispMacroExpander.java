@@ -5038,6 +5038,28 @@ public final class LispMacroExpander {
 		return listToCons(parts);
 	}
 
+	// memberCallForm's BOUNDED twin: (position item seq :start s :end e :test ... :key
+	// ...), for a set-style scan that must compare an element against a WINDOW of the
+	// sequence rather than against a tail or an accumulator. The item side is pre-keyed
+	// by the caller exactly as memberCallForm's is, since position's own :key covers the
+	// sequence side only. The position family already walks from :start (its scan
+	// nthcdrs there) and stops at :end, so the inner scan costs what the member call it
+	// replaces cost.
+	private static LispVal positionCallForm(LispVal item, LispVal seq, LispVal startForm, LispVal endForm,
+			TestSpec testSpec, @Nullable LispVal keyForm) {
+		List<LispVal> parts = new java.util.ArrayList<>(List.of(new LispSymbol(LispNames.POSITION), item, seq,
+				new LispSymbol(LispNames.START_KEYWORD), startForm, new LispSymbol(LispNames.END_KEYWORD), endForm));
+		if (testSpec.form() != null) {
+			parts.add(new LispSymbol(testSpec.negated() ? LispNames.TEST_NOT_KEYWORD : LispNames.TEST_KEYWORD));
+			parts.add(testSpec.form());
+		}
+		if (keyForm != null) {
+			parts.add(new LispSymbol(LispNames.KEY_KEYWORD));
+			parts.add(keyForm);
+		}
+		return listToCons(parts);
+	}
+
 	/**
 	 * Expands (find item seq) into the shared position-family scan, returning the
 	 * matching ELEMENT rather than its index (see {@code buildPositionScan}). Like
@@ -5677,10 +5699,24 @@ public final class LispMacroExpander {
 
 		private final String prefix;
 
+		private final boolean forcedIndex;
+
 		SeqScanScaffold(SeqScanBounds bounds, LispVal listForm, String prefix, boolean cells) {
+			this(bounds, listForm, prefix, cells, false);
+		}
+
+		/**
+		 * {@code forceIndex} makes the scan carry its element index even when no
+		 * {@code :start}/{@code :end} was spelled -- for a scan whose BODY needs the
+		 * index for something other than the guard (the duplicate window of
+		 * {@code remove-duplicates}). It adds the index binding and nothing else: with no
+		 * bounding keyword there is still no guard and no {@code lo}/{@code hi}.
+		 */
+		SeqScanScaffold(SeqScanBounds bounds, LispVal listForm, String prefix, boolean cells, boolean forceIndex) {
 			this.bounds = bounds;
 			this.listForm = listForm;
 			this.prefix = prefix;
+			this.forcedIndex = forceIndex;
 			this.cellList = cells && bounds.fromEnd() != null;
 			this.seq = new LispSymbol(prefix + "_seq");
 			this.walk = new LispSymbol(prefix + "_walk");
@@ -5713,9 +5749,31 @@ public final class LispMacroExpander {
 			return callOf(LispNames.CAR, cellOf(cursor));
 		}
 
+		/** The element index the scan walks with; valid once {@link #addBindings} ran. */
+		LispSymbol indexVar() {
+			return this.idx;
+		}
+
+		/**
+		 * The scan's inclusive lower index bound as a form -- the literal 0 when
+		 * {@code :start} was not spelled. Only meaningful for a FORWARD scan (no
+		 * {@code :from-end}), where the bound is in the sequence's own coordinates.
+		 */
+		LispVal lowBound() {
+			return needsLo() ? this.lo : new LispInteger(0);
+		}
+
+		/**
+		 * The scan's exclusive upper index bound as a form -- nil ("to the end") when
+		 * {@code :end} was not spelled. Forward scans only, like {@link #lowBound}.
+		 */
+		LispVal highBound() {
+			return needsHi() ? this.hi : LispNil.INSTANCE;
+		}
+
 		/** The scan's extra do-loop bindings: the element index and the count budget. */
 		void addBindings(List<LispVal> bindings) {
-			if (this.bounds.indexed()) {
+			if (this.bounds.indexed() || this.forcedIndex) {
 				bindings.add(listToCons(List.of(this.idx, new LispInteger(0),
 						listToCons(List.of(new LispSymbol(LispNames.ADD), this.idx, new LispInteger(1))))));
 			}
@@ -6391,13 +6449,13 @@ public final class LispMacroExpander {
 	 * Expands (remove-duplicates lst) into a do scan that accumulates (in reverse) every
 	 * element that does not occur again later in the list, then reverses the accumulator
 	 * back to source order. Elements are compared with {@code eql} via {@code member}, so
-	 * the last occurrence of each element is kept (Common Lisp's default); a literal
-	 * {@code :from-end t} keeps the FIRST occurrence instead (the scan then tests the
-	 * candidate against the already-kept accumulator rather than the tail). The
-	 * {@code :test}/{@code :key} keywords forward to the inner {@code member}; the
-	 * {@code :key} selector applies to both sides of the comparison (CL semantics).
-	 * {@code delete-duplicates} shares this lowering: its contract lets the caller use
-	 * only the RESULT, so the non-destructive rendering is conforming (the
+	 * the last occurrence of each element is kept (Common Lisp's default); {@code
+	 * :from-end t} keeps the FIRST occurrence instead (the scan then tests the candidate
+	 * against the already-kept accumulator rather than the tail). The
+	 * {@code :test}/{@code :test-not}/{@code :key} keywords forward to the inner
+	 * {@code member}; the {@code :key} selector applies to both sides of the comparison
+	 * (CL semantics). {@code delete-duplicates} shares this lowering: its contract lets
+	 * the caller use only the RESULT, so the non-destructive rendering is conforming (the
 	 * {@code sort}-via-{@code stable-sort} precedent).
 	 * @param cons the remove-duplicates expression
 	 * @return the expanded expression
@@ -6418,40 +6476,112 @@ public final class LispMacroExpander {
 		List<LispVal> parts = cons.toList();
 		String operator = cons.car() instanceof LispSymbol op ? LispSymbol.memberName(op.name())
 				: LispNames.REMOVE_DUPLICATES;
-		LispVal keywordError = keywordTailError(cons, operator, parts, 2, LispNames.TEST_KEYWORD, LispNames.KEY_KEYWORD,
+		LispVal keywordError = keywordTailError(cons, operator, parts, 2, LispNames.TEST_KEYWORD,
+				LispNames.TEST_NOT_KEYWORD, LispNames.KEY_KEYWORD, LispNames.START_KEYWORD, LispNames.END_KEYWORD,
 				LispNames.FROM_END_KEYWORD);
 		if (keywordError != null) {
 			return keywordError;
 		}
-		KeywordTail tail = KeywordTail.of(parts, 2, "__rd");
-		parts = tail.parts();
-		TestSpec testForm = testSpec(parts, 2);
-		LispVal keyForm = keywordValue(parts, 2, LispNames.KEY_KEYWORD);
-		LispVal fromEndForm = keywordValue(parts, 2, LispNames.FROM_END_KEYWORD);
-		if (fromEndForm != null && !(fromEndForm instanceof LispNil) && !(fromEndForm instanceof LispTrue)) {
-			// The direction changes the expansion's shape, so it must be knowable here.
-			throw new IllegalArgumentException(operator + " expects a literal t or nil for :from-end");
+		if (parts.size() < 2) {
+			return programErrorForm(cons, operator + " expects at least 1 argument, got 0");
 		}
-		boolean fromEnd = fromEndForm instanceof LispTrue;
+		KeywordTail tail = KeywordTail.of(parts, 2, "__rd");
+		List<LispVal> call = tail.parts();
+		TestSpec testForm = testSpec(call, 2);
+		LispVal keyForm = keywordValue(call, 2, LispNames.KEY_KEYWORD);
+		LispVal fromEndForm = keywordValue(call, 2, LispNames.FROM_END_KEYWORD);
+		SeqScanBounds bounds = new SeqScanBounds(keywordValue(call, 2, LispNames.START_KEYWORD),
+				keywordValue(call, 2, LispNames.END_KEYWORD), null, null);
+		// The direction decides which side of the element the duplicate is looked for on,
+		// so a literal one is folded away and only a COMPUTED one costs a runtime branch.
+		boolean keepFirst = fromEndForm != null && isLiteralTrue(fromEndForm);
+		boolean literalDirection = fromEndForm == null || keepFirst || isLiteralNil(fromEndForm);
+		if (literalDirection && !bounds.indexed()) {
+			return tail.wrap(seqResultDispatchForm(call.get(1), lst -> dedupScan(lst, testForm, keyForm, keepFirst),
+					arraysExist, false));
+		}
+		LispVal direction = literalDirection ? null : fromEndForm;
+		return tail.wrap(seqResultDispatchForm(call.get(1),
+				lst -> boundedDedupScan(lst, bounds, direction, keepFirst, testForm, keyForm), arraysExist, false));
+	}
+
+	/**
+	 * The unbounded scan, which is the loop {@code remove-duplicates} has always expanded
+	 * to: an element is dropped when the inner {@code member} finds it again -- in the
+	 * TAIL for the keep-last default, in the already-kept accumulator for
+	 * {@code :from-end t} (keep-first).
+	 *
+	 * <pre>
+	 * (do ((__rd_acc nil) (__rd_cur lst (cdr __rd_cur)))
+	 *     ((atom __rd_cur) (nreverse __rd_acc))
+	 *   (if (member (car __rd_cur) DUPS [:test fn] [:key fn]) nil
+	 *       (setq __rd_acc (cons (car __rd_cur) __rd_acc))))
+	 * </pre>
+	 */
+	private static LispVal dedupScan(LispVal list, TestSpec testForm, @Nullable LispVal keyForm, boolean keepFirst) {
 		LispSymbol acc = new LispSymbol("__rd_acc");
 		LispSymbol cur = new LispSymbol("__rd_cur");
-		// (do ((__rd_acc nil) (__rd_cur lst (cdr __rd_cur)))
-		// ((atom __rd_cur) (reverse __rd_acc))
-		// (if (member (car __rd_cur) DUPS [:test fn] [:key fn]) nil
-		// (setq __rd_acc (cons (car __rd_cur) __rd_acc))))
-		// where DUPS is the tail (cdr __rd_cur) for the keep-last default and the
-		// already-kept accumulator for :from-end t (keep-first).
-		return tail.wrap(seqResultDispatchForm(parts.get(1), lst -> {
-			LispVal bindings = listToCons(List.of(listToCons(List.of(acc, LispNil.INSTANCE)),
-					listToCons(List.of(cur, lst, callOf(LispNames.CDR, cur)))));
-			LispVal endClause = listToCons(List.of(callOf(LispNames.ATOM, cur), nreverseListForm(acc)));
-			LispVal dup = memberCallForm(keyedForm(keyForm, callOf(LispNames.CAR, cur)),
-					fromEnd ? acc : callOf(LispNames.CDR, cur), testForm, keyForm);
-			LispVal keep = listToCons(List.of(new LispSymbol(LispNames.SETQ), acc,
-					listToCons(List.of(new LispSymbol(LispNames.CONS), callOf(LispNames.CAR, cur), acc))));
-			LispVal body = makeIf(dup, LispNil.INSTANCE, keep);
-			return expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body)));
-		}, arraysExist, false));
+		LispVal bindings = listToCons(List.of(listToCons(List.of(acc, LispNil.INSTANCE)),
+				listToCons(List.of(cur, list, callOf(LispNames.CDR, cur)))));
+		LispVal endClause = listToCons(List.of(callOf(LispNames.ATOM, cur), nreverseListForm(acc)));
+		LispVal dup = memberCallForm(keyedForm(keyForm, callOf(LispNames.CAR, cur)),
+				keepFirst ? acc : callOf(LispNames.CDR, cur), testForm, keyForm);
+		LispVal keep = listToCons(List.of(new LispSymbol(LispNames.SETQ), acc,
+				listToCons(List.of(new LispSymbol(LispNames.CONS), callOf(LispNames.CAR, cur), acc))));
+		LispVal body = makeIf(dup, LispNil.INSTANCE, keep);
+		return expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body)));
+	}
+
+	/**
+	 * The scan a {@code :start}/{@code :end} -- or a COMPUTED {@code :from-end} -- asks
+	 * for. CLHS 17.2.1's window here bounds which elements are CONSIDERED: one outside it
+	 * is kept verbatim, never compared and never handed to a designator, so the scaffold
+	 * guard's "kept" arm is the accumulate arm rather than a skip.
+	 *
+	 * <p>
+	 * Inside the window the duplicate is looked for with the position family's own
+	 * bounded scan instead of {@code member} over a tail, which is what lets ONE loop
+	 * serve both directions: keep-last looks in {@code [i+1, end)} and keep-first in
+	 * {@code [start, i)}, so a computed {@code :from-end} is a branch over two INDEX
+	 * bounds rather than over two loops. It is also exactly how the standard defines the
+	 * operator (and how ANSI's own reference implementation spells it).
+	 *
+	 * <pre>
+	 * (do ((__rd_acc nil) (__rd_i 0 (+ __rd_i 1)) (__rd_cur lst (cdr __rd_cur)))
+	 *     ((atom __rd_cur) (nreverse __rd_acc))
+	 *   (if IN-WINDOW
+	 *       (if (position (car __rd_cur) lst :start LO :end HI [:test fn] [:key fn]) nil KEEP)
+	 *       KEEP))
+	 * </pre>
+	 */
+	private static LispVal boundedDedupScan(LispVal list, SeqScanBounds bounds, @Nullable LispVal directionForm,
+			boolean keepFirst, TestSpec testForm, @Nullable LispVal keyForm) {
+		SeqScanScaffold scan = new SeqScanScaffold(bounds, list, "__rd", false, true);
+		LispSymbol acc = new LispSymbol("__rd_acc");
+		LispSymbol cur = new LispSymbol("__rd_cur");
+		LispSymbol direction = new LispSymbol("__rd_dir");
+		LispVal element = scan.elementOf(cur);
+		LispVal after = listToCons(List.of(new LispSymbol(LispNames.ADD), scan.indexVar(), new LispInteger(1)));
+		LispVal lower = keepFirst ? scan.lowBound() : after;
+		LispVal upper = keepFirst ? scan.indexVar() : scan.highBound();
+		if (directionForm != null) {
+			lower = makeIf(direction, scan.lowBound(), after);
+			upper = makeIf(direction, scan.indexVar(), scan.highBound());
+		}
+		LispVal dup = positionCallForm(keyedForm(keyForm, element), list, lower, upper, testForm, keyForm);
+		LispVal keep = listToCons(List.of(new LispSymbol(LispNames.SETQ), acc,
+				listToCons(List.of(new LispSymbol(LispNames.CONS), element, acc))));
+		List<LispVal> bindings = new ArrayList<>(List.of(listToCons(List.of(acc, LispNil.INSTANCE)),
+				listToCons(List.of(cur, scan.cursorInit(), callOf(LispNames.CDR, cur)))));
+		scan.addBindings(bindings);
+		LispVal endClause = listToCons(List.of(callOf(LispNames.ATOM, cur), scan.finish(acc)));
+		LispVal body = scan.select(dup, LispNil.INSTANCE, keep, true);
+		LispVal loop = scan.wrap(expandDo(
+				(LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), listToCons(bindings), endClause, body))));
+		// The direction binds OUTSIDE the scan's own let chain; every value in it is a
+		// variable or a literal by now (KeywordTail hoisted the rest in source order), so
+		// nothing here can move an evaluation.
+		return directionForm == null ? loop : makeLet(direction.name(), directionForm, loop);
 	}
 
 	/**

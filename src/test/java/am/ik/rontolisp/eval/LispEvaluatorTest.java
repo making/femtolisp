@@ -4821,6 +4821,47 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void evalRemoveDuplicatesTakesTheBoundingKeywords() {
+		// CLHS 17.2.1's window bounds which elements are CONSIDERED here: one outside
+		// :start/:end is kept VERBATIM and never compared, which is not what the same
+		// keywords do to remove/count (.kb/sequence-bounding-keywords.md).
+		assertThat(eval("(remove-duplicates '(0 1 2 3 1 2 3 9) :start 2 :end 6)").print()).isEqualTo("(0 1 3 1 2 3 9)");
+		assertThat(eval("(remove-duplicates '(0 1 2 3 1 2 3 9) :start 2 :end 6 :from-end t)").print())
+			.isEqualTo("(0 1 2 3 1 3 9)");
+		assertThat(eval("(remove-duplicates '(0 1 2 3 1 2 3 9) :start 2)").print()).isEqualTo("(0 1 1 2 3 9)");
+		assertThat(eval("(remove-duplicates '(0 1 2 3 1 2 3 9) :end 6)").print()).isEqualTo("(0 3 1 2 3 9)");
+		// A nil bound is the default one, as everywhere else in 17.2.1.
+		assertThat(eval("(remove-duplicates '(0 1 2 3 1 2 3 9) :start nil :end nil)").print()).isEqualTo("(0 1 2 3 9)");
+		assertThat(eval("(delete-duplicates (list 1 2 3 1 3 1 2 4) :start 0 :end nil)").print()).isEqualTo("(3 1 2 4)");
+		// The window travels through the sequence dispatch, so a string and a vector are
+		// rebuilt from the same bounded scan.
+		assertThat(eval("(remove-duplicates \"abcabc\" :start 1)").print()).isEqualTo("\"aabc\"");
+		assertThat(eval("(remove-duplicates #(1 2 1 2) :start 1)").print()).isEqualTo("#(1 1 2)");
+		// :test-not is the family's complemented equality designator here too.
+		assertThat(eval("(remove-duplicates '(a b c d a e f d g) :test-not #'eql)").print()).isEqualTo("(G)");
+		assertThat(eval("(remove-duplicates '((1 a) (1 b) (2 c)) :test-not #'= :key #'car)").print())
+			.isEqualTo("((2 C))");
+		// A COMPUTED :from-end is a branch over two index bounds inside ONE loop -- it
+		// used to be rejected outright, which is what ANSI's remove-duplicates.order.1
+		// (a :from-end that counts its own evaluation) failed on.
+		assertThat(eval("(remove-duplicates '(1 2 1 3 2) :from-end (> 1 0))").print()).isEqualTo("(1 2 3)");
+		assertThat(eval("(remove-duplicates '(1 2 1 3 2) :from-end (> 0 1))").print()).isEqualTo("(1 3 2)");
+		// Every keyword value is evaluated once, in the order the call spells it
+		// (ANSI's remove-duplicates.order.1, verbatim).
+		assertThat(evalMulti("""
+				(let ((i 0) (a nil) (b nil) (c nil) (d nil) (e nil) (f nil))
+				  (list (remove-duplicates
+				          (progn (setf a (incf i)) (list 1 2 3 1 3 1 2 4))
+				          :from-end (progn (setf b (incf i)) nil)
+				          :start (progn (setf c (incf i)) 0)
+				          :end (progn (setf d (incf i)) nil)
+				          :key (progn (setf e (incf i)) #'identity)
+				          :test (progn (setf f (incf i)) #'=))
+				        i a b c d e f))
+				""").print()).isEqualTo("((3 1 2 4) 6 1 2 3 4 5 6)");
+	}
+
+	@Test
 	void evalButlast() {
 		assertThat(eval("(butlast '(1 2 3))").print()).isEqualTo("(1 2)");
 		assertThat(eval("(butlast '(1))")).isSameAs(LispNil.INSTANCE);
