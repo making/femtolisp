@@ -177,6 +177,31 @@ backend's operator set at all, so a program using one is already refused at
 compile time. Its `sqrt` is a bare `f64.sqrt`, so a negative argument keeps the
 NaN -- the one documented place where that answer survives.
 
+## The two-argument `atan` and `log` (`.todo/762`, 2026-09-11)
+
+- `(atan y x)` is `WasmComplexCompiler.compileAtan2`, which runs `phase`'s OWN
+  `emitAtan2Into` -- so the axes and the signed zeros are exact constants
+  (`0.0`, `-0.0`, `+-pi/2`, `+-pi`) on this backend too, and only the off-axis
+  values carry the software atan core's ~1e-9. Both arguments must be real; a
+  SYNTACTIC complex lands in `_type_err_real` through `emitRealOperandGuard`
+  (renamed from `emitMinMaxComplexGuard`, which min/max still shares), the same
+  syntactic-steering corner min/max has always had.
+- `(log n base)` is `compileLogBase`: the quotient of two logarithms, with the
+  complex-capable spelling running both through `compileLogOf` and dividing
+  with `_c_div`, and the real one through `WasmLogCompiler.compileOf` into a
+  plain `f64.div` -- so `(log 8 2)` pulls in no complex runtime at all. Whether
+  a site is complex-capable is `LispMacroExpander.escapesToComplex` over BOTH
+  arguments, the predicate the JVM's gate reads.
+- `_c_div` gained the JVM's arm: neither operand a `TYPE_COMPLEX` -> delegate to
+  `_rat_div`. It answered a real here before (its `_c_complex` tail canonicalizes
+  an exact zero imaginary part away, where the JVM's float path could not), but
+  through the `c^2+d^2` denominator -- so the two backends now agree bit for bit
+  on `(log n b)` when both logarithms stayed real.
+- The exact-power rows are NOT exact here: the software log's error rides through
+  the quotient, so `(log 8 2)` is within ~1e-9 of `3.0` rather than equal to it,
+  and `ci-spec.yaml`'s `atan2-and-log-base` pins the contract (the exact axes, the
+  identity against `phase`, the magnitude and the TYPE) rather than digits.
+
 ## Known corners (documented, matching the JVM where stated)
 
 - A complex arriving only through a variable beside a real operator takes that

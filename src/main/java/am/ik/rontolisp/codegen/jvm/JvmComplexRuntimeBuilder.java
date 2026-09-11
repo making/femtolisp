@@ -866,6 +866,28 @@ final class JvmComplexRuntimeBuilder {
 	// Slots: params 0-1, parts 2-5, temps 6-8, doubles 10-19.
 	private static ComplexMethod buildDiv(Refs refs, Utf8Constant name, Utf8Constant desc) {
 		List<Integer> c = new ArrayList<>();
+		// Neither operand a holder: a plain real division, which the ungated _div
+		// answers -- exactly, without the c^2+d^2 denominator's two extra roundings
+		// and without manufacturing a zero-imagined float holder the float path
+		// cannot canonicalize away. The arm is reachable because a complex-capable
+		// site only knows at RUN time whether it holds a complex: (log n base)
+		// divides two logarithms, either of which may have stayed real, and this is
+		// what keeps that quotient EQUAL to (/ (log n) (log base)). The WASM twin
+		// (_c_div's own head) is the same arm.
+		aload(c, 0);
+		c.add(Opcode.INSTANCEOF);
+		emitU2(c, refs.rcClass().index());
+		int firstIsHolder = jump(c, Opcode.IFNE);
+		aload(c, 1);
+		c.add(Opcode.INSTANCEOF);
+		emitU2(c, refs.rcClass().index());
+		int secondIsHolder = jump(c, Opcode.IFNE);
+		aload(c, 0);
+		aload(c, 1);
+		call(c, refs.rDiv());
+		c.add(Opcode.ARETURN);
+		patch(c, firstIsHolder);
+		patch(c, secondIsHolder);
 		emitExtractParts(c, refs, 0, 2, 3);
 		emitExtractParts(c, refs, 1, 4, 5);
 		List<Integer> toFloat = emitFloatTest(c, refs, new int[] { 2, 3, 4, 5 });

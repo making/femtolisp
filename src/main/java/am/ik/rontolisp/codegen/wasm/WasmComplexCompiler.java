@@ -353,11 +353,12 @@ final class WasmComplexCompiler {
 		WasmEmitHelper.emitBoolFromI32(ctx);
 	}
 
-	// The min/max complex guard, over the two operand slots the caller already
+	// The two-real-operands guard, over the two operand slots the caller already
 	// filled: a complex in either lands in _type_err_real (the interpreter's
 	// "Expected real number, got: <prin1>", caught as a simple-error on this
-	// backend, like every instance-less throw).
-	static void emitMinMaxComplexGuard(WasmLispCompiler.Ctx ctx, int aSlot, int bSlot) {
+	// backend, like every instance-less throw). min/max and the two-argument atan
+	// share it.
+	static void emitRealOperandGuard(WasmLispCompiler.Ctx ctx, int aSlot, int bSlot) {
 		emitTestComplex(ctx, aSlot);
 		emitTestComplex(ctx, bSlot);
 		ctx.writer.write(Instruction.I32_OR);
@@ -568,10 +569,21 @@ final class WasmComplexCompiler {
 	// own answer.
 	static void compileLog(LispCons cons, WasmLispCompiler.Ctx ctx) {
 		List<LispVal> args = cons.toList();
-		if (args.size() != 2) {
-			throw new UnsupportedOperationException("log expects 1 argument, got " + (args.size() - 1));
+		if (args.size() != 2 && args.size() != 3) {
+			throw new UnsupportedOperationException("log expects 1 or 2 arguments, got " + (args.size() - 1));
 		}
-		WasmExprCompiler.compileExpr(args.get(1), ctx);
+		compileLogOf(args.get(1), ctx);
+	}
+
+	/**
+	 * The complex-capable {@code log} of one argument FORM, leaving the boxed result --
+	 * the shape the two-argument {@code (log n base)} needs, which compiles two
+	 * logarithms out of one call form.
+	 * @param arg the argument form
+	 * @param ctx the compile context
+	 */
+	static void compileLogOf(LispVal arg, WasmLispCompiler.Ctx ctx) {
+		WasmExprCompiler.compileExpr(arg, ctx);
 		int slot = ctx.allocTemp();
 		ctx.writer.write(Instruction.SET_LOCAL);
 		ctx.writer.writeUnsignedLeb128(slot);
@@ -600,6 +612,56 @@ final class WasmComplexCompiler {
 		WasmLogCompiler.emitLogCore(ctx, ctx.allocTemp(), ctx.allocTemp(), ctx.allocTemp());
 		ctx.writer.write(Instruction.END);
 		ctx.writer.write(Instruction.END);
+	}
+
+	// (log n base): the quotient of the two logarithms, each taking the real-domain
+	// escape on its own -- the very pair (/ (log n) (log base)) would reach. The
+	// complex-capable spelling divides through _c_div; the real one is a plain
+	// f64.div, so (log 8 2) pulls in no complex runtime at all.
+	static void compileLogBase(LispCons cons, WasmLispCompiler.Ctx ctx, boolean complexCapable) {
+		List<LispVal> args = cons.toList();
+		if (complexCapable) {
+			compileLogOf(args.get(1), ctx);
+			compileLogOf(args.get(2), ctx);
+			call(ctx, WasmLispCompiler.FUNC_C_DIV);
+			return;
+		}
+		WasmLogCompiler.compileOf(args.get(1), ctx);
+		int numSlot = ctx.allocTemp();
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(numSlot);
+		WasmLogCompiler.compileOf(args.get(2), ctx);
+		int denSlot = ctx.allocTemp();
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(denSlot);
+		WasmExpCompiler.unboxF64Local(ctx, numSlot);
+		WasmExpCompiler.unboxF64Local(ctx, denSlot);
+		ctx.writer.write(Instruction.F64_DIV);
+		WasmExpCompiler.boxF64(ctx);
+	}
+
+	// (atan y x): C's atan2, the angle of the vector (x, y) over the full circle --
+	// which IS the phase of x + yi, so it runs phase's own quadrant assembly rather
+	// than a second one. Both arguments must be REAL (CLHS): a syntactic complex
+	// lands in _type_err_real, the guard min/max signals through.
+	static void compileAtan2(LispCons cons, WasmLispCompiler.Ctx ctx) {
+		List<LispVal> args = cons.toList();
+		WasmExprCompiler.compileExpr(args.get(1), ctx);
+		int ySlot = ctx.allocTemp();
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(ySlot);
+		WasmExprCompiler.compileExpr(args.get(2), ctx);
+		int xSlot = ctx.allocTemp();
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(xSlot);
+		if (hasComplex(cons)) {
+			emitRealOperandGuard(ctx, ySlot, xSlot);
+		}
+		int yBox = emitRealAsF64Box(ctx, ySlot);
+		int xBox = emitRealAsF64Box(ctx, xSlot);
+		int out = ctx.allocTemp();
+		emitAtan2Into(ctx, yBox, xBox, out);
+		getLocal(ctx, out);
 	}
 
 	// (asin x) / (acos x): |x| <= 1 (a NaN too -- f64.gt answers false for one) takes

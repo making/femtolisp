@@ -65,14 +65,25 @@ final class WasmLogCompiler {
 
 	static void compile(LispCons cons, WasmLispCompiler.Ctx ctx) {
 		List<LispVal> args = cons.toList();
-		if (args.size() != 2) {
-			throw new UnsupportedOperationException("log expects 1 argument, got " + (args.size() - 1));
+		if (args.size() != 2 && args.size() != 3) {
+			throw new UnsupportedOperationException("log expects 1 or 2 arguments, got " + (args.size() - 1));
 		}
+		compileOf(args.get(1), ctx);
+	}
+
+	/**
+	 * The real {@code log} of one argument FORM, leaving the boxed result -- the shape
+	 * the two-argument {@code (log n base)} needs, which compiles two logarithms out of
+	 * one call form.
+	 * @param arg the argument form
+	 * @param ctx the compile context
+	 */
+	static void compileOf(LispVal arg, WasmLispCompiler.Ctx ctx) {
 		int xSlot = ctx.allocTemp(); // x, later reused for s
 		int mSlot = ctx.allocTemp(); // m, later reused for u = s^2
 		int eSlot = ctx.allocTemp(); // the accumulated exponent, as f64
 
-		WasmExprCompiler.compileExpr(args.get(1), ctx);
+		WasmExprCompiler.compileExpr(arg, ctx);
 		WasmEmitHelper.castFloatGetF64(ctx);
 		emitLogCore(ctx, xSlot, mSlot, eSlot);
 	}

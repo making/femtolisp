@@ -3191,6 +3191,77 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void evalAtanOfTwoArguments() {
+		// (atan y x) is C's atan2: the angle of the vector (x, y) over the FULL circle,
+		// which is the phase of x + yi -- so the identity against phase is the pin, not
+		// a second quadrant assembly. The quadrant edges are IEEE-exact everywhere;
+		// everything else is spelled as its Math.atan2 call, whose last bit is the
+		// platform's (.kb/jvm-complex.md).
+		assertThat(eval("(atan 1d0 1d0)")).isEqualTo(new LispDouble(Math.atan2(1.0, 1.0)));
+		assertThat(eval("(atan 1d0 -1d0)")).isEqualTo(new LispDouble(Math.atan2(1.0, -1.0)));
+		assertThat(eval("(atan -1d0 1d0)")).isEqualTo(new LispDouble(Math.atan2(-1.0, 1.0)));
+		assertThat(eval("(atan -1d0 -1d0)")).isEqualTo(new LispDouble(Math.atan2(-1.0, -1.0)));
+		assertThat(eval("(atan 3 4)")).isEqualTo(new LispDouble(Math.atan2(3.0, 4.0)));
+		assertThat(eval("(atan 1 1)")).isEqualTo(eval("(atan 1d0 1d0)"));
+		// The axes, where the signed zeros earn their keep: atan2 is exactly the
+		// function that tells (0, -1) from (-0, -1).
+		assertThat(eval("(atan 0d0 1d0)")).isEqualTo(new LispDouble(0.0));
+		assertThat(eval("(atan 1d0 0d0)")).isEqualTo(new LispDouble(1.5707963267948966));
+		assertThat(eval("(atan -1d0 0d0)")).isEqualTo(new LispDouble(-1.5707963267948966));
+		assertThat(eval("(atan 0d0 -1d0)")).isEqualTo(new LispDouble(3.141592653589793));
+		assertThat(eval("(atan -0d0 -1d0)")).isEqualTo(new LispDouble(-3.141592653589793));
+		assertThat(eval("(atan 0d0 0d0)")).isEqualTo(new LispDouble(0.0));
+		assertThat(eval("(atan -0d0 0d0)").print()).isEqualTo("-0.0");
+		// (atan (imagpart z) (realpart z)) IS (phase z), the surface it reuses.
+		for (String z : List.of("#c(1d0 1d0)", "#c(-1d0 1d0)", "#c(-1d0 -1d0)", "#c(1d0 -1d0)", "#c(0d0 1d0)",
+				"#c(0d0 -1d0)", "#c(-0d0 1d0)", "#c(3d0 4d0)")) {
+			assertThat(eval("(atan (imagpart " + z + ") (realpart " + z + "))")).as(z)
+				.isEqualTo(eval("(phase " + z + ")"));
+		}
+		// One argument is unchanged, and both arguments must be REAL (CLHS).
+		assertThat(eval("(atan 1d0)")).isEqualTo(new LispDouble(Math.atan(1.0)));
+		assertThatThrownBy(() -> eval("(atan #c(1d0 1d0) 1d0)")).hasMessageContaining("Expected real number");
+		assertThatThrownBy(() -> eval("(atan 1d0 #c(1d0 1d0))")).hasMessageContaining("Expected real number");
+		assertThatThrownBy(() -> eval("(atan 1d0 1d0 1d0)")).hasMessageContaining("ATAN expects 1 to 2 arguments");
+	}
+
+	@Test
+	void evalLogWithABase() {
+		// (log n base) is the QUOTIENT of the two logarithms -- no special case for an
+		// exact power: the plain quotient of two Math.log calls already lands on 3.0.
+		assertThat(eval("(log 8 2)")).isEqualTo(new LispDouble(3.0));
+		assertThat(eval("(log 100 10)")).isEqualTo(new LispDouble(2.0));
+		assertThat(eval("(log 1024 2)")).isEqualTo(new LispDouble(10.0));
+		assertThat(eval("(log 8d0 2d0)")).isEqualTo(new LispDouble(3.0));
+		assertThat(eval("(log 1000d0 10d0)")).isEqualTo(new LispDouble(Math.log(1000.0) / Math.log(10.0)));
+		// Each logarithm takes the real-domain escape on its own, so a negative number
+		// answers the plane divided by the real base. The QUOTIENT is the definition,
+		// so the identity is the pin -- and it is also why the real part is
+		// 2.9999999999999996 where SBCL answers 3.0: this complex division is the
+		// naive (ac+bd)/(c^2+d^2), SBCL's is Smith's, whose real divisor reduces to a
+		// part-wise divide (.kb/jvm-complex.md).
+		assertThat(eval("(log -8d0 2d0)")).isEqualTo(eval("(/ (log -8d0) (log 2d0))"));
+		assertThat(realPartOf("(log -8d0 2d0)")).isCloseTo(3.0, within(2 * Math.ulp(3.0)));
+		assertThat(imagPartOf("(log -8d0 2d0)")).isEqualTo(Math.PI / Math.log(2.0));
+		// A complex number or base is legal: the quotient of two complex logs.
+		assertThat(eval("(log #c(1d0 1d0) 2d0)")).isEqualTo(eval("(/ (log #c(1d0 1d0)) (log 2d0))"));
+		assertThat(eval("(log #c(1d0 1d0) #c(2d0 1d0))")).isEqualTo(eval("(/ (log #c(1d0 1d0)) (log #c(2d0 1d0)))"));
+		assertThat(realPartOf("(log #c(1d0 1d0) 2d0)")).isCloseTo(0.5, within(2 * Math.ulp(0.5)));
+		assertThat(imagPartOf("(log #c(1d0 1d0) 2d0)")).isCloseTo(1.1330900354567985, within(2 * Math.ulp(1.2)));
+		assertThat(realPartOf("(log #c(1d0 1d0) #c(2d0 1d0))")).isCloseTo(0.7455202635908202,
+				within(2 * Math.ulp(0.8)));
+		assertThat(imagPartOf("(log #c(1d0 1d0) #c(2d0 1d0))")).isCloseTo(0.5464509967419067,
+				within(2 * Math.ulp(0.6)));
+		// One argument is unchanged.
+		assertThat(eval("(log 1d0)")).isEqualTo(new LispDouble(0.0));
+		assertThat(eval("(log 8d0)")).isEqualTo(new LispDouble(Math.log(8.0)));
+		assertThatThrownBy(() -> eval("(log 8 2 1)")).hasMessageContaining("LOG expects 1 to 2 arguments");
+		// The first-class reference carries the optional argument too.
+		assertThat(eval("(funcall #'log 8 2)")).isEqualTo(new LispDouble(3.0));
+		assertThat(eval("(funcall #'atan 1d0 -1d0)")).isEqualTo(new LispDouble(Math.atan2(1.0, -1.0)));
+	}
+
+	@Test
 	void evalExptOfANegativeBaseToAFractionalPower() {
 		// |x|^y turned through y*pi radians -- one pow and one cis, NOT exp(y*log x):
 		// a real base's phase is exactly pi, which is what makes the imaginary part of

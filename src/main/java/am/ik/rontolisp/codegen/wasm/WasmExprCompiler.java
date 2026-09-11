@@ -1927,10 +1927,16 @@ final class WasmExprCompiler {
 					}
 				}
 				case LispNames.LOG -> {
-					if (WasmComplexCompiler.hasComplex(cons)) {
+					boolean logPlane = WasmComplexCompiler.hasComplex(cons)
+							|| LispMacroExpander.escapesToComplex(sym.name(), cons.toList());
+					if (cons.toList().size() == 3) {
+						// (log n base): the quotient of the two logarithms.
+						WasmComplexCompiler.compileLogBase(cons, ctx, logPlane);
+					}
+					else if (WasmComplexCompiler.hasComplex(cons)) {
 						WasmComplexCompiler.compileUnaryMath(cons, ctx, sym.name());
 					}
-					else if (LispMacroExpander.escapesToComplex(sym.name(), cons.toList())) {
+					else if (logPlane) {
 						// A negative argument leaves the real line, and no literal
 						// here rules that out: the site carries the plane arm.
 						WasmComplexCompiler.compileLog(cons, ctx);
@@ -1956,7 +1962,11 @@ final class WasmExprCompiler {
 					}
 				}
 				case LispNames.ASIN, LispNames.ACOS, LispNames.ATAN -> {
-					if (WasmComplexCompiler.hasComplex(cons)) {
+					if (LispNames.ATAN.equals(sym.name()) && cons.toList().size() == 3) {
+						// (atan y x): atan2 over the full circle, both arguments real.
+						WasmComplexCompiler.compileAtan2(cons, ctx);
+					}
+					else if (WasmComplexCompiler.hasComplex(cons)) {
 						WasmComplexCompiler.compileUnaryMath(cons, ctx, sym.name());
 					}
 					else if (LispMacroExpander.escapesToComplex(sym.name(), cons.toList())) {
