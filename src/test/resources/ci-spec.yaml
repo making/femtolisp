@@ -10442,7 +10442,8 @@ cases:
       (print (expt (give 2.0) (give 0.0)))
       (print (expt (give 0.0) (give 0.5)))
       (print (expt (give 0.0) (give -0.5)))
-      (print (expt (give -2.0) (give 0.5)))
+      (print (complexp (expt (give -2.0) (give 0.5))))
+      (print (round (* 1000000 (imagpart (expt (give -2.0) (give 0.5))))))
       (print (expt (give -2.0) (give 3.0)))
       (print (round (* 1000 (expt 4 (give 1/2)))))
       (print (round (* 1000 (expt (give 10000.0) (give 0.75)))))
@@ -10454,7 +10455,8 @@ cases:
       1.0
       0.0
       Infinity
-      NaN
+      T
+      1414214
       -8.0
       2000
       1000000
