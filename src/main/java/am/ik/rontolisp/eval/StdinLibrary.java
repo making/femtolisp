@@ -245,7 +245,8 @@ public final class StdinLibrary {
 			synchronized (StdinLibrary.class) {
 				cached = forms;
 				if (cached == null) {
-					cached = LispReader.readAllFromString(readResource("stdin.lisp"), Features.INTERPRETER);
+					cached = List
+						.copyOf(LispReader.readAllFromString(readResource("stdin.lisp"), Features.INTERPRETER));
 					forms = cached;
 				}
 			}
@@ -259,7 +260,8 @@ public final class StdinLibrary {
 			synchronized (StdinLibrary.class) {
 				cached = stubForms;
 				if (cached == null) {
-					cached = LispReader.readAllFromString(readResource("stdin-stub.lisp"), Features.INTERPRETER);
+					cached = List
+						.copyOf(LispReader.readAllFromString(readResource("stdin-stub.lisp"), Features.INTERPRETER));
 					stubForms = cached;
 				}
 			}
@@ -273,7 +275,8 @@ public final class StdinLibrary {
 			synchronized (StdinLibrary.class) {
 				cached = dispatchForms;
 				if (cached == null) {
-					cached = LispReader.readAllFromString(readResource("stdin-dispatch.lisp"), Features.INTERPRETER);
+					cached = List.copyOf(
+							LispReader.readAllFromString(readResource("stdin-dispatch.lisp"), Features.INTERPRETER));
 					dispatchForms = cached;
 				}
 			}

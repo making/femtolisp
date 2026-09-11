@@ -223,7 +223,7 @@ public final class ShimLibraries {
 				combined.addAll(parsed);
 				return List.copyOf(combined);
 			}
-			return parsed;
+			return List.copyOf(parsed);
 		});
 	}
 
@@ -255,7 +255,7 @@ public final class ShimLibraries {
 			return null;
 		}
 		return CACHE.computeIfAbsent(resource,
-				key -> LispReader.readAllFromString(readSource(key), Features.INTERPRETER));
+				key -> List.copyOf(LispReader.readAllFromString(readSource(key), Features.INTERPRETER)));
 	}
 
 	/**

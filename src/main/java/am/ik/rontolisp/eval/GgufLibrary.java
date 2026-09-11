@@ -69,7 +69,7 @@ public final class GgufLibrary {
 			synchronized (GgufLibrary.class) {
 				cached = forms;
 				if (cached == null) {
-					cached = LispReader.readAllFromString(readSource(), Features.INTERPRETER);
+					cached = List.copyOf(LispReader.readAllFromString(readSource(), Features.INTERPRETER));
 					forms = cached;
 				}
 			}

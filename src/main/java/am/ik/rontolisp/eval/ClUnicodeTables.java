@@ -251,7 +251,7 @@ final class ClUnicodeTables {
 
 	private static List<LispVal> read(String source) {
 		// Generated data carries no reader conditional, so the feature set is immaterial.
-		return LispReader.readAllFromString(source, Features.INTERPRETER);
+		return List.copyOf(LispReader.readAllFromString(source, Features.INTERPRETER));
 	}
 
 	/** A property symbol: a symbol in the {@code cl-unicode-names} package. */

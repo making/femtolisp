@@ -176,7 +176,7 @@ public final class TlsLibrary {
 			synchronized (TlsLibrary.class) {
 				cached = forms;
 				if (cached == null) {
-					cached = LispReader.readAllFromString(readResource("tls.lisp"), Features.INTERPRETER);
+					cached = List.copyOf(LispReader.readAllFromString(readResource("tls.lisp"), Features.INTERPRETER));
 					forms = cached;
 				}
 			}

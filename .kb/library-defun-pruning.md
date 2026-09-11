@@ -247,6 +247,22 @@ gate, and shrinks the UNOPTIMIZED artifact too. **A "dead top-level `let`" rule 
 and rejected** (`definitionName` returns null for a `let`; 14 occurrences, two dead blocks, 771
 bytes of a 1.55 MB module): a top-level `let` is STILL opaque to the pass.
 
+## The parsed-library caches the splice reads from
+Every `forms()` / `formsFor()` / `protocolForms()` in `eval` (and `macro`'s `CompileRuntime`,
+`FormatRenderer`, `MopProtocol`) parses its bundled source ONCE and keeps it for the life of
+the JVM -- a `volatile` field behind double-checked locking, or a `ConcurrentHashMap` keyed on
+the feature set. **Every one of them hands back an IMMUTABLE list** (`List.copyOf` at the fill,
+or `Collections.unmodifiableMap` over an insertion-ordered map where iteration order is part of
+the contract -- `UiopLibrary.build`, because `Map.copyOf`'s order is salted per JVM run).
+
+The rule is not stylistic. Handing back the reader's own `ArrayList` puts every later compile
+in that JVM at the mercy of one splice site writing `forms().addAll(...)` instead of
+`new ArrayList<>(forms())`, and a cache that grows per compile grows the next program's
+function count with it -- silently, without bound, and only in a long-lived JVM, so a single
+compile of the same program stays green. `.kb/wasm-function-body-size.md` records the run that
+shape would explain. `CompileIndependenceTest` pins the observable half: one program's compiled
+bytes must not move because of what else the JVM compiled, interpreted, or compiled alongside.
+
 ## The constant-pool dedup
 `am.ik.jvm.ConstantPool.add` keys every entry by its serialized bytes (tag + payload) in a
 `HashMap` and returns the existing `Constant` on a hit; a composite entry embeds the u2 indexes

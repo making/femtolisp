@@ -192,8 +192,8 @@ public final class HostFetchLibrary {
 		boolean withId = boundary.bodiesOutOfBand() && reentrant;
 		String key = boundary.name() + (withId ? "-reentrant" : "");
 		synchronized (FORMS) {
-			return FORMS.computeIfAbsent(key,
-					shape -> LispReader.readAllFromString(source(boundary, reentrant), Features.WASM_REACTOR));
+			return FORMS.computeIfAbsent(key, shape -> List
+				.copyOf(LispReader.readAllFromString(source(boundary, reentrant), Features.WASM_REACTOR)));
 		}
 	}
 

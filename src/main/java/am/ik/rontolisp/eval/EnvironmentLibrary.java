@@ -197,7 +197,8 @@ public final class EnvironmentLibrary {
 			synchronized (EnvironmentLibrary.class) {
 				cached = forms;
 				if (cached == null) {
-					cached = LispReader.readAllFromString(readResource("environment.lisp"), Features.INTERPRETER);
+					cached = List
+						.copyOf(LispReader.readAllFromString(readResource("environment.lisp"), Features.INTERPRETER));
 					forms = cached;
 				}
 			}

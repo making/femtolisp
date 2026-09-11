@@ -190,7 +190,7 @@ public final class ExitLibrary {
 
 	private static List<LispVal> forms(Features features) {
 		return FORMS.computeIfAbsent(String.join(",", features.names()),
-				ignored -> LispReader.readAllFromString(readResource("exit.lisp"), features));
+				ignored -> List.copyOf(LispReader.readAllFromString(readResource("exit.lisp"), features)));
 	}
 
 	private static String witText() {

@@ -207,7 +207,7 @@ public final class WaitForLibrary {
 			synchronized (WaitForLibrary.class) {
 				cached = forms;
 				if (cached == null) {
-					cached = LispReader.readAllFromString(readResource("wait.lisp"), Features.INTERPRETER);
+					cached = List.copyOf(LispReader.readAllFromString(readResource("wait.lisp"), Features.INTERPRETER));
 					forms = cached;
 				}
 			}

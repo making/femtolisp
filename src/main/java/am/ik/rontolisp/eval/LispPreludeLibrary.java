@@ -3038,7 +3038,7 @@ public final class LispPreludeLibrary {
 			if (source == null) {
 				throw new IllegalArgumentException(n + " is not a prelude function");
 			}
-			return LispReader.readAllFromString(source, Features.INTERPRETER);
+			return List.copyOf(LispReader.readAllFromString(source, Features.INTERPRETER));
 		});
 	}
 

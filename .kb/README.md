@@ -122,7 +122,7 @@ deliberate boundaries the audit must not undo: user-facing operator catalogues l
 - [pure-builtin-fold.md](pure-builtin-fold.md) -- compile-time fold of pure built-ins over literal arguments, and what is deliberately out
 - [toplevel-statement-values.md](toplevel-statement-values.md) -- a top-level form is a statement; nothing may be emitted only to be dropped
 - [compile-time-boundp.md](compile-time-boundp.md) -- `(boundp 'name)` over a literal symbol decided at compile time
-- [library-defun-pruning.md](library-defun-pruning.md) -- AST pruning of spliced library defuns, rontolisp's own and ASDF-spliced
+- [library-defun-pruning.md](library-defun-pruning.md) -- AST pruning of spliced library defuns, rontolisp's own and ASDF-spliced; the JVM-lived parse caches the splice reads from
 - [emitted-output-determinism.md](emitted-output-determinism.md) -- the same program compiles to the same bytes on every run
 - [default-run-path.md](default-run-path.md) -- flagless `rontolisp app.lisp` runs the interpreter by decision
 - [interpreter-stack.md](interpreter-stack.md) -- the CLI runs every program on a stack it chose, and `--stack`
