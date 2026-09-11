@@ -1304,6 +1304,56 @@ the compiled side the guard is the bridge NAME in the class bytes.
 - **Exact-input operands must be exact IN THE FOLD too** -- a 64-long sum of products of 1..4096 is
   not, at f32, because the defun accumulates in f64 (`.kb/linalg-simd.md`'s reduction contract).
 
+### What `eval/LinalgGpuTest` costs, and the timeout that tells slow from stopped
+
+It is the one class in the suite that takes MINUTES where every sibling takes seconds -- enough, on
+2026-08-25, for a full `./mvnw test` to be killed on the belief that it had hung (`.todo/514`). It
+had not. The ORACLE leg of every assertion here is the interpreted defun at the DEVICE's own floor,
+and Metal's floors are 4-16x CUDA's (`minWork` 4194304 against 262144, so `SIDE` is 208 where it is
+64), so the same source buys an order of magnitude more interpreted work on a Mac than the numbers
+the class was written against. Measured 2026-09-11 on an M4 Max: a 736-square broadcast add and its
+`linalg:sum` is **2.6 s** interpreted against 0.35 s under the flag, while a fresh `LispEvaluator`
+plus the `linalg` splice is **5 ms** -- the cost is the arithmetic, not the harness, and no amount
+of sharing evaluators touches it.
+
+**The class carries `@Timeout(5, MINUTES, ThreadMode.SEPARATE_THREAD)`**, which is what `.todo/514`
+was for: slow finishes, stopped fails with a stack. The thread mode is load-bearing -- the default
+`SAME_THREAD` only interrupts, and the evaluator's loops poll no interrupt flag, so the spinning
+interpreted `while` the 2026-08-29 `jstack` caught would ignore it and hang exactly as before.
+
+The shape pass of 2026-09-11 cut each method it touched by **26-57%**; it did NOT visibly cut the
+class TOTAL, because this box's run-to-run spread swamps the difference. Three runs of the same tree,
+one afternoon: **545 s** before the pass alone (`-Dtest=LinalgGpuTest`), **499 s** after it alone,
+**559 s** after it inside a full `./mvnw test` -- where `forkCount=2` puts a sibling fork on the same
+cores, and every method the pass did NOT touch grows to meet it (`theFusedTier...` 71.7 -> 77.9 ->
+92.8 across the three, while `everyEnumeratedWriter...` went 115.7 -> 69.9 -> 50.0). **Read the
+per-method ratios, never the totals**, and re-measure before reading a regression into either. What
+moved, and what will not:
+
+- **A margin over a threshold is paid IN FULL by every interpreted leg.** Six copied-out spellings of
+  `16 * ceil(sqrt(2.0 * stridedMinElements()) / 16)` are now one `residentSide()` at 1.25x instead of
+  2x -- the gate counts the RESULT's own elements (`Gpu#stridedCount`), so 1.25x clears it as surely
+  as 2x, and the square went 736 -> 576. The four other programs built on it fell 26-38% (the
+  resident tier 50.6 s -> 37.7, the reader enumeration 28.8 -> 20.4, the index tier 20.9 -> 12.9, the
+  clip norm 7.1 -> 5.4). `matvecSide()` the same, 2048 -> 1632.
+- **`everyEnumeratedWriterInvalidatesTheResidentCopy` printed BOTH operands' sums after every
+  writer**, half of it over an array nothing had touched; each writer now checks the array it wrote,
+  through `check-m` / `check-v`. With the smaller square, 115.7 s -> 69.9.
+- **`theMatrixByVectorProduct...OnceResident` ran one program twice on any device with no double**:
+  `option()` and an explicit `'single-float` are the SAME string there. 37.4 s -> 19.0.
+- **What is not cuttable, and should not be attempted**: the fused tier's operands are already 1.002x
+  its own floor and its twenty members are twenty distinct claims (78 s); the stacked product's five
+  shapes are five (43 s). That cost IS the contract.
+- **Not taken -- parallelising the oracle legs.** They are pure interpreter, independent, and would
+  give most of the class back on 16 cores; but the device legs cannot join them (the residency
+  counters every "it really ran" pin reads are PROCESS-WIDE, `.kb/test-execution.md`), and the class
+  would stop running `same_thread` like the rest of the suite for a wall-clock win in a lane no CI
+  runner executes.
+
+Run-to-run spread on this box is wide -- methods untouched by the pass moved 20-50% between the two
+runs above, a warm machine throttling -- so treat the totals as +-10% and re-measure before reading
+a regression into them.
+
 ### The vacuity sweeps, and the rules they left
 
 **A test whose shape does not clear the threshold that gates the mechanism it asserts on runs nothing,
