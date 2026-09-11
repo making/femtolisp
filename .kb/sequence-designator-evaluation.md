@@ -39,10 +39,9 @@ that used to tell it so -- ANSI passes a computed nil for `:key` (`subsetp.order
   circuits, so a non-nil designator allocates nothing and the loop body is unchanged.
 - a `:test-not` that the scan will USE (no `:test` beside it) binds as the COMPLEMENTED
   test and is rewritten into the `:test` slot, so the match form is the same `funcall`
-  either way. The negation is spelled out as a two-argument lambda rather than delegated
-  to `complement`, whose expansion answers a ONE-argument lambda on purpose
-  (`expandComplement`: a variadic one would need `apply`, and `apply` drags the eval
-  runtime into every compiled program that uses it).
+  either way. The negation is spelled out as a two-argument lambda
+  (`LispMacroExpander.twoArgumentComplement`) rather than delegated to `complement`,
+  which could serve it but dispatches four arities behind supplied-p flags -- see below.
 - The injected `#'identity` / `#'eql` need no `#'identity` in the SOURCE: the wrapper
   reference gate runs over the EXPANDED tree, so `BuiltinFunctionWrappers` emits them.
 
@@ -89,16 +88,64 @@ counters exactly now.
 
 What the order tests still fail on, each a different gap:
 
-- `remove.order.2` / `delete.order.2` / `adjoin.order.2` pass `(complement #'eq)` as a
-  two-argument `:test-not`: `complement` answers a ONE-argument lambda (`.todo/774`).
 - `member-if.order.2`, `assoc-if*.order.*`, `rassoc-if*.order.*`: the `-if` spellings of
   `member`/`assoc`/`rassoc` take no `:key` at all (`.todo/776`).
+
+A second gap stood in that list until 2026-09-11: `remove.order.2` / `delete.order.2` /
+`adjoin.order.2` pass `(complement #'eq)` as a two-argument `:test-not`, and `complement`
+answered a ONE-argument lambda. Fixed -- see the next section.
 
 A third gap stood in that list until 2026-09-11:
 `remove-duplicates.order.1/2` and `delete-duplicates.order.1/2` want
 `:start`/`:end`/`:test-not` and a COMPUTED `:from-end`, which `expandRemoveDuplicates`
 rejected. Fixed (4 more tests, sequences 2,891 -> 2,895) --
 `.kb/sequence-bounding-keywords.md`, "the window bounds what is CONSIDERED".
+
+## What a variadic complement costs (2026-09-11)
+
+**`complement` answers a lambda covering arities 0-3, dispatched with `&optional`
+supplied-p flags. Three is where the set stops because the only UNBOUNDED lowering is
+`(lambda (&rest args) (not (apply f args)))`, and `apply` is a gate, not an operator.**
+
+The gate is real and was re-measured, not assumed: `(print (+ 1 2))` compiles to 3,955 B
+(JVM) / 489 B (WASM); `(print (apply #'+ (list 1 2)))` to 41,041 B / 18,741 B. On the JVM
+`apply` forces `usesEval`; on WASM it opens the apply tier (`.kb/eval-runtime.md`).
+
+What the gate does NOT cost is what the old javadoc assumed. Measured on the minimal
+program `(let ((f #'evenp)) (let ((g <lambda>)) (print (funcall g 3))))`, where `#'evenp`
+has already opened the designator gate the way every `complement` call site does:
+
+| lowering of the complement lambda | JVM | WASM |
+|---|---|---|
+| one argument (what it used to emit) | 41,840 | 20,988 |
+| `(&rest args)` + `apply` (CL-conformant) | 42,045 | 29,301 |
+| `(a &rest more)`, arities 1-2 | 42,098 | 23,756 |
+| `&optional` supplied-p, arities 0-3 (**landed**) | 43,115 | 25,026 |
+| `(&rest args)` + `cond`, arities 0-3 | 43,180 | 25,037 |
+
+So on the JVM the conformant `apply` lowering is the SMALLEST of the four candidates
+(+205 B, 0.5%) -- the premise "`apply` drags the whole eval runtime into every compiled
+program that uses it" does not survive contact with a program that spells `complement`,
+because such a program has already paid. WASM is where it holds: +8,313 B (+40%) against
++4,038 B for the bounded dispatch. Two things decided it for the bounded shape anyway:
+
+- the wrappers. `BuiltinFunctionWrappers.sequenceScanFamily`/`positionFamily` build the
+  first-class `#'remove`/`#'position` `:test` on a complemented `:test-not`, and those
+  bodies are injected on a reference, not on a call. An `apply` inside them is invisible
+  to `needsApplyRuntime` (`APPLY_USING_FUNCTIONS` does not list `remove`), so making
+  `complement` variadic would have meant widening that set -- every program naming
+  `#'remove` pulling the apply tier, for a keyword it may never pass.
+- `&rest` conses. A complemented `:test-not` runs once per ELEMENT of the scan.
+
+Both wrapper sites and `KeywordTail.complemented` know their arity is TWO, so all three
+spell it: `LispMacroExpander.twoArgumentComplement`. That is why a program that never
+writes `complement` did not grow with this change (41,840 / 20,988 -> 42,308 / 20,847),
+while one that does pays for the dispatch (41,840 / 20,984 -> 43,572 / 25,027).
+
+Landing it uncovered one more thing: a nested lambda whose `&optional` carries a default
+(`(defun f (n) (lambda (&optional (x 1 p)) ...))`) was a ClassCastException at compile
+time -- `compiler/FreeVarAnalyzer.extractParamNames` read only the bare-symbol parameter
+shape. The ci-spec case below covers it.
 
 ## Pinning tests
 
@@ -110,3 +157,10 @@ rejected. Fixed (4 more tests, sequences 2,891 -> 2,895) --
   counters, the duplicate keyword, the computed nil designator, call position and
   first-class.
 - ci-spec `sequence-designator-order` -- the same counters on all four backends.
+- `LispMacroExpanderTest.complementAnswersALambdaThatCoversEveryDesignatorArity` -- the
+  arity arms, the once-evaluated function form, the absence of `apply`, and the
+  two-argument shape the known-arity sites spell instead.
+- `LispEvaluatorTest.complementServesEveryDesignatorArityItsCallersUse` and ci-spec
+  `complement-designator-arity` -- the behaviour, in the interpreter and on all four
+  backends, including the first-class `(apply #'remove ... :test-not ...)` path and the
+  defaulted-`&optional` nested lambda.

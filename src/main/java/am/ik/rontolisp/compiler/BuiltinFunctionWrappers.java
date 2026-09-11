@@ -925,7 +925,7 @@ public final class BuiltinFunctionWrappers {
 		if (item) {
 			callParts.add(new LispSymbol(LispNames.TEST_KEYWORD));
 			callParts.add(listToCons(List.of(new LispSymbol(LispNames.IF), getfKw(LispNames.TEST_NOT_KEYWORD),
-					callV(LispNames.COMPLEMENT, getfKw(LispNames.TEST_NOT_KEYWORD)),
+					LispMacroExpander.twoArgumentComplement(getfKw(LispNames.TEST_NOT_KEYWORD)),
 					getfKwOr(LispNames.TEST_KEYWORD, sharpQuote(LispNames.EQL)))));
 		}
 		callParts.add(new LispSymbol(LispNames.KEY_KEYWORD));
@@ -957,7 +957,7 @@ public final class BuiltinFunctionWrappers {
 		if (item) {
 			callParts.add(new LispSymbol(LispNames.TEST_KEYWORD));
 			callParts.add(listToCons(List.of(new LispSymbol(LispNames.IF), getfKw(LispNames.TEST_NOT_KEYWORD),
-					callV(LispNames.COMPLEMENT, getfKw(LispNames.TEST_NOT_KEYWORD)),
+					LispMacroExpander.twoArgumentComplement(getfKw(LispNames.TEST_NOT_KEYWORD)),
 					getfKwOr(LispNames.TEST_KEYWORD, sharpQuote(LispNames.EQL)))));
 		}
 		callParts.add(new LispSymbol(LispNames.KEY_KEYWORD));

@@ -4539,6 +4539,40 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void complementServesEveryDesignatorArityItsCallersUse() {
+		// The predicate case, and the EQUALITY case that used to be an arity error at
+		// the call site ("Function expects 1 argument, got 2").
+		assertThat(eval("(funcall (complement #'evenp) 3)").print()).isEqualTo("T");
+		assertThat(eval("(funcall (complement #'eq) 'a 'b)").print()).isEqualTo("T");
+		assertThat(eval("(funcall (complement #'eq) 'a 'a)").print()).isEqualTo("NIL");
+		assertThat(evalMulti("""
+				(defun cmp3 (a b c) (and (eql a b) (eql b c)))
+				(list (funcall (complement #'cmp3) 1 1 2) (funcall (complement #'cmp3) 1 1 1))
+				""").print()).isEqualTo("(T NIL)");
+		assertThat(evalMulti("""
+				(defun always-nil () nil)
+				(funcall (complement #'always-nil))
+				""").print()).isEqualTo("T");
+		// The function form is evaluated ONCE, whatever the result is later called with.
+		assertThat(eval("""
+				(let ((log nil))
+				  (let ((f (complement (progn (setq log (cons 1 log)) #'eq))))
+				    (funcall f 'a 'b)
+				    (funcall f 'a 'a)
+				    (length log)))
+				""").print()).isEqualTo("1");
+		// ANSI's remove.order.2 / delete.order.2 / adjoin.order.2 shape: a complemented
+		// equality designator in a :test-not slot -- two arguments, per element.
+		assertThat(eval("(remove 3 (list 1 2 3 4) :test-not (progn (complement #'eql)))").print()).isEqualTo("(1 2 4)");
+		assertThat(eval("(adjoin 3 (list 1 2 3) :test-not (progn (complement #'eql)))").print()).isEqualTo("(1 2 3)");
+		assertThat(eval("(position 3 (list 1 2 3 4) :test-not (progn (complement #'eql)))").print()).isEqualTo("2");
+		// ... and the same through the first-class wrappers, which build their :test on
+		// the same negation (BuiltinFunctionWrappers.sequenceScanFamily/positionFamily).
+		assertThat(eval("(apply #'remove 3 (list 1 2 3 4) (list :test-not #'eql))").print()).isEqualTo("(3)");
+		assertThat(eval("(apply #'position 3 (list 1 2 3 4) (list :test-not #'eql))").print()).isEqualTo("0");
+	}
+
+	@Test
 	void evalSequenceScansEvaluateAComputedDesignatorOnce() {
 		// CLHS 3.1.2.1.2.3: every argument form is evaluated left to right, exactly
 		// once. The scans inline a designator FORM into the loop body, which is right

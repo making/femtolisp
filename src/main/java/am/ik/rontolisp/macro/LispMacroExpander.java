@@ -4951,8 +4951,10 @@ public final class LispMacroExpander {
 		// (let ((v form)) (if v (lambda (a b) (not (funcall v a b))) #'eql)): the scan's
 		// match form is then the same funcall a :test gets, and a nil :test-not is the
 		// ABSENT designator exactly as a literal nil one is. The negation is spelled out
-		// rather than delegated to `complement`, whose expansion answers a ONE-argument
-		// lambda on purpose (see expandComplement) -- an equality designator takes two.
+		// rather than delegated to `complement`, which could serve it now but would cost
+		// more: the arity here is statically TWO, and expandComplement's lambda
+		// dispatches
+		// four of them behind supplied-p flags, once per element of the scan.
 		private static LispVal complemented(LispVal form) {
 			LispSymbol fn = new LispSymbol("__testnot_fn");
 			LispSymbol left = new LispSymbol("__testnot_a");
@@ -5220,17 +5222,38 @@ public final class LispMacroExpander {
 	}
 
 	/**
-	 * Expands {@code (complement fn)} into a one-argument lambda answering the opposite
-	 * of the given predicate. The function form is evaluated once. Lite: CL's
-	 * {@code complement} is variadic, but the result here takes exactly one argument (the
-	 * predicate case; a variadic wrapper would need {@code apply}, which drags the whole
-	 * eval runtime into every compiled program using it) -- and because this is an
-	 * expansion, not a function, {@code #'complement} is not available.
+	 * How many arguments {@link #expandComplement}'s lambda accepts. CL's
+	 * {@code complement} is variadic without bound, and the only lowering that is too is
+	 * {@code (lambda (&rest args) (not (apply f args)))} -- {@code apply} opens the eval
+	 * gate on the JVM and the apply tier on WASM. So the lowering dispatches a fixed set
+	 * of arities with {@code funcall} instead, and this is where the set stops: three
+	 * covers every designator position CL actually has -- a predicate (one argument), an
+	 * equality test (two) and the odd ternary. The measurement behind the number is in
+	 * {@code .kb/sequence-designator-evaluation.md}, "What a variadic complement costs".
+	 */
+	private static final int COMPLEMENT_MAX_ARITY = 3;
+
+	/**
+	 * Expands {@code (complement fn)} into a lambda answering the opposite of the given
+	 * predicate for any call of up to {@link #COMPLEMENT_MAX_ARITY} arguments. The
+	 * function form is evaluated once. Lite: CL's {@code complement} is variadic without
+	 * bound and this one stops at three, so a fourth argument is an arity error at the
+	 * call site. And because this is an expansion, not a function, {@code #'complement}
+	 * is not available.
+	 *
+	 * <p>
+	 * The arguments are {@code &optional} with supplied-p flags rather than a
+	 * {@code &rest} list, so a call conses nothing -- a complemented {@code :test-not}
+	 * designator runs once per ELEMENT of the sequence being scanned.
 	 *
 	 * <pre>
 	 * (complement fn) ->
 	 *   (let ((__complement_fn fn))
-	 *     (lambda (__complement_x) (not (funcall __complement_fn __complement_x))))
+	 *     (lambda (&optional (__complement_a0 nil __complement_p0) ...)
+	 *       (not (if __complement_p2 (funcall __complement_fn __complement_a0 __complement_a1 __complement_a2)
+	 *              (if __complement_p1 (funcall __complement_fn __complement_a0 __complement_a1)
+	 *                (if __complement_p0 (funcall __complement_fn __complement_a0)
+	 *                  (funcall __complement_fn)))))))
 	 * </pre>
 	 * @param cons the complement expression
 	 * @return the expanded expression
@@ -5241,10 +5264,53 @@ public final class LispMacroExpander {
 			throw new IllegalArgumentException("complement expects exactly one function: " + cons.print());
 		}
 		LispSymbol fn = new LispSymbol("__complement_fn");
-		LispSymbol x = new LispSymbol("__complement_x");
-		LispVal call = listToCons(List.of(new LispSymbol(LispNames.FUNCALL), fn, x));
-		LispVal lambda = listToCons(List.of(new LispSymbol(LispNames.LAMBDA), listToCons(List.of(x)), makeNot(call)));
+		List<LispVal> lambdaList = new java.util.ArrayList<>();
+		lambdaList.add(new LispSymbol(LispNames.LAMBDA_OPTIONAL));
+		List<LispSymbol> args = new java.util.ArrayList<>();
+		List<LispSymbol> supplied = new java.util.ArrayList<>();
+		for (int i = 0; i < COMPLEMENT_MAX_ARITY; i++) {
+			LispSymbol arg = new LispSymbol("__complement_a" + i);
+			LispSymbol flag = new LispSymbol("__complement_p" + i);
+			args.add(arg);
+			supplied.add(flag);
+			lambdaList.add(listToCons(List.of(arg, LispNil.INSTANCE, flag)));
+		}
+		LispVal body = complementCall(fn, args, 0);
+		for (int arity = 1; arity <= COMPLEMENT_MAX_ARITY; arity++) {
+			body = makeIf(supplied.get(arity - 1), complementCall(fn, args, arity), body);
+		}
+		LispVal lambda = listToCons(List.of(new LispSymbol(LispNames.LAMBDA), listToCons(lambdaList), makeNot(body)));
 		return makeLet(fn.name(), normalizeFunctionDesignator(parts.get(1)), lambda);
+	}
+
+	/**
+	 * The negation of a designator whose arity is statically known to be TWO -- an
+	 * equality {@code :test-not} -- as {@code (let ((v form)) (lambda (a b) (not (funcall
+	 * v a b))))}. {@link #expandComplement} would serve the same call, but it dispatches
+	 * {@link #COMPLEMENT_MAX_ARITY} + 1 arities behind supplied-p flags, and the callers
+	 * here pay that per ELEMENT of the sequence being scanned and per injected wrapper in
+	 * the program. {@code KeywordTail.complemented} spells the same shape with the
+	 * {@code #'eql} default around it.
+	 * @param form the designator form to negate, evaluated once
+	 * @return the negating two-argument lambda
+	 */
+	public static LispVal twoArgumentComplement(LispVal form) {
+		LispSymbol fn = new LispSymbol("__complement2_fn");
+		LispSymbol left = new LispSymbol("__complement2_a");
+		LispSymbol right = new LispSymbol("__complement2_b");
+		LispVal call = listToCons(List.of(new LispSymbol(LispNames.FUNCALL), fn, left, right));
+		LispVal lambda = listToCons(
+				List.of(new LispSymbol(LispNames.LAMBDA), listToCons(List.of(left, right)), makeNot(call)));
+		return makeLet(fn.name(), form, lambda);
+	}
+
+	// (funcall fn a0 ... a{arity-1}) -- the arity-th arm of the complement dispatch.
+	private static LispVal complementCall(LispSymbol fn, List<LispSymbol> args, int arity) {
+		List<LispVal> call = new java.util.ArrayList<>();
+		call.add(new LispSymbol(LispNames.FUNCALL));
+		call.add(fn);
+		call.addAll(args.subList(0, arity));
+		return listToCons(call);
 	}
 
 	/**
