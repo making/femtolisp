@@ -54,6 +54,22 @@ The compiled output is the fast path, on the JVM and on WASM alike; see
 [Compile to JVM Bytecode](../compiling/jvm.md) and
 [Compile to WASM](../compiling/wasm.md).
 
+## Recursion Depth
+
+The interpreter recurses on the host's stack: every Lisp call in progress holds
+interpreter frames, so a deeply recursive program can exhaust it. rontolisp runs
+the program on a thread of its own with a **16 MiB** stack, so the depth a
+program reaches is the same number on every platform and every launcher -- a
+`java -jar`'s `-Xss` sizes a thread the program no longer runs on. Ask for more
+with `--stack`, in MiB:
+
+```bash
+rontolisp --stack 64 deep.lisp
+```
+
+A program deeper than its stack stops with a `StackOverflowError`; the cure is
+this flag or an iterative formulation of the recursion.
+
 ## Programs Given on the Command Line
 
 `-e` (long form `--eval`) takes the program from the argument itself instead of a

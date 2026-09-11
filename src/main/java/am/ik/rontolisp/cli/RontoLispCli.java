@@ -1196,6 +1196,12 @@ public final class RontoLispCli {
 		this.out.println("                     computed strings need this flag (or --dynamic) to resolve.");
 		this.out.println("  --buffered-output  Block-buffer stdout (avoids interleaving when piped)");
 		this.out.println("                     Off by default so the REPL responds to each line");
+		this.out.println("  --stack MiB        Stack of the thread rontolisp runs the program on (default 16)");
+		this.out.println("                     The interpreter's recursion depth is the program's, so the CLI");
+		this.out.println("                     runs it on a thread of its own rather than the launcher's: the");
+		this.out.println("                     ceiling is the same number on every platform, and a java -jar");
+		this.out.println("                     -Xss no longer reaches it. Raise it for a program recursing");
+		this.out.println("                     deeper than 16 MiB of interpreter frames.");
 		this.out.println("  --system-path DIRS Directories searched for NAME.asd by asdf:load-system");
 		this.out.println("                     (joined with the platform path separator, like PATH; the");
 		this.out.println("                     RONTOLISP_SOURCE_REGISTRY environment variable adds more)");
@@ -1232,18 +1238,33 @@ public final class RontoLispCli {
 	 * @param args the command-line arguments
 	 */
 	public static void main(String[] args) {
+		// The CLI ALWAYS runs on a thread of its own, never on the one the launcher
+		// happened to call main on: the interpreter's recursion depth is the PROGRAM's,
+		// and thread 0 carries whatever stack the platform gives it -- about 8 MiB on
+		// macOS, 1 MiB on linux-x64, which an ordinary vendored library's own test suite
+		// already recurses past. The depth ceiling is therefore one number everywhere,
+		// WORKER_STACK_BYTES or --stack (.kb/interpreter-stack.md).
+		LaunchStack stack;
+		try {
+			stack = LaunchStack.of(args);
+		}
+		catch (IllegalArgumentException ex) {
+			System.err.println("error: " + ex.getMessage());
+			System.exit(1);
+			return;
+		}
+		String[] rest = stack.args();
+		long stackBytes = stack.bytes();
 		// In the native binary on macOS, main runs on the process's FIRST thread -- the
-		// one AppKit demands for every window and the one nothing drains. So the binary
-		// does what the java launcher does for a jar: the CLI moves to a second thread
-		// and thread 0 parks in the run loop, which pumps AppKit and the main dispatch
-		// queue the objc: package hops through. Unconditional, because thread 0 cannot
-		// be handed over later; on a JVM, on Linux and in the browser it answers false
-		// and nothing changes (.kb/objc.md).
+		// one AppKit demands for every window and the one nothing drains. So there thread
+		// 0 parks in the run loop, which pumps AppKit and the main dispatch queue the
+		// objc: package hops through, and never comes back; everywhere else it waits for
+		// the worker and carries its outcome out of main (.kb/objc.md).
 		if (ObjcInterop.mainThreadHandOverRequired()) {
 			Thread worker = new Thread(null, () -> {
 				int code;
 				try {
-					code = launch(args);
+					code = launch(rest);
 				}
 				catch (Throwable ex) {
 					ex.printStackTrace();
@@ -1252,20 +1273,138 @@ public final class RontoLispCli {
 				// Thread 0 never returns from the run loop, so the exit code has to
 				// leave through System.exit whatever its value.
 				System.exit(code);
-			}, "main", WORKER_STACK_BYTES);
+			}, "main", stackBytes);
 			worker.start();
 			ObjcInterop.parkMainThread();
 			return;
 		}
-		exit(launch(args));
+		exit(joinLaunch(rest, stackBytes));
 	}
 
 	/**
-	 * The stack of the thread the CLI runs on when thread 0 is handed over: at least what
-	 * the OS gives the first thread (8 MiB), since the interpreter's recursion depth is
-	 * the program's.
+	 * Runs the whole command line on a worker with the chosen stack and waits for it,
+	 * answering the exit code.
+	 * <p>
+	 * What the worker threw is rethrown HERE rather than reported on the worker, so an
+	 * {@code Error} the CLI does not handle -- a {@code StackOverflowError} from a
+	 * program deeper than its stack, an {@code OutOfMemoryError} -- still reaches main's
+	 * default handler with its own trace and still ends the process with a failure,
+	 * exactly as it did when launch ran on thread 0.
+	 */
+	private static int joinLaunch(String[] args, long stackBytes) {
+		int[] code = new int[1];
+		Throwable[] thrown = new Throwable[1];
+		Thread worker = new Thread(null, () -> {
+			try {
+				code[0] = launch(args);
+			}
+			catch (Throwable ex) {
+				thrown[0] = ex;
+			}
+		}, "main", stackBytes);
+		worker.start();
+		boolean interrupted = false;
+		while (true) {
+			try {
+				worker.join();
+				break;
+			}
+			catch (InterruptedException ex) {
+				// Thread 0 is not the CLI any more, so an interrupt aimed at it answers
+				// nothing: remember it for whoever sent it and keep waiting for the run.
+				interrupted = true;
+			}
+		}
+		if (interrupted) {
+			Thread.currentThread().interrupt();
+		}
+		switch (thrown[0]) {
+			case null -> {
+			}
+			case Error error -> throw error;
+			case RuntimeException runtime -> throw runtime;
+			default -> throw new IllegalStateException(thrown[0]);
+		}
+		return code[0];
+	}
+
+	/**
+	 * The stack of the thread the CLI runs on: comfortably more than the 8 MiB the most
+	 * generous platform gives the first thread, since the interpreter's recursion depth
+	 * is the program's.
 	 */
 	private static final long WORKER_STACK_BYTES = 16L << 20;
+
+	/** The largest {@code --stack} accepted, in MiB. */
+	private static final long MAX_STACK_MIB = 65536L;
+
+	private static final String STACK_OPTION = "--stack";
+
+	/**
+	 * What {@code --stack} asked for and the command line with it removed.
+	 *
+	 * @param bytes the stack the CLI's thread is given
+	 * @param args every other argument, in order
+	 */
+	// Package-private, not private, so RontoLispCliTest can drive it: main itself may end
+	// with System.exit and cannot be called from a test JVM.
+	record LaunchStack(long bytes, String[] args) {
+
+		/**
+		 * Reads {@code --stack <MiB>} (or {@code --stack=<MiB>}) off the raw arguments.
+		 * <p>
+		 * Raw, because the thread has to exist before anything parses a command line on
+		 * it -- and the flag exists because a {@code java -jar}'s {@code -Xss} no longer
+		 * reaches the interpreter once the CLI has a stack of its own, so this is the
+		 * knob that replaces it (the native binary never had one). The option is
+		 * CONSUMED: no subcommand or option parser downstream has to know it exists.
+		 * Everything after the first bare {@code --} belongs to the interpreted program,
+		 * so the scan stops there and passes the rest through untouched.
+		 * @param args the command-line arguments
+		 * @return the stack size and the arguments that are not this option
+		 * @throws IllegalArgumentException if the value is not a size in MiB a thread can
+		 * be given
+		 */
+		static LaunchStack of(String[] args) {
+			String value = null;
+			List<String> rest = new ArrayList<>(args.length);
+			for (int i = 0; i < args.length; i++) {
+				String arg = args[i];
+				if ("--".equals(arg)) {
+					rest.addAll(Arrays.asList(args).subList(i, args.length));
+					break;
+				}
+				if (arg.startsWith(STACK_OPTION + "=")) {
+					value = arg.substring(STACK_OPTION.length() + 1);
+				}
+				else if (STACK_OPTION.equals(arg) && i + 1 < args.length) {
+					value = args[++i];
+				}
+				else {
+					rest.add(arg);
+				}
+			}
+			return new LaunchStack(bytes(value), rest.toArray(String[]::new));
+		}
+
+		private static long bytes(@Nullable String value) {
+			if (value == null) {
+				return WORKER_STACK_BYTES;
+			}
+			long mib;
+			try {
+				mib = Long.parseLong(value.trim());
+			}
+			catch (NumberFormatException ex) {
+				mib = -1;
+			}
+			if (mib <= 0 || mib > MAX_STACK_MIB) {
+				throw new IllegalArgumentException(STACK_OPTION + " expects a stack size in MiB between 1 and "
+						+ MAX_STACK_MIB + ", not '" + value + "'");
+			}
+			return mib << 20;
+		}
+	}
 
 	/** The whole command line, answering the exit code. */
 	private static int launch(String[] args) {

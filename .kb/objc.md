@@ -20,11 +20,13 @@ The thread the kernel started the process on (`pthread_main_np()` answers 1) is 
 may touch a window, and the Lisp thread is never it.
 
 - `java -jar`: the launcher already parks thread 0 in a `CFRunLoop`. Nothing to do.
-- **Native binary**: `main` IS thread 0, so `RontoLispCli.main`, when
+- **Native binary**: `main` IS thread 0. `RontoLispCli.main` always moves the CLI to a spawned
+  `main` thread ([interpreter-stack.md](interpreter-stack.md)); what
   `ObjcInterop.mainThreadHandOverRequired()` (native image + macOS + thread 0; cheap -- libSystem
-  + CoreFoundation, no AppKit), moves to a spawned `main` thread (16 MiB stack) and parks thread 0
-  in `MainThread.runLoop()`. UNCONDITIONAL -- thread 0 cannot be handed over later; the worker
-  ends the process with `System.exit` whatever the code.
+  + CoreFoundation, no AppKit) decides is what thread 0 does next -- park in
+  `MainThread.runLoop()` rather than wait for the worker. UNCONDITIONAL on that platform: thread 0
+  cannot be handed over later, and since the run loop never returns, the worker ends the process
+  with `System.exit` whatever the code.
 - `runLoop()` is the launcher's `ParkEventLoop`: a no-op `CFRunLoopSource` keeps the default mode
   non-empty and `CFRunLoopRunInMode(default, 1e20)` is re-entered whenever it returns. **Trap: a
   bare `CFRunLoopRun` returns after the first click and the binary sits in `JavaMainWrapper`'s

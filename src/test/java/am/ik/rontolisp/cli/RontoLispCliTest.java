@@ -27,6 +27,7 @@ import java.util.zip.ZipInputStream;
 
 import am.ik.rontolisp.SourceProvenance;
 import am.ik.rontolisp.compiler.HostGlueEmitter;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -1617,6 +1618,98 @@ class RontoLispCliTest {
 		assertThat(RontoLispCli.distSpecs("ultralisp\nquicklisp", null)).containsExactly("ultralisp", "quicklisp");
 		assertThat(RontoLispCli.distSpecs(" ultralisp , ", "ultralisp,other")).containsExactly("ultralisp", "other");
 		assertThat(RontoLispCli.distSpecs(null, null)).isEmpty();
+	}
+
+	// A program deeper than the 1 MiB linux-x64 gives a process's first thread, and well
+	// inside the stack the CLI hands the interpreter. cl-mustache's spec suite is the
+	// real-world specimen (~800 KiB down); this is the same shape in two lines.
+	private static final String DEEP_PROGRAM = """
+			(defun depth (n) (if (= n 0) 0 (+ 1 (depth (- n 1)))))
+			(print (depth 1500))
+			""";
+
+	// What linux-x64 gives thread 0, and so what the CLI used to interpret on there.
+	private static final long LAUNCHER_STACK_BYTES = 1L << 20;
+
+	@Test
+	void theDeepProgramDoesNotFitALauncherSizedStack() throws Exception {
+		// The control for the test below: without it that test could pass on a stack it
+		// never needed. The interpreter's recursion depth is the PROGRAM's, and this
+		// program does not fit the stack a platform hands main.
+		Throwable thrown = onAStackOf(LAUNCHER_STACK_BYTES, () -> {
+			RontoLispCli cli = new RontoLispCli(new ByteArrayInputStream(new byte[0]),
+					new PrintStream(new ByteArrayOutputStream()));
+			RontoLispCli.runReporting(cli, new String[] { "-e", DEEP_PROGRAM });
+		});
+		assertThat(thrown).isInstanceOf(StackOverflowError.class);
+	}
+
+	@Test
+	void mainRunsTheProgramOnItsOwnStackNotTheLaunchersOne() throws Exception {
+		// So the depth ceiling is one number on every platform and every launcher: main
+		// is called here on a thread with exactly what linux-x64 gives thread 0, and the
+		// program that cannot run there runs anyway.
+		ByteArrayOutputStream out = new ByteArrayOutputStream();
+		PrintStream oldOut = System.out;
+		System.setOut(new PrintStream(out, true, StandardCharsets.UTF_8));
+		Throwable thrown;
+		try {
+			thrown = onAStackOf(LAUNCHER_STACK_BYTES, () -> RontoLispCli.main(new String[] { "-e", DEEP_PROGRAM }));
+		}
+		finally {
+			System.setOut(oldOut);
+		}
+		assertThat(thrown).isNull();
+		assertThat(out.toString(StandardCharsets.UTF_8)).contains("1500");
+	}
+
+	@Test
+	void theStackOptionIsReadOffTheRawArgumentsAndConsumed() {
+		// No parser downstream knows --stack exists, so it is removed from the arguments
+		// the CLI goes on to read -- in either spelling.
+		RontoLispCli.LaunchStack stack = RontoLispCli.LaunchStack.of(new String[] { "--stack", "64", "prog.lisp" });
+		assertThat(stack.bytes()).isEqualTo(64L << 20);
+		assertThat(stack.args()).containsExactly("prog.lisp");
+		stack = RontoLispCli.LaunchStack.of(new String[] { "--stack=8", "prog.lisp" });
+		assertThat(stack.bytes()).isEqualTo(8L << 20);
+		assertThat(stack.args()).containsExactly("prog.lisp");
+		// The default is the one ceiling every platform gets.
+		stack = RontoLispCli.LaunchStack.of(new String[] { "prog.lisp" });
+		assertThat(stack.bytes()).isEqualTo(16L << 20);
+		assertThat(stack.args()).containsExactly("prog.lisp");
+		// Everything after the bare -- is the interpreted program's own argument vector,
+		// including a word that would otherwise be this option.
+		stack = RontoLispCli.LaunchStack.of(new String[] { "prog.lisp", "--", "--stack", "9" });
+		assertThat(stack.bytes()).isEqualTo(16L << 20);
+		assertThat(stack.args()).containsExactly("prog.lisp", "--", "--stack", "9");
+	}
+
+	@Test
+	void theStackOptionRefusesASizeNoThreadCanBeGiven() {
+		assertThatThrownBy(() -> RontoLispCli.LaunchStack.of(new String[] { "--stack", "huge", "prog.lisp" }))
+			.isInstanceOf(IllegalArgumentException.class)
+			.hasMessageContaining("--stack expects a stack size in MiB");
+		assertThatThrownBy(() -> RontoLispCli.LaunchStack.of(new String[] { "--stack=0", "prog.lisp" }))
+			.isInstanceOf(IllegalArgumentException.class);
+		assertThatThrownBy(() -> RontoLispCli.LaunchStack.of(new String[] { "--stack=1048576", "prog.lisp" }))
+			.isInstanceOf(IllegalArgumentException.class);
+	}
+
+	// Runs the body on a thread with the given stack and answers what it threw, so a
+	// StackOverflowError is this test's evidence rather than its failure.
+	private static @Nullable Throwable onAStackOf(long stackBytes, Runnable body) throws InterruptedException {
+		Throwable[] thrown = new Throwable[1];
+		Thread thread = new Thread(null, () -> {
+			try {
+				body.run();
+			}
+			catch (Throwable ex) {
+				thrown[0] = ex;
+			}
+		}, "launcher", stackBytes);
+		thread.start();
+		thread.join();
+		return thrown[0];
 	}
 
 }

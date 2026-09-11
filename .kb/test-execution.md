@@ -36,14 +36,13 @@
 
 `AsdfLibraryE2eSupport#loadsAndRunsOnTheInterpreter` drives `LispEvaluator` IN PROCESS,
 so without help it recurses on the JUnit worker thread -- the JVM default stack, 1 MiB on
-linux-x64. The interpreter's recursion depth is the PROGRAM's: cl-mustache's spec suite
-renders its templates about **800 KiB** down (measured 2026-09-11 on aarch64: the run
-survives `-Xss832k` and dies at `-Xss768k`), which is inside that margin, and CI duly
-went red on `ClMustacheSpecE2eTest » StackOverflow` while every local box stayed green.
-The leg therefore runs its body on a thread with the stack the CLI hands the interpreter
-(16 MiB, `RontoLispCli`'s worker) and rethrows what that thread threw, so the leg
-measures the product's ceiling rather than the harness's. A `StackOverflowError` from
-this leg is a real depth regression, not a stack-size accident.
+linux-x64, which cl-mustache's spec suite alone recurses past
+([interpreter-stack.md](interpreter-stack.md) has the numbers). The leg therefore runs its
+body on a thread with the stack the CLI hands every program (16 MiB,
+`RontoLispCli`'s `WORKER_STACK_BYTES`, which `INTERPRETER_STACK_BYTES` must track) and
+rethrows what that thread threw, so the leg measures the product's ceiling rather than the
+harness's. A `StackOverflowError` from this leg is a real depth regression, not a
+stack-size accident.
 
 The evaluator's own per-form scans stay off that budget too: the typecase arm's uiop /
 asdf / geom name scans (`LispEvaluator#collectUiopNames`,
