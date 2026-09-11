@@ -7,7 +7,10 @@
   concurrency only with class-level `@Execution(ExecutionMode.CONCURRENT)`: today
   `WasmLispCompilerIntegrationTest`, `RoveTestCommandE2eTest`, and every subclass of
   `AsdfLibraryE2eSupport`. Everything else -- including all of `am.ik.gpu` /
-  `eval.LinalgGpuTest` -- runs one method at a time in one thread.
+  `eval.LinalgGpuTest` -- runs one method at a time in one thread. `eval.LinalgGpuTest`
+  costs MINUTES that way on a Mac and carries a `@Timeout` so that a run which is merely
+  slow cannot be mistaken for one that stopped (`.kb/gpu.md`, "What `eval/LinalgGpuTest`
+  costs").
 - **Trap: `[rontolisp] JUnit parallelism = N` at the start of a run is NOT evidence of
   parallel test execution.** It is `CoreCountParallelismStrategy` printing the value it
   derived for `junit.jupiter.execution.parallel.config.custom.class`, which governs
