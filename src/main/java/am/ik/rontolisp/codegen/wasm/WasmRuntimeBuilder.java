@@ -1954,28 +1954,35 @@ final class WasmRuntimeBuilder {
 		int dispatchArgs = spread ? 1 : arity;
 		List<DispatchTarget> targets = dispatchTargets(arity, defuns, lambdaDecls, spread, dispatchable, userFuncBase);
 
-		// The unpaged shape first: it is what all but a handful of programs emit, and
-		// its SIZE is what decides whether this one needs pages at all.
-		ByteArrayOutputStream body = new ByteArrayOutputStream();
-		WasmWriter w = new WasmWriter(body);
-		emitDispatchPrologue(w, arity, dispatchArgs, spread, usesEval);
-		emitDispatchCases(w, targets, arity, dispatchArgs, spread, 0);
-		byte[] single = body.toByteArray();
-		if (single.length <= DISPATCH_PAGE_BUDGET_BYTES) {
-			return new DispatchFunctions(single, List.of());
-		}
-
 		int maxFuncId = 0;
 		for (DispatchTarget t : targets) {
 			maxFuncId = Math.max(maxFuncId, t.funcId());
 		}
 		int levels = dispatchLevels(maxFuncId);
-		if (levels == 1) {
-			// Every callable is inside one page already: the body is large because its
-			// CASES are (a spread dispatcher over ten-parameter targets), not because
-			// there are many. Splitting the one page would need a second radix, and the
-			// worst case here is still ~105 KB, well inside the bound.
-			return new DispatchFunctions(single, List.of());
+
+		// The unpaged shape first: it is what all but a handful of programs emit, and
+		// its SIZE is what decides whether this one needs pages at all -- but only when
+		// it CAN be the answer. `emitDispatchCases` writes one br_table label per id
+		// from 0 up to the largest, at least a byte each, so a maxFuncId past the budget
+		// is an over-budget body by itself and the paging decision is already made;
+		// `levels == 1` cannot rescue it either, since that means maxFuncId < 256.
+		// Measuring such a body would cost the array to build it -- 16 MB at a funcId of
+		// 2^24, the value one full `./mvnw test` once reached
+		// (`.kb/wasm-function-body-size.md`).
+		if (maxFuncId < DISPATCH_PAGE_BUDGET_BYTES) {
+			ByteArrayOutputStream body = new ByteArrayOutputStream();
+			WasmWriter w = new WasmWriter(body);
+			emitDispatchPrologue(w, arity, dispatchArgs, spread, usesEval);
+			emitDispatchCases(w, targets, arity, dispatchArgs, spread, 0);
+			byte[] single = body.toByteArray();
+			// levels == 1: every callable is inside one page already, so the body is
+			// large because its CASES are (a spread dispatcher over ten-parameter
+			// targets), not because there are many. Splitting the one page would need a
+			// second radix, and the worst case here is still ~105 KB, well inside the
+			// bound.
+			if (single.length <= DISPATCH_PAGE_BUDGET_BYTES || levels == 1) {
+				return new DispatchFunctions(single, List.of());
+			}
 		}
 
 		List<byte[]> pages = new ArrayList<>();

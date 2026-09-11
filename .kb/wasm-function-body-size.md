@@ -77,6 +77,11 @@ so **the body no longer depends on the function count** — one extra call per l
   can survive a value from outside it — the flat one writes ONE `br_table` label per id
   from 0 up to the largest (a `2^24` id alone is a 16 MB body), and the paged one reads
   the id one 8-bit digit at a time.
+- **The flat shape is not built when its label count alone settles the gate.** A label is
+  at least a byte, so `maxFuncId >= DISPATCH_PAGE_BUDGET_BYTES` means an over-budget body
+  whatever the cases hold, and `levels == 1` cannot rescue it (that means
+  `maxFuncId < 256`). Emitting it anyway would allocate the array only to measure it.
+  Output is unchanged for every program either way.
 - **The radix depth is counted from the bit length** (`WasmRuntimeBuilder.dispatchLevels`,
   pinned by `WasmDispatchPagingTest`), never by shifting the id 8 more bits per round:
   Java takes a shift distance mod 32, so the fourth round of such a loop shifts by 0,
@@ -89,11 +94,44 @@ Measured 2026-09-11, jose + rove + cl-ppcre through `asdf:load-system`, the wide
 dispatcher any shipped test builds: 2453 defuns + 526 lambdas, maxFuncId 2978, 2975
 targets, 260777 bytes unpaged — over the 128 KiB gate, 1367 bytes under the 256 KiB bound,
 and two levels deep. So the id that once reached the fourth level was ~5600x the live
-value and came from no counter. **Where it came from is still open (`.todo/770`)**, and
-the range check above is what will name it on a recurrence — it runs at the top of every
-`buildDispatch`, before any emission, on per-compile state, so each concurrent leg throws
-on its own thread. What that check cannot see is a compile whose POPULATION is equally
-corrupt: the bound scales with it.
+value. **Where it came from is still open (`.todo/770`).** Every funcId comes from
+`nextFuncId[0]++` and every increment registers a declaration, so `2^24` means one of two
+things and only one of them is catchable: either the counter ran ahead of the
+declarations, which the range check above names on a recurrence (it runs at the top of
+every `buildDispatch`, before any emission, on per-compile state, so each concurrent leg
+throws on its own thread), or the compile really built `2^24` declarations, which nothing
+catches because the bound scales with them. If the next occurrence throws nothing, it was
+the second, and the counts are what to print.
+
+**Not the shared parsed-library caches** (measured 2026-09-11, x86-64 Linux, 64 cores,
+JUnit parallelism 16 — the same numbers the failing machine ran). The suspect was one of
+the JVM-lived form caches growing under a pass that appended to the list it was handed
+rather than to a copy, which would make every later compile in that JVM bigger. Four
+measurements say no:
+
+- The front end is a pure function of its input across programs in one JVM. Seven
+  exercises — jose+rove+cl-ppcre, cl-ppcre, the built-in shims, trivia, uax-15, iterate,
+  a uiop/prelude program — x both WASM targets, expanded twice in sequence and then 16-way
+  concurrent for four rounds, give the same top-level form count, deep node count and
+  defun/lambda counts every time.
+- So does the BACKEND. Six of those x both targets, compiled to WASM 16-way concurrent in
+  one JVM for three rounds, are byte-identical to a sequential baseline (jose-tests:
+  5373879 bytes Preview 1, 5403188 component). The 66-compile check above repeated ONE
+  program, which cannot see a cache that a DIFFERENT program's splice chain grows.
+- Interpreting the same sources in the same JVM, interleaved with those compiles, does not
+  move the bytes either.
+- Nor does the JVM itself. `ImmutableCollections.SALT` salts the iteration order of every
+  `Set.copyOf`/`Map.copyOf` per JVM RUN — the reason `UiopLibrary.build` returns
+  `Collections.unmodifiableMap` over an insertion-ordered map instead — and both failing
+  legs shared one fork, so an unlucky salt would have hit both and no isolated run. It
+  does not reach the output: the jose program compiled by the CLI in 8 separate JVMs is
+  byte-identical eight times.
+- A read audit of every static form cache in `src/main/java` found no path that mutates
+  one. ~30 accessors nevertheless handed back the live `ArrayList` the reader produced,
+  protected only by caller discipline; they now hand back `List.copyOf` of it, so the
+  append is impossible rather than merely absent. `CompileIndependenceTest` pins the
+  observable half — the three conditions a repeat of one program cannot reach: a warm
+  JVM, different programs compiling at once, and the interpreter beside them.
 
 The frame is not in doubt, and neither is the value. Line 1973 is the level count in every
 revision from the last change to the file before the run (`ff55fa031`) through the run's
@@ -106,7 +144,11 @@ same two legs compiled 66 times 16-way concurrent in one JVM are byte-identical 
 compile and report the same funcId every time, `codegen.wasm` holds no mutable static state
 at all, and the compile input is host-independent (`BuiltinSystems.announcedFeatures`
 withholds the trivial-features host half from both WASM targets). What the failing run had
-that an isolated one does not is ~239 other test classes compiling in the same JVM first.
+that an isolated one does not is ~239 other test classes compiling in the same JVM first —
+and the four measurements above are what is left of that lead: warming every cache with
+other programs, compiling them alongside, and interpreting them beside the compiles all
+leave the bytes identical. What has NOT been reproduced is the machine: aarch64, 16 cores,
+32 worker threads over them (here it is 32 over 64).
 
 Ask of any new outlining path what the async top level failed: *is the piece it cuts
 bounded in BYTES, or only by where some syntactic marker falls?*
