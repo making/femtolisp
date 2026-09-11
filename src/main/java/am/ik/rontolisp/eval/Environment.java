@@ -2551,14 +2551,42 @@ public final class Environment implements Scope {
 		}));
 		defineUnaryComplex(env, LispNames.EXP, Math::exp, Environment::complexExp);
 		// log's real domain is the non-negative reals; a zero keeps -Infinity (the
-		// zero edge is CL's own, not this escape).
-		defineUnaryComplexEscape(env, LispNames.LOG, Math::log, Environment::complexLog, d -> !(d < 0.0));
+		// zero edge is CL's own, not this escape). The optional BASE makes the answer
+		// the QUOTIENT of the two logarithms, each of which takes the escape on its
+		// own -- so (log -8d0 2d0) is a plane value over a real one, and nothing about
+		// the one-argument answer moves.
+		env.defineFunction(LispNames.LOG, new LispFunction(LispNames.LOG, args -> {
+			requireArgCountBetween(LispNames.LOG, args, 1, 2);
+			LispVal value = unaryComplexEscape(args.get(0), Math::log, Environment::complexLog, d -> !(d < 0.0));
+			if (args.size() == 1) {
+				return value;
+			}
+			LispVal base = unaryComplexEscape(args.get(1), Math::log, Environment::complexLog, d -> !(d < 0.0));
+			List<LispVal> quotient = List.of(value, base);
+			if (hasComplex(quotient)) {
+				return divComplex(quotient);
+			}
+			// Both logarithms are floats, so this is the float arm of / itself.
+			return new LispDouble(asDouble(value) / asDouble(base));
+		}));
 		defineUnaryComplex(env, LispNames.SIN, Math::sin, Environment::complexSin);
 		defineUnaryComplex(env, LispNames.COS, Math::cos, Environment::complexCos);
 		defineUnaryComplex(env, LispNames.TAN, Math::tan, Environment::complexTan);
 		defineUnaryComplexEscape(env, LispNames.ASIN, Math::asin, Environment::complexAsin, Environment::insideUnit);
 		defineUnaryComplexEscape(env, LispNames.ACOS, Math::acos, Environment::complexAcos, Environment::insideUnit);
-		defineUnaryComplex(env, LispNames.ATAN, Math::atan, Environment::complexAtan);
+		// atan's optional second argument is C's atan2: the angle of the vector (x, y)
+		// over the full circle, which IS the phase of x + yi -- the same Math.atan2
+		// phase already answers with, signed zeros and all. CLHS requires both
+		// arguments to be real there, so a complex signals rather than computing.
+		env.defineFunction(LispNames.ATAN, new LispFunction(LispNames.ATAN, args -> {
+			requireArgCountBetween(LispNames.ATAN, args, 1, 2);
+			if (args.size() == 1) {
+				return unaryComplex(args.get(0), Math::atan, Environment::complexAtan);
+			}
+			requireRealOperand(LispNames.ATAN, args.get(0));
+			requireRealOperand(LispNames.ATAN, args.get(1));
+			return new LispDouble(Math.atan2(asDouble(args.get(0)), asDouble(args.get(1))));
+		}));
 		defineUnaryComplex(env, LispNames.SINH, Math::sinh, Environment::complexSinh);
 		defineUnaryComplex(env, LispNames.COSH, Math::cosh, Environment::complexCosh);
 		defineUnaryComplex(env, LispNames.TANH, Math::tanh, Environment::complexTanh);
@@ -3163,12 +3191,26 @@ public final class Environment implements Scope {
 			ComplexFn complexFn) {
 		env.defineFunction(name, new LispFunction(name, args -> {
 			requireArgCount(name, args, 1);
-			if (args.get(0) instanceof LispComplex c) {
-				double[] r = complexFn.apply(realToDouble(c.real()), realToDouble(c.imag()));
-				return LispComplex.valueOf(new LispDouble(r[0]), new LispDouble(r[1]));
-			}
-			return new LispDouble(realFn.applyAsDouble(asDouble(args.get(0))));
+			return unaryComplex(args.get(0), realFn, complexFn);
 		}));
+	}
+
+	/**
+	 * One complex-capable unary math function over one argument: the complex formula for
+	 * a complex, the real one for a real. The body {@link #defineUnaryComplex} registers,
+	 * factored out for the operators that carry an optional SECOND argument and so cannot
+	 * be registered by it.
+	 * @param arg the argument
+	 * @param realFn the real arm
+	 * @param complexFn the complex formula
+	 * @return the function's value at {@code arg}
+	 */
+	private static LispVal unaryComplex(LispVal arg, DoubleUnaryOperator realFn, ComplexFn complexFn) {
+		if (arg instanceof LispComplex c) {
+			double[] r = complexFn.apply(realToDouble(c.real()), realToDouble(c.imag()));
+			return LispComplex.valueOf(new LispDouble(r[0]), new LispDouble(r[1]));
+		}
+		return new LispDouble(realFn.applyAsDouble(asDouble(arg)));
 	}
 
 	/**
@@ -3188,17 +3230,32 @@ public final class Environment implements Scope {
 			ComplexFn complexFn, DoublePredicate staysReal) {
 		env.defineFunction(name, new LispFunction(name, args -> {
 			requireArgCount(name, args, 1);
-			if (args.get(0) instanceof LispComplex c) {
-				double[] r = complexFn.apply(realToDouble(c.real()), realToDouble(c.imag()));
-				return LispComplex.valueOf(new LispDouble(r[0]), new LispDouble(r[1]));
-			}
-			double d = asDouble(args.get(0));
-			if (staysReal.test(d)) {
-				return new LispDouble(realFn.applyAsDouble(d));
-			}
-			double[] r = complexFn.apply(d, 0.0);
-			return LispComplex.valueOf(new LispDouble(r[0]), new LispDouble(r[1]));
+			return unaryComplexEscape(args.get(0), realFn, complexFn, staysReal);
 		}));
+	}
+
+	/**
+	 * The body {@link #defineUnaryComplexEscape} registers, over one argument -- factored
+	 * out for {@code log}, whose optional BASE applies the SAME escape to a second
+	 * argument before dividing.
+	 * @param arg the argument
+	 * @param realFn the real arm, applied inside the real domain
+	 * @param complexFn the complex formula
+	 * @param staysReal whether a real argument is inside the real domain
+	 * @return the function's value at {@code arg}
+	 */
+	private static LispVal unaryComplexEscape(LispVal arg, DoubleUnaryOperator realFn, ComplexFn complexFn,
+			DoublePredicate staysReal) {
+		if (arg instanceof LispComplex c) {
+			double[] r = complexFn.apply(realToDouble(c.real()), realToDouble(c.imag()));
+			return LispComplex.valueOf(new LispDouble(r[0]), new LispDouble(r[1]));
+		}
+		double d = asDouble(arg);
+		if (staysReal.test(d)) {
+			return new LispDouble(realFn.applyAsDouble(d));
+		}
+		double[] r = complexFn.apply(d, 0.0);
+		return LispComplex.valueOf(new LispDouble(r[0]), new LispDouble(r[1]));
 	}
 
 	/** A float complex formula: two doubles in, two doubles out. */

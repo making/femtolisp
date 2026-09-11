@@ -225,6 +225,27 @@ final class WasmComplexRuntimeBuilder {
 		w.write(7);
 		w.writeRefType(true, Type.EQ.code());
 
+		// Neither operand a complex: a plain real division, which _rat_div answers
+		// exactly -- without the c^2+d^2 denominator's two extra roundings. The arm
+		// is reachable because a complex-capable site only knows at RUN time whether
+		// it holds a complex: (log n base) divides two logarithms, either of which
+		// may have stayed real, and this is what keeps that quotient EQUAL to
+		// (/ (log n) (log base)). The JVM twin (_cdiv's own head) is the same arm.
+		getLocal(w, 0);
+		w.write(Instruction.GC_PREFIX, Instruction.REF_TEST);
+		w.writeHeapType(WasmLispCompiler.TYPE_COMPLEX);
+		getLocal(w, 1);
+		w.write(Instruction.GC_PREFIX, Instruction.REF_TEST);
+		w.writeHeapType(WasmLispCompiler.TYPE_COMPLEX);
+		w.write(Instruction.I32_OR);
+		w.write(Instruction.I32_EQZ);
+		w.write(Instruction.IF, 0x40);
+		getLocal(w, 0);
+		getLocal(w, 1);
+		call(w, WasmLispCompiler.FUNC_RAT_DIV);
+		w.write(Instruction.RETURN);
+		w.write(Instruction.END);
+
 		emitComplexReal(w, 0);
 		w.write(Instruction.SET_LOCAL);
 		w.writeUnsignedLeb128(2);

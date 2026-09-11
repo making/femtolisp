@@ -7775,6 +7775,83 @@ class JvmLispCompilerTest {
 		assertThat(compileAndRun(source)).isEqualTo("(NIL NIL NIL NIL NIL NIL NIL)");
 	}
 
+	private static final String ATAN2_AND_LOG_BASE_PROGRAM = """
+			(print (atan 1d0 1d0))
+			(print (atan 0d0 1d0))
+			(print (atan 1d0 0d0))
+			(print (atan 1d0 -1d0))
+			(print (atan 0d0 -1d0))
+			(print (atan -0d0 -1d0))
+			(print (atan -1d0 1d0))
+			(print (atan -1d0 0d0))
+			(print (atan -1d0 -1d0))
+			(print (atan 0d0 0d0))
+			(print (atan -0d0 0d0))
+			(print (atan 1 1))
+			(print (atan 3 4))
+			(print (atan 1d0))
+			(print (log 8 2))
+			(print (log 100 10))
+			(print (log 1024 2))
+			(print (log 8d0 2d0))
+			(print (log 1000d0 10d0))
+			(print (log -8d0 2d0))
+			(print (log #c(1d0 1d0) 2d0))
+			(print (log #c(1d0 1d0) #c(2d0 1d0)))
+			(print (log 8d0))
+			(let ((y 1d0) (x -1d0)) (print (atan y x)))
+			(let ((y -0d0) (x -1d0)) (print (atan y x)))
+			(let ((n 8d0) (b 2d0)) (print (log n b)))
+			(let ((n -8d0) (b 2d0)) (print (log n b)))
+			(let ((z #c(1d0 1d0)) (b 2d0)) (print (log z b)))
+			(print (funcall #'log 8 2))
+			(print (funcall #'atan 1d0 -1d0))
+			(print (funcall #'log 8d0))
+			(print (funcall #'atan 1d0))
+			""";
+
+	@Test
+	void compileAndRunAtan2AndLogBaseMirrorTheInterpreter() throws Exception {
+		// (atan y x) is Math.atan2 and (log n base) the quotient of two logarithms;
+		// both are platform-rounded Math values, so the pin is the INTERPRETER's own
+		// output rather than a digit string.
+		assertThat(compileAndRun(ATAN2_AND_LOG_BASE_PROGRAM)).isEqualTo(interpret(ATAN2_AND_LOG_BASE_PROGRAM));
+	}
+
+	@Test
+	void compileAndRunAtan2OfAComplexSignals() throws Exception {
+		// CLHS: both arguments of the two-argument atan must be REAL. A complex
+		// reaching the f64 coercion is not silently reduced to its real part.
+		String source = """
+				(print (handler-case (atan #c(1d0 1d0) 1d0) (error (e) (princ-to-string e))))
+				""";
+		assertThat(compileAndRun(source)).contains("Expected real number");
+		assertThat(compileAndRun(source)).isEqualTo(interpret(source));
+	}
+
+	@Test
+	void aLiteralProvenRealBaseKeepsTheComplexGateShut() throws Exception {
+		// (log n base) is TWO logarithms, so the gate stays shut only when both
+		// literals prove themselves non-negative -- and (atan y x) never opens it at
+		// all, being Math.atan2 over two reals.
+		String holderClassConstant = "am/ik/rontolisp/runtime/RontoComplex";
+		byte[] shut = new JvmLispCompiler("Test").compile(LispReader.readAllFromString("""
+				(defun f (y x) (+ (atan y x) (log 8 2)))
+				(print (f 1d0 2d0))
+				"""));
+		assertThat(new String(shut, StandardCharsets.ISO_8859_1)).doesNotContain(holderClassConstant)
+			.doesNotContain("_ccomplex")
+			.doesNotContain("_cu1")
+			.doesNotContain("_cdiv");
+		byte[] open = new JvmLispCompiler("Test").compile(LispReader.readAllFromString("""
+				(defun f (n) (log n 2))
+				(print (f 8d0))
+				"""));
+		assertThat(new String(open, StandardCharsets.ISO_8859_1)).contains(holderClassConstant)
+			.contains("_cu1")
+			.contains("_cdiv");
+	}
+
 	@Test
 	void aLiteralProvenRealDomainKeepsTheComplexGateShut() throws Exception {
 		// The gate's trigger for these four is the CALL, not the mention: an argument

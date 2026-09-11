@@ -13465,6 +13465,71 @@ class WasmLispCompilerIntegrationTest {
 	}
 
 	@Test
+	void compileAndRunAtanOfTwoArguments() throws Exception {
+		// (atan y x) is atan2 over the full circle: it reuses phase's own quadrant
+		// assembly, so the axes and the signed zeros come out EXACT (the constants are
+		// pi and pi/2 themselves) while the off-axis values carry the software atan
+		// core's approximation.
+		String[] out = compileAndRun("""
+				(print (atan 0d0 1d0))
+				(print (atan 1d0 0d0))
+				(print (atan -1d0 0d0))
+				(print (atan 0d0 -1d0))
+				(print (atan -0d0 -1d0))
+				(print (atan 0d0 0d0))
+				(print (atan -0d0 0d0))
+				(print (atan 1d0 1d0))
+				(print (atan 1d0 -1d0))
+				(print (atan -1d0 -1d0))
+				(print (atan 3 4))
+				(let ((y 1d0) (x -1d0)) (print (atan y x)))
+				(print (= (atan (imagpart #c(3d0 4d0)) (realpart #c(3d0 4d0))) (phase #c(3d0 4d0))))
+				(print (= (atan (imagpart #c(-1d0 1d0)) (realpart #c(-1d0 1d0))) (phase #c(-1d0 1d0))))
+				(print (atan 1d0))
+				""").split("\n");
+		assertThat(out[0]).isEqualTo("0.0");
+		assertThat(out[1]).isEqualTo("1.5707963267948966");
+		assertThat(out[2]).isEqualTo("-1.5707963267948966");
+		assertThat(out[3]).isEqualTo("3.141592653589793");
+		assertThat(out[4]).isEqualTo("-3.141592653589793");
+		assertThat(out[5]).isEqualTo("0.0");
+		assertThat(out[6]).isEqualTo("-0.0");
+		assertThat(Double.parseDouble(out[7])).isCloseTo(0.7853981633974483, within(1e-9));
+		assertThat(Double.parseDouble(out[8])).isCloseTo(2.356194490192345, within(1e-9));
+		assertThat(Double.parseDouble(out[9])).isCloseTo(-2.356194490192345, within(1e-9));
+		assertThat(Double.parseDouble(out[10])).isCloseTo(0.6435011087932844, within(1e-9));
+		assertThat(Double.parseDouble(out[11])).isCloseTo(2.356194490192345, within(1e-9));
+		assertThat(out[12]).isEqualTo("T");
+		assertThat(out[13]).isEqualTo("T");
+		assertThat(Double.parseDouble(out[14])).isCloseTo(0.7853981633974483, within(1e-9));
+	}
+
+	@Test
+	void compileAndRunLogWithABase() throws Exception {
+		// (log n base) is the QUOTIENT of the two logarithms, and that identity is the
+		// pin: the software log core's error rides through it, so the exact-power rows
+		// are NOT exact here the way they are on the interpreter and the JVM.
+		String[] out = compileAndRun("""
+				(print (< (abs (- (log 8 2) 3)) 1d-9))
+				(print (< (abs (- (log 100 10) 2)) 1d-9))
+				(print (< (abs (- (log 1024 2) 10)) 1d-9))
+				(print (= (log 8d0 2d0) (/ (log 8d0) (log 2d0))))
+				(print (< (abs (- (log 1000d0 10d0) 3)) 1d-9))
+				(print (complexp (log 8 2)))
+				(let ((n -8d0) (b 2d0)) (print (complexp (log n b))))
+				(let ((n -8d0) (b 2d0)) (print (< (abs (- (realpart (log n b)) 3)) 1d-9)))
+				(let ((n -8d0) (b 2d0)) (print (< (abs (- (imagpart (log n b)) 4.532360141827194d0)) 1d-9)))
+				(print (= (log #c(1d0 1d0) 2d0) (/ (log #c(1d0 1d0)) (log 2d0))))
+				(print (= (log #c(1d0 1d0) #c(2d0 1d0)) (/ (log #c(1d0 1d0)) (log #c(2d0 1d0)))))
+				(let ((n 8d0) (b 2d0)) (print (complexp (log n b))))
+				(print (< (abs (- (log 8d0) 2.0794415416798357d0)) 1d-9))
+				(print (< (abs (- (funcall #'log 8 2) 3)) 1d-9))
+				(print (< (abs (- (funcall #'atan 1d0 -1d0) 2.356194490192345d0)) 1d-9))
+				""").split("\n");
+		assertThat(out).containsExactly("T", "T", "T", "T", "T", "NIL", "T", "T", "T", "T", "T", "NIL", "T", "T", "T");
+	}
+
+	@Test
 	void compileAndRunComplexAsinAcosOfARealArgumentAnswerAnExactZero() throws Exception {
 		// A zero has no tolerance: an exactly real argument inside [-1, 1] answers an
 		// exactly real value here too, because Kahan's asinh argument is a difference

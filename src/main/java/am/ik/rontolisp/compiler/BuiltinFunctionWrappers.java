@@ -1506,8 +1506,11 @@ public final class BuiltinFunctionWrappers {
 			unary(LispNames.CONJUGATE), unary(LispNames.PHASE), unary(LispNames.UPGRADED_COMPLEX_PART_TYPE),
 			// Math functions (arity 1)
 			unary(LispNames.SQRT), unary(LispNames.ISQRT), unary(LispNames.SIGNUM), unary(LispNames.EXP),
-			unary(LispNames.LOG), unary(LispNames.SIN), unary(LispNames.COS), unary(LispNames.TAN),
-			unary(LispNames.ASIN), unary(LispNames.ACOS), unary(LispNames.ATAN), unary(LispNames.SINH),
+			// log and atan carry the optional SECOND argument (the logarithm's base,
+			// atan's atan2 x): the dispatch on its presence is exact, since neither an
+			// omitted base nor an omitted x can be spelled nil.
+			unaryOptionalSecond(LispNames.LOG), unary(LispNames.SIN), unary(LispNames.COS), unary(LispNames.TAN),
+			unary(LispNames.ASIN), unary(LispNames.ACOS), unaryOptionalSecond(LispNames.ATAN), unary(LispNames.SINH),
 			unary(LispNames.COSH), unary(LispNames.TANH), unary(LispNames.CIS), unary(LispNames.ASINH),
 			unary(LispNames.ACOSH), unary(LispNames.ATANH), unary(LispNames.RANDOM),
 			// Math functions (arity 2)

@@ -240,6 +240,47 @@ unchanged, so two shapes keep the pre-existing corner rather than gaining an arm
   since typed loops existed: the loop's result goes into a packed float array, which has
   no complex representation anyway.
 
+## The two-argument `atan` and `log` (`.todo/762`, 2026-09-11)
+
+`(atan y x)` is C's `atan2` and `(log n base)` the quotient of the two logarithms
+(CLHS). Both live in `JvmMathFnCompiler.compileBinary`, AHEAD of the one-argument path,
+which is byte-for-byte what it was.
+
+- **`atan2` is `Math.atan2`, the same call `phase` makes**, so
+  `(atan (imagpart z) (realpart z))` IS `(phase z)` and no second quadrant assembly
+  exists to drift. Both arguments must be REAL (CLHS): they go through
+  `compileUnboxedOperand`, whose `_dbl` funnel already throws the interpreter's
+  "Expected real number" for a holder. `atan` NEVER opens the complex gate -- it is not
+  a real-domain escape, and the two-argument form cannot answer a complex.
+- **`log/2` is TWO logarithms and one division.** `escapesToComplex` therefore reads
+  BOTH literals: `(log 8 2)` keeps the gate shut and compiles to two `Math.log` calls
+  and a `DDIV`; anything a literal cannot prove non-negative runs both arguments through
+  `_cu1`'s `U1_LOG` and divides with `_cdiv`
+  (`JvmLispCompilerTest#aLiteralProvenRealBaseKeepsTheComplexGateShut`).
+- **`_cdiv` gained the arm that makes that quotient total**: neither operand a holder ->
+  delegate to the ungated `_div`. A complex-capable site only knows at RUN time whether
+  it holds a complex, and `(log 8d0 2d0)` through the gated spelling must still answer
+  the REAL `3.0`, not `#C(2.9999999999999996 0.0)` (which is what the float path's
+  `emitNewHolderFromSlots` built -- it cannot canonicalize a float zero away, where the
+  WASM twin's `_c_complex` could, so the two backends disagreed on an arm neither could
+  reach before). It is `_cpowr`'s shape: the gated helper answers the real case by
+  delegating rather than by duplicating. The WASM twin (`_c_div`'s own head, to
+  `_rat_div`) is the same arm.
+- `#'log` was already reference-gated; `#'atan` is not and must not become so. Both
+  wrappers are now `unaryOptionalSecond` (the presence dispatch is exact: neither an
+  omitted base nor an omitted `x` can be spelled `nil`).
+
+**Measured against SBCL 2.2.9 (2026-09-11, `linux/amd64`), one row of `.todo/762`'s
+table does not land**: `(log -8d0 2d0)` is `#C(2.9999999999999996 4.532360141827194)`
+here and `#C(3.0 4.532360141827194)` in SBCL. The cause is not `log` -- it is complex
+DIVISION. This implementation's is the naive `(ac+bd)/(c^2+d^2)`; SBCL's is Smith's,
+whose real divisor reduces to a part-wise `a/c, b/c` with ONE rounding instead of three.
+`(/ #c(2.0794415416798357d0 3.141592653589793d0) 0.6931471805599453d0)` alone shows it,
+with no logarithm in sight. Fixing it is `.todo/779`, not this item: the quotient IS the
+definition of `(log n base)`, so the pin here is the identity
+`(log n b)` = `(/ (log n) (log b))`, which holds on every backend and improves with the
+division rather than around it.
+
 ## Known corners (documented, not fixed here)
 
 A complex arriving only through a variable beside a double literal takes the

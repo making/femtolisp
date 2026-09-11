@@ -16182,6 +16182,48 @@ cases:
       T
       T
       T
+  - name: atan2-and-log-base
+    # atan's optional second argument is C's atan2 -- the angle of the vector (x, y)
+    # over the full circle, which IS the phase of x + yi -- and log's is the base,
+    # making the answer the QUOTIENT of the two logarithms. WASM's transcendentals are
+    # software approximations, so what travels is the contract: the quadrant edges and
+    # the signed zeros (exact constants on every backend), the identity against phase,
+    # and the quotient's magnitude and type.
+    source: |
+      (print (atan 0d0 1d0))
+      (print (atan 1d0 0d0))
+      (print (atan -1d0 0d0))
+      (print (atan 0d0 -1d0))
+      (print (atan -0d0 -1d0))
+      (print (atan -0d0 0d0))
+      (print (= (atan (imagpart #c(3d0 4d0)) (realpart #c(3d0 4d0))) (phase #c(3d0 4d0))))
+      (print (= (atan (imagpart #c(-1d0 -1d0)) (realpart #c(-1d0 -1d0))) (phase #c(-1d0 -1d0))))
+      (print (< (abs (- (atan 3 4) 0.6435011087932844d0)) 1d-9))
+      (print (< (abs (- (log 8 2) 3)) 1d-9))
+      (print (< (abs (- (log 1024 2) 10)) 1d-9))
+      (print (< (abs (- (log 1000d0 10d0) 3)) 1d-9))
+      (print (complexp (log 8 2)))
+      (let ((n -8d0) (b 2d0))
+        (print (complexp (log n b)))
+        (print (< (abs (- (realpart (log n b)) 3)) 1d-9))
+        (print (< (abs (- (imagpart (log n b)) 4.532360141827194d0)) 1d-9)))
+    expected: |
+      0.0
+      1.5707963267948966
+      -1.5707963267948966
+      3.141592653589793
+      -3.141592653589793
+      -0.0
+      T
+      T
+      T
+      T
+      T
+      T
+      NIL
+      T
+      T
+      T
   - name: complex-binary-arithmetic
     source: |
       (print (+ #c(1 1/2) #c(1 1/3)))

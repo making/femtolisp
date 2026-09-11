@@ -17120,8 +17120,11 @@ public final class LispMacroExpander {
 	 */
 	public static boolean escapesToComplex(String head, List<LispVal> call) {
 		return switch (head) {
-			// A non-negative literal argument has a real logarithm.
-			case LispNames.LOG -> call.size() != 2 || !isNonNegativeRealLiteral(call.get(1));
+			// A non-negative literal argument has a real logarithm. The optional BASE
+			// is a second logarithm under the same rule -- (log n b) is their
+			// quotient, so it stays real exactly when BOTH of them do.
+			case LispNames.LOG -> call.size() != 2 && call.size() != 3 || !isNonNegativeRealLiteral(call.get(1))
+					|| call.size() == 3 && !isNonNegativeRealLiteral(call.get(2));
 			// A literal inside [-1, 1] has a real arc sine and arc cosine.
 			case LispNames.ASIN, LispNames.ACOS -> call.size() != 2 || !isUnitRangeLiteral(call.get(1));
 			// An INTEGER exponent answers a real for every base (the sign is the

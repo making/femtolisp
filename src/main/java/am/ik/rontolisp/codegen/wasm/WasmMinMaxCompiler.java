@@ -74,7 +74,7 @@ final class WasmMinMaxCompiler {
 		// EH mode), like the interpreter -- the n-ary expansion reduces to this
 		// binary shape, so one guard covers every arity.
 		if (WasmComplexCompiler.hasComplex(cons)) {
-			WasmComplexCompiler.emitMinMaxComplexGuard(ctx, aSlot, bSlot);
+			WasmComplexCompiler.emitRealOperandGuard(ctx, aSlot, bSlot);
 		}
 
 		if (WasmLispCompiler.hasDoubleLiteral(args)) {
