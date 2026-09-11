@@ -13183,6 +13183,26 @@ cases:
                    (class-name (class-of (make-fcm-node)))
                    (class-name (find-class 'string))))
       (print (class-of 42))
+      ;; The built-in class lattice: find-class answers for its INTERIOR too
+      ;; (array/vector/bit-vector, number/real/rational, sequence/list,
+      ;; structure-object, built-in-class), reachable by NAME only -- class-of
+      ;; always has a narrower answer. The lattice itself is not copied into the
+      ;; metaobjects: a metaobject standing as a type specifier means the same
+      ;; set as its name, which is what typep/subtypep already know.
+      (print (list (mapcar (lambda (n) (class-name (find-class n)))
+                           '(array vector bit-vector number real rational
+                             sequence list structure-object built-in-class))
+                   (typep #(1 2) (find-class 'array))
+                   (typep 1 (find-class 'array))
+                   (typep 1 (find-class 'number))
+                   (subtypep (find-class 'vector) 'array)))
+      ;; class-of NARROWS what the lite %class-designator answers t for: a rank-1
+      ;; array is a vector, anything else an array, and a string keeps string.
+      (print (list (class-name (class-of (make-array 3)))
+                   (class-name (class-of #2a((1 2) (3 4))))
+                   (class-name (class-of "ab"))
+                   (eq (class-of (make-array 3)) (find-class 'vector))
+                   (type-of (make-array 3))))
       ;; allocate-instance: an all-slots-unbound instance from a metaobject or a
       ;; name; only CLOS classes allocate (a struct class signals)
       (let ((p (allocate-instance (find-class 'fcm-dog))))
@@ -13226,6 +13246,8 @@ cases:
       (TYPE-ERROR ERROR)
       (T T T FCM-NODE STRING)
       #<STANDARD-CLASS :NAME INTEGER :DIRECT-SUPERCLASSES NIL :DIRECT-SLOTS NIL :EFFECTIVE-SLOTS NIL :FINALIZED-P T>
+      ((ARRAY VECTOR BIT-VECTOR NUMBER REAL RATIONAL SEQUENCE LIST STRUCTURE-OBJECT BUILT-IN-CLASS) T NIL T T)
+      (VECTOR ARRAY STRING T (SIMPLE-VECTOR 3))
       (T NIL "rex" NIL :SIGNALED)
       (T FCM-DOG T T 42)
       (T NIL T T T NIL T T T T)
