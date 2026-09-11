@@ -76,6 +76,22 @@ declaration, since an `NSRect` through a `long` shape is a SIGBUS** -- calling i
 `ObjcException` -> a Lisp `error`, never a crash. Blocks (`@?`), unions, bitfields and function
 pointers are refused by name.
 
+- **"Describes every selector completely" is false for a VARIADIC one**, which is declared byte
+  for byte like its fixed-arity twin (`arrayWithObjects:` and `arrayWithObject:` are both `@@:@`).
+  On arm64 a variadic argument goes on the STACK and a fixed one in a register, so the declared
+  shape leaves the callee walking its `va_list` off a slot nobody wrote -- SIGSEGV in
+  `objc_retain`, the one hole in "never a crash". Nothing in the runtime marks it, so the family
+  is a TABLE OF NAMES, `am.ik.objc.VariadicSelectors`: the nil-terminated constructors and the
+  format-string family. `send` lets a selector in it take arguments PAST the declared arity, each
+  marshalled by the carrier its VALUE picks (object/`jlong`/`jdouble` -- what `va_arg` reads for
+  `%@`, `%ld`, `%f`), appends the nil terminator ITSELF, and binds with
+  `Linker.Option.firstVariadicArg(declared count)`. **The appended nil is unconditional**: the
+  nil-terminated half needs it and a `printf`-style callee never reads past its format, which is
+  what keeps ONE rule instead of two -- and makes the last variadic argument always `void*`, which
+  is what bounds the native table. A variadic selector a PROGRAM declares is still the crash;
+  nothing can see it coming. `ObjcRuntime.Signature` (descriptor + split, `-1` when fixed) is the
+  `sends` cache key, since the same layouts called variadically are a different stub.
+
 - A native image builds a downcall stub only for a shape registered at build time
   (`MissingForeignRegistrationError` at `Linker.downcallHandle`), so the served set is a CLOSED
   TABLE in `reachability-metadata.json`: the runtime's own C functions, every shape `appkit.lisp`/
@@ -84,7 +100,11 @@ pointers are refused by name.
   `scheduledTimerWithTimeInterval:...`. A selector outside the table signals with the exact entry
   to add; the JVM registers nothing, so `java -jar` is where a program discovers what it sends.
   **A new selector in `appkit.lisp`, `metal.lisp`, the `examples/macos` programs the test names, or
-  the docs is a row in `ObjcNativeImageForeignConfigTest`'s table.**
+  the docs is a row in `ObjcNativeImageForeignConfigTest`'s table.** The variadic sends are their
+  own 144-entry grid, generated from a RULE the same test restates and pins in both directions:
+  three fixed halves (`void*(void*,void*,void*)` and `void(void*,void*,void*)` splitting at 3,
+  `void(void*,void*,void*,void*)` -- `raise:format:` -- at 4) crossed with 1-12 variadic
+  arguments, every carrier combination up to 4 and `void*` only past it.
 - In the native binary every send through that table is INTERPRETED by SubstrateVM's method-handle
   interpreter -- a handle created at run time has no AOT code, ~1.7 us a call plus ~0.4 us per
   argument on top of `invokeWithArguments`' own boxing (`.kb/gpu.md`, "An FFM downcall inside a native
@@ -231,8 +251,6 @@ via `eval/ObjcInterop`'s five entry points (the `LinalgGpu`/`LinalgGpuKernels` s
 ## Open items
 - No MAIN menu (a process with no bundle sets none), so no Cmd-Q on a windowed program.
 - Callback shapes with struct or integer arguments, and block-taking selectors.
-- **A VARIADIC selector is the one hole in "never a crash"**: the encoding does not mark it, so
-  `arrayWithObjects:` is bound as `@@:@`, the nil terminator lands in a register the callee never
-  reads, and the process dies in `objc_retain`. Refuse the known set by name the way blocks are,
-  then serve them with `Linker.Option.firstVariadicArg`.
+- A variadic selector a PROGRAM declares: served only for the names in `VariadicSelectors`, and
+  the runtime offers no way to recognise another.
 - x86_64: `objc_msgSend_stret` (struct returns wider than 16 bytes) has not been exercised.

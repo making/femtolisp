@@ -222,6 +222,38 @@ that does not fit its declared type is an `error`, never a crash. The answer of 
 binding cannot see). Blocks, unions and bitfields are outside this first cut: a
 selector that takes one is refused by name.
 
+### The one declaration that is not the whole call
+
+A VARIADIC selector is the exception the runtime does not mark.
+`+[NSArray arrayWithObjects:]` and `+[NSArray arrayWithObject:]` are both declared
+`@@:@`, byte for byte, and nothing distinguishes them — yet on Apple silicon that
+difference is the whole call, since a variadic argument travels on the stack where a
+fixed one travels in a register.
+
+So the family is known by name instead: the nil-terminated constructors
+(`arrayWithObjects:`, `initWithObjects:`, `setWithObjects:`, `orderedSetWithObjects:`,
+`dictionaryWithObjectsAndKeys:`, `initWithObjectsAndKeys:`) and the format-string one
+(`stringWithFormat:`, `initWithFormat:`, `localizedStringWithFormat:`,
+`stringByAppendingFormat:`, `appendFormat:`, `predicateWithFormat:`, `raise:format:`).
+Each of them takes as many arguments as you give it past its declared arity — an object,
+a string, an integer or a float — and the `nil` terminator is the binding's own, never
+yours.
+
+```console
+CL-USER> (objc:send (objc:send "NSArray" "arrayWithObjects:"
+                      (objc:string "a") (objc:string "b") (objc:string "c")) "count")
+3
+CL-USER> (objc:send (objc:send "NSString" "stringWithFormat:"
+                      (objc:string "%@ has %ld items, %.1f%% full")
+                      (objc:string "cache") 3 62.5) "UTF8String")
+"cache has 3 items, 62.5% full"
+```
+
+`arrayWithObjects:count:` is deliberately not one of them: it takes a real array and a
+count, and is the fixed-arity way to build a collection of any size. A variadic method
+your own program declares is outside the table too, and there is no way for the binding
+to see it coming.
+
 ### Bytes, and the `:error` out-parameter
 
 Two things a generic message send cannot express on its own are a block of MEMORY and an
@@ -368,6 +400,11 @@ in this binary; register it under foreign.downcalls in reachability-metadata.jso
 The JVM registers nothing ahead of time and binds any shape, so `java -jar` is the
 place to find out what a program sends before a binary is built for it.
 
+A variadic call is its own registration, so the binary serves a bounded grid of those
+too: up to eleven arguments past the declared ones — the binding's own `nil` terminator
+makes twelve — of which the first three may be numbers and the rest objects. A longer
+or more numeric list signals the same way.
+
 ## Compiling to a JVM class
 
 The same program compiles to a `.class` or a `.jar` and runs under a plain `java`
@@ -398,5 +435,7 @@ API and no AppKit on that side.
   Cmd-Q, and closing the last window does not quit — the REPL is the process.
 - Callback shapes are the closed set above; a delegate method with a struct or
   integer argument, or a block-taking selector, needs a rung this cut does not have.
+- The variadic selectors served are the table above. One a program declares itself is
+  not in it, and the runtime gives the binding no way to tell.
 - Apple silicon. On an Intel Mac a struct wider than two registers is returned
   through `objc_msgSend_stret`, which the binding selects but has not been exercised.

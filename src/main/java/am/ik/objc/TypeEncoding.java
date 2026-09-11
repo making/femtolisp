@@ -204,9 +204,24 @@ public record TypeEncoding(Type returnType, List<Type> argumentTypes) {
 	 * @return the descriptor a downcall or upcall stub needs
 	 */
 	public FunctionDescriptor descriptor() {
-		MemoryLayout[] args = this.argumentTypes.stream().map(Type::argumentLayout).toArray(MemoryLayout[]::new);
+		return descriptor(List.of());
+	}
+
+	/**
+	 * The foreign-call shape of this encoding with a variadic argument list appended --
+	 * what a {@linkplain VariadicSelectors variadic selector} is really called through,
+	 * since the encoding describes only the fixed half.
+	 * @param tail the layouts of the variadic arguments, in order
+	 * @return the descriptor, whose first variadic argument is at
+	 * {@link #argumentTypes()}{@code .size()}
+	 */
+	public FunctionDescriptor descriptor(List<MemoryLayout> tail) {
+		List<MemoryLayout> args = new ArrayList<>(this.argumentTypes.size() + tail.size());
+		this.argumentTypes.forEach(type -> args.add(type.argumentLayout()));
+		args.addAll(tail);
+		MemoryLayout[] all = args.toArray(MemoryLayout[]::new);
 		MemoryLayout ret = this.returnType.layout();
-		return ret == null ? FunctionDescriptor.ofVoid(args) : FunctionDescriptor.of(ret, args);
+		return ret == null ? FunctionDescriptor.ofVoid(all) : FunctionDescriptor.of(ret, all);
 	}
 
 	/**

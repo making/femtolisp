@@ -42,6 +42,12 @@ import org.jspecify.annotations.Nullable;
  * an {@link ObjcException} that spells the entry to add, never a silent decline and never
  * a SIGBUS.
  *
+ * <p>
+ * The encoding is complete for every method except a VARIADIC one, which it spells
+ * exactly like its fixed-arity twin. Those are a known set of names
+ * ({@link VariadicSelectors}) and {@link #send} calls them through a variadic shape
+ * instead.
+ *
  * <h2>Threads</h2>
  *
  * This class is a plain binding and runs on whichever thread calls it. AppKit demands
@@ -124,7 +130,7 @@ public final class ObjcRuntime {
 	/** The shapes bound, in binding order, for the native-image registration test. */
 	private final Set<FunctionDescriptor> signatures = new LinkedHashSet<>();
 
-	private final Map<FunctionDescriptor, MethodHandle> sends = new ConcurrentHashMap<>();
+	private final Map<Signature, MethodHandle> sends = new ConcurrentHashMap<>();
 
 	// Both caches are load-bearing rather than an optimization: the C strings they are
 	// built from live in the global arena forever.
@@ -177,26 +183,81 @@ public final class ObjcRuntime {
 	}
 
 	private static MethodHandle downcall(MemorySegment symbol, FunctionDescriptor descriptor, String what) {
+		return downcall(symbol, new Signature(descriptor, -1), what);
+	}
+
+	private static MethodHandle downcall(MemorySegment symbol, Signature signature, String what) {
 		try {
-			return LINKER.downcallHandle(symbol, descriptor);
+			return LINKER.downcallHandle(symbol, signature.descriptor(), signature.options());
 		}
 		catch (Throwable ex) {
 			// A native image refuses a shape it did not register at build time
 			// (MissingForeignRegistrationError, an Error): name the entry to add.
-			throw new ObjcException(what + ": the shape " + TypeEncoding.spelling(descriptor)
+			throw new ObjcException(what + ": the shape " + signature
 					+ " has no foreign-call stub in this binary; register it under foreign.downcalls in "
 					+ "reachability-metadata.json and rebuild", ex);
 		}
 	}
 
 	/**
-	 * Every downcall shape this binding and its pump asked the linker for.
+	 * A bound downcall shape: the descriptor, plus where the variadic argument list
+	 * starts. A variadic registration is a DIFFERENT stub than the same descriptor
+	 * without one -- on the Apple arm64 ABI a variadic argument goes on the stack where a
+	 * fixed one goes in a register -- so the two never share a handle or a metadata
+	 * entry.
+	 *
+	 * @param descriptor the shape
+	 * @param firstVariadicArg the index of the first variadic argument, or {@code -1}
+	 * when the call is not variadic
+	 */
+	public record Signature(FunctionDescriptor descriptor, int firstVariadicArg) {
+
+		/**
+		 * @return whether this shape is called as a variadic
+		 */
+		public boolean isVariadic() {
+			return this.firstVariadicArg >= 0;
+		}
+
+		Linker.Option[] options() {
+			return isVariadic() ? new Linker.Option[] { Linker.Option.firstVariadicArg(this.firstVariadicArg) }
+					: new Linker.Option[0];
+		}
+
+		@Override
+		public String toString() {
+			return TypeEncoding.spelling(this.descriptor)
+					+ (isVariadic() ? " variadic from argument " + this.firstVariadicArg : "");
+		}
+	}
+
+	/**
+	 * Every non-variadic downcall shape this binding and its pump asked the linker for.
 	 * @return the shapes
+	 * @see #variadicSignatures()
 	 */
 	public Set<FunctionDescriptor> signatures() {
 		Set<FunctionDescriptor> all = new LinkedHashSet<>(this.signatures);
 		all.addAll(this.mainThread.signatures());
-		all.addAll(this.sends.keySet());
+		for (Signature signature : this.sends.keySet()) {
+			if (!signature.isVariadic()) {
+				all.add(signature.descriptor());
+			}
+		}
+		return all;
+	}
+
+	/**
+	 * Every variadic send shape this binding asked the linker for.
+	 * @return the shapes
+	 */
+	public Set<Signature> variadicSignatures() {
+		Set<Signature> all = new LinkedHashSet<>();
+		for (Signature signature : this.sends.keySet()) {
+			if (signature.isVariadic()) {
+				all.add(signature);
+			}
+		}
 		return all;
 	}
 
@@ -545,6 +606,12 @@ public final class ObjcRuntime {
 	 * or pointer ({@code null} for nil), a {@link String} for a selector or C string, a
 	 * {@link Boolean}, a {@link Long} for any integer, a {@link Double} for any float, a
 	 * {@code Number[]} for a struct, and {@code null} for void.
+	 * <p>
+	 * A {@linkplain VariadicSelectors variadic selector} takes arguments PAST its
+	 * declared arity: each one travels as a variadic argument whose carrier its own value
+	 * picks, a nil terminator is appended, and the call is bound with
+	 * {@link Linker.Option#firstVariadicArg} -- without which the callee reads its
+	 * {@code va_list} off a stack slot nobody wrote and the process dies.
 	 * @param receiver the object or class
 	 * @param selector the selector name
 	 * @param args the selector's own arguments (not the receiver, not the selector)
@@ -555,13 +622,16 @@ public final class ObjcRuntime {
 	public Sent send(MemorySegment receiver, String selector, @Nullable Object... args) {
 		TypeEncoding encoding = encoding(receiver, selector);
 		List<Type> params = encoding.argumentTypes();
-		if (params.size() != args.length + 2) {
-			throw new ObjcException(selector + " takes " + (params.size() - 2) + " argument(s), got " + args.length);
+		int declared = params.size() - 2;
+		// The encoding does not say a method is variadic -- arrayWithObjects: is declared
+		// byte for byte what arrayWithObject: is -- so the known set is a table of names.
+		boolean variadic = VariadicSelectors.isVariadic(selector);
+		if (variadic ? args.length < declared : args.length != declared) {
+			throw new ObjcException(selector + " takes " + (variadic ? "at least " : "") + declared
+					+ " argument(s), got " + args.length);
 		}
-		FunctionDescriptor descriptor = encoding.descriptor();
-		MethodHandle handle = this.sends.computeIfAbsent(descriptor, d -> downcall(target(encoding), d, selector));
 		try (Arena arena = Arena.ofConfined()) {
-			List<Object> all = new ArrayList<>(args.length + 3);
+			List<Object> all = new ArrayList<>(args.length + 4);
 			Type ret = encoding.returnType();
 			if (ret.isStruct()) {
 				all.add((SegmentAllocator) arena);
@@ -570,7 +640,7 @@ public final class ObjcRuntime {
 			all.add(selector(selector));
 			List<Out> outs = List.of();
 			List<MemorySegment> slots = List.of();
-			for (int i = 0; i < args.length; i++) {
+			for (int i = 0; i < declared; i++) {
 				if (args[i] instanceof Out out) {
 					Type param = params.get(i + 2);
 					if (param.kind() != Kind.POINTER) {
@@ -592,6 +662,22 @@ public final class ObjcRuntime {
 					all.add(marshal(params.get(i + 2), args[i], arena, selector, i));
 				}
 			}
+			Signature signature;
+			if (variadic) {
+				List<MemoryLayout> tail = new ArrayList<>(args.length - declared + 1);
+				for (int i = declared; i < args.length; i++) {
+					tail.add(variadicArgument(all, args[i], arena, selector, i));
+				}
+				// The terminator the nil-terminated constructors need and the format
+				// family never reads.
+				all.add(MemorySegment.NULL);
+				tail.add(ValueLayout.ADDRESS);
+				signature = new Signature(encoding.descriptor(tail), params.size());
+			}
+			else {
+				signature = new Signature(encoding.descriptor(), -1);
+			}
+			MethodHandle handle = this.sends.computeIfAbsent(signature, s -> downcall(target(encoding), s, selector));
 			Object raw;
 			try {
 				raw = handle.invokeWithArguments(all);
@@ -673,6 +759,35 @@ public final class ObjcRuntime {
 		catch (ObjcException ex) {
 			throw ex;
 		}
+	}
+
+	/**
+	 * Marshals one argument past a variadic selector's declared arity, where the encoding
+	 * says nothing and the VALUE decides the shape: an object, string or pointer travels
+	 * as {@code void*}, a floating value as a {@code double} and any other number as a
+	 * 64-bit integer -- the three carriers a {@code va_arg} of {@code %@}, {@code %f} and
+	 * {@code %ld} reads back.
+	 * @param all the argument list being built, which the marshalled value is added to
+	 * @return the layout to register for it
+	 */
+	private MemoryLayout variadicArgument(List<Object> all, @Nullable Object arg, Arena arena, String selector,
+			int index) {
+		Object value = switch (arg) {
+			case null -> MemorySegment.NULL;
+			case MemorySegment seg -> seg;
+			case String s -> nsString(s, arena);
+			case Double d -> d;
+			case Float f -> (double) f;
+			case Number n -> n.longValue();
+			default -> throw new ObjcException(selector + ": argument " + (index + 1)
+					+ " is past the declared arity, so it is a variadic argument, which takes an object, a "
+					+ "string, an integer or a float, got " + arg.getClass().getSimpleName());
+		};
+		all.add(value);
+		if (value instanceof Double) {
+			return ValueLayout.JAVA_DOUBLE;
+		}
+		return value instanceof Long ? ValueLayout.JAVA_LONG : ValueLayout.ADDRESS;
 	}
 
 	private static Number scalar(@Nullable Object arg, String selector, int index, String expected) {

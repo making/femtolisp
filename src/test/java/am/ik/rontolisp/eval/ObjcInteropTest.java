@@ -168,6 +168,48 @@ class ObjcInteropTest {
 
 	@Test
 	@EnabledOnOs(OS.MAC)
+	void aVariadicSelectorTakesItsWholeArgumentListAndTerminatesItself() {
+		assumeTrue(ObjcInterop.available(), ObjcInterop.description());
+		// arrayWithObjects: is declared @@:@ -- byte for byte what arrayWithObject: is --
+		// so sending it through the encoding leaves the callee reading its va_list off a
+		// stack slot nobody wrote, and the process dies in objc_retain. The table of
+		// known variadic selectors is what makes the difference (am.ik.objc's
+		// VariadicSelectors): the list is passed as variadic arguments and the nil
+		// terminator is the binding's, never the caller's.
+		assertThat(eval("(objc:send (objc:send \"NSArray\" \"arrayWithObjects:\" (objc:string \"a\")"
+				+ " (objc:string \"b\") (objc:string \"c\")) \"count\")"))
+			.isEqualTo("3");
+		assertThat(eval("(objc:send (objc:send (objc:send \"NSArray\" \"arrayWithObjects:\" (objc:string \"a\")"
+				+ " (objc:string \"b\")) \"componentsJoinedByString:\" (objc:string \"-\")) \"UTF8String\")"))
+			.isEqualTo("\"a-b\"");
+		// The declared arity alone is a one-element list, not a crash: the terminator is
+		// still appended.
+		assertThat(
+				eval("(objc:send (objc:send \"NSArray\" \"arrayWithObjects:\" (objc:string \"solo\"))" + " \"count\")"))
+			.isEqualTo("1");
+		// The pairs of dictionaryWithObjectsAndKeys:, value first.
+		assertThat(eval("(objc:send (objc:send (objc:send \"NSDictionary\" \"dictionaryWithObjectsAndKeys:\""
+				+ " (objc:string \"v1\") (objc:string \"k1\") (objc:string \"v2\") (objc:string \"k2\"))"
+				+ " \"objectForKey:\" (objc:string \"k2\")) \"UTF8String\")"))
+			.isEqualTo("\"v2\"");
+		// The format family takes the carrier its VALUE picks, which is what %@, %ld and
+		// %f read back out of the va_list.
+		assertThat(eval("(objc:send (objc:send \"NSString\" \"stringWithFormat:\" (objc:string \"%@ %ld %.2f\")"
+				+ " (objc:string \"x\") 42 3.5) \"UTF8String\")"))
+			.isEqualTo("\"x 42 3.50\"");
+		// Below the declared arity it is still the arity error, worded for a list with no
+		// end.
+		assertThat(eval("(handler-case (objc:send \"NSArray\" \"arrayWithObjects:\") (error (e) (princ-to-string e)))"))
+			.contains("arrayWithObjects: takes at least 1 argument(s), got 0");
+		// A variadic argument has no declared type to check against, so the refusal is
+		// by carrier: an object, a string, an integer or a float.
+		assertThat(eval("(handler-case (objc:send \"NSArray\" \"arrayWithObjects:\" (objc:string \"a\") '(1 2))"
+				+ " (error (e) (princ-to-string e)))"))
+			.contains("is past the declared arity");
+	}
+
+	@Test
+	@EnabledOnOs(OS.MAC)
 	void aWrongSelectorArityOrOperandIsAConditionNotACrash() {
 		assumeTrue(ObjcInterop.available(), ObjcInterop.description());
 		assertThat(eval("(handler-case (objc:send (objc:string \"x\") \"nope:\" 1) (error (e) (princ-to-string e)))"))
