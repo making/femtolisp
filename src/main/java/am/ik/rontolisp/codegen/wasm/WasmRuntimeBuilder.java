@@ -1969,10 +1969,7 @@ final class WasmRuntimeBuilder {
 		for (DispatchTarget t : targets) {
 			maxFuncId = Math.max(maxFuncId, t.funcId());
 		}
-		int levels = 1;
-		while ((maxFuncId >>> (DISPATCH_PAGE_BITS * levels)) != 0) {
-			levels++;
-		}
+		int levels = dispatchLevels(maxFuncId);
 		if (levels == 1) {
 			// Every callable is inside one page already: the body is large because its
 			// CASES are (a spread dispatcher over ten-parameter targets), not because
@@ -2025,6 +2022,30 @@ final class WasmRuntimeBuilder {
 	}
 
 	/** The callables one dispatcher carries a case for, in funcId order. */
+	/**
+	 * How many 8-bit digits of {@code maxFuncId} a paged dispatcher has to read: the
+	 * depth of the radix tree {@link #buildDispatch} builds. One for a program whose
+	 * largest funcId fits a single page, four at the ceiling -- a funcId is an
+	 * {@code i32}, so it has no fifth digit.
+	 *
+	 * <p>
+	 * Counted from the bit length rather than by shifting {@code maxFuncId} right 8 more
+	 * bits per round: Java takes a shift distance mod 32, so the fourth round of such a
+	 * loop shifts by 0, reads the id back unshifted and spins forever on any id of
+	 * {@code 2^24} or more. An unreachable bound must not be a hang -- one full
+	 * {@code ./mvnw test} lost two workers to exactly that (2026-09-11), each burning
+	 * 2223 s of CPU inside the count.
+	 * @param maxFuncId the largest funcId the dispatcher must select on, never negative
+	 * @return the tree depth, in {@code [1, 4]}
+	 */
+	static int dispatchLevels(int maxFuncId) {
+		if (maxFuncId < 0) {
+			throw new IllegalStateException("Cannot page a dispatcher on a negative funcId: " + maxFuncId);
+		}
+		int bits = 32 - Integer.numberOfLeadingZeros(maxFuncId);
+		return Math.max(1, (bits + DISPATCH_PAGE_BITS - 1) / DISPATCH_PAGE_BITS);
+	}
+
 	private static List<DispatchTarget> dispatchTargets(int arity, List<WasmLispCompiler.DefunDecl> defuns,
 			List<WasmLispCompiler.LambdaInfo> lambdaDecls, boolean spread, @Nullable Set<Integer> dispatchable,
 			int userFuncBase) {
@@ -2053,6 +2074,21 @@ final class WasmRuntimeBuilder {
 			if (spread || (lambda.variadic() ? arity >= paramCount - 1 : paramCount == arity)) {
 				targets.add(new DispatchTarget(lambda.funcId(), lambda.funcIndex(),
 						lambda.variadic() ? paramCount - 1 : paramCount, lambda.variadic()));
+			}
+		}
+		// One counter hands out every funcId -- the defuns first (index == funcId), then
+		// exactly one per lambda declaration -- so a funcId is always in
+		// [0, defuns + lambdas). Outside it the compile is already corrupt, and both
+		// dispatcher shapes would turn the value into nonsense rather than an error:
+		// the flat one writes ONE br_table label per id from 0 up to the largest
+		// (a 2^24 id alone is a 16 MB body), and the paged one reads the id one 8-bit
+		// digit at a time. Fail here instead, naming the value.
+		int funcIdBound = defuns.size() + lambdaDecls.size();
+		for (DispatchTarget t : targets) {
+			if (t.funcId() < 0 || t.funcId() >= funcIdBound) {
+				throw new IllegalStateException("Dispatch target funcId " + t.funcId() + " is outside [0, "
+						+ funcIdBound + ") (" + defuns.size() + " defuns, " + lambdaDecls.size() + " lambdas, arity "
+						+ arity + (spread ? ", spread" : "") + "): the compile assigned it from no counter");
 			}
 		}
 		return targets;
