@@ -113,7 +113,7 @@ public final class WasmLispCompiler implements LispCompiler {
 
 	/**
 	 * The WASI Preview 1 module name, for the imports that are APPENDED rather than
-	 * declared in the twelve index-pinned fixed slots: the {@code args_sizes_get} /
+	 * declared in the fifteen index-pinned fixed slots: the {@code args_sizes_get} /
 	 * {@code args_get} pair {@code %host-argv} reads its vector from, bound the way
 	 * {@code exit.lisp} binds {@code proc_exit} -- as an ordinary user import, so a
 	 * program that never asks for them imports nothing new.
@@ -719,10 +719,23 @@ public final class WasmLispCompiler implements LispCompiler {
 	// path_open / fd_read can establish without reading the whole thing.
 	static final int FUNC_FD_FILESTAT_GET = 11; // imported
 
-	/** Number of preview1-style imported functions (fd_write..fd_filestat_get). */
-	static final int IMPORT_FUNC_COUNT = 12;
+	// The filesystem-WRITE calls, in both modes like the twelve above: preview1 binds
+	// the real wasi_snapshot_preview1 path_create_directory / path_unlink_file /
+	// path_rename, component mode the adapter's implementations over
+	// wasi:filesystem's create-directory-at / unlink-file-at / rename-at. They are
+	// what %make-directories / %delete-file / %rename-file -- and therefore
+	// ensure-directories-exist, delete-file, rename-file and the uiop/filesystem
+	// mutating side -- run on (.todo/257).
+	static final int FUNC_PATH_CREATE_DIRECTORY = 12; // imported
 
-	static final int FUNC_START = IMPORT_FUNC_COUNT; // 12
+	static final int FUNC_PATH_UNLINK_FILE = 13; // imported
+
+	static final int FUNC_PATH_RENAME = 14; // imported
+
+	/** Number of preview1-style imported functions (fd_write..path_rename). */
+	static final int IMPORT_FUNC_COUNT = 15;
+
+	static final int FUNC_START = IMPORT_FUNC_COUNT; // 15
 
 	static final int FUNC_PRINT_I32 = FUNC_START + 1;
 
@@ -1403,7 +1416,7 @@ public final class WasmLispCompiler implements LispCompiler {
 	// argv0 first -- the host read behind %host-argv, and therefore behind the whole
 	// uiop/image command-line family. It scans the buffer args_sizes_get / args_get
 	// fill, the pair being APPENDED USER IMPORTS rather than fixed slots
-	// (WasmArgvRuntimeBuilder), so the twelve index-pinned preview1 imports do not
+	// (WasmArgvRuntimeBuilder), so the fifteen index-pinned preview1 imports do not
 	// grow and no --component adapter export list changes. Reuses the () -> (ref null
 	// eq) signature (TYPE_READ_LINE), so no new type entry; appended after the last
 	// fixed helper so no index above shifts. A program that reads no arguments gets a
@@ -1577,7 +1590,31 @@ public final class WasmLispCompiler implements LispCompiler {
 	// no index above shifts.
 	static final int FUNC_C_SIGNUM = FUNC_TYPE_ERR_REAL + 1;
 
-	static final int FX_FUNC_LAST = FUNC_C_SIGNUM;
+	// _make_directories ((ref null eq) path) -> (ref null eq): the T symbol when the
+	// directory exists afterwards, nil when it could not be created
+	// (WasmIoRuntimeBuilder.buildMakeDirectoriesBody, over the path_create_directory
+	// import). The call-site compiler turns nil into a Lisp error like _open does,
+	// because ensure-directories-exist has no "cannot be determined" answer. Reuses
+	// the unary (TYPE_CALLABLE_BASE + 0) signature; appended after the last fixed
+	// helper so no index above shifts.
+	static final int FUNC_MAKE_DIRECTORIES = FUNC_C_SIGNUM + 1;
+
+	// _delete_file ((ref null eq) path) -> (ref null eq): the T symbol when the file
+	// was removed, nil when there was nothing to remove or the host refused
+	// (WasmIoRuntimeBuilder.buildDeleteFileBody, over the path_unlink_file import).
+	// The "a missing file is a file-error" decision lives in the Lisp delete-file
+	// above it, as on the other backends. Same signature and position rule as
+	// _make_directories.
+	static final int FUNC_DELETE_FILE = FUNC_MAKE_DIRECTORIES + 1;
+
+	// _rename_file ((ref null eq) from, (ref null eq) to) -> (ref null eq): the T
+	// symbol when the file was renamed, nil when there was nothing to rename or the
+	// host refused (WasmIoRuntimeBuilder.buildRenameFileBody, over the path_rename
+	// import). Reuses the binary (TYPE_CALLABLE_BASE + 1) signature; appended after
+	// the last fixed helper so no index above shifts.
+	static final int FUNC_RENAME_FILE = FUNC_DELETE_FILE + 1;
+
+	static final int FX_FUNC_LAST = FUNC_RENAME_FILE;
 
 	// The vec: SIMD block (_v_new/_v_get/_v_set + the twelve v128 kernels), emitted ONLY
 	// under --simd. Fixed indices relative to FX_FUNC_LAST, so every constant
@@ -1886,7 +1923,15 @@ public final class WasmLispCompiler implements LispCompiler {
 	// type, like the two above, so every type index keeps its value.
 	static final int TYPE_ARR_SET = TYPE_UB_READ + 1; // 68
 
-	static final int IARR_TYPE_LAST = TYPE_ARR_SET;
+	// path_rename(old_fd, old_ptr, old_len, new_fd, new_ptr, new_len) -> errno:
+	// (i32 x 6) -> i32. The create/unlink imports reuse the (i32, i32, i32) -> i32
+	// TYPE_RD_MEMEQ, but nothing in the module has this six-i32 shape. Appended
+	// after the last fixed type, like the three above, so every type index keeps
+	// its value; the conditional --simd / async / instance blocks follow it through
+	// IARR_TYPE_LAST.
+	static final int TYPE_PATH_RENAME = TYPE_ARR_SET + 1; // 69
+
+	static final int IARR_TYPE_LAST = TYPE_PATH_RENAME;
 
 	// The Schubfach float-printer runtime types (todo-431). Unconditional, like the
 	// printer itself; the tree shaker removes what a program does not reach.
@@ -1924,7 +1969,7 @@ public final class WasmLispCompiler implements LispCompiler {
 	// array (mut v128) -- the lane-group storage of a packed float array under --simd.
 	// A bare array comptype (implicitly sub final), so a subtype of eq. array.new_default
 	// zeroes every lane, which is what lets the kernels drop their scalar tails.
-	static final int TYPE_V128ARR = SCHUB_TYPE_LAST + 1; // 69
+	static final int TYPE_V128ARR = SCHUB_TYPE_LAST + 1; // 70
 
 	// struct {i32 count, i32 kind, (ref null eq) groups} -- the --simd replacement for
 	// the
@@ -1936,13 +1981,13 @@ public final class WasmLispCompiler implements LispCompiler {
 	// TYPE_V128ARR, and `groups` holds ceil(count / lanes) + 1 groups -- the trailing one
 	// a
 	// zero sentinel so matvec's shuffle window can always read one group past its last.
-	static final int TYPE_VBLOCK = SCHUB_TYPE_LAST + 2; // 70
+	static final int TYPE_VBLOCK = SCHUB_TYPE_LAST + 2; // 71
 
 	// _v_get ((ref null eq) vblock, i32 index) -> f64
-	static final int TYPE_V_GET = SCHUB_TYPE_LAST + 3; // 71
+	static final int TYPE_V_GET = SCHUB_TYPE_LAST + 3; // 72
 
 	// _v_set ((ref null eq) vblock, i32 index, f64 value) -> f64 (the value AS STORED)
-	static final int TYPE_V_SET = SCHUB_TYPE_LAST + 4; // 72
+	static final int TYPE_V_SET = SCHUB_TYPE_LAST + 4; // 73
 
 	// How many type entries the --simd block appends.
 	static final int SIMD_TYPE_COUNT = 4;
@@ -5404,6 +5449,12 @@ public final class WasmLispCompiler implements LispCompiler {
 					w.write(1);
 					w.writeRefType(true, Type.EQ.code());
 				});
+				// type 65 (TYPE_PATH_RENAME): path_rename (i32 old_fd, i32 old_ptr,
+				// i32 old_len, i32 new_fd, i32 new_ptr, i32 new_len) -> i32 errno.
+				// The create/unlink imports reuse TYPE_RD_MEMEQ's (i32, i32, i32) ->
+				// i32, so this six-i32 shape is the only new entry.
+				types.addFunc(new Type[] { Type.I32, Type.I32, Type.I32, Type.I32, Type.I32, Type.I32 },
+						new Type[] { Type.I32 });
 				// The Schubfach float-printer runtime (todo-431), in constant order.
 				// TYPE_SCHUB_UMULHI: (i64, i64) -> i64
 				types.addFunc(new Type[] { Type.I64, Type.I64 }, new Type[] { Type.I64 });
@@ -5693,7 +5744,23 @@ public final class WasmLispCompiler implements LispCompiler {
 						// errno is (i32,i32)->i32 like _intern, so no new type entry.
 						// Component mode binds the adapter's implementation over
 						// wasi:filesystem's descriptor.stat.
-						.addImport("wasi_snapshot_preview1", "fd_filestat_get", ExternalKind.FUNCTION, TYPE_INTERN);
+						.addImport("wasi_snapshot_preview1", "fd_filestat_get", ExternalKind.FUNCTION, TYPE_INTERN)
+						// path_create_directory backs %make-directories.
+						// path_create_directory(fd, path_ptr, path_len) -> errno is
+						// (i32,i32,i32)->i32 like _rd_memeq, so no new type entry.
+						// Component mode binds the adapter's implementation over
+						// wasi:filesystem's descriptor.create-directory-at.
+						.addImport("wasi_snapshot_preview1", "path_create_directory", ExternalKind.FUNCTION,
+								TYPE_RD_MEMEQ)
+						// path_unlink_file backs %delete-file: same (i32,i32,i32)->i32
+						// shape (TYPE_RD_MEMEQ). Component mode binds the adapter's
+						// implementation over wasi:filesystem's
+						// descriptor.unlink-file-at.
+						.addImport("wasi_snapshot_preview1", "path_unlink_file", ExternalKind.FUNCTION, TYPE_RD_MEMEQ)
+						// path_rename backs %rename-file: (i32 x 6) -> i32, the new
+						// TYPE_PATH_RENAME. Component mode binds the adapter's
+						// implementation over wasi:filesystem's descriptor.rename-at.
+						.addImport("wasi_snapshot_preview1", "path_rename", ExternalKind.FUNCTION, TYPE_PATH_RENAME);
 				}
 				if (this.component && !this.noWasi) {
 					// Import the linear memory from the shared canonical-memory module so
@@ -5717,13 +5784,14 @@ public final class WasmLispCompiler implements LispCompiler {
 			})
 			// Function section
 			.writeFunction(fnDef -> {
-				// No-wasi mode: the twelve wasi imports were omitted, so define twelve
+				// No-wasi mode: the fifteen wasi imports were omitted, so define fifteen
 				// trap
-				// stubs at function indices 0-11 with the SAME type indices the imports
+				// stubs at function indices 0-14 with the SAME type indices the imports
 				// used
 				// (fd_write, fd_read, path_open, fd_close, random_get, clock_time_get,
 				// environ_sizes_get, environ_get, fd_readdir, fd_prestat_get,
-				// fd_prestat_dir_name, fd_filestat_get). This keeps every FUNC_*
+				// fd_prestat_dir_name, fd_filestat_get, path_create_directory,
+				// path_unlink_file, path_rename). This keeps every FUNC_*
 				// constant
 				// valid.
 				if (this.noWasi) {
@@ -5738,7 +5806,10 @@ public final class WasmLispCompiler implements LispCompiler {
 						.addFunction(TYPE_FD_READDIR) // 8: fd_readdir
 						.addFunction(TYPE_INTERN) // 9: fd_prestat_get
 						.addFunction(TYPE_RD_MEMEQ) // 10: fd_prestat_dir_name
-						.addFunction(TYPE_INTERN); // 11: fd_filestat_get
+						.addFunction(TYPE_INTERN) // 11: fd_filestat_get
+						.addFunction(TYPE_RD_MEMEQ) // 12: path_create_directory
+						.addFunction(TYPE_RD_MEMEQ) // 13: path_unlink_file
+						.addFunction(TYPE_PATH_RENAME); // 14: path_rename
 				}
 				fnDef.addFunction(TYPE_START) // _start
 					.addFunction(TYPE_PRINT_I32) // print_i32
@@ -6000,7 +6071,16 @@ public final class WasmLispCompiler implements LispCompiler {
 				fnDef.addFunction(TYPE_PRINT_VAL); // _type_err_real (culprit) -> ()
 													// (FUNC_TYPE_ERR_REAL)
 				fnDef.addFunction(TYPE_CALLABLE_BASE + 0); // _csignum (a) -> value
-															// (FUNC_C_SIGNUM)
+				// (FUNC_C_SIGNUM)
+				fnDef.addFunction(TYPE_CALLABLE_BASE + 0); // _make_directories (path) ->
+															// T | nil
+				// (FUNC_MAKE_DIRECTORIES)
+				fnDef.addFunction(TYPE_CALLABLE_BASE + 0); // _delete_file (path) -> T |
+															// nil
+				// (FUNC_DELETE_FILE)
+				fnDef.addFunction(TYPE_CALLABLE_BASE + 1); // _rename_file (from, to) -> T
+															// | nil
+				// (FUNC_RENAME_FILE)
 				// vec: SIMD block (--simd only): the three element helpers + twelve
 				// kernels
 				if (this.simd) {
@@ -6507,7 +6587,7 @@ public final class WasmLispCompiler implements LispCompiler {
 		mainWriter
 			// Code section
 			.writeCode(code -> {
-				// No-wasi mode: bodies for the twelve stubs at indices 0-11. TWO are
+				// No-wasi mode: bodies for the fifteen stubs at indices 0-14. TWO are
 				// `unreachable; end` (no locals) -- fd_read and clock_time_get;
 				// unreachable is stack-polymorphic so one shape satisfies every WASI
 				// signature, and calling one traps.
@@ -6518,9 +6598,10 @@ public final class WasmLispCompiler implements LispCompiler {
 				// (which nothing calls here any more -- `random` inlines the same step
 				// at the draw site, .kb/random.md -- so the shaker drops it unless
 				// --host-random makes it the seeding forwarder);
-				// the two environ functions report an EMPTY environment; and the four
+				// the two environ functions report an EMPTY environment; and the seven
 				// filesystem slots report an errno, which the _open / _probe_file /
-				// _list_directory / _file_length / _load runtimes already turn into
+				// _list_directory / _file_length / _load / _make_directories /
+				// _delete_file / _rename_file runtimes already turn into
 				// nil. EBADF on
 				// fd_prestat_get is what ends _path_dirfd's preopen walk at the FIRST
 				// fd, so a reactor answers "no preopen covers this path" instead of
@@ -6548,7 +6629,7 @@ public final class WasmLispCompiler implements LispCompiler {
 									: WasmIoRuntimeBuilder.buildNoWasiRandomGetBody();
 							case FUNC_ENVIRON_SIZES_GET -> WasmIoRuntimeBuilder.buildNoWasiEnvironSizesGetBody();
 							case FUNC_ENVIRON_GET -> WasmIoRuntimeBuilder.buildNoWasiErrnoBody(0);
-							case FUNC_PATH_OPEN ->
+							case FUNC_PATH_OPEN, FUNC_PATH_CREATE_DIRECTORY, FUNC_PATH_UNLINK_FILE, FUNC_PATH_RENAME ->
 								WasmIoRuntimeBuilder.buildNoWasiErrnoBody(WasmIoRuntimeBuilder.ERRNO_NOENT);
 							case FUNC_FD_CLOSE, FUNC_FD_READDIR, FUNC_FD_PRESTAT_GET, FUNC_FD_PRESTAT_DIR_NAME,
 									FUNC_FD_FILESTAT_GET ->
@@ -6837,6 +6918,12 @@ public final class WasmLispCompiler implements LispCompiler {
 				code.addFunction(WasmEmitHelper.buildTypeErrBody(ehMode, expRealEntry));
 				// complex signum body (FUNC_C_SIGNUM)
 				code.addFunction(WasmComplexRuntimeBuilder.buildCsignumBody());
+				// directory-creation body (FUNC_MAKE_DIRECTORIES)
+				code.addFunction(WasmIoRuntimeBuilder.buildMakeDirectoriesBody(stringTable));
+				// file-removal body (FUNC_DELETE_FILE)
+				code.addFunction(WasmIoRuntimeBuilder.buildDeleteFileBody(stringTable));
+				// file-rename body (FUNC_RENAME_FILE)
+				code.addFunction(WasmIoRuntimeBuilder.buildRenameFileBody(stringTable));
 				// vec: SIMD block bodies (--simd only), in FUNC_VEC_BASE index order.
 				if (this.simd) {
 					// Each helper is handed the function index of the scalar vec.lisp

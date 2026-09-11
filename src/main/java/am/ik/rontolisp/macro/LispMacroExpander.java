@@ -9728,7 +9728,7 @@ public final class LispMacroExpander {
 			LispNames.DEFINE_PACKAGE, LispNames.WITH_UPGRADABILITY, LispNames.NEST, LispNames.WHILE_COLLECTING,
 			LispNames.APPENDF, LispNames.LATEST_TIMESTAMP_F, LispNames.WITH_MUFFLED_CONDITIONS, LispNames.UIOP_DEBUG,
 			LispNames.COMPATFMT, LispNames.WITH_PATHNAME_DEFAULTS, LispNames.WITH_ENOUGH_PATHNAME, LispNames.OS_COND,
-			LispNames.WITH_FATAL_CONDITION_HANDLER);
+			LispNames.WITH_CURRENT_DIRECTORY, LispNames.WITH_FATAL_CONDITION_HANDLER);
 
 	/**
 	 * If {@code cons} is a {@code (read-line ...)} call in CL's 2- or 3-argument shape
@@ -10360,6 +10360,36 @@ public final class LispMacroExpander {
 	}
 
 	/**
+	 * Expands {@code (uiop:with-current-directory ([dir]) body...)} into
+	 * {@code (uiop:call-with-current-directory dir (lambda () body...))} -- upstream's
+	 * own shorthand, over the {@code chdir} + {@code *default-pathname-defaults*}
+	 * function in {@code uiop-filesystem.lisp}. The dir form is evaluated ONCE, inside
+	 * the call, exactly as upstream's backquote places it; an absent dir is nil, which
+	 * just runs the thunk.
+	 * @param cons the with-current-directory expression
+	 * @return the expanded expression
+	 */
+	public static LispVal expandUiopWithCurrentDirectory(LispCons cons) {
+		List<LispVal> parts = cons.toList();
+		if (parts.size() < 2 || !(parts.get(1) instanceof LispCons || parts.get(1) instanceof LispNil)) {
+			throw new UnsupportedOperationException(UiopExports.qualified(LispNames.WITH_CURRENT_DIRECTORY)
+					+ " expects (with-current-directory ([dir]) body...): " + cons.print());
+		}
+		List<LispVal> specParts = parts.get(1) instanceof LispCons specCons ? specCons.toList() : List.of();
+		if (specParts.size() > 1) {
+			throw new UnsupportedOperationException(UiopExports.qualified(LispNames.WITH_CURRENT_DIRECTORY)
+					+ " expects at most one directory form: " + cons.print());
+		}
+		LispVal dir = specParts.isEmpty() ? LispNil.INSTANCE : specParts.get(0);
+		List<LispVal> thunk = new java.util.ArrayList<>();
+		thunk.add(new LispSymbol(LispNames.LAMBDA));
+		thunk.add(LispNil.INSTANCE);
+		thunk.addAll(parts.subList(2, parts.size()));
+		return listToCons(List.of(new LispSymbol(UiopExports.qualified(LispNames.CALL_WITH_CURRENT_DIRECTORY)), dir,
+				listToCons(thunk)));
+	}
+
+	/**
 	 * Expands {@code (uiop:uiop-debug key...)} into
 	 * {@code (uiop:load-uiop-debug-utility key...)}. Upstream additionally wraps it in an
 	 * {@code (eval-when (:compile-toplevel :load-toplevel :execute) ...)} so the debug
@@ -10440,6 +10470,7 @@ public final class LispMacroExpander {
 			case LispNames.WITH_FATAL_CONDITION_HANDLER -> expandUiopWithFatalConditionHandler(cons);
 			case LispNames.WITH_PATHNAME_DEFAULTS -> expandUiopWithPathnameDefaults(cons);
 			case LispNames.WITH_ENOUGH_PATHNAME -> expandUiopWithEnoughPathname(cons);
+			case LispNames.WITH_CURRENT_DIRECTORY -> expandUiopWithCurrentDirectory(cons);
 			case LispNames.UIOP_DEBUG -> expandUiopDebug(cons);
 			case LispNames.COMPATFMT -> expandUiopCompatfmt(cons);
 			// define-package is read-time surgery the package resolver performs, not an
@@ -28984,50 +29015,6 @@ public final class LispMacroExpander {
 			return listToCons(List.of(parts.get(0), parts.get(1)));
 		}
 		return null;
-	}
-
-	/**
-	 * The call-time stub both WASM backends lower {@code %make-directories} -- and
-	 * therefore {@code ensure-directories-exist} -- to. WASI's import set here carries no
-	 * directory-creation call, and unlike {@code file-length} / {@code file-write-date}
-	 * this primitive has no "cannot be determined" answer in its contract: either the
-	 * directory exists afterwards or it does not, so answering anything but an error
-	 * would be a lie. Like the other stubs it keeps a library defun merely CONTAINING the
-	 * form compilable and signals only if it is actually called.
-	 * @return the signaling expression
-	 */
-	public static LispVal makeDirectoriesStub() {
-		return listToCons(List.of(new LispSymbol(LispNames.ERROR),
-				new LispString("ensure-directories-exist is not supported on the WASM backends")));
-	}
-
-	/**
-	 * The call-time stub both WASM backends lower {@code %delete-file} -- and therefore
-	 * {@code delete-file} -- to, for the same reason as {@link #makeDirectoriesStub()}:
-	 * WASI's import set here carries no unlink call, and "the file is gone afterwards"
-	 * has no honest non-answer, so anything but an error would be a lie. Like the other
-	 * stubs it keeps a library defun merely CONTAINING the form compilable and signals
-	 * only if it is actually called -- which is what lets mito's
-	 * {@code generate-migrations} compile on the WASM backends even though its
-	 * delete-superseded-files branch cannot run there.
-	 * @return the signaling expression
-	 */
-	public static LispVal deleteFileStub() {
-		return listToCons(List.of(new LispSymbol(LispNames.ERROR),
-				new LispString("delete-file is not supported on the WASM backends")));
-	}
-
-	/**
-	 * The call-time stub both WASM backends lower {@code %rename-file} -- and therefore
-	 * {@code rename-file} -- to, for the same reason as {@link #deleteFileStub()}: WASI's
-	 * import set here carries no rename call, and "the file is at the new name
-	 * afterwards" has no honest non-answer. Like the other stubs it keeps a library defun
-	 * merely CONTAINING the form compilable and signals only if it is actually called.
-	 * @return the signaling expression
-	 */
-	public static LispVal renameFileStub() {
-		return listToCons(List.of(new LispSymbol(LispNames.ERROR),
-				new LispString("rename-file is not supported on the WASM backends")));
 	}
 
 	/**

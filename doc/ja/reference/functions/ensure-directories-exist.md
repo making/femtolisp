@@ -6,7 +6,7 @@
 
 lite 版: Common Lisp は `(values pathspec created)` を返しますが、こちらは pathspec のみを返します。コンパイル済みバックエンドでは第2の値が関数境界を越えられないため、返すと約束すると誤解を招くからです。
 
-**2つのWASMバックエンドは呼び出し時にシグナルを発生させます。** そこではWASIのディレクトリ作成呼び出しをインポートしておらず、[`file-write-date`](file-write-date.md) と違ってこの操作の契約には「判定できない」という答えがありません。実行後にディレクトリが存在するかしないかのどちらかなので、エラー以外を返すのは嘘になります。
+4つのバックエンドすべてで動作します。2つのWASMバックエンドは `path_create_directory` というWASIインポートを通じて欠けている階層をすべて作成し（Preview 1は直接、`--component` は `wasi:filesystem` の `create-directory-at` 経由）、作成できなかった場合は通知します。[`file-write-date`](file-write-date.md) と違ってこの操作の契約には「判定できない」という答えがありません。実行後にディレクトリが存在するかしないかのどちらかです。
 
 ```console
 (ensure-directories-exist "logs/2026/app.log")

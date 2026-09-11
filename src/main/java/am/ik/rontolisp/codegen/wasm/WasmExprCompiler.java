@@ -1257,20 +1257,19 @@ final class WasmExprCompiler {
 				case LispNames.FILE_LENGTH -> WasmFileLengthCompiler.compile(cons, ctx);
 				// file-position and file-write-date answer nil here rather than
 				// signalling: neither has a call imported, and "cannot be determined" is
-				// what Common Lisp prescribes for exactly that. %make-directories,
-				// %delete-file and %rename-file have no such escape -- the directory/file
-				// either changed
-				// or
-				// it did not -- so they signal.
+				// what Common Lisp prescribes for exactly that. The three write-side
+				// operators are REAL here -- %make-directories creates every missing
+				// level through path_create_directory (signalling on failure, since
+				// its contract has no "cannot be determined" answer),
+				// %delete-file unlinks through path_unlink_file and %rename-file moves
+				// through path_rename (both answering nil when there is nothing to do,
+				// with the file-error raised once in the Lisp above them).
 				case LispNames.FILE_POSITION, LispNames.FILE_WRITE_DATE ->
 					WasmExprCompiler.compileExpr(LispMacroExpander.expandConstantResult(cons, LispNil.INSTANCE), ctx);
 				case LispNames.PATHNAMEP -> WasmExprCompiler.compileExpr(LispMacroExpander.expandPathnamep(cons), ctx);
-				case LispNames.MAKE_DIRECTORIES ->
-					WasmExprCompiler.compileExpr(LispMacroExpander.makeDirectoriesStub(), ctx);
-				case LispNames.DELETE_FILE_INTERNAL ->
-					WasmExprCompiler.compileExpr(LispMacroExpander.deleteFileStub(), ctx);
-				case LispNames.RENAME_FILE_INTERNAL ->
-					WasmExprCompiler.compileExpr(LispMacroExpander.renameFileStub(), ctx);
+				case LispNames.MAKE_DIRECTORIES -> WasmMakeDirectoriesCompiler.compile(cons, ctx);
+				case LispNames.DELETE_FILE_INTERNAL -> WasmDeleteFileCompiler.compile(cons, ctx);
+				case LispNames.RENAME_FILE_INTERNAL -> WasmRenameFileCompiler.compile(cons, ctx);
 				case LispNames.STREAM_ELEMENT_TYPE -> WasmExprCompiler.compileExpr(
 						LispMacroExpander.expandConstantResult(cons, LispMacroExpander.quotedCharacterTypeName()), ctx);
 				case LispNames.MAKE_BROADCAST_STREAM ->

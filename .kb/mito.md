@@ -10,13 +10,15 @@ selected.
 Substrate: `.kb/asdf.md` (trivia, sxql, cl-dbi/dbd-postgres, chipz), `.kb/clos.md` (MOP
 widening), `.kb/packages.md` (`uiop:define-package` `:use-reexport`).
 
-## Scope: `generate-migrations` is interpreter + JVM only
+## Scope: `generate-migrations` file writing is real on all three in-scope backends
 The DB-side workflow (`migration-status`, `migration-expressions`, `migrate-table`,
-`migrate`) runs on all three in-scope backends. WRITING migration files does not:
-`ensure-directories-exist` and `delete-file` are call-time errors on WASM
-(`.kb/read-load-streams.md`). Closing it needs a tenth preview1 import
-(`path_create_directory` / `path_unlink_file`), which shifts every emitted function index
-and needs `adapter.wat` + `adapter-http-server-p1.wat` + the `--no-wasi` trap stubs in step.
+`migrate`) runs on all three in-scope backends. WRITING migration files does too since
+.todo/257 landed the `path_create_directory` / `path_unlink_file` imports (the
+thirteenth and fourteenth of fifteen, adapter + http-server bridge + `--no-wasi` stubs
+in step): `ensure-directories-exist` makes the migration directory and `delete-file`
+removes a superseded migration file for real. The E2E leg still exercises the DB-side
+workflow, which is the part all three share -- a file-writing leg is the
+re-verification trigger, not a claim made here.
 
 
 ## Upstream defects reproduced faithfully (do NOT "fix" here)

@@ -1,10 +1,10 @@
 ;; preview1-to-WASI-0.3 adapter core module.
 ;;
 ;; Imports the shared memory and the lowered WASI 0.3 functions plus the async canonical
-;; built-ins (under "w"); exports the twelve wasi_snapshot_preview1 functions rontolisp
+;; built-ins (under "w"); exports the fifteen wasi_snapshot_preview1 functions rontolisp
 ;; imports. In WASI 0.3 the wasi:io package is gone and all byte I/O flows through the
 ;; built-in stream<u8> / future<T> types, so fd_write/fd_read/path_open/fd_close/fd_readdir/
-;; fd_prestat_*/fd_filestat_get
+;; fd_prestat_*/fd_filestat_get/path_create_directory/path_unlink_file/path_rename
 ;; are implemented with stream.new/read/write/drop + future.read over wasi:cli + wasi:filesystem
 ;; 0.3; random_get/clock_time_get/environ_* bridge wasi:random / wasi:clocks
 ;; (system-clock, renamed from 0.2's wall-clock) / wasi:cli/environment. The environ_*
@@ -29,6 +29,9 @@
 ;;   0x50030 get-directories list {ptr@0x50030, count@0x50034}
 ;;   0x50040 preopen table header {flag@0x50040, count@0x50044}
 ;;   0x50050 open-at result {disc@0x50050 byte, descriptor-or-errcode i32@0x50054}
+;;           (the filesystem-write results reuse it: their result<_, error-code>
+;;           answers through the same discriminant byte, and no two of these calls
+;;           overlap -- SINGLE-TASK BY DESIGN below)
 ;;   0x50060 file read-via-stream tuple {stream@0x50060, future@0x50064}
 ;;   0x50070 stdin read-via-stream tuple {stream@0x50070, future@0x50074}
 ;;   0x50080 stdin cache {flag@0x50080, stream@0x50084, eof-latch@0x50088}
@@ -73,6 +76,9 @@
   (import "w" "file-read" (func $file_read (param i32 i64 i32)))
   (import "w" "file-append" (func $file_append (param i32 i32) (result i32)))
   (import "w" "open-at" (func $open_at (param i32 i32 i32 i32 i32 i32 i32)))
+  (import "w" "create-dir" (func $create_dir (param i32 i32 i32 i32)))
+  (import "w" "unlink-file" (func $unlink_file (param i32 i32 i32 i32)))
+  (import "w" "rename-at" (func $rename_at (param i32 i32 i32 i32 i32 i32 i32)))
   (import "w" "get-directories" (func $get_directories (param i32)))
   (import "w" "read-dir" (func $read_dir (param i32 i32)))
   (import "w" "desc-stat" (func $desc_stat (param i32 i32)))
@@ -537,6 +543,49 @@
     (i64.store offset=56 (local.get $buf) (i64.const 0))                        ;; ctim
     (i32.const 0))
 
+  ;; path_create_directory(fd, path, path_len) -> errno. The preview1 shape over
+  ;; WASI 0.3's descriptor.create-directory-at: the SYNC (blocking) lowering of an
+  ;; async func taking a string, so the call is (self, path_ptr, path_len, retptr)
+  ;; and the result<_, error-code> lands in memory -- discriminant byte 0 means ok
+  ;; (the $open_at / $fd_filestat_get precedent). A dirfd naming no preopen is errno
+  ;; 76, like $path_open's; any other failure is 76 too, which the core reads as
+  ;; "the directory is not there afterwards" and verifies by opening it.
+  (func $path_create_directory (param $fd i32) (param $path i32) (param $plen i32) (result i32)
+    (local $pre i32)
+    (local.set $pre (call $preopen_desc (i32.sub (local.get $fd) (i32.const 3))))
+    (if (i32.eq (local.get $pre) (i32.const -1)) (then (return (i32.const 76))))
+    (call $create_dir (local.get $pre) (local.get $path) (local.get $plen) (i32.const 0x50050))
+    (if (i32.load8_u (i32.const 0x50050)) (then (return (i32.const 76))))
+    (i32.const 0))
+
+  ;; path_unlink_file(fd, path, path_len) -> errno, over
+  ;; descriptor.unlink-file-at -- the same shape as $path_create_directory above.
+  ;; The core reads a nonzero errno as "nothing was removed" and answers nil.
+  (func $path_unlink_file (param $fd i32) (param $path i32) (param $plen i32) (result i32)
+    (local $pre i32)
+    (local.set $pre (call $preopen_desc (i32.sub (local.get $fd) (i32.const 3))))
+    (if (i32.eq (local.get $pre) (i32.const -1)) (then (return (i32.const 76))))
+    (call $unlink_file (local.get $pre) (local.get $path) (local.get $plen) (i32.const 0x50050))
+    (if (i32.load8_u (i32.const 0x50050)) (then (return (i32.const 76))))
+    (i32.const 0))
+
+  ;; path_rename(old_fd, old_path, old_len, new_fd, new_path, new_len) -> errno, over
+  ;; descriptor.rename-at: the SYNC lowering of
+  ;; async func(old-path: string, new-descriptor: borrow<descriptor>, new-path: string).
+  ;; Each dirfd resolves to its preopen descriptor on its own -- usually the same one,
+  ;; handed twice, but nothing here assumes that.
+  (func $path_rename (param $ofd i32) (param $opath i32) (param $olen i32)
+    (param $nfd i32) (param $npath i32) (param $nlen i32) (result i32)
+    (local $opre i32) (local $npre i32)
+    (local.set $opre (call $preopen_desc (i32.sub (local.get $ofd) (i32.const 3))))
+    (if (i32.eq (local.get $opre) (i32.const -1)) (then (return (i32.const 76))))
+    (local.set $npre (call $preopen_desc (i32.sub (local.get $nfd) (i32.const 3))))
+    (if (i32.eq (local.get $npre) (i32.const -1)) (then (return (i32.const 76))))
+    (call $rename_at (local.get $opre) (local.get $opath) (local.get $olen)
+      (local.get $npre) (local.get $npath) (local.get $nlen) (i32.const 0x50050))
+    (if (i32.load8_u (i32.const 0x50050)) (then (return (i32.const 76))))
+    (i32.const 0))
+
   ;; wasi:filesystem descriptor-type case index -> preview1 filetype. Only "directory"
   ;; (case 2 -> 3) is load-bearing for %list-directory, but the whole table is mapped so
   ;; a caller reading d_type gets the preview1 answer it expects.
@@ -651,4 +700,7 @@
   (export "environ_get" (func $environ_get))
   (export "fd_prestat_get" (func $fd_prestat_get))
   (export "fd_prestat_dir_name" (func $fd_prestat_dir_name))
-  (export "fd_filestat_get" (func $fd_filestat_get)))
+  (export "fd_filestat_get" (func $fd_filestat_get))
+  (export "path_create_directory" (func $path_create_directory))
+  (export "path_unlink_file" (func $path_unlink_file))
+  (export "path_rename" (func $path_rename)))

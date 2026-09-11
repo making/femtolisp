@@ -95,8 +95,9 @@ All prelude Lisp, so the four backends run ONE definition each.
   signalled): a TO wildcard with no capture left substitutes `""`, adjacent wildcards in one
   component consume one capture apiece, and an unpaired `**` is not checked. The `:no-match`
   answer of `%wild-captures` is the error signal here — keep it.
-- `rename-file` — prelude Lisp over `%rename-file`: interpreter and JVM rename for real,
-  both WASM backends lower to a call-time signal (`LispMacroExpander.renameFileStub`).
+- `rename-file` — prelude Lisp over `%rename-file`: real on all four backends (both
+  WASM backends move through the `path_rename` import, `.todo/257`; a missing source
+  answers nil, which the Lisp above raises the `file-error` from).
   Truename values 2 and 3 are not returned.
 - `file-namestring` / `directory-namestring` — one split: `%pathname-split`'s first element
   is a literal PREFIX, so `file-namestring` is `(subseq ns (length it))`, exact

@@ -97,6 +97,14 @@ rendered) instead of the complex answer; ordering there answers `nil` instead
 of signalling. The embedded runtime reader has no `#C` arm yet. `signum` of a
 complex is 754's audit.
 
+The `_cu1` real path and the interpreter's unary math are both `Math.<fn>`, so
+they agree on every platform -- but a `Math` result is not one number:
+`Math.exp(1.0)` is `2.718281828459045` on x64 and `2.7182818284590455` on
+aarch64 (2026-09-10, the defect behind the deleted `.todo/756`, which was
+`./mvnw test` red on every aarch64 box). The pinning tests therefore assert
+the interpreter's own `Math` values (`Double.toString(Math.exp(1))`), never a
+printed digit string, and only the platform-exact answers keep literals.
+
 Pinning tests: `JvmLispCompilerTest#compileAndRunComplex*` (mirrors
 `LispEvaluatorTest`'s `evalComplex*` case for case);
 `JvmRuntimeClassFilesTest` covers the holder's travelling list.

@@ -77,6 +77,8 @@ sections:
                 title: uiop/os
               - file: reference/uiop/pathname.md
                 title: uiop/pathname
+              - file: reference/uiop/filesystem.md
+                title: uiop/filesystem
               - file: reference/uiop/image.md
                 title: uiop/image
           - file: reference/functions/ql-and-ql-dist.md

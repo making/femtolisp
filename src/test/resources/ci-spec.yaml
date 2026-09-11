@@ -2804,9 +2804,8 @@ cases:
       NIL
   # The clack-enablement batch that CAN be cross-backend: substitute-if (lack/util's
   # runtime middleware-name build), sleep (clack.handler's stop) and the load-context
-  # specials clack's %load-file rebinds. file-write-date / file-length /
-  # ensure-directories-exist are deliberately NOT here: they diverge on WASM by design
-  # (.kb/read-load-streams.md).
+  # specials clack's %load-file rebinds. file-write-date is deliberately NOT here: it
+  # answers nil on both WASM backends by design (.kb/read-load-streams.md).
   - name: clack-enablement-builtins
     source: |
       (print (substitute-if #\- (lambda (c) (member c '(#\. #\/) :test 'char=)) "lack/mw.backtrace"))
@@ -8669,6 +8668,33 @@ cases:
       NIL
       NIL
       300
+  - name: filesystem-write-create-rename-delete-and-probe
+    # The three write-side operators are REAL on all four backends: the interpreter
+    # and the JVM create/remove/move through java.nio, both WASM backends through
+    # the path_create_directory / path_unlink_file / path_rename imports (component
+    # mode: the adapter over wasi:filesystem's create-directory-at / unlink-file-at
+    # / rename-at). ensure-directories-exist makes every missing level; delete-file
+    # answers nil -- which the Lisp above it raises the file-error from -- when the
+    # file is already gone.
+    source: |
+      (print (ensure-directories-exist "w257/sub/dir/x.txt"))
+      (with-open-file (out "w257/sub/dir/x.txt" :direction :output) (write-line "hello" out))
+      (print (probe-file "w257/sub/dir/x.txt"))
+      (print (rename-file "w257/sub/dir/x.txt" "y.txt"))
+      (print (probe-file "w257/sub/dir/x.txt"))
+      (print (probe-file "w257/sub/dir/y.txt"))
+      (print (delete-file "w257/sub/dir/y.txt"))
+      (print (probe-file "w257/sub/dir/y.txt"))
+      (print (ignore-errors (delete-file "w257/sub/dir/y.txt")))
+    expected: |
+      "w257/sub/dir/x.txt"
+      #P"w257/sub/dir/x.txt"
+      #P"w257/sub/dir/y.txt"
+      NIL
+      #P"w257/sub/dir/y.txt"
+      T
+      NIL
+      NIL
   - name: open-if-exists-append-keeps-the-existing-content
     # smart-buffer's disk-spill path writes every chunk past the memory limit
     # this way, so the option is real on all four backends: :direction :output
@@ -8871,6 +8897,20 @@ cases:
       (print (uiop:directory-exists-p "no-such-directory"))
       (print (directory "no-such-directory/*.*"))
       (print (uiop:subdirectories "no-such-directory/"))
+      ;; The uiop/filesystem probing spellings over the same primitives:
+      ;; probe-file* answers the parsed pathname (or its truename with
+      ;; :truename), truename* is the nil-tolerant truename, directory* is
+      ;; directory. The write side (ensure-all-directories-exist and friends)
+      ;; stays out of this case: it signals on both WASM backends until
+      ;; .todo/257 lands the mkdir/unlink/rename imports, so only the
+      ;; interpreter and the JVM pin it (LispEvaluatorTest and
+      ;; JvmLispCompilerTest).
+      (print (uiop:probe-file* "dls-a.txt"))
+      (print (uiop:probe-file* "dls-a.txt" :truename t))
+      (print (uiop:probe-file* "dls-missing.txt"))
+      (print (uiop:truename* "dls-a.txt"))
+      (print (uiop:truename* "dls-missing.txt"))
+      (print (dls-ours (uiop:directory* "./*.txt")))
     expected: |
       (#P"./dls-a.txt" #P"./dls-b.txt")
       (#P"./dls-a.txt" #P"./dls-b.txt")
@@ -8881,6 +8921,12 @@ cases:
       NIL
       NIL
       NIL
+      #P"dls-a.txt"
+      #P"dls-a.txt"
+      NIL
+      #P"dls-a.txt"
+      NIL
+      (#P"./dls-a.txt" #P"./dls-b.txt")
   - name: with-output-to-string-print-family
     source: |
       (print (with-output-to-string (ss-out)

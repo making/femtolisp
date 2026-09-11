@@ -163,6 +163,42 @@ stored from main's OWN PROLOGUE (a defun is a static method and cannot see main'
 `regen.sh` + `FIXED_BLOCK_IFACES`, then `regen-wit.sh` and `WasiWitDefinitions`; the block is
 pruned per INTERFACE, checked by `WitOracleE2eTest`). A `--no-wasi` reactor answers nil.
 
+`uiop/filesystem` (32/32, `uiop-filesystem.lisp` except the one macro) — the read side is
+Lisp over the two primitives every backend already carries: `probe-file*`/`truename*` over
+`probe-file` (a designator `ensure-pathname` rejects answers nil through `ignore-errors`,
+exactly like a file that is not there), `directory*` over `directory` (upstream's
+per-implementation symlink keys accepted and dropped), `filter-logical-directory-results`
+the passthrough it is where `logical-pathname-p` is nil, `safe-file-write-date` over
+`file-write-date` with the missing-file `file-error` swallowed (nil on both WASM backends,
+where the date itself is nil). `parse-native-namestring` is `parse-unix-namestring` plus
+the `ensure-pathname` constraints (`os-unix-p` is t outright, so native IS Unix and the
+separator `#\:`); the `getenv-*` family reads `uiop/os:getenvp` through it. **The write
+side is option 2 of `.todo/358`, landed by `.todo/257`**:
+`ensure-all-directories-exist`, `rename-file-overwriting-target` and
+`delete-file-if-exists` are real Lisp over the one primitive each matching CL operator
+already bottoms out in (`%make-directories` via `ensure-directories-exist`, `%rename-file`
+via `rename-file`, `%delete-file` via `delete-file`), real on all four backends -- the
+ci-spec `filesystem-write-create-rename-delete-and-probe` case and
+`WasmLispCompilerIntegrationTest#uiopFilesystemProbeReadsAndMutations` pin both WASM
+legs. **One deliberate remainder: removing a DIRECTORY still signals on WASM** --
+preview1's `path_unlink_file` cannot remove directories (that needs the
+`path_remove_directory` import, out of `.todo/257`'s scope), so
+`delete-empty-directory` over an actual directory, and `delete-directory-tree` past its
+file deletions, answer the honest `file-error` rather than a silent no-op.
+`delete-directory-tree` takes the portable recursive walk only (no `run-program`
+branch -- there is no backend that spawns one); an explicit `:validate nil` fails the
+first check rather than the second, both the same `parameter-error`. **Symlinks are the
+identity, and that is coverage, not a stub**: no backend resolves them (`truename`
+carries the argument namestring), so `*resolve-symlinks*` defaults to nil (upstream's t
+would promise what is not there) and `resolve-symlinks`/`resolve-symlinks*`/`truenamize`
+coerce-and-return. `lisp-implementation-directory` is nil (no install directory exists
+to name) and `lisp-implementation-pathname-p` follows it. **`with-current-directory`
+inherits `chdir`'s decision and invents no second one**: `call-with-current-directory`
+binds `*default-pathname-defaults*` and `chdir`s (running `chdir` BEFORE `getcwd` so the
+signal names `CHDIR` on all four -- `getcwd` has no WASM answer), a nil dir just runs
+the thunk; the macro is a `LispMacroExpander` expansion over it (every uiop macro is),
+with the `MACRO_EXPANSION_CALLEES` row its expansion needs.
+
 ## Selection, not pruning
 `UiopLibrary.process` prepends only the definitions the program reaches, to a fixpoint on a
 `PackageResolver.resolveProgram` copy. **`MACRO_EXPANSION_CALLEES` is the surface-form rule**

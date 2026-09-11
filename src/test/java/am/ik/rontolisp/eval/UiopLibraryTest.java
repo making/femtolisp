@@ -105,6 +105,10 @@ class UiopLibraryTest {
 		assertThat(splicedNames("(uiop:with-pathname-defaults () (print 1))")).contains("UIOP/PATHNAME:*NIL-PATHNAME*");
 		assertThat(splicedNames("(uiop:with-enough-pathname (p :defaults #P\"/tmp/\") (print p))")).contains(
 				"UIOP/PATHNAME:CALL-WITH-ENOUGH-PATHNAME", "UIOP/PATHNAME:ENOUGH-PATHNAME", "UIOP/PATHNAME:SUBPATHP");
+		// with-current-directory expands into call-with-current-directory, a spliced
+		// defun the program never names -- same rule, same reason.
+		assertThat(splicedNames("(uiop:with-current-directory (\"/tmp\") (print 1))"))
+			.contains("UIOP/FILESYSTEM:CALL-WITH-CURRENT-DIRECTORY");
 	}
 
 	@Test

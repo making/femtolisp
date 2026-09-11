@@ -19090,6 +19090,116 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void evalUiopFilesystemProbeWalkAndMutate(@TempDir Path tempDir) throws Exception {
+		// The uiop/filesystem read side over probe-file and directory (.kb/uiop.md):
+		// probe-file* answers the parsed pathname or its truename, truename* is the
+		// nil-tolerant truename, directory* is directory, and safe-file-write-date
+		// swallows the missing-file error. The write side below it is real here
+		// (the interpreter's %make-directories / %delete-file / %rename-file).
+		Files.writeString(tempDir.resolve("p.txt"), "p\n");
+		String dir = tempDir.toString().replace("\\", "\\\\");
+		assertThat(eval("(uiop:probe-file* \"" + dir + "/p.txt\")").print()).isEqualTo("#P\"" + tempDir + "/p.txt\"");
+		assertThat(eval("(uiop:probe-file* \"" + dir + "/p.txt\" :truename t)").print())
+			.isEqualTo("#P\"" + tempDir + "/p.txt\"");
+		assertThat(eval("(uiop:probe-file* \"" + dir + "/missing\")")).isEqualTo(LispNil.INSTANCE);
+		assertThat(eval("(uiop:probe-file* \"" + dir + "/*.txt\")")).isEqualTo(LispNil.INSTANCE);
+		assertThat(eval("(uiop:truename* \"" + dir + "/p.txt\")").print()).isEqualTo("#P\"" + tempDir + "/p.txt\"");
+		assertThat(eval("(uiop:truename* \"" + dir + "/missing\")")).isEqualTo(LispNil.INSTANCE);
+		assertThat(eval("(uiop:truename* nil)")).isEqualTo(LispNil.INSTANCE);
+		assertThat(eval("(uiop:directory* \"" + dir + "/*.txt\")").print()).isEqualTo("(#P\"" + tempDir + "/p.txt\")");
+		assertThat(eval("(uiop:safe-file-write-date \"" + dir + "/p.txt\")")).isInstanceOf(LispInteger.class);
+		assertThat(eval("(uiop:safe-file-write-date \"" + dir + "/missing\")")).isEqualTo(LispNil.INSTANCE);
+		assertThat(eval("(uiop:safe-file-write-date nil)")).isEqualTo(LispNil.INSTANCE);
+		assertThat(eval("(uiop:filter-logical-directory-results \"d/\" (list 1 2) #'identity)").print())
+			.isEqualTo("(1 2)");
+		// Native namestrings and environment pathnames: the native spelling is the
+		// Unix one and the separator is #\:, on every backend.
+		assertThat(evalMulti("""
+				(list (uiop:parse-native-namestring "/tmp/x")
+				      (uiop:parse-native-namestring nil)
+				      (uiop:parse-native-namestring "/tmp/x" :ensure-directory t)
+				      (string (uiop:inter-directory-separator))
+				      (uiop:split-native-pathnames-string "a:b::c")
+				      (uiop:split-native-pathnames-string nil))
+				""").print()).isEqualTo("(#P\"/tmp/x\" NIL #P\"/tmp/x/\" \":\" (#P\"a\" #P\"b\" NIL #P\"c\") (NIL))");
+		assertThat(evalMulti("""
+				(progn (setf (uiop:getenv "RONTOLISP_UIOP_FS_TEST") "/tmp")
+				       (setf (uiop:getenv "RONTOLISP_UIOP_FS_PATHS") "/tmp:/var")
+				       (list (uiop:getenv-pathname "RONTOLISP_UIOP_FS_TEST")
+				             (uiop:getenv-pathnames "RONTOLISP_UIOP_FS_PATHS")
+				             (uiop:getenv-absolute-directory "RONTOLISP_UIOP_FS_TEST")
+				             (uiop:getenv-absolute-directories "RONTOLISP_UIOP_FS_PATHS")
+				             (uiop:getenv-pathname "RONTOLISP_UIOP_FS_UNSET")))
+				""").print())
+			.isEqualTo("(#P\"/tmp\" (#P\"/tmp\" #P\"/var\") #P\"/tmp/\" (#P\"/tmp/\" #P\"/var/\") NIL)");
+		// No backend resolves symlinks: the flag defaults to nil and the functions
+		// are the identity; there is no install directory to name either.
+		assertThat(evalMulti("""
+				(list uiop:*resolve-symlinks*
+				      (uiop:resolve-symlinks "/a/b")
+				      (uiop:resolve-symlinks* "x")
+				      (let ((uiop:*resolve-symlinks* t)) (uiop:resolve-symlinks* "x"))
+				      (uiop:truenamize nil)
+				      (uiop:lisp-implementation-directory)
+				      (uiop:lisp-implementation-pathname-p "/x"))
+				""").print()).isEqualTo("(NIL #P\"/a/b\" \"x\" #P\"x\" NIL NIL NIL)");
+		// The write side, real on this backend: make, rename over, delete the tree.
+		assertThat(evalMulti("""
+				(let ((base "%s/fs-"))
+				  (uiop:ensure-all-directories-exist (list (concatenate 'string base "d/sub/f.txt")))
+				  (with-open-file (out (concatenate 'string base "d/sub/f.txt") :direction :output)
+				    (write-line "x" out))
+				  (uiop:rename-file-overwriting-target (concatenate 'string base "d/sub/f.txt")
+				                                       (concatenate 'string base "d/g.txt"))
+				  (let ((after (list (uiop:probe-file* (concatenate 'string base "d/sub/f.txt"))
+				                     (namestring (uiop:probe-file* (concatenate 'string base "d/g.txt")))
+				                     (uiop:delete-empty-directory (concatenate 'string base "d/sub/")))))
+				    (uiop:delete-directory-tree (concatenate 'string base "d/")
+				                                :validate (constantly t))
+				    (append after (list (uiop:directory-exists-p (concatenate 'string base "d/"))
+				                        (uiop:delete-directory-tree (concatenate 'string base "d/")
+				                                                    :validate (constantly t)
+				                                                    :if-does-not-exist :ignore)))))
+				""".formatted(dir)).print())
+			.isEqualTo("(NIL \"%s/fs-d/g.txt\" T NIL NIL)".formatted(dir.replace("\\", "\\\\")));
+		// call-with-current-directory inherits chdir's decision: a non-nil dir
+		// signals UIOP/OS:CHDIR on every backend without running the thunk, while a
+		// nil dir just runs it. with-current-directory is the macro over it.
+		assertThat(eval("(uiop:call-with-current-directory nil (lambda () 42))").print()).isEqualTo("42");
+		assertThat(evalMulti("""
+				(let ((ran nil))
+				  (list (handler-case (uiop:call-with-current-directory "/tmp"
+				                        (lambda () (setq ran t) :body))
+				          (uiop:not-implemented-error (c) (princ-to-string c)))
+				        ran))
+				""").print()).contains("UIOP/OS:CHDIR").contains("NIL");
+		assertThat(eval("(uiop:with-current-directory () 41)").print()).isEqualTo("41");
+		assertThat(evalMulti("""
+				(list (handler-case (uiop:with-current-directory ("/tmp") (defun %wcd-probe () 1))
+				        (uiop:not-implemented-error () :signalled))
+				      (fboundp '%wcd-probe))
+				""").print()).isEqualTo("(:SIGNALLED NIL)");
+	}
+
+	@Test
+	void evalUiopDeleteDirectoryTreeValidatesItsVictim() {
+		// rm -rf takes a validation predicate: no predicate and a failing one both
+		// signal parameter-error, and a missing directory signals unless :ignore.
+		assertThat(evalMulti("""
+				(list (handler-case (uiop:delete-directory-tree "/tmp/rontolisp-no-such-d/")
+				        (uiop:parameter-error () :parameter-error))
+				      (handler-case (uiop:delete-directory-tree "/tmp/rontolisp-no-such-d/"
+				                      :validate (constantly nil))
+				        (uiop:parameter-error () :parameter-error))
+				      (handler-case (uiop:delete-directory-tree "/tmp/rontolisp-no-such-d/"
+				                      :validate (constantly t))
+				        (error () :missing))
+				      (uiop:delete-directory-tree "/tmp/rontolisp-no-such-d/"
+				        :validate (constantly t) :if-does-not-exist :ignore))
+				""").print()).isEqualTo("(:PARAMETER-ERROR :PARAMETER-ERROR :MISSING NIL)");
+	}
+
+	@Test
 	void evalUiopPathnameSubpathFamily() {
 		// The uiop/pathname algebra over the flat namestring (.kb/uiop.md): subpathname
 		// merges a relative subpath under the base's DIRECTORY, subpathp answers the

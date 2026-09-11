@@ -1,11 +1,13 @@
 package am.ik.rontolisp.codegen.wasm;
 
+import java.io.ByteArrayOutputStream;
 import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import am.ik.rontolisp.LispVal;
 import am.ik.rontolisp.reader.LispReader;
+import am.ik.wasm.WasmWriter;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -125,6 +127,80 @@ class WasmToplevelChunkingTest {
 			.as("largest emitted function body of the ASYNC top level; a run outlined whole "
 					+ "makes a cold wasmtime compile need memory superlinear in this number")
 			.isLessThanOrEqualTo(MAX_FUNCTION_BODY_BYTES);
+	}
+
+	/**
+	 * A long top level led by every shape that binds a top-level name without a
+	 * head-position definer: a nested assignment read back by a later form, a defun
+	 * nested in a top-level form, and a multiple-value-setq. Each one once disabled the
+	 * chunker for the rest of the program -- the first form that allocated a named local
+	 * latched it off, so this program compiled as one ~300 KB body. Cutting must continue
+	 * across all of them.
+	 */
+	@Test
+	void chunkingContinuesAcrossTopLevelShapesThatBindWithoutAHeadPositionDefiner() {
+		String source = "(print (progn (setq trip-nested-455 10) trip-nested-455))\n" //
+				+ "(print trip-nested-455)\n" //
+				+ "(let () (defun trip-nested-fn-455 () 42) (print (trip-nested-fn-455)))\n" //
+				+ "(multiple-value-setq (trip-mva-455 trip-mvb-455) (values 1 2))\n" //
+				+ longToplevel();
+
+		int largest = WasmModuleInspector.largestFunctionBodySize(compile(source));
+
+		assertThat(largest).as("largest emitted function body; a pinning form must delay cuts, never disable them")
+			.isLessThanOrEqualTo(MAX_FUNCTION_BODY_BYTES);
+	}
+
+	/**
+	 * The same through the real compile pipeline: a compiler macro that introduces a
+	 * top-level assignment of a name no earlier pass could have collected, called at the
+	 * top level ahead of a long run of forms.
+	 */
+	@Test
+	void chunkingContinuesAcrossACompilerMacroIntroducedAssignment() {
+		String source = "(define-compiler-macro cm-trip-455 (x) `(progn (setq __cm_trip_455 ,x) __cm_trip_455))\n" //
+				+ "(print (cm-trip-455 1))\n" //
+				+ IntStream.range(0, 11000)
+					.mapToObj(i -> "(print (+ %d (* %d 3)))".formatted(i, i))
+					.collect(Collectors.joining("\n"));
+		List<LispVal> program = am.ik.rontolisp.cli.CorpusFrontend.program(source, am.ik.rontolisp.reader.Features.WASM,
+				true, false);
+
+		int largest = WasmModuleInspector.largestFunctionBodySize(new WasmLispCompiler().compile(program));
+
+		assertThat(largest)
+			.as("largest emitted function body; a backend-time-introduced assignment must not stop the chunker")
+			.isLessThanOrEqualTo(MAX_FUNCTION_BODY_BYTES);
+	}
+
+	/**
+	 * The cut rule itself: a cut waits while a name bound in the current chunk is still
+	 * read by a later form, and closes past the last such reader. A quoted occurrence is
+	 * not a read.
+	 */
+	@Test
+	void aCutWaitsForTheLastReaderOfAChunkBoundName() {
+		WasmLispCompiler.Ctx ctx = WasmLispCompiler.Ctx.builder()
+			.writer(new WasmWriter(new ByteArrayOutputStream()))
+			.bodyStream(new ByteArrayOutputStream())
+			.stringTable(new WasmLispCompiler.StringTable(0, false))
+			.build();
+		ctx.locals.put("TRIP-WB-455", 1);
+		List<LispVal> program = LispReader.readAllFromString("(print 1)\n(print trip-wb-455)\n");
+
+		assertThat(WasmToplevelEmit.readsChunkLocal(program, 0, ctx))
+			.as("a later form reads the chunk-bound name, so the cut must wait")
+			.isTrue();
+		assertThat(WasmToplevelEmit.readsChunkLocal(program, 1, ctx))
+			.as("no form follows the reader, so the chunk may close")
+			.isFalse();
+
+		List<LispVal> quoted = LispReader.readAllFromString("(print 1)\n(print 'trip-wb-455)\n");
+		assertThat(WasmToplevelEmit.readsChunkLocal(quoted, 0, ctx)).as("a quoted occurrence is not a read").isFalse();
+
+		ctx.locals.clear();
+		assertThat(WasmToplevelEmit.readsChunkLocal(program, 0, ctx)).as("nothing bound means no scan at all")
+			.isFalse();
 	}
 
 }

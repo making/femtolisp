@@ -23,8 +23,4 @@ backends.
 
 ## Backend support
 
-Interpreter and JVM rename for real. Both WASM backends signal at CALL time: the
-WASI import set here carries no rename call, and "the file is at the new name
-afterwards" has no honest non-answer -- the same divergence
-[`delete-file`](delete-file.md) and
-[`ensure-directories-exist`](ensure-directories-exist.md) have.
+All four backends rename for real. Both WASM backends move through the `path_rename` WASI import (Preview 1 directly, `--component` through `wasi:filesystem`'s `rename-at`); "it was not there" signals the same `file-error` as [`delete-file`](delete-file.md) everywhere.

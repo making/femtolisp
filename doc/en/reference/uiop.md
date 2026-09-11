@@ -34,7 +34,7 @@ one member name:
 | `uiop/version` | version comparison and the deprecation conditions | 1 / 15 |
 | [`uiop/os`](uiop/os.md) | host identity, the environment, the working directory | 22 / 22 |
 | [`uiop/pathname`](uiop/pathname.md) | the pathname algebra (`subpathname`, `parse-unix-namestring`, `enough-pathname`) | 50 / 50 |
-| `uiop/filesystem` | probe, walk and mutate the file system | 8 / 32 |
+| [`uiop/filesystem`](uiop/filesystem.md) | probe, walk and mutate the file system | 32 / 32 |
 | `uiop/stream` | file contents, temporary files, encodings, the standard streams | 3 / 66 |
 | [`uiop/image`](uiop/image.md) | exit, fatal conditions, the dump hooks, the command line | 30 / 30 |
 | `uiop/launch-program` | asynchronous subprocesses | 0 / 19 |
@@ -50,7 +50,7 @@ target the counts above are measured against, so both move together.
 
 ## What is implemented
 
-Four sub-packages have their own page, and all four are complete: `uiop/utility` — the
+Five sub-packages have their own page, and all five are complete: `uiop/utility` — the
 68 portable helpers everything else in uiop is written in
 ([uiop/utility](uiop/utility.md)) — `uiop/pathname`, the 50-member pathname
 algebra ([uiop/pathname](uiop/pathname.md)), and `uiop/os`, the 22 host-identity,
@@ -60,21 +60,18 @@ environment and working-directory members ([uiop/os](uiop/os.md), which is where
 ends the process with a status code on all four backends,
 [`uiop:command-line-arguments`](uiop/image.md#the-command-line) reads the
 arguments the program was started with on all four, and the fatal-condition,
-backtrace and image-hook families live there too. The rest:
+backtrace and image-hook families live there too. The fifth is
+[`uiop/filesystem`](uiop/filesystem.md), complete as well: `probe-file*`,
+`truename*` and `directory*` probe and walk on all four backends, the
+`getenv-*` family reads pathnames out of the environment, symlinks are the
+honest identity, and the four mutating operations run where their primitives do
+(signalling the primitive's own call-time error on both WASM backends). The rest:
 
 | Function | Example | Result |
 |----------|---------|--------|
-| `uiop:file-exists-p` | `(uiop:file-exists-p "f.txt")` | the pathname when the file exists, `nil` otherwise — the same contract as `probe-file`, which it lowers onto on every backend |
-| `uiop:directory-exists-p` | `(uiop:directory-exists-p "src/")` | the pathname (with a trailing `/`) when the DIRECTORY exists, `nil` otherwise — the directory twin of `file-exists-p`, and what tells an empty directory from a missing one |
-| `uiop:directory-files` | `(uiop:directory-files "db/" "*.up.sql")` | the non-directory entries of a directory — `(directory "db/*.*")` with the subdirectories dropped. UIOP's optional second argument, the namestring of a name-and-type wildcard, filters them exactly as `directory` matches; omitting it lists everything, and a pattern carrying a directory component is an error |
-| `uiop:subdirectories` | `(uiop:subdirectories "src/")` | the subdirectories of a directory, each with its trailing `/` |
-| `uiop:collect-sub*directories` | `(uiop:collect-sub*directories "src/" (constantly t) (constantly t) #'print)` | walk a directory tree: `collectp` decides what reaches `collector`, `recursep` what is descended into. Every directory handed over is in directory form, root included |
 | `uiop:read-file-string` | `(uiop:read-file-string "db/up.sql")` | the whole file as one string. Runs on every backend that can open a file for input. Lite: real UIOP's `&rest` keys are accepted and ignored (`:external-format` has no rontolisp surface — every backend reads UTF-8) |
 | `uiop:compile-file-type` | `(uiop:compile-file-type)` | `nil` — the pathname type a compiled file carries. There is no `compile-file` here, so there is no such type, and a caller asking "is this path a fasl?" gets `no` for a source path |
 | `uiop:default-temporary-directory` | `(uiop:default-temporary-directory)` | `$TMPDIR` in directory form, or `#P"/tmp/"` when the environment is empty (both WASM backends without `--env`) |
-| `uiop:delete-file-if-exists` | `(uiop:delete-file-if-exists "scratch.txt")` | delete a file, answering `nil` instead of signalling when it is not there — the whole reason UIOP exports it |
-| `uiop:get-pathname-defaults` | `(uiop:get-pathname-defaults)` | the defaults relative names resolve against — `*default-pathname-defaults*` (initially `#P""`, the pathname designating the host working directory) unless an absolute defaults argument is given |
-| `uiop:native-namestring` | `(uiop:native-namestring #P"/tmp/x")` | `"/tmp/x"` — the host-OS spelling of a pathname, which here IS the namestring, so this is `namestring` |
 | `uiop:add-package-local-nickname` | `(uiop:add-package-local-nickname '#:j '#:com.example.pkg)` | register a package shorthand (lite: global, no per-package scoping). A literal top-level call is a compile-time directive, so it works on every backend |
 | `uiop:symbol-call` | `(uiop:symbol-call :cl :+ 1 2)` | look the name up in the package at run time and apply it — UIOP's late-binding call into a system the caller does not depend on |
 
@@ -84,6 +81,8 @@ compiler rather than called: `uiop:with-temporary-file`,
 `uiop:define-package` (a literal top-level call is consumed like `defpackage`).
 `uiop/pathname`'s two macros — `uiop:with-pathname-defaults` and
 `uiop:with-enough-pathname` — are [on its page](uiop/pathname.md#relative-to-a-base).
+`uiop/filesystem`'s macro — `uiop:with-current-directory` — is
+[on its page](uiop/filesystem.md#the-working-directory).
 `uiop/utility`'s own macros — [`uiop:if-let`](macros/uiop-if-let.md),
 `uiop:nest`, `uiop:while-collecting`, `uiop:with-upgradability` and the rest —
 are [on its page](uiop/utility.md#macros).
