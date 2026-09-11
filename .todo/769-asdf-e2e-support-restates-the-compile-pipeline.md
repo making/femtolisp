@@ -4,8 +4,8 @@ Difficulty: Medium
 
 ## What is wrong
 
-`src/test/java/am/ik/rontolisp/e2e/AsdfLibraryE2eSupport.compileProgram` spells the
-compile path's pass order out by hand:
+`src/test/java/am/ik/rontolisp/e2e/AsdfLibraryE2eSupport.java`'s `compileProgram` spells
+the compile path's pass order out by hand:
 
 ```
 LibraryDefunPruner.prune(EnvironmentLibrary.process(UnreadCharLibrary.process(
@@ -18,7 +18,7 @@ forbids -- *"the pass pipeline itself is `CompileFrontend.expand`, and nothing m
 it"* -- and exactly the copy that already drifted twice in the two corpus guards: eight
 passes behind when a `tokenizer:` case joined `ci-spec.yaml`, ten when that was fixed, and
 `VecLibrary` in the wrong POSITION, which no census of pass NAMES could see. Those two
-guards were moved behind `src/test/java/am/ik/rontolisp/cli/CorpusFrontend`; this third
+guards were moved behind `src/test/java/am/ik/rontolisp/cli/CorpusFrontend.java`; this third
 copy was not.
 
 Every `asdf:load-system` library E2E runs through it (jose, rove, cl-who, cl-mustache,

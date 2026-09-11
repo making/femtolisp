@@ -89,10 +89,24 @@ Measured 2026-09-11, jose + rove + cl-ppcre through `asdf:load-system`, the wide
 dispatcher any shipped test builds: 2453 defuns + 526 lambdas, maxFuncId 2978, 2975
 targets, 260777 bytes unpaged — over the 128 KiB gate, 1367 bytes under the 256 KiB bound,
 and two levels deep. So the id that once reached the fourth level was ~5600x the live
-value and came from no counter. The same two legs compiled 66 times 16-way concurrent in
-one JVM are byte-identical to a serial compile and report the same funcId every time, and
-`codegen.wasm` holds no mutable static state at all, so nothing in the backend explains
-it; the range check above is what will name the value if it ever recurs.
+value and came from no counter. **Where it came from is still open (`.todo/770`)**, and
+the range check above is what will name it on a recurrence — it runs at the top of every
+`buildDispatch`, before any emission, on per-compile state, so each concurrent leg throws
+on its own thread. What that check cannot see is a compile whose POPULATION is equally
+corrupt: the bound scales with it.
+
+The frame is not in doubt, and neither is the value. Line 1973 is the level count in every
+revision from the last change to the file before the run (`ff55fa031`) through the run's
+own HEAD; every other loop in `buildDispatch` and everything it calls is bounded by
+`targets`, `leaves`, `levels`, `numCases`, `maxDigit` (<= 255) or `dispatchArgs`; the two
+that scale with the funcId (`emitDispatchCases`'s `br_table` label loop) are finite and run
+BEFORE the count, and at `2^24` they finish in about a second or die of memory rather than
+holding 100% CPU for 37 minutes. Nothing in the backend explains the value, either: the
+same two legs compiled 66 times 16-way concurrent in one JVM are byte-identical to a serial
+compile and report the same funcId every time, `codegen.wasm` holds no mutable static state
+at all, and the compile input is host-independent (`BuiltinSystems.announcedFeatures`
+withholds the trivial-features host half from both WASM targets). What the failing run had
+that an isolated one does not is ~239 other test classes compiling in the same JVM first.
 
 Ask of any new outlining path what the async top level failed: *is the piece it cuts
 bounded in BYTES, or only by where some syntactic marker falls?*
