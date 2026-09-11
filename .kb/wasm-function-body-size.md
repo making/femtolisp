@@ -62,15 +62,37 @@ Why cuts are safe:
 ## Keeping the dispatch ladder bounded
 The SPREAD dispatcher (`WasmRuntimeBuilder.buildDispatch(..., spread = true, ...)`, what
 `_apply` calls) is a `br_table` over EVERY callable, ~110 bytes per case, ~410 at its
-widest. Past `WasmRuntimeBuilder.DISPATCH_PAGE_BUDGET_BYTES` (64 KiB) it is emitted as a
-TREE keyed on successive 8-bit digits of the funcId, ~256 cases per leaf, so **the body no
-longer depends on the function count** — one extra call per level.
+widest. Past `WasmRuntimeBuilder.DISPATCH_PAGE_BUDGET_BYTES` (128 KiB, half the bound) it
+is emitted as a TREE keyed on successive 8-bit digits of the funcId, ~256 cases per leaf,
+so **the body no longer depends on the function count** — one extra call per level.
 - **Pages are appended after EVERY other function**, so no index moves and a program
   needing none is byte-for-byte unchanged (`.kb/wasm-callable-arity.md`).
 - **A page's signature is the dispatcher's own**, so no module gains a type entry: the
   page re-reads the funcId off the closure in local 0.
 - **The gate is the emitted body's SIZE, not the callable count**, so the arity ladders on
   the `funcall`/`mapcar`/`sort` hot path stay one call deep.
+- **A funcId is always in `[0, defuns + lambdas)`**: one counter hands them out, the
+  defuns first (index == funcId), then exactly one per lambda declaration.
+  `dispatchTargets` rejects anything else by that bound, because neither dispatcher shape
+  can survive a value from outside it — the flat one writes ONE `br_table` label per id
+  from 0 up to the largest (a `2^24` id alone is a 16 MB body), and the paged one reads
+  the id one 8-bit digit at a time.
+- **The radix depth is counted from the bit length** (`WasmRuntimeBuilder.dispatchLevels`,
+  pinned by `WasmDispatchPagingTest`), never by shifting the id 8 more bits per round:
+  Java takes a shift distance mod 32, so the fourth round of such a loop shifts by 0,
+  reads the id straight back and spins forever on any id of `2^24` or more. That loop
+  cost one full `./mvnw test` two workers at 100% CPU for 2223 s each (2026-09-11,
+  aarch64 16 cores, the two `AsdfLibraryE2eSupport` WASM legs of `JoseTestSuiteE2eTest`,
+  which compile concurrently); an unreachable bound must fail, not hang.
+
+Measured 2026-09-11, jose + rove + cl-ppcre through `asdf:load-system`, the widest spread
+dispatcher any shipped test builds: 2453 defuns + 526 lambdas, maxFuncId 2978, 2975
+targets, 260777 bytes unpaged — over the 128 KiB gate, 1367 bytes under the 256 KiB bound,
+and two levels deep. So the id that once reached the fourth level was ~5600x the live
+value and came from no counter. The same two legs compiled 66 times 16-way concurrent in
+one JVM are byte-identical to a serial compile and report the same funcId every time, and
+`codegen.wasm` holds no mutable static state at all, so nothing in the backend explains
+it; the range check above is what will name the value if it ever recurs.
 
 Ask of any new outlining path what the async top level failed: *is the piece it cuts
 bounded in BYTES, or only by where some syntactic marker falls?*
