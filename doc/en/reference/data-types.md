@@ -488,9 +488,10 @@ structure is CYCLIC is usable -- stored and retrieved under the same object:
 They
 are also usable as first-class function values (`#'gethash`, `#'remhash`,
 `#'clrhash`, `#'hash-table-count`, `#'hash-table-p`, `#'maphash`, and
-`#'make-hash-table` in its no-argument form) on all three backends -- passed via
-fixed-arity wrappers, so `gethash`'s optional default and `make-hash-table`'s
-keyword arguments are not available through the function value. A typical use --
+`#'make-hash-table`) on all three backends -- passed via fixed-arity wrappers, so
+`gethash`'s optional default is not available through the function value, and
+`#'make-hash-table` accepts its keyword arguments but ignores them, always
+building the default table. A typical use --
 counting with `incf` on the place:
 
 ```lisp

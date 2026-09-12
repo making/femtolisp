@@ -4579,11 +4579,20 @@ public final class WasmLispCompiler implements LispCompiler {
 		List<byte[]> dispatchPageBodies = new ArrayList<>();
 		List<Integer> dispatchPageTypes = new ArrayList<>();
 		List<byte[]> dispatchBodies = new ArrayList<>();
+		// The wrong-argument-count report the per-arity dispatchers' no-match arm
+		// throws. Gated on the module actually HAVING a dispatcher, on EH mode and on a
+		// handler landing pad: outside those nothing could catch the throw, the
+		// program-error instance may have no representation, and the arm stays the
+		// `unreachable` it was -- so a module that reports nothing is byte-identical,
+		// down to the five interned message pieces this does not add.
+		WasmRuntimeBuilder.ArityReport arityReport = arityReport(
+				ehMode && hasLandingPad && this.usesInstances && (!indirectCallArities.isEmpty() || usesApplyRuntime),
+				closRegistry, stringTable, layoutAddresses);
 		for (int arity = 0; arity <= MAX_CALLABLE_ARITY; arity++) {
 			if (indirectCallArities.contains(arity)) {
 				WasmRuntimeBuilder.DispatchFunctions built = WasmRuntimeBuilder.buildDispatch(arity, defuns,
 						lambdaDecls, numDefuns, stringTable, usesEval, userFuncBase(), false, dispatchableFuncIds,
-						dispatchPageFuncBase + dispatchPageBodies.size());
+						dispatchPageFuncBase + dispatchPageBodies.size(), arityReport);
 				dispatchBodies.add(built.body());
 				for (byte[] page : built.pages()) {
 					dispatchPageBodies.add(page);
@@ -4606,7 +4615,7 @@ public final class WasmLispCompiler implements LispCompiler {
 		if (usesApplyRuntime) {
 			WasmRuntimeBuilder.DispatchFunctions built = WasmRuntimeBuilder.buildDispatch(0, defuns, lambdaDecls,
 					numDefuns, stringTable, usesEval, userFuncBase(), true, dispatchableFuncIds,
-					dispatchPageFuncBase + dispatchPageBodies.size());
+					dispatchPageFuncBase + dispatchPageBodies.size(), arityReport);
 			dispatchBodies.add(built.body());
 			for (byte[] page : built.pages()) {
 				dispatchPageBodies.add(page);
@@ -4634,7 +4643,7 @@ public final class WasmLispCompiler implements LispCompiler {
 			if (indirectCallArities.contains(arity)) {
 				WasmRuntimeBuilder.DispatchFunctions built = WasmRuntimeBuilder.buildDispatch(arity, defuns,
 						lambdaDecls, numDefuns, stringTable, usesEval, userFuncBase(), false, dispatchableFuncIds,
-						dispatchPageFuncBase + dispatchPageBodies.size());
+						dispatchPageFuncBase + dispatchPageBodies.size(), arityReport);
 				extraDispatchBodies.add(built.body());
 				for (byte[] page : built.pages()) {
 					dispatchPageBodies.add(page);
@@ -7431,6 +7440,40 @@ public final class WasmLispCompiler implements LispCompiler {
 			}
 		}
 		return false;
+	}
+
+	/**
+	 * The wrong-argument-count report a dispatcher's no-match arm throws, or {@code null}
+	 * when this module reports none. The message pieces are interned by the report on
+	 * first use rather than here: a module can have dispatchers and still report nothing,
+	 * and strings nothing reads cost it a split data segment (see
+	 * {@code WasmRuntimeBuilder.ArityReport}).
+	 * @param on whether this module reports a wrong argument count at all
+	 * @param closRegistry the class registry, for the program-error slot layout
+	 * @param stringTable the module's string table
+	 * @param layoutAddresses the baked instance layout records
+	 * @return the report, or null
+	 */
+	private WasmRuntimeBuilder.@Nullable ArityReport arityReport(boolean on, ClosRegistry closRegistry,
+			StringTable stringTable, Map<String, Integer> layoutAddresses) {
+		String tag = LispLayout.CLASS_TAG_PREFIX + ClosRegistry.PROGRAM_ERROR_CLASS_NAME;
+		Integer address = layoutAddresses.get(tag);
+		ClosRegistry.ClassInfo info = closRegistry.findClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME);
+		LispLayout layout = closRegistry.findLayoutByTag(tag);
+		if (!on || address == null || info == null || layout == null) {
+			return null;
+		}
+		int formatControl = -1;
+		for (int i = 0; i < info.slots().size(); i++) {
+			if ("FORMAT-CONTROL".equals(info.slots().get(i).baseName())) {
+				formatControl = i;
+			}
+		}
+		if (formatControl < 0) {
+			return null;
+		}
+		return new WasmRuntimeBuilder.ArityReport(stringTable, address, instanceTypeBase(), layout.capacity(),
+				formatControl);
 	}
 
 	private Set<Integer> dispatchableFuncIds(List<DefunDecl> defuns, Set<Integer> valueFuncIds,

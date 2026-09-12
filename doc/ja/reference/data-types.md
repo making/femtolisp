@@ -415,10 +415,9 @@ f64 -> f32)。bfloat16 のスカラも存在しないため、`#bf16` の要素�
         (hash-table-test h)))               ; => (1 1 EQUALP)
 ```
 
-これらは3つのバックエンドすべてで第一級の関数値としても使用できます(`#'gethash`、`#'remhash`、`#'clrhash`、`#'hash-table-count`、`#'hash-table-p`、`#'maphash`、および無引数形式の
-`#'make-hash-table`) -- 固定アリティのラッパー経由で渡されるため、`gethash` の省略可能なデフォルトや
-`make-hash-table`
-のキーワード引数は関数値経由では利用できません。典型的な使い方 -- placeに対する `incf`
+これらは3つのバックエンドすべてで第一級の関数値としても使用できます(`#'gethash`、`#'remhash`、`#'clrhash`、`#'hash-table-count`、`#'hash-table-p`、`#'maphash`、`#'make-hash-table`) --
+固定アリティのラッパー経由で渡されるため、`gethash` の省略可能なデフォルトは関数値経由では利用できません。`#'make-hash-table`
+はキーワード引数を受け取りますが無視し、常にデフォルトのテーブルを作ります。典型的な使い方 -- placeに対する `incf`
 でのカウント:
 
 ```lisp

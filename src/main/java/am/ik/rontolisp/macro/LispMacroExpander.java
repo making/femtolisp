@@ -30809,18 +30809,19 @@ public final class LispMacroExpander {
 	 * The condition classes a compiled landing pad synthesizes for a RAW host failure, in
 	 * the order a backend's classification switch numbers them: a cast/index failure is a
 	 * {@code type-error}, a zero divisor a {@code division-by-zero}, any other arithmetic
-	 * failure its parent {@code arithmetic-error}, and the two messages every backend
+	 * failure its parent {@code arithmetic-error}, and the three messages every backend
 	 * spells identically ({@code "The variable X is unbound"},
-	 * {@code "The function X is undefined"}) their cell-error classes. The list is what
-	 * {@link #conditionNarrowing} marks constructible and what
-	 * {@link #reportingConditionForm} is asked to build, so the classification a backend
-	 * emits can never name a class the report runtime dropped.
+	 * {@code "The function X is undefined"},
+	 * {@code "Function expects N arguments, got M"}) their cell-error and
+	 * {@code program-error} classes. The list is what {@link #conditionNarrowing} marks
+	 * constructible and what {@link #reportingConditionForm} is asked to build, so the
+	 * classification a backend emits can never name a class the report runtime dropped.
 	 * @return the class names, in classification order
 	 */
 	public static List<String> rawFailureConditionClasses() {
 		return List.of(ClosRegistry.TYPE_ERROR_CLASS_NAME, ClosRegistry.DIVISION_BY_ZERO_CLASS_NAME,
 				ClosRegistry.ARITHMETIC_ERROR_CLASS_NAME, ClosRegistry.UNBOUND_VARIABLE_CLASS_NAME,
-				ClosRegistry.UNDEFINED_FUNCTION_CLASS_NAME);
+				ClosRegistry.UNDEFINED_FUNCTION_CLASS_NAME, ClosRegistry.PROGRAM_ERROR_CLASS_NAME);
 	}
 
 	/**

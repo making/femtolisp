@@ -654,9 +654,9 @@ report's two top rows: 370 + 299 lost forms) and to fail the COMPILE on the comp
   run at the pad, not at the signal point (the compiled-backend semantics).
 - **Arity**: the interpreter's `Function expects N argument(s), got M` (lambda application), `Macro X
   expects ...`, `Environment.requireArgCount*` and every inline `X expects N arguments, got M` built-in
-  check are `program-error`s (the ANSI suite's next six rows). **The compiled backends do NOT signal a
-  wrong-arity `funcall`/`apply` at all** -- the JVM dispatcher answers nil, wasm-GC traps
-  (`.todo/735`); only a DIRECT call is checked, at compile time. The first-class twins are pinned on
+  check are `program-error`s (the ANSI suite's next six rows). The compiled backends signal the same
+  through a function VALUE ("A wrong argument COUNT" below); `apply` is the one shape still
+  unreported. The first-class twins are pinned on
   `#'member` / `#'find` / `#'position` and, since the family took the bounding keywords, on
   `#'remove` too -- its wrapper now forwards a keyword tail instead of taking a fixed two arguments
   ([sequence-bounding-keywords.md](sequence-bounding-keywords.md)).
@@ -667,6 +667,61 @@ report's two top rows: 370 + 299 lost forms) and to fail the COMPILE on the comp
   on `count` -- rather than forms the driver could not evaluate. Those gaps are closed
   ([sequence-bounding-keywords.md](sequence-bounding-keywords.md), 2026-09-11): 2,861 / 3,287 pass,
   166 fail, 265 error -- +657 tests, no test that passed before failing after.
+
+## A wrong argument COUNT through a function value
+**Invariant: calling a function VALUE with a count its lambda list cannot take signals a catchable
+`program-error` on every backend, spelled by the ONE `ClosRegistry.arityMessage`** -- `Function
+expects [at least ]N argument(s), got M`. Only a DIRECT call is checked at compile time; everything
+else (`funcall`, `mapcar`, `sort`, a bare `(f x)` whose head is an expression) arrives at an
+`_invoke_N` dispatcher, whose no-match arm used to answer nil on the JVM and `unreachable` on
+wasm-GC. A silent nil is the worst of the three: an ANSI `signals-error ... program-error` row
+passed interpreted and returned a WRONG VALUE compiled. Pinned by ci-spec
+`wrong-arity-funcall-signals-program-error` and `JvmLispCompilerTest`
+`compileAndRunWrongArityThroughAFunctionValueSignalsProgramError`.
+
+- **JVM** (`JvmRuntimeBuilder.ArityReporting`): the arm calls `_arityErr(funcId, got)`, which reads
+  the callee's SHAPE (required count doubled, plus one for a `&rest` tail) out of a STRING indexed
+  by funcId and throws `new RuntimeException(_arityMsg(shape, got))`. A search tree over the
+  dispatchable ids -- the shape the dispatchers themselves use -- is the wrong structure here: ~15
+  bytes per callable in ONE method, and the cl-postgres corpus overflowed the signed 16-bit branch
+  offset on it. The table is one byte per funcId and three instructions, whatever the program's
+  size. `JvmHandlerCaseCompiler.emitRawFailureTest` recovers `program-error` from the
+  `Function expects ` prefix (the `Expected integer, got: ` precedent -- a bytecode-emitted throw
+  site has no channel for a class), which is the sixth entry in
+  `LispMacroExpander.rawFailureConditionClasses()`.
+- **wasm-GC** (`WasmRuntimeBuilder.ArityReport`): the `br_table` already has a label per funcId, so
+  the ids this arity cannot serve point at one ARM PER SHAPE instead of at the default; the arm puts
+  the shape in the (now dead) funcId local and branches to one assembly block per dispatcher, which
+  builds the message from five interned pieces -- the two counts rendered by `_prin1_to_str` over an
+  `i31`, as the interpreter prints them -- constructs the `program-error` instance the way
+  `%obj-new` does and throws the `(instance . message)` payload on `$lisp-cond`. EH mode behind a
+  handler landing pad only; outside it the arm is the `unreachable` it was, byte for byte. The
+  pieces are interned on FIRST USE: eagerly interning them costs a module whose dispatchers all turn
+  out to be dead an extra data-segment header.
+- **`apply` is deliberately NOT covered.** The spread dispatcher carries a case for EVERY callable
+  and reads the parameters out of a list, so a wrong count there is no dispatch miss and the check
+  would have to sit in every case. What such a check finds FIRST is not a user bug but `.todo/192`:
+  a failing cl-ppcre scan leaks `*reg-starts*` past the special binding that shadowed it, and the
+  phantom register becomes a second argument to a one-parameter `:simple-calls` replacement
+  function. So `(apply #'f '(1 2))` still answers `1` on both compiled backends where the
+  interpreter signals; ci-spec pins the gap rather than hiding it.
+- **A BUILT-IN designator diverges in TEXT, not in class**: `(funcall #'car)` is a `program-error`
+  everywhere, but the interpreter names the operator (`CAR expects 1 arguments, got 0`) while the
+  compiled backends go through the `BuiltinFunctionWrappers` lambda and say `Function expects 1
+  argument, got 0`. The wrapper has no name to report at the dispatcher.
+- **Sizes** (2026-09-12, minimal programs, JVM `.class` / wasm Preview 1 bytes):
+
+  | program | JVM before | after | wasm before | after |
+  |---|---|---|---|---|
+  | `(print (+ 1 2))` | 3,949 | 3,949 | 489 | 489 |
+  | `(print (handler-case (car 1) (error (c) :e)))` | 10,508 | 10,681 | 13,709 | 13,715 |
+  | `(print (mapcar (lambda (x) (* x x)) '(1 2 3)))` | 6,935 | 7,613 | 16,446 | 16,446 |
+  | a `defun` + a wrong-arity `funcall` under `handler-case` | 19,964 | 20,879 | 19,650 | 19,840 |
+
+  A program with no indirect call is byte-identical on both backends. The JVM pays +173 B on ANY
+  handler-case (the sixth classification arm) and +678 B on any program with a dispatcher
+  (`_arityMsg` + `_arityErr` + the funcId table); wasm pays nothing without a landing pad, +6 B when
+  its dispatchers are all shaken away, and +190 B when the arms are live.
 
 ## Out of scope (still)
 The interactive debugger (`break`, `*debugger-hook*`, rendering a restart's `:report` or running its

@@ -15873,6 +15873,34 @@ cases:
       :CHECKED
       (1 NIL)
 
+  # A wrong argument COUNT through a function VALUE is a catchable program-error on every
+  # backend, spelled by ClosRegistry.arityMessage (.kb/error-handling.md). The compiled
+  # dispatchers' no-match arm used to answer nil on the JVM and trap on wasm-GC, so an
+  # ANSI signals-error test passed interpreted and returned a wrong value compiled. Two
+  # deliberate gaps are pinned here as well: apply is NOT covered (its dispatcher carries
+  # a case for every callable, so a wrong count is no dispatch miss at all), and a
+  # BUILT-IN designator's wrapper reports the generic "Function expects ..." where the
+  # interpreter names the operator -- so only the CLASS is compared for that one.
+  - name: wrong-arity-funcall-signals-program-error
+    source: |
+      (defun ci-ar-one (x) x)
+      (defun ci-ar-rest (x &rest r) (list x r))
+      (print (handler-case (funcall (lambda (x) x) 1 2) (program-error (c) (princ-to-string c)) (error (c) :plain)))
+      (print (handler-case (funcall #'ci-ar-one 1 2) (program-error (c) (princ-to-string c)) (error (c) :plain)))
+      (print (handler-case (funcall #'ci-ar-one) (program-error (c) (princ-to-string c)) (error (c) :plain)))
+      (print (handler-case (funcall #'ci-ar-rest) (program-error (c) (princ-to-string c)) (error (c) :plain)))
+      (print (handler-case (mapcar #'ci-ar-one '(1 2) '(3 4)) (program-error (c) (princ-to-string c)) (error (c) :plain)))
+      (print (handler-case (funcall #'identity 1 2) (program-error (c) :pe) (error (c) :plain)))
+      (print (list (funcall #'ci-ar-one 5) (funcall #'ci-ar-rest 6 7)))
+    expected: |
+      "Function expects 1 argument, got 2"
+      "Function expects 1 argument, got 2"
+      "Function expects 1 argument, got 0"
+      "Function expects at least 1 argument, got 0"
+      "Function expects 1 argument, got 2"
+      :PE
+      (5 (6 (7)))
+
   # The tokenizer package (tokenizers.lisp, .kb/tokenizers.md): the five byte-level
   # pre-tokenizer shapes, the ranked merge loop, the special-token scan, Llama 3's
   # ignore-merges and the SentencePiece half, on all four backends. The vocabulary is

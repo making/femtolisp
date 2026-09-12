@@ -52,7 +52,10 @@ public final class BuiltinFunctionWrappers {
 	 * any hash-table operator, so the wrapper and its helpers stay gated together (see
 	 * the {@code wrapperExcludes} handling in {@code Jvm/WasmLispCompiler}).
 	 * {@code %puthash} is internal and intentionally excluded; {@code make-hash-table}
-	 * takes keyword arguments and is exposed here only in its 0-arg default-table form.
+	 * takes keyword arguments and is exposed here only as the DEFAULT table -- it accepts
+	 * the initargs as a {@code &rest} tail and drops them, rather than declaring itself
+	 * nullary, so {@code (apply #'make-hash-table initargs)} is not a wrong argument
+	 * count.
 	 */
 	public static final Set<String> HASH_FUNCTIONS = Set.of(LispNames.MAKE_HASH_TABLE, LispNames.GETHASH,
 			LispNames.REMHASH, LispNames.CLRHASH, LispNames.HASH_TABLE_COUNT, LispNames.HASH_TABLE_P,
@@ -1648,9 +1651,17 @@ public final class BuiltinFunctionWrappers {
 			unary(LispNames.PARSE_INTEGER), unary(LispNames.READ_FROM_STRING),
 			// Hash-table operators: gated like parse-integer/read-from-string (see
 			// HASH_FUNCTIONS). gethash here is the 2-arg form (no default);
-			// make-hash-table
-			// is the 0-arg default-table form; %puthash is internal and omitted.
-			new WrapperDef(LispNames.MAKE_HASH_TABLE, List.of(), List.of(call(LispNames.MAKE_HASH_TABLE))),
+			// %puthash is internal and omitted. #'make-hash-table builds the DEFAULT
+			// table and drops its initargs -- the same lite forwarding as the signal
+			// operators -- but it takes them as a &rest tail rather than declaring
+			// itself nullary: (apply #'make-hash-table initargs) is how alexandria's
+			// alist-hash-table/plist-hash-table construct, and a nullary wrapper makes
+			// that call a wrong-argument-count program-error
+			// (JvmRuntimeBuilder.ArityReporting). Honouring a RUNTIME :test is a
+			// separate matter: the test is what picks the table's representation, and
+			// that choice is made at compile time (.kb/hash-tables.md).
+			new WrapperDef(LispNames.MAKE_HASH_TABLE, List.of(LispNames.LAMBDA_REST, "initargs"),
+					List.of(call(LispNames.MAKE_HASH_TABLE))),
 			binary(LispNames.GETHASH), binary(LispNames.REMHASH), unary(LispNames.CLRHASH),
 			unary(LispNames.HASH_TABLE_COUNT), unary(LispNames.HASH_TABLE_P), binary(LispNames.MAPHASH),
 			// #'aref: variadic (CL aref takes one subscript per dimension) -- fold the

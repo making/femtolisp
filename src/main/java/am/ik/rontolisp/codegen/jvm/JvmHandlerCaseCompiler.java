@@ -699,7 +699,8 @@ final class JvmHandlerCaseCompiler {
 	 * Emits the test guarding raw-failure arm {@code index}, and answers the branch
 	 * positions to patch to the arm's END (i.e. the "does not apply" exits). The order
 	 * mirrors {@link LispMacroExpander#rawFailureConditionClasses()}: type-error,
-	 * division-by-zero, arithmetic-error, unbound-variable, undefined-function.
+	 * division-by-zero, arithmetic-error, unbound-variable, undefined-function,
+	 * program-error.
 	 */
 	private static List<Integer> emitRawFailureTest(int index, int excSlot, int rawSlot, JvmLispCompiler.Ctx ctx) {
 		return switch (index) {
@@ -733,9 +734,14 @@ final class JvmHandlerCaseCompiler {
 			case 2 -> List.of(emitInstanceOfJump(excSlot, "java/lang/ArithmeticException", ctx, false));
 			case 3 -> List.of(emitMessageTest(rawSlot, "startsWith", ClosRegistry.UNBOUND_VARIABLE_MESSAGE_PREFIX, ctx),
 					emitMessageTest(rawSlot, "endsWith", ClosRegistry.UNBOUND_VARIABLE_MESSAGE_SUFFIX, ctx));
-			default ->
+			case 4 ->
 				List.of(emitMessageTest(rawSlot, "startsWith", ClosRegistry.UNDEFINED_FUNCTION_MESSAGE_PREFIX, ctx),
 						emitMessageTest(rawSlot, "endsWith", ClosRegistry.UNDEFINED_FUNCTION_MESSAGE_SUFFIX, ctx));
+			// A dispatcher's wrong-argument-count throw
+			// (JvmRuntimeBuilder.ArityReporting):
+			// the same no-channel-for-a-class situation as the two above, and the text
+			// is ClosRegistry.arityMessage's, which no other throw site writes.
+			default -> List.of(emitMessageTest(rawSlot, "startsWith", ClosRegistry.ARITY_MESSAGE_PREFIX, ctx));
 		};
 	}
 

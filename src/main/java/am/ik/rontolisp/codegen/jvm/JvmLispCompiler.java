@@ -2492,10 +2492,21 @@ public final class JvmLispCompiler implements LispCompiler {
 		MethodrefConstant lookupRefForDispatch = needsLookup
 				? cp.addMethodref(thisClass, cp.addNameAndType(lookupName, lookupDesc)) : null;
 		List<DispatchMethod> dispatchMethods = new ArrayList<>();
+		// The arity reporters the dispatchers signal a wrong argument COUNT through,
+		// emitted only for a program that has a dispatcher at all: without one no
+		// indirect call exists and the class is byte-identical to a build that never
+		// knew about the check (JvmRuntimeBuilder.ArityReporting).
+		JvmRuntimeBuilder.ArityReporting arityReporting = JvmRuntimeBuilder.ArityReporting.NONE;
+		if (!indirectCallArities.isEmpty()) {
+			arityReporting = new JvmRuntimeBuilder.ArityReporting(cp.addMethodref(thisClass, cp.addNameAndType(
+					cp.addUtf8(JvmRuntimeBuilder.ARITY_ERR_NAME), cp.addUtf8(JvmRuntimeBuilder.ARITY_ERR_DESC))));
+			dispatchMethods.addAll(JvmRuntimeBuilder.buildArityMethods(functions, lambdaDecls, cp, thisClass,
+					stringClass, dispatchableFuncIds));
+		}
 		for (int arity : indirectCallArities) {
 			dispatchMethods.addAll(JvmRuntimeBuilder.buildDispatchMethods(arity, functions, lambdaDecls,
 					lambdaFuncInfos, cp, thisClass, objectArrayClass, integerClass, integerValue, objectClass,
-					stringClass, applyRefForDispatch, lookupRefForDispatch, dispatchableFuncIds));
+					stringClass, applyRefForDispatch, lookupRefForDispatch, dispatchableFuncIds, arityReporting));
 		}
 		// The spread dispatcher _apply calls: it takes the argument list whole, so an
 		// apply through a COMPUTED designator has no arity ceiling. Emitted with the eval
@@ -2503,7 +2514,7 @@ public final class JvmLispCompiler implements LispCompiler {
 		if (usesEval) {
 			dispatchMethods.addAll(JvmRuntimeBuilder.buildDispatchMethods(0, functions, lambdaDecls, lambdaFuncInfos,
 					cp, thisClass, objectArrayClass, integerClass, integerValue, objectClass, stringClass,
-					applyRefForDispatch, lookupRefForDispatch, true, dispatchableFuncIds));
+					applyRefForDispatch, lookupRefForDispatch, true, dispatchableFuncIds, arityReporting));
 		}
 
 		// Build the runtime reader methods (read/load), only when used

@@ -10883,12 +10883,11 @@ public final class LispEvaluator {
 			int required = lambda.params().size();
 			if (args.size() < required) {
 				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
-						"Function expects " + (lambda.rest() == null ? "" : "at least ") + required + " argument"
-								+ (required == 1 ? "" : "s") + ", got " + args.size());
+						ClosRegistry.arityMessage(required, lambda.rest() != null, args.size()));
 			}
 			if (lambda.rest() == null && args.size() > required) {
-				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME, "Function expects " + required
-						+ " argument" + (required == 1 ? "" : "s") + ", got " + args.size());
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						ClosRegistry.arityMessage(required, false, args.size()));
 			}
 			Environment lambdaEnv = new Environment((Environment) lambda.closure());
 			// A parameter whose name is proclaimed special binds DYNAMICALLY, as in CL:

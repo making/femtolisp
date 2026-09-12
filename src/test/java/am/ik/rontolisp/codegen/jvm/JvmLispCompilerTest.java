@@ -3826,14 +3826,45 @@ class JvmLispCompilerTest {
 	// An arity the callee cannot take is NOT a compile error at these sites: the arity
 	// contract of funcall and the map family is a RUN-time one, so such a site keeps the
 	// dispatcher and behaves exactly as the computed-designator spelling of it does --
-	// which on this backend means the ladder's default arm, nil.
+	// which means the dispatcher's no-match arm, a program-error spelled as the
+	// interpreter spells it.
 	@Test
 	void compileAndRunLiteralDesignatorOfTheWrongArityKeepsTheDispatcher() throws Exception {
 		String defs = "(defun dbl (x) (* x 2)) ";
-		assertThat(compileAndRun(defs + "(print (funcall #'dbl 1 2))"))
-			.isEqualTo(compileAndRun(defs + "(let ((f #'dbl)) (print (funcall f 1 2)))"));
-		assertThat(compileAndRun("(print (mapcar #'cons '(1 2)))"))
-			.isEqualTo(compileAndRun("(let ((f #'cons)) (print (mapcar f '(1 2))))"));
+		String caught = "(print (handler-case %s (program-error (c) (princ-to-string c))))";
+		assertThat(compileAndRun(defs + caught.formatted("(funcall #'dbl 1 2)")))
+			.isEqualTo("\"Function expects 1 argument, got 2\"")
+			.isEqualTo(compileAndRun(defs + caught.formatted("(let ((f #'dbl)) (funcall f 1 2))")));
+		assertThat(compileAndRun(caught.formatted("(mapcar #'cons '(1 2))")))
+			.isEqualTo("\"Function expects 2 arguments, got 1\"")
+			.isEqualTo(compileAndRun(caught.formatted("(let ((f #'cons)) (mapcar f '(1 2)))")));
+	}
+
+	// A wrong argument COUNT through a function value signals a catchable program-error
+	// on
+	// every backend, spelled by ClosRegistry.arityMessage -- the dispatcher's no-match
+	// arm
+	// used to answer nil, so an ANSI signals-error test passed interpreted and returned a
+	// wrong value compiled (.kb/error-handling.md).
+	@Test
+	void compileAndRunWrongArityThroughAFunctionValueSignalsProgramError() throws Exception {
+		String defs = "(defun f (x) x) (defun g (x &rest r) (list x r)) ";
+		String caught = "(print (handler-case %s (program-error (c) (princ-to-string c)) (error (c) :plain)))";
+		assertThat(compileAndRun(defs + caught.formatted("(funcall (lambda (x) x) 1 2)")))
+			.isEqualTo("\"Function expects 1 argument, got 2\"");
+		assertThat(compileAndRun(defs + caught.formatted("(funcall #'f 1 2)")))
+			.isEqualTo("\"Function expects 1 argument, got 2\"");
+		assertThat(compileAndRun(defs + caught.formatted("(funcall #'f)")))
+			.isEqualTo("\"Function expects 1 argument, got 0\"");
+		assertThat(compileAndRun(defs + caught.formatted("(funcall #'g)")))
+			.isEqualTo("\"Function expects at least 1 argument, got 0\"");
+		// apply is NOT covered: its dispatcher has a case for every callable and reads
+		// the parameters out of a list, so a wrong count is not a dispatch miss there.
+		// It still answers what it always did (.kb/error-handling.md).
+		assertThat(compileAndRun(defs + caught.formatted("(apply #'f '(1 2))"))).isEqualTo("1");
+		// The right count still runs, through both routes.
+		assertThat(compileAndRun(defs + "(print (list (funcall #'f 1) (apply #'f '(2)) (funcall #'g 3 4)))"))
+			.isEqualTo("(1 2 (3 (4)))");
 	}
 
 	@Test

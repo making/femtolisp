@@ -200,6 +200,53 @@ public final class ClosRegistry {
 	 */
 	public static final String EXPECTED_REAL_MESSAGE_PREFIX = "Expected real number, got: ";
 
+	/**
+	 * The prefix of the message a call with the wrong number of arguments reports. The
+	 * whole message is {@link #arityMessage}, spelled identically by the interpreter's
+	 * {@code apply} and by both compiled backends' indirect-call dispatchers, so the JVM
+	 * landing pad -- which only sees the TEXT of a failure its bytecode threw -- can
+	 * recover {@code program-error} from it (the unbound-variable precedent).
+	 */
+	public static final String ARITY_MESSAGE_PREFIX = "Function expects ";
+
+	/**
+	 * The message a call with the wrong number of arguments reports, the one spelling
+	 * every backend uses. A variadic callee can only be called with too FEW arguments, so
+	 * its count is reported as a lower bound.
+	 * @param required the callee's required parameter count
+	 * @param variadic whether the callee takes a {@code &rest} tail
+	 * @param got the number of arguments the call passed
+	 * @return the message
+	 */
+	public static String arityMessage(int required, boolean variadic, int got) {
+		return ARITY_MESSAGE_PREFIX + arityExpectation(required, variadic) + ARITY_MESSAGE_INFIX + got;
+	}
+
+	/**
+	 * The part of {@link #arityMessage} that depends on the CALLEE alone. A compiled
+	 * backend bakes this half as a constant beside the callee it describes and joins the
+	 * two halves at the throw site, where the count it was called with is what varies.
+	 * @param required the callee's required parameter count
+	 * @param variadic whether the callee takes a {@code &rest} tail
+	 * @return the expectation, e.g. {@code "1 argument"} or
+	 * {@code "at least 2 arguments"}
+	 */
+	public static String arityExpectation(int required, boolean variadic) {
+		return (variadic ? ARITY_AT_LEAST : "") + required + ARITY_ARGUMENT + (required == 1 ? "" : ARITY_PLURAL);
+	}
+
+	/** What {@link #arityMessage} puts between the expectation and the actual count. */
+	public static final String ARITY_MESSAGE_INFIX = ", got ";
+
+	/** How {@link #arityExpectation} marks a callee with a {@code &rest} tail. */
+	public static final String ARITY_AT_LEAST = "at least ";
+
+	/** The noun {@link #arityExpectation} counts, and its plural suffix. */
+	public static final String ARITY_ARGUMENT = " argument";
+
+	/** @see #ARITY_ARGUMENT */
+	public static final String ARITY_PLURAL = "s";
+
 	/** The prefix of the message a read of an unbound variable reports. */
 	public static final String UNBOUND_VARIABLE_MESSAGE_PREFIX = "The variable ";
 

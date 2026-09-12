@@ -65,6 +65,24 @@ interpreter `(1 4 #() #())`; JVM and wasm-GC `(1 4 #(NIL) #(NIL))`.
 `ClPpcreE2eTest` passes today only by case order: its one register-exhausting
 loop (`split "(,)" ... :with-registers-p t`) is the final case.
 
+**This now BLOCKS the `apply` half of the wrong-argument-count report**
+(`.kb/error-handling.md`, "A wrong argument COUNT through a function value",
+2026-09-12). Checking the count inside the spread dispatcher's cases makes the
+leak fatal instead of silent: the phantom register is a second argument to
+cl-ppcre's one-parameter `:simple-calls` replacement, and `ClPpcreE2eTest` goes
+red on the JVM. The `funcall` half landed; `apply` waits on this item. Re-measured
+2026-09-12 on the vendored sources, and the case order has since drifted -- the
+register-exhausting split is no longer last:
+
+```lisp
+(asdf:load-system :cl-ppcre)
+(print (multiple-value-list (cl-ppcre:scan "[a-z]+" "one 2 three")))   ; (0 3 #() #())
+(print (multiple-value-list (cl-ppcre:scan "(,)" "xyz")))              ; (NIL NIL), a FAILING 1-register scan
+(print (multiple-value-list (cl-ppcre:scan "[a-z]+" "one 2 three")))   ; interpreter (0 3 #() #())
+```
+
+JVM and wasm-GC answer `(0 3 #(NIL) #(NIL))` on the third line.
+
 ## Sketch
 
 - JVM: `JvmHandlerCaseCompiler` (and `JvmUnwindProtectCompiler`'s catch-any

@@ -14,6 +14,7 @@ import am.ik.jvm.ConstantPool.FieldrefConstant;
 import am.ik.jvm.ConstantPool.MethodrefConstant;
 import am.ik.jvm.ConstantPool.Utf8Constant;
 import am.ik.jvm.Opcode;
+import am.ik.rontolisp.ClosRegistry;
 import am.ik.rontolisp.RenderCycleGuard;
 
 /**
@@ -65,10 +66,56 @@ final class JvmRuntimeBuilder {
 			ClassConstant objectClass, ClassConstant stringClass,
 			@org.jspecify.annotations.Nullable MethodrefConstant applyRef,
 			@org.jspecify.annotations.Nullable MethodrefConstant lookupRef,
-			@org.jspecify.annotations.Nullable Set<Integer> dispatchable) {
+			@org.jspecify.annotations.Nullable Set<Integer> dispatchable, ArityReporting arityReporting) {
 		return buildDispatchMethods(arity, functions, lambdaDecls, lambdaFuncInfos, cp, thisClass, objectArrayClass,
-				integerClass, integerValue, objectClass, stringClass, applyRef, lookupRef, false, dispatchable);
+				integerClass, integerValue, objectClass, stringClass, applyRef, lookupRef, false, dispatchable,
+				arityReporting);
 	}
+
+	/**
+	 * The methodrefs a dispatcher signals a wrong argument COUNT through, or
+	 * {@link #NONE} for a build that does not report one.
+	 *
+	 * <p>
+	 * A dispatcher's no-match arm used to answer nil, which made
+	 * {@code (funcall #'f 1 2)} on a one-parameter {@code f} the quietest of failures:
+	 * the interpreter signals a {@code program-error} there, so an ANSI
+	 * {@code signals-error} test passed interpreted and returned a WRONG VALUE compiled.
+	 * The arm now throws instead, spelled by {@link ClosRegistry#arityMessage} exactly as
+	 * the interpreter spells it, and {@code JvmHandlerCaseCompiler} recovers the class
+	 * from that text (the {@code Expected integer, got: } precedent -- a bytecode-emitted
+	 * throw site has no channel for a condition).
+	 *
+	 * <p>
+	 * The SPREAD dispatcher is deliberately NOT covered: it carries a case for every
+	 * callable and reads the parameters out of a list, so a wrong count there is not a
+	 * dispatch miss at all and the check would have to live in every case. What that
+	 * check FINDS first is {@code .todo/192} -- a failing cl-ppcre scan leaks
+	 * {@code *reg-starts*} past the special binding that shadowed it, and the phantom
+	 * register becomes a second argument to a one-parameter replacement function. So
+	 * {@code apply} keeps answering nil for now; {@code .kb/error-handling.md} records
+	 * the gap.
+	 *
+	 * @param errRef {@code _arityErr(funcId, got)}, the per-arity dispatchers' no-match
+	 * arm: it maps the funcId back to the callee's shape and throws
+	 */
+	record ArityReporting(@org.jspecify.annotations.Nullable MethodrefConstant errRef) {
+
+		static final ArityReporting NONE = new ArityReporting(null);
+
+	}
+
+	/** {@code _arityMsg(int shape, int got)}: the message, built at the throw. */
+	static final String ARITY_MSG_NAME = "_arityMsg";
+
+	static final String ARITY_MSG_DESC = "(II)Ljava/lang/String;";
+
+	/**
+	 * {@code _arityErr(int funcId, int got)}: the per-arity dispatchers' no-match arm.
+	 */
+	static final String ARITY_ERR_NAME = "_arityErr";
+
+	static final String ARITY_ERR_DESC = "(II)Ljava/lang/Object;";
 
 	/**
 	 * As above, with {@code spread} selecting the SPREAD dispatcher {@code _invoke_v}:
@@ -98,7 +145,7 @@ final class JvmRuntimeBuilder {
 			ClassConstant objectClass, ClassConstant stringClass,
 			@org.jspecify.annotations.Nullable MethodrefConstant applyRef,
 			@org.jspecify.annotations.Nullable MethodrefConstant lookupRef, boolean spread,
-			@org.jspecify.annotations.Nullable Set<Integer> dispatchable) {
+			@org.jspecify.annotations.Nullable Set<Integer> dispatchable, ArityReporting arityReporting) {
 		// Descriptor: (Object funcval, Object a0, ..., Object aN-1) -> Object, or
 		// (Object funcval, Object argList) -> Object for the spread dispatcher.
 		int dispatchArgs = spread ? 1 : arity;
@@ -295,12 +342,26 @@ final class JvmRuntimeBuilder {
 				int[] range = routed ? ranges.get(segment - 1) : new int[] { 0, cases.size() - 1 };
 				List<Integer> defaultJumps = new ArrayList<>();
 				emitDispatchTree(code, cases, range[0], range[1], idSlot, defaultJumps);
-				// Default: an id no case of this arity claims.
+				// Default: an id no case of this arity claims. For a per-arity
+				// dispatcher that is a CALL with the wrong number of arguments -- the
+				// callee exists, it just has another shape -- so the arm reports it
+				// (ArityReporting). The spread dispatcher carries a case for every
+				// callable, so its default really is an id nothing claims and answers
+				// nil as before.
 				int defaultPos = code.size();
 				for (int jump : defaultJumps) {
 					patchBranch(code, jump, defaultPos);
 				}
-				code.add(Opcode.ACONST_NULL);
+				if (!spread && arityReporting.errRef() != null) {
+					code.add(Opcode.ILOAD);
+					code.add(idSlot);
+					emitIntConstStatic(code, arity);
+					code.add(Opcode.INVOKESTATIC);
+					emitU2(code, arityReporting.errRef().index());
+				}
+				else {
+					code.add(Opcode.ACONST_NULL);
+				}
 				code.add(Opcode.ARETURN);
 			}
 			segments.add(new JvmLispCompiler.DispatchMethod(nameUtf8, descUtf8, code, maxLocals));
@@ -366,6 +427,220 @@ final class JvmRuntimeBuilder {
 
 	private static boolean dispatchMatches(int paramCount, boolean variadic, int arity) {
 		return variadic ? arity >= paramCount - 1 : paramCount == arity;
+	}
+
+	/**
+	 * The callee shape a wrong-count report is spelled from: the required parameter count
+	 * doubled, plus one for a {@code &rest} tail. One int, so it rides a string table
+	 * cell and an {@code _arityChk} argument alike.
+	 */
+	static int arityShape(int required, boolean variadic) {
+		return required * 2 + (variadic ? 1 : 0);
+	}
+
+	/**
+	 * The {@code _arityErr} table cell for a funcId no dispatchable callable claims --
+	 * and for a shape too wide to fit one: such an id answers nil, exactly as the arm did
+	 * before it reported anything. Chosen inside the one-byte range of the class file's
+	 * modified UTF-8 so the table costs one byte per funcId whatever it holds.
+	 */
+	private static final int ARITY_TABLE_NONE = 0x7F;
+
+	/**
+	 * The widest funcId span {@code _arityErr} will table over. Past it the reporter is
+	 * dropped rather than emitted wrong: the length comparison is a {@code sipush} and
+	 * the table a single UTF-8 constant, both of which have hard ceilings, and no real
+	 * program comes within an order of magnitude of this one.
+	 */
+	private static final int ARITY_TABLE_MAX_SPAN = 30_000;
+
+	/**
+	 * Builds the arity-reporting helpers a program's dispatchers share: {@code _arityMsg}
+	 * (the message), {@code _arityErr} (the per-arity dispatchers' no-match arm) and --
+	 * when a spread dispatcher exists -- {@code _arityChk} (its per-case count guard).
+	 *
+	 * <p>
+	 * {@code _arityErr} maps the funcId back to the callee's shape through a STRING
+	 * indexed by funcId, not a search tree over the dispatchable ids. A tree is what the
+	 * dispatchers themselves use, and it is the wrong shape here: it costs ~15 bytes per
+	 * callable in ONE method, and the cl-postgres corpus (thousands of first-class
+	 * functions) blew past the signed 16-bit branch offset -- the failure
+	 * {@link #patchBranch} exists to name. The table is one byte per funcId in the
+	 * constant pool and a constant three instructions of code, whatever the program's
+	 * size.
+	 * @param functions the program's named functions
+	 * @param lambdaDecls the program's lambda declarations
+	 * @param cp the constant pool
+	 * @param thisClass the class being emitted
+	 * @param objectArrayClass the {@code Object[]} class constant (a cons cell)
+	 * @param stringClass the {@code String} class constant
+	 * @param dispatchable the funcIds reachable as a function value, or null for all
+	 * @return the helper methods
+	 */
+	static List<JvmLispCompiler.DispatchMethod> buildArityMethods(Map<String, JvmLispCompiler.FunctionInfo> functions,
+			List<JvmLispCompiler.LambdaInfo> lambdaDecls, ConstantPool cp, ClassConstant thisClass,
+			ClassConstant stringClass, @org.jspecify.annotations.Nullable Set<Integer> dispatchable) {
+		SortedMap<Integer, Integer> shapes = new java.util.TreeMap<>();
+		for (JvmLispCompiler.FunctionInfo fi : functions.values()) {
+			if (fi.isClosure() || (dispatchable != null && !dispatchable.contains(fi.funcId()))) {
+				continue;
+			}
+			shapes.put(fi.funcId(), arityShape(fi.variadic() ? fi.paramCount() - 1 : fi.paramCount(), fi.variadic()));
+		}
+		for (JvmLispCompiler.LambdaInfo lambda : lambdaDecls) {
+			if (dispatchable != null && !dispatchable.contains(lambda.funcId())) {
+				continue;
+			}
+			int params = lambda.paramNames().size();
+			shapes.put(lambda.funcId(), arityShape(lambda.variadic() ? params - 1 : params, lambda.variadic()));
+		}
+		ClassConstant runtimeEx = cp.addClass(cp.addUtf8("java/lang/RuntimeException"));
+		MethodrefConstant exCtor = cp.addMethodref(runtimeEx,
+				cp.addNameAndType(cp.addUtf8("<init>"), cp.addUtf8("(Ljava/lang/String;)V")));
+		MethodrefConstant msgRef = cp.addMethodref(thisClass,
+				cp.addNameAndType(cp.addUtf8(ARITY_MSG_NAME), cp.addUtf8(ARITY_MSG_DESC)));
+		List<JvmLispCompiler.DispatchMethod> methods = new ArrayList<>();
+		methods.add(new JvmLispCompiler.DispatchMethod(cp.addUtf8(ARITY_MSG_NAME), cp.addUtf8(ARITY_MSG_DESC),
+				buildArityMsgBody(cp), 4));
+		methods.add(new JvmLispCompiler.DispatchMethod(cp.addUtf8(ARITY_ERR_NAME), cp.addUtf8(ARITY_ERR_DESC),
+				buildArityErrBody(shapes, cp, stringClass, runtimeEx, exCtor, msgRef), 3));
+		return methods;
+	}
+
+	/**
+	 * {@code _arityMsg(shape, got)}: the text, assembled out of the very constants
+	 * {@link ClosRegistry#arityMessage} composes, so the compiled wording cannot drift
+	 * from the interpreter's.
+	 */
+	private static List<Integer> buildArityMsgBody(ConstantPool cp) {
+		ClassConstant sb = cp.addClass(cp.addUtf8("java/lang/StringBuilder"));
+		MethodrefConstant sbInit = cp.addMethodref(sb, cp.addNameAndType(cp.addUtf8("<init>"), cp.addUtf8("()V")));
+		MethodrefConstant appendStr = cp.addMethodref(sb,
+				cp.addNameAndType(cp.addUtf8("append"), cp.addUtf8("(Ljava/lang/String;)Ljava/lang/StringBuilder;")));
+		MethodrefConstant appendInt = cp.addMethodref(sb,
+				cp.addNameAndType(cp.addUtf8("append"), cp.addUtf8("(I)Ljava/lang/StringBuilder;")));
+		MethodrefConstant toString = cp.addMethodref(sb,
+				cp.addNameAndType(cp.addUtf8("toString"), cp.addUtf8("()Ljava/lang/String;")));
+		List<Integer> code = new ArrayList<>();
+		// required = shape >>> 1
+		code.add(Opcode.ILOAD_0);
+		code.add(Opcode.ICONST_1);
+		code.add(Opcode.IUSHR);
+		code.add(Opcode.ISTORE_3);
+		code.add(Opcode.NEW);
+		emitU2(code, sb.index());
+		code.add(Opcode.DUP);
+		code.add(Opcode.INVOKESPECIAL);
+		emitU2(code, sbInit.index());
+		code.add(Opcode.ASTORE_2);
+		emitArityAppend(code, cp, appendStr, ClosRegistry.ARITY_MESSAGE_PREFIX);
+		// a &rest tail makes the count a lower bound
+		code.add(Opcode.ILOAD_0);
+		code.add(Opcode.ICONST_1);
+		code.add(Opcode.IAND);
+		int notVariadic = code.size();
+		code.add(Opcode.IFEQ);
+		emitU2(code, 0);
+		emitArityAppend(code, cp, appendStr, ClosRegistry.ARITY_AT_LEAST);
+		patchBranch(code, notVariadic, code.size());
+		code.add(Opcode.ALOAD_2);
+		code.add(Opcode.ILOAD_3);
+		code.add(Opcode.INVOKEVIRTUAL);
+		emitU2(code, appendInt.index());
+		code.add(Opcode.POP);
+		emitArityAppend(code, cp, appendStr, ClosRegistry.ARITY_ARGUMENT);
+		code.add(Opcode.ILOAD_3);
+		code.add(Opcode.ICONST_1);
+		int singular = code.size();
+		code.add(Opcode.IF_ICMPEQ);
+		emitU2(code, 0);
+		emitArityAppend(code, cp, appendStr, ClosRegistry.ARITY_PLURAL);
+		patchBranch(code, singular, code.size());
+		emitArityAppend(code, cp, appendStr, ClosRegistry.ARITY_MESSAGE_INFIX);
+		code.add(Opcode.ALOAD_2);
+		code.add(Opcode.ILOAD_1);
+		code.add(Opcode.INVOKEVIRTUAL);
+		emitU2(code, appendInt.index());
+		code.add(Opcode.POP);
+		code.add(Opcode.ALOAD_2);
+		code.add(Opcode.INVOKEVIRTUAL);
+		emitU2(code, toString.index());
+		code.add(Opcode.ARETURN);
+		return code;
+	}
+
+	/** {@code sb.append(<literal>)} inside {@code _arityMsg}, discarding the builder. */
+	private static void emitArityAppend(List<Integer> code, ConstantPool cp, MethodrefConstant appendStr, String text) {
+		code.add(Opcode.ALOAD_2);
+		emitLdc(code, cp.addString(text).index());
+		code.add(Opcode.INVOKEVIRTUAL);
+		emitU2(code, appendStr.index());
+		code.add(Opcode.POP);
+	}
+
+	/**
+	 * {@code _arityErr(funcId, got)}: read the callee's shape out of the table and throw.
+	 * A funcId the table does not cover answers nil, which is what the no-match arm did
+	 * before it reported anything -- such an id can only come from a corrupted function
+	 * value, and a report is not worth turning that into a throw.
+	 */
+	private static List<Integer> buildArityErrBody(SortedMap<Integer, Integer> shapes, ConstantPool cp,
+			ClassConstant stringClass, ClassConstant runtimeEx, MethodrefConstant exCtor, MethodrefConstant msgRef) {
+		List<Integer> code = new ArrayList<>();
+		List<Integer> nullJumps = new ArrayList<>();
+		int base = shapes.isEmpty() ? 0 : shapes.firstKey();
+		int span = shapes.isEmpty() ? 0 : shapes.lastKey() - base + 1;
+		if (span > 0 && span <= ARITY_TABLE_MAX_SPAN) {
+			StringBuilder table = new StringBuilder(span);
+			for (int i = 0; i < span; i++) {
+				Integer shape = shapes.get(base + i);
+				table.append((char) (shape == null || shape + 1 >= ARITY_TABLE_NONE ? ARITY_TABLE_NONE : shape + 1));
+			}
+			code.add(Opcode.ILOAD_0);
+			if (base != 0) {
+				emitIntConstStatic(code, base);
+				code.add(Opcode.ISUB);
+			}
+			code.add(Opcode.ISTORE_2);
+			code.add(Opcode.ILOAD_2);
+			nullJumps.add(code.size());
+			code.add(Opcode.IFLT);
+			emitU2(code, 0);
+			code.add(Opcode.ILOAD_2);
+			emitIntConstStatic(code, span);
+			nullJumps.add(code.size());
+			code.add(Opcode.IF_ICMPGE);
+			emitU2(code, 0);
+			emitLdc(code, cp.addString(table.toString()).index());
+			code.add(Opcode.ILOAD_2);
+			code.add(Opcode.INVOKEVIRTUAL);
+			emitU2(code,
+					cp.addMethodref(stringClass, cp.addNameAndType(cp.addUtf8("charAt"), cp.addUtf8("(I)C"))).index());
+			code.add(Opcode.ISTORE_2);
+			code.add(Opcode.ILOAD_2);
+			emitIntConstStatic(code, ARITY_TABLE_NONE);
+			nullJumps.add(code.size());
+			code.add(Opcode.IF_ICMPEQ);
+			emitU2(code, 0);
+			code.add(Opcode.NEW);
+			emitU2(code, runtimeEx.index());
+			code.add(Opcode.DUP);
+			code.add(Opcode.ILOAD_2);
+			code.add(Opcode.ICONST_1);
+			code.add(Opcode.ISUB);
+			code.add(Opcode.ILOAD_1);
+			code.add(Opcode.INVOKESTATIC);
+			emitU2(code, msgRef.index());
+			code.add(Opcode.INVOKESPECIAL);
+			emitU2(code, exCtor.index());
+			code.add(Opcode.ATHROW);
+		}
+		for (int jump : nullJumps) {
+			patchBranch(code, jump, code.size());
+		}
+		code.add(Opcode.ACONST_NULL);
+		code.add(Opcode.ARETURN);
+		return code;
 	}
 
 	/**
