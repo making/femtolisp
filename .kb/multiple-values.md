@@ -9,15 +9,16 @@ multiple-value representation. A `%mv-spill` global carries the cases the syntac
   so `macroexpand-1` leaves it alone as in CL.
 - `multiple-value-bind`, `multiple-value-list`, `multiple-value-call`, `nth-value` (CL_MACROS +
   `expandBuiltinMacro`; `multiple-value-call` as a macro deviates from CL's special operator).
-- Secondary values for `floor`/`ceiling`/`round`/`truncate` and `gethash`, ONLY inside consumers.
+- Secondary values for `floor`/`ceiling`/`round`/`truncate`, `gethash` and `subtypep`, ONLY inside
+  consumers.
   Two-argument `(floor a b)` elsewhere: `expandFloorFamilyDivisor` -> `(floor (/ a b))`.
 
 ## The lowering (`LispMacroExpander`)
 `lowerMvProducer` -> `MvProducer{bindings, values}`: ordered `__mv<id>` temps (`MV_COUNTER`) as
 **nested single-binding lets** (`nestMvBindings`) so evaluation order holds on every backend.
 `isMvProducerForm` recognizes literal `values`, the floor family, `gethash` (a runtime `(gensym)`
-sentinel default plus `(eq v sentinel)` distinguishes a stored nil from a missing key), else one
-temp. Consumers: `expandMultipleValueBind` (missing -> nil, surplus evaluated and dropped),
+sentinel default plus `(eq v sentinel)` distinguishes a stored nil from a missing key), `subtypep`
+(answer + valid-p, [[declarations-type-checks]]), else one temp. Consumers: `expandMultipleValueBind` (missing -> nil, surplus evaluated and dropped),
 `expandMultipleValueList`, `expandNthValue`, `expandMultipleValueCall` (fn temp FIRST, then
 producers' temps, into one direct `funcall` -- static count, no runtime spreading).
 
@@ -52,7 +53,7 @@ form's full VALUES list -- primary first, then the spill extras, with missing va
 and surplus values dropped, the same shape `multiple-value-bind` uses. Both backends apply
 `LispMacroExpander.spillEscapingMvProducers` to the protected form when a `:no-error` clause
 exists (so a syntactic producer -- gethash, floor-family, find-symbol, intern,
-array-displacement -- publishes its secondary through the spill), snapshot the spill into a
+array-displacement, subtypep -- publishes its secondary through the spill), snapshot the spill into a
 local on the success path, clear the channel, and bind each variable through `(nth i spill)`,
 well-defined on nil.
 - The variable list is REQUIRED-ONLY here, not the full CL lambda list: `&optional`/`&rest`/
@@ -74,7 +75,7 @@ well-defined on nil.
 
 ## A syntactic producer's tail escapes through the spill
 **Invariant: the tier boundary is not observable through a function return.** A recognized
-producer (floor family, `gethash`, `find-symbol`, `intern`, `array-displacement`) in a
+producer (floor family, `gethash`, `find-symbol`, `intern`, `array-displacement`, `subtypep`) in a
 value-escaping position publishes its secondary to `%mv-spill`
 (`LispMacroExpander.spillEscapingMvProducers`), so `(defun f (h) (gethash "K" h))` answers two
 values however many calls away, including through a `defmethod`. Wiring is SELECTIVE -- an
@@ -100,8 +101,9 @@ the macro expander.
 - `ReplBuffer.eval` echoes EVERY form right after it runs (as SBCL does);
   `RontoPlayground.evalLine` (`src/web/java`, also the doc site's "Run" cells) echoes the LAST.
 - Diffed against SBCL 2.2.9. Remaining differences: a non-tail `values` nobody consumes leaks;
-  `read-from-string`/`subtypep` are single-valued ([[gensym-macroexpand]] for
-  `macroexpand-1`/`macroexpand`); `print` omits CL's leading newline / trailing space.
+  `read-from-string` is single-valued ([[gensym-macroexpand]] for `macroexpand-1`/`macroexpand`,
+  [[declarations-type-checks]] for `subtypep`'s valid-p); `print` omits CL's leading newline /
+  trailing space.
 
 ## Documented deviations
 - A `values` in a NON-tail position with no consumer leaves a stale spill. `funcall #'values`

@@ -17672,6 +17672,36 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void subtypepAnswersCommonLispValidP() {
+		// subtypep's SECOND value: whether the answer is a DECISION. A t primary always
+		// is; a nil primary is only between two plain type NAMES, which the name lattice
+		// settles completely. A nil with a COMPOUND specifier on either side is "cannot
+		// tell" -- every compound rule here is sound but not complete, and claiming
+		// otherwise made 82 of the ANSI suite's SUBTYPEP.* tests red (they check the
+		// equivalence a pairwise nil cannot see). Identical on all four backends:
+		// JvmLispCompilerTest / WasmLispCompilerIntegrationTest carry the twins.
+		assertThat(evalMulti("(multiple-value-list (subtypep 'integer 'number))").print()).isEqualTo("(T T)");
+		assertThat(evalMulti("(multiple-value-list (subtypep 'number 'integer))").print()).isEqualTo("(NIL T)");
+		assertThat(evalMulti("(multiple-value-list (subtypep '(integer 0 10) 'integer))").print()).isEqualTo("(T T)");
+		// Undecided: the pairwise rules answer nil and the truth is t.
+		assertThat(evalMulti("(multiple-value-list (subtypep '(satisfies foo) 'integer))").print())
+			.isEqualTo("(NIL NIL)");
+		assertThat(evalMulti(
+				"(multiple-value-list (subtypep '(and (cons symbol *) (cons * symbol)) '(cons symbol symbol)))")
+			.print()).isEqualTo("(NIL NIL)");
+		// COMPUTED specifiers take the same route.
+		assertThat(evalMulti("""
+				(defun probe (a b) (multiple-value-list (subtypep a b)))
+				(list (probe 'string 'sequence) (probe 'number 'integer) (probe '(member 1 2) 'integer))
+				""").print()).isEqualTo("((T T) (NIL T) (NIL NIL))");
+		// And it escapes a function return through %mv-spill like the other producers.
+		assertThat(evalMulti("""
+				(defun st (a b) (subtypep a b))
+				(multiple-value-list (st 'cons 'list))
+				""").print()).isEqualTo("(T T)");
+	}
+
+	@Test
 	void makeArrayDisplacedErrors() {
 		// :initial-element is the ONE keyword CLHS forbids beside :displaced-to (the view
 		// owns no storage to initialize); :fill-pointer and :adjustable are allowed --

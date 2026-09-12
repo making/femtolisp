@@ -7501,6 +7501,21 @@ public final class LispNames {
 	public static final String SUBTYPEP_ANCESTOR_TABLE = "%SUBTYPEP-ANCESTOR-TABLE";
 
 	/**
+	 * The {@code subtypep} VALID-P companion: CL's SECOND value, {@code t} when the
+	 * answer is a decision and {@code nil} when this lattice cannot decide the pair. Only
+	 * the multiple-value lowering of a {@code subtypep} producer emits it -- a program
+	 * never spells it.
+	 */
+	public static final String SUBTYPEP_VALID = "%SUBTYPEP-VALID";
+
+	/**
+	 * The shared runtime-{@code %subtypep-valid} dispatch defun the compilers inject once
+	 * per program when a multiple-value {@code subtypep} carries a non-literal type
+	 * specifier -- the valid-p twin of {@link #SUBTYPEP_RUNTIME}, which it calls.
+	 */
+	public static final String SUBTYPEP_VALID_RUNTIME = "%SUBTYPEP-VALID-RUNTIME";
+
+	/**
 	 * The shared runtime-{@code typep} dispatch defun the compilers inject once per
 	 * program when a {@code typep} call carries a non-literal type specifier. Inlining
 	 * that dispatch at every call site (the interpreter's model) grows with the number of

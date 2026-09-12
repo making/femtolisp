@@ -18148,6 +18148,25 @@ class WasmLispCompilerIntegrationTest {
 	}
 
 	@Test
+	void compileSubtypepValidP() throws Exception {
+		// The valid-p twin of LispEvaluatorTest.subtypepAnswersCommonLispValidP: a
+		// LITERAL pair folds to a constant here, a COMPUTED one goes through the
+		// injected %subtypep-valid-runtime beside the %subtypep-runtime dispatch, and
+		// the two must answer alike.
+		assertThat(compileAndRun("""
+				(defun probe (a b) (multiple-value-list (subtypep a b)))
+				(print (multiple-value-list (subtypep 'integer 'number)))
+				(print (multiple-value-list (subtypep 'number 'integer)))
+				(print (multiple-value-list (subtypep '(satisfies foo) 'integer)))
+				(print (multiple-value-list (subtypep '(and (cons symbol *) (cons * symbol)) '(cons symbol symbol))))
+				(print (probe 'string 'sequence))
+				(print (probe 'number 'integer))
+				(print (probe '(member 1 2) 'integer))
+				(print (probe '(integer 0 10) 'integer))
+				""")).isEqualTo("(T T)\n(NIL T)\n(NIL NIL)\n(NIL NIL)\n(T T)\n(NIL T)\n(NIL NIL)\n(T T)");
+	}
+
+	@Test
 	void compileArrayDisplacementValues() throws Exception {
 		assertThat(compileAndRun("""
 				(defparameter *base* (make-array 5))

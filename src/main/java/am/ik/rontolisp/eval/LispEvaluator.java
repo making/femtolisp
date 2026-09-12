@@ -1068,6 +1068,17 @@ public final class LispEvaluator {
 			}
 			return subtypep(args.get(0), args.get(1)) ? LispTrue.INSTANCE : LispNil.INSTANCE;
 		}));
+		// subtypep's SECOND value, emitted beside the primary by the multiple-value
+		// lowering of a subtypep producer (LispMacroExpander.lowerMvProducer). Its own
+		// built-in rather than a flag on the one above: the two are separate reads over
+		// the same argument temps on every backend.
+		this.globalEnv.defineFunction(LispNames.SUBTYPEP_VALID, new LispFunction(LispNames.SUBTYPEP_VALID, args -> {
+			if (args.size() < 2) {
+				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+						LispNames.SUBTYPEP_VALID + " expects 2 arguments, got " + args.size());
+			}
+			return subtypepValid(args.get(0), args.get(1)) ? LispTrue.INSTANCE : LispNil.INSTANCE;
+		}));
 		// The instance primitives. Every struct/class/condition instance is built, read,
 		// written and type-tested through these; nothing else may touch the slot
 		// storage, which is what keeps the value model swappable behind one seam.
@@ -3387,6 +3398,16 @@ public final class LispEvaluator {
 		seedMopClassesForTypeSpecifier(subV);
 		seedMopClassesForTypeSpecifier(superV);
 		return LispMacroExpander.subtypep(subV, superV, this.closRegistry);
+	}
+
+	/**
+	 * CL's second value of {@code subtypep} -- whether the answer is a decision -- over
+	 * the same lattice the primary comes from.
+	 */
+	private boolean subtypepValid(LispVal subV, LispVal superV) {
+		seedMopClassesForTypeSpecifier(subV);
+		seedMopClassesForTypeSpecifier(superV);
+		return LispMacroExpander.subtypepValid(subV, superV, this.closRegistry);
 	}
 
 	/**

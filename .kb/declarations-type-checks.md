@@ -235,13 +235,40 @@ table is GENERATED from it. **Change them together.**
 - **Any other head as the SUB reduces to that head and re-tests** (`(integer 0 10)` <= `integer`);
   the same reduction on the SUPER would be unsound, so `(subtypep 'integer '(integer 0 10))` stays
   nil (SBCL agrees). `(not ...)`/`(member ...)`/`(eql ...)`/`(satisfies ...)` stay unknown
-  (`OPAQUE_COMPOUND_TYPE_HEADS`), the lite single-value `subtypep` allowed its nil.
+  (`OPAQUE_COMPOUND_TYPE_HEADS`), which the VALID-P below reports as such.
 - **Trap:** a lattice LEAF with no `SUBTYPEP_PARENTS` entry (`hash-table`, `function`, `package`,
   `stream`, `atom`) had no ancestor-table row, so a runtime `(subtypep 'hash-table 'hash-table)`
   answered nil on the compile paths and `T` on the interpreter. `subtypepUniverse` now adds every
   `RUNTIME_TYPEP_BUILTINS` name except `T` (not a symbol at run time; the generated `(eq b t)` edge
   answers it). No COMPUTED `subtypep` -> byte-identical.
 
+## `subtypep` answers CL's VALID-P as its second value
+**Invariant: a nil primary claims a DECISION only between two plain type NAMES. Every compound rule
+above is sound but NOT complete, so a nil over a compound is `nil nil`.** `subtypepValid` is the one
+decision (`LispMacroExpander`), `RUNTIME_SUBTYPEP_VALID_SOURCE` its runtime twin for computed
+specifiers; a `t` primary is always a decision, since `subtypep` answers `t` only on a proof.
+
+- The value crosses the call boundary through the ordinary multiple-value tier: `SUBTYPEP` is an
+  `isMvProducerForm` case whose second value is `(%subtypep-valid sub super)`
+  (`LispNames.SUBTYPEP_VALID`, `CL_INTERNALS`), folded to a constant for a literal pair and routed
+  to the injected `%subtypep-valid-runtime` defun otherwise -- the same split `expandSubtypep`
+  makes, and the same shape `find-symbol`'s `%find-symbol-status` uses ([[multiple-values]]). A
+  LITERAL specifier is passed through the lowering rather than bound to a temp, or the fold would
+  not see it.
+- The injection gate is `needsRuntimeSubtypep(program) && usesMvOperator`: a program with no
+  multiple-value operator, or no computed `subtypep`, emits the bytes it emitted before.
+- **This rule was MEASURED, not reasoned.** A first cut claimed a decision for everything outside
+  the opaque heads: on the ANSI suite (2026-09-12) that was **+486 tests and -82**, the 82 being
+  `SUBTYPEP.CONS.*` / `.REAL.*` / `.RATIONAL.*` / `.OR.*`, where `check-equivalence` accepts a nil
+  valid-p and FAILS a false claim -- `(and (cons symbol *) (cons * symbol))` really is
+  `(cons symbol symbol)`. Narrowing the claim to name-vs-name gave **+443 and 0 regressions**
+  (66.3% -> 68.6%). Under-claiming is conforming; over-claiming is a wrong answer.
+- Deviation: an unknown type NAME answers `nil t` (the name universe is closed here) where CL may
+  answer `nil nil`.
+- Pins: `LispEvaluatorTest.subtypepAnswersCommonLispValidP`,
+  `JvmLispCompilerTest.compileSubtypepValidP`,
+  `WasmLispCompilerIntegrationTest.compileSubtypepValidP`; the component backend was verified by
+  hand ([[running-backends]]).
 ## The `simple-` names are lattice EDGES, not aliases
 **`simple-vector`, `simple-array` and `simple-string` name strictly smaller types than
 `vector`/`array`/`string`, so `subtypep` answers `T` one way and `NIL` the other, on all four

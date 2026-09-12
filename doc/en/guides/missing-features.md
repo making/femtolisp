@@ -38,14 +38,15 @@ Lisp:
   compiled programs;
 - `multiple-value-call` with a built-in `#'name` keeps the wrapper's fixed
   arity — pass a user function or `lambda` for other argument counts;
-- other built-ins with secondary values in CL (`read-from-string`,
-  `subtypep`, ...) remain single-value —
+- other built-ins with secondary values in CL (`read-from-string`, ...)
+  remain single-value —
   [`find-symbol`](../reference/functions/find-symbol.md) and
   [`intern`](../reference/functions/intern.md) do answer the accessibility
-  status, and
+  status,
   [`macroexpand-1`](../reference/functions/macroexpand-1.md) /
   [`macroexpand`](../reference/functions/macroexpand.md) do answer
-  `expanded-p`.
+  `expanded-p`, and
+  [`subtypep`](../reference/functions/subtypep.md) does answer `valid-p`.
 
 ## Non-local exit
 

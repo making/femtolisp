@@ -6,8 +6,17 @@ limitation (`doc/*/guides/missing-features.md`, "other built-ins with secondary
 values in CL (`read-from-string`, `macroexpand-1`, `intern`, ...) remain
 single-value") -- this item is the concrete inventory plus the diff harness, so
 the list stops being open-ended. The transcript below is the state of 2026-07-30;
-`intern`/`find-symbol` landed 2026-08-12 and `macroexpand-1`/`macroexpand`
-2026-08-15.
+`intern`/`find-symbol` landed 2026-08-12, `macroexpand-1`/`macroexpand`
+2026-08-15 and `subtypep`'s valid-p 2026-09-12 (worth **+443 ANSI tests, 0
+regressions** -- and the valid-p RULE is the finding: see
+`.kb/declarations-type-checks.md`, "`subtypep` answers CL's VALID-P").
+
+**What is left here is `read-from-string`'s index** (67 ANSI tests: 57 in
+`reader`, 10 in `misc`, measured 2026-09-12) and the `decode-universal-time` /
+`truncate`-on-ratio rows below. `read-from-string` is NOT the shape `subtypep`
+was: it has a dedicated compiler per backend (`JvmReadFromStringCompiler`,
+`WasmReadFromStringCompiler`), so the index is real work on three backends
+rather than a second pure read over the same temps.
 
 ```console
 $ sbcl --noinform                  $ rontolisp
@@ -31,7 +40,7 @@ T                                             <- SBCL also echoes the expanded-p
 | `get-setf-expansion` | 5 values (we DO return all 5 -- keep) | ok |
 | `parse-integer` | stop index (we DO publish it) | ok |
 | `floor`-family, `gethash`, `array-displacement` | remainder / present-p / offset | `.todo/212` |
-| `subtypep` | valid-p | primary only |
+| `subtypep` | valid-p | **done** (2026-09-12, `.kb/declarations-type-checks.md`) |
 | `decode-universal-time` | 9 values | primary only |
 | `truncate`-family on ratios / `ffloor` &c | remainder | primary only |
 | `string-to-octets`-style helpers, `gethash`-like table ops in our own libraries | -- | audit while here |

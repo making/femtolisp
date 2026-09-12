@@ -21435,6 +21435,10 @@ public final class LispMacroExpander {
 		// every class joins the capacity reservation.
 		boolean changeClassRuntime = needsChangeClassRuntime(program);
 		boolean runtimeSubtypep = needsRuntimeSubtypep(program);
+		// The valid-p twin: emitted only by the multiple-value lowering of a subtypep
+		// producer, so it joins the dispatch above exactly when a computed specifier and
+		// a multiple-value operator can meet.
+		boolean runtimeSubtypepValid = needsRuntimeSubtypepValid(program);
 		boolean runtimeTypep = needsRuntimeTypep(program);
 		// A make-array whose :element-type is a runtime designator: the arms that
 		// dispatch it compare against the seven built-in spellings, so a deftype alias
@@ -21752,6 +21756,10 @@ public final class LispMacroExpander {
 			// goes FIRST (after the dispatcher slots above were filled by index).
 			out.add(runtimeSubtypepDefun(closRegistry));
 			out.addAll(0, subtypepAncestorTableForms(closRegistry));
+		}
+		if (runtimeSubtypepValid) {
+			// Position-independent like the dispatch they call.
+			out.addAll(subtypepValidRuntimeDefuns());
 		}
 		if (runtimeTypep) {
 			// The defun is position-independent like the subtypep one; its data table
@@ -33329,6 +33337,7 @@ public final class LispMacroExpander {
 				size == 2 || size == 3;
 			case LispNames.GETHASH -> size == 3 || size == 4;
 			case LispNames.ARRAY_DISPLACEMENT -> size == 2;
+			case LispNames.SUBTYPEP -> size == 3;
 			case LispNames.FIND_SYMBOL, LispNames.INTERN -> size == 2 || size == 3;
 			default -> false;
 		};
@@ -33465,6 +33474,31 @@ public final class LispMacroExpander {
 					bindings.add(new MvBinding(arr, parts.get(1)));
 					values.add(mvCall(LispNames.ARRAY_DISP_TARGET, arr));
 					values.add(mvCall(LispNames.ARRAY_DISP_OFFSET, arr));
+					return new MvProducer(bindings, values, null);
+				}
+				case LispNames.SUBTYPEP: {
+					// (subtypep sub super) -> the answer + CL's valid-p. The valid-p is
+					// a second decision over the SAME argument temps, so each specifier
+					// is evaluated once however many values the consumer takes; both
+					// reads are pure.
+					// A LITERAL specifier is passed through rather than bound, for the
+					// reason find-symbol's is (below): the compile paths fold BOTH
+					// decisions against the literal, and a temp would hide it -- the
+					// primary would go from a constant to the runtime dispatch.
+					LispVal subRef = parts.get(1);
+					LispVal supRef = parts.get(2);
+					if (literalTypeSpecifier(subRef) == null) {
+						LispSymbol s = new LispSymbol(prefix + "_s");
+						bindings.add(new MvBinding(s, subRef));
+						subRef = s;
+					}
+					if (literalTypeSpecifier(supRef) == null) {
+						LispSymbol p = new LispSymbol(prefix + "_p");
+						bindings.add(new MvBinding(p, supRef));
+						supRef = p;
+					}
+					values.add(mvCall(LispNames.SUBTYPEP, subRef, supRef));
+					values.add(mvCall(LispNames.SUBTYPEP_VALID, subRef, supRef));
 					return new MvProducer(bindings, values, null);
 				}
 				case LispNames.FIND_SYMBOL, LispNames.INTERN: {
@@ -35632,6 +35666,105 @@ public final class LispMacroExpander {
 		// dispatch at every call site overflows the 16-bit branch range of a large
 		// method).
 		return listToCons(List.of(new LispSymbol(LispNames.SUBTYPEP_RUNTIME), parts.get(1), parts.get(2)));
+	}
+
+	/**
+	 * CL's SECOND value of {@code subtypep}: whether the answer is a DECISION rather than
+	 * an "I cannot tell". Exactly two things are decisions here:
+	 * <ul>
+	 * <li>a {@code t} primary, always -- {@link #subtypep} answers {@code t} only on a
+	 * proof (a lattice edge, an identical specifier, an exhausted {@code and}/{@code or}
+	 * rule);
+	 * <li>a {@code nil} primary between two plain type NAMES, which the name lattice
+	 * decides completely.
+	 * </ul>
+	 * A {@code nil} with a COMPOUND specifier on either side is "cannot tell", because
+	 * every compound rule here is SOUND but not COMPLETE: a restricting head as the SUPER
+	 * answers nil whatever the truth is, {@code (and ...)} as the sub and
+	 * {@code (or ...)} as the super prove only the positive direction, a restricting head
+	 * as the SUB reduces to the head and loses the bounds, and the opaque heads
+	 * ({@link #OPAQUE_COMPOUND_TYPE_HEADS}) relate to nothing at all.
+	 * <p>
+	 * This was MEASURED, not reasoned: a first cut claimed a decision for every pair
+	 * outside the opaque heads and turned 82 of the suite's {@code SUBTYPEP.*} tests red
+	 * -- {@code check-equivalence} accepts a nil valid-p and fails a false claim, and
+	 * {@code (and (cons symbol *) (cons * symbol))} really is
+	 * {@code (cons symbol symbol)} however firmly the pairwise rule answers nil.
+	 * Under-claiming is conforming; over-claiming is a wrong answer.
+	 * <p>
+	 * Deviation: an UNKNOWN type NAME answers {@code nil t} here (the name universe is
+	 * closed) where CL implementations answer {@code nil nil}; see
+	 * {@code .kb/declarations-type-checks.md}.
+	 * @param subV the sub type designator
+	 * @param superV the super type designator
+	 * @param closRegistry the class registry for class-name type specifiers
+	 * @return whether the {@code subtypep} answer for the pair is a decision
+	 */
+	public static boolean subtypepValid(LispVal subV, LispVal superV, ClosRegistry closRegistry) {
+		return (!(subV instanceof LispCons) && !(superV instanceof LispCons)) || subtypep(subV, superV, closRegistry);
+	}
+
+	/**
+	 * Expands {@code (%subtypep-valid 'sub 'super)} -- the valid-p companion the
+	 * multiple-value lowering of a {@code subtypep} producer emits -- into its constant
+	 * answer, exactly as {@link #expandSubtypep} folds the primary. A non-literal
+	 * specifier routes to the injected {@code %subtypep-valid-runtime} defun.
+	 * @param cons the {@code %subtypep-valid} expression
+	 * @param closRegistry the class registry for class-name type specifiers
+	 * @return {@code t} or {@code nil}, or the runtime dispatch call
+	 */
+	public static LispVal expandSubtypepValid(LispCons cons, ClosRegistry closRegistry) {
+		List<LispVal> parts = cons.toList();
+		if (parts.size() != 3) {
+			throw new IllegalArgumentException(LispNames.SUBTYPEP_VALID + " expects two type specifiers");
+		}
+		LispVal sub = literalTypeSpecifier(parts.get(1));
+		LispVal sup = literalTypeSpecifier(parts.get(2));
+		if (sub != null && sup != null) {
+			return subtypepValid(sub, sup, closRegistry) ? LispTrue.INSTANCE : LispNil.INSTANCE;
+		}
+		return listToCons(List.of(new LispSymbol(LispNames.SUBTYPEP_VALID_RUNTIME), parts.get(1), parts.get(2)));
+	}
+
+	/**
+	 * The runtime twin of {@link #subtypepValid}: the valid-p of a pair whose specifiers
+	 * are only known at run time. It asks the same {@code %subtypep-runtime} dispatch the
+	 * primary value goes through, so the two answers cannot disagree, and reads the
+	 * compound-ness the Java side reads off the AST with {@code consp}. Change the two
+	 * together.
+	 */
+	private static final String RUNTIME_SUBTYPEP_VALID_SOURCE = """
+			(defun %subtypep-valid-runtime (%stv-a %stv-b)
+			  (if (consp %stv-a)
+			      (if (%subtypep-runtime %stv-a %stv-b) t nil)
+			      (if (consp %stv-b)
+			          (if (%subtypep-runtime %stv-a %stv-b) t nil)
+			          t)))
+			""";
+
+	/**
+	 * The defun backing a runtime {@code %subtypep-valid}, read from its source. Injected
+	 * by {@link #expandTopLevelDefinitions} beside the {@code %subtypep-runtime} dispatch
+	 * it calls.
+	 * @return the {@code %subtypep-valid-runtime} defun
+	 */
+	private static List<LispVal> subtypepValidRuntimeDefuns() {
+		return LispReader.readAllFromString(RUNTIME_SUBTYPEP_VALID_SOURCE, Features.INTERPRETER);
+	}
+
+	/**
+	 * Whether the program can reach a runtime {@code %subtypep-valid} -- a
+	 * {@code subtypep} with a non-literal specifier (so the valid-p cannot fold) in a
+	 * program that also uses a multiple-value operator (so a consumer, or the escaping
+	 * tail rewrite of {@link #spillEscapingMvProducers}, can ask for the second value at
+	 * all). Over-approximates by one small pair of defuns rather than predicting where
+	 * the lowering will fire; a program with no multiple-value operator, or with no
+	 * computed {@code subtypep}, stays byte-identical.
+	 * @param program the top-level forms
+	 * @return {@code true} when the valid-p dispatch defuns must be injected
+	 */
+	public static boolean needsRuntimeSubtypepValid(List<LispVal> program) {
+		return needsRuntimeSubtypep(program) && program.stream().anyMatch(LispMacroExpander::usesMvOperator);
 	}
 
 	/**
