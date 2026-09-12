@@ -30,7 +30,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * and that the optimized class runs with output identical to the unoptimized one (the
  * corpus is deterministic: its random/getenv cases assert only deterministic properties,
  * and its file-stream cases write scratch files relative to the process working
- * directory, which this test deletes afterwards -- see {@code CORPUS_SCRATCH_FILES}).
+ * directory, which this test deletes afterwards by diffing a before/after snapshot of the
+ * project root -- see {@code CorpusFixtures.snapshotTopLevel}/{@code
+ * removeNewEntries}; a hand-maintained name list went stale as ci-spec.yaml grew).
  */
 class JvmClassShakerCorpusTest {
 
@@ -41,15 +43,11 @@ class JvmClassShakerCorpusTest {
 		return am.ik.rontolisp.testsupport.YamlResources.corpusSource();
 	}
 
-	// Scratch files the ci-spec file-stream cases create relative to the process
-	// working directory (the corpus main runs in-process, so relative paths resolve
-	// against the project dir, not the @TempDir). Keep in sync with the file names
-	// used by the ci-spec.yaml binary/stream cases.
-	private static final List<String> CORPUS_SCRATCH_FILES = List.of("bin.dat", "seq.dat", "crlf.dat", "pk.dat",
-			"ci-stream-value.txt", "ci-model.gguf");
-
 	@Test
 	void optimizesTheWholeCorpusWithoutDecoderGapsAndBehavesIdentically() throws Exception {
+		// Snapshot before staging or running anything, so every file or directory the
+		// corpus run creates at a relative path -- by name or not -- is caught below.
+		java.util.Set<String> before = am.ik.rontolisp.testsupport.CorpusFixtures.snapshotTopLevel(Path.of("."));
 		// The `wild-pathnames` case walks a bounded ./wpc-sub/ tree the driver must
 		// stage (see CorpusFixtures); this run's working directory is the project
 		// root, so the tree is removed again below.
@@ -82,10 +80,8 @@ class JvmClassShakerCorpusTest {
 			assertThat(run(optimized)).isEqualTo(run(plain));
 		}
 		finally {
-			for (String name : CORPUS_SCRATCH_FILES) {
-				Files.deleteIfExists(Path.of(name));
-			}
 			am.ik.rontolisp.testsupport.CorpusFixtures.removeWildPathnameTree(Path.of("."));
+			am.ik.rontolisp.testsupport.CorpusFixtures.removeNewEntries(Path.of("."), before);
 		}
 	}
 

@@ -3,9 +3,15 @@ package am.ik.rontolisp.testsupport;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Comparator;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
- * The one tree the ci-spec corpus needs but no backend can build at run time.
+ * The one tree the ci-spec corpus needs but no backend can build at run time, plus the
+ * cleanup for whatever ELSE an in-process run of the corpus leaves behind.
  *
  * <p>
  * The {@code wild-pathnames} case walks a pathspec under {@code ./wpc-sub/} with a
@@ -25,6 +31,17 @@ import java.nio.file.Path;
  * before the run: {@code CiSpecE2eTest} (the working directory is its {@code @TempDir})
  * and {@code JvmClassShakerCorpusTest} (the process working directory, the project root
  * -- which must also be cleaned).
+ *
+ * <p>
+ * Beyond {@code wpc-sub}, dozens of other ci-spec cases write scratch files and even a
+ * nested directory tree (the {@code filesystem-write-create-rename-delete-and-probe}
+ * case's {@code w257/sub/dir/}) at relative paths, which resolve against the project root
+ * for the same in-process runners. {@code JvmClassShakerCorpusTest} used to track those
+ * names by hand in a constant list; it went stale every time a case was added that wrote
+ * a new name, and even a hand-complete list could not have covered {@code w257/}, since
+ * {@code Files.deleteIfExists} refuses a non-empty directory. {@link #snapshotTopLevel}
+ * and {@link #removeNewEntries} replace the list: snapshot the run directory before the
+ * corpus runs, then delete whatever is new afterward, file or directory, by name or not.
  */
 public final class CorpusFixtures {
 
@@ -58,6 +75,52 @@ public final class CorpusFixtures {
 		Files.deleteIfExists(wpc.resolve("wpc-a.txt"));
 		Files.deleteIfExists(wpc.resolve("wpc-b.txt"));
 		Files.deleteIfExists(wpc);
+	}
+
+	/**
+	 * Records the top-level entry names already present under {@code runDir}, to pass to
+	 * {@link #removeNewEntries} after an in-process corpus run.
+	 * @param runDir the directory the corpus program is about to run in
+	 * @return the entry names already there, before the run
+	 * @throws IOException if the directory cannot be listed
+	 */
+	public static Set<String> snapshotTopLevel(Path runDir) throws IOException {
+		try (Stream<Path> children = Files.list(runDir)) {
+			return children.map(child -> child.getFileName().toString()).collect(Collectors.toCollection(TreeSet::new));
+		}
+	}
+
+	/**
+	 * Deletes every top-level entry under {@code runDir} that was not present in
+	 * {@code before} -- whatever the corpus run wrote at a relative path, by name or not,
+	 * file or directory. Entries staged deliberately (such as
+	 * {@link #stageWildPathnameTree}) must already be removed before calling this, or
+	 * they are swept up too.
+	 * @param runDir the directory the corpus program ran in
+	 * @param before the snapshot {@link #snapshotTopLevel} took beforehand
+	 * @throws IOException if an entry cannot be listed or removed
+	 */
+	public static void removeNewEntries(Path runDir, Set<String> before) throws IOException {
+		try (Stream<Path> children = Files.list(runDir)) {
+			for (Path child : children.toList()) {
+				if (!before.contains(child.getFileName().toString())) {
+					deleteRecursively(child);
+				}
+			}
+		}
+	}
+
+	private static void deleteRecursively(Path path) throws IOException {
+		if (Files.isDirectory(path)) {
+			try (Stream<Path> walk = Files.walk(path)) {
+				for (Path entry : walk.sorted(Comparator.reverseOrder()).toList()) {
+					Files.deleteIfExists(entry);
+				}
+			}
+		}
+		else {
+			Files.deleteIfExists(path);
+		}
 	}
 
 }
