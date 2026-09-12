@@ -45,6 +45,11 @@ final class WasmSubseqCompiler {
 			ctx.writer.write(Instruction.REF_NULL);
 			ctx.writer.writeHeapType(Type.EQ.code());
 		}
+		// One of the three charvec CONSTRUCTORS: the scan that answers
+		// Ctx.charvecPossible has to have seen this site, or the boundary normalization
+		// it turned off would silently hand a character vector to a host
+		// (.kb/wasm-gc-strings.md). Loud here rather than wrong there.
+		WasmEmitHelper.requireCharvecPossible(ctx, "subseq");
 		ctx.writer.write(Instruction.CALL);
 		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.FUNC_SUBSEQ_STR);
 	}

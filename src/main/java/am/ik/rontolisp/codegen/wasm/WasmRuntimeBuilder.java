@@ -144,7 +144,7 @@ final class WasmRuntimeBuilder {
 	 * @param instanceTypeIndex the {@code TYPE_INSTANCE} index, or -1
 	 * @return the function body
 	 */
-	static byte[] buildEqualBody(int instanceTypeIndex) {
+	static byte[] buildEqualBody(int instanceTypeIndex, boolean charvecPossible) {
 		ByteArrayOutputStream body = new ByteArrayOutputStream();
 		WasmWriter w = new WasmWriter(body);
 
@@ -163,11 +163,11 @@ final class WasmRuntimeBuilder {
 		// vectors with equal content compare true, and a character vector compares true
 		// to a string with the same content.
 		getLocal(w, 0);
-		WasmEmitHelper.emitCharvecToStrCall(w);
+		WasmEmitHelper.emitCharvecToStrCall(w, charvecPossible);
 		w.write(Instruction.SET_LOCAL);
 		w.writeUnsignedLeb128(0);
 		getLocal(w, 1);
-		WasmEmitHelper.emitCharvecToStrCall(w);
+		WasmEmitHelper.emitCharvecToStrCall(w, charvecPossible);
 		w.write(Instruction.SET_LOCAL);
 		w.writeUnsignedLeb128(1);
 
@@ -440,7 +440,8 @@ final class WasmRuntimeBuilder {
 	 * when {@code depthGlobalIndex} is
 	 * @return the function body
 	 */
-	static byte[] buildHashBody(int instanceTypeIndex, int depthGlobalIndex, int gasGlobalIndex) {
+	static byte[] buildHashBody(int instanceTypeIndex, int depthGlobalIndex, int gasGlobalIndex,
+			boolean charvecPossible) {
 		ByteArrayOutputStream body = new ByteArrayOutputStream();
 		WasmWriter w = new WasmWriter(body);
 
@@ -502,7 +503,7 @@ final class WasmRuntimeBuilder {
 		// with _equal's entry normalization -- equal-table gethash/sethash with mixed
 		// string/character-vector keys interoperate).
 		getLocal(w, 0);
-		WasmEmitHelper.emitCharvecToStrCall(w);
+		WasmEmitHelper.emitCharvecToStrCall(w, charvecPossible);
 		w.write(Instruction.SET_LOCAL);
 		w.writeUnsignedLeb128(0);
 
@@ -3895,7 +3896,8 @@ final class WasmRuntimeBuilder {
 	 * cons struct (list).
 	 */
 	static byte[] buildPrintValBody(WasmLispCompiler.StringTable st, boolean simd, int futureTypeIndex,
-			int p1StreamTypeIndex, int instanceTypeIndex, int renderPathGlobalIndex, int renderDepthGlobalIndex) {
+			int p1StreamTypeIndex, int instanceTypeIndex, int renderPathGlobalIndex, int renderDepthGlobalIndex,
+			boolean charvecPossible) {
 		ByteArrayOutputStream body = new ByteArrayOutputStream();
 		WasmWriter w = new WasmWriter(body);
 
@@ -3919,7 +3921,7 @@ final class WasmRuntimeBuilder {
 		// recursive cons/array element prints route back through this entry.
 		w.write(Instruction.GET_LOCAL);
 		w.writeUnsignedLeb128(0);
-		WasmEmitHelper.emitCharvecToStrCall(w);
+		WasmEmitHelper.emitCharvecToStrCall(w, charvecPossible);
 		w.write(Instruction.SET_LOCAL);
 		w.writeUnsignedLeb128(0);
 
@@ -4130,7 +4132,8 @@ final class WasmRuntimeBuilder {
 	 * strings and uses FUNC_PRINC_VAL for recursive cons printing.
 	 */
 	static byte[] buildPrincValBody(WasmLispCompiler.StringTable st, boolean simd, int futureTypeIndex,
-			int p1StreamTypeIndex, int instanceTypeIndex, int renderPathGlobalIndex, int renderDepthGlobalIndex) {
+			int p1StreamTypeIndex, int instanceTypeIndex, int renderPathGlobalIndex, int renderDepthGlobalIndex,
+			boolean charvecPossible) {
 		ByteArrayOutputStream body = new ByteArrayOutputStream();
 		WasmWriter w = new WasmWriter(body);
 
@@ -4154,7 +4157,7 @@ final class WasmRuntimeBuilder {
 		// cons/array element prints route back through this entry.
 		w.write(Instruction.GET_LOCAL);
 		w.writeUnsignedLeb128(0);
-		WasmEmitHelper.emitCharvecToStrCall(w);
+		WasmEmitHelper.emitCharvecToStrCall(w, charvecPossible);
 		w.write(Instruction.SET_LOCAL);
 		w.writeUnsignedLeb128(0);
 

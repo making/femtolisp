@@ -195,7 +195,7 @@ final class WasmStringRuntimeBuilder {
 	 * @return the function body (signature {@code ((ref null eq),i32)->i32},
 	 * TYPE_STR_TO_MEM)
 	 */
-	static byte[] buildStrToMemBody() {
+	static byte[] buildStrToMemBody(boolean charvecPossible) {
 		ByteArrayOutputStream body = new ByteArrayOutputStream();
 		WasmWriter w = new WasmWriter(body);
 		// params: str = 0 (ref null eq), ptr = 1. locals: arr = 2 ($str_bytes), len = 3,
@@ -211,7 +211,7 @@ final class WasmStringRuntimeBuilder {
 		// value passes through _charvec_to_str unchanged, so a TYPE_STRING costs one
 		// call and no walk.
 		get(w, str);
-		WasmEmitHelper.emitCharvecToStrCall(w);
+		WasmEmitHelper.emitCharvecToStrCall(w, charvecPossible);
 		set(w, str);
 		// arr = str.data; len = array.len(arr)
 		get(w, str);
@@ -1079,7 +1079,7 @@ final class WasmStringRuntimeBuilder {
 	 * @return the function body (signature {@code ((ref null eq),(ref null eq))->(ref
 	 * null eq)}, the two-string concatenation type)
 	 */
-	static byte[] buildStringConcatBody() {
+	static byte[] buildStringConcatBody(boolean charvecPossible) {
 		ByteArrayOutputStream body = new ByteArrayOutputStream();
 		WasmWriter w = new WasmWriter(body);
 		// params: a = 0, b = 1. locals: lenA = 2, lenB = 3, total = 4, start = 5,
@@ -1091,10 +1091,10 @@ final class WasmStringRuntimeBuilder {
 		// below -- the contract the interpreter and the JVM backend enforce by
 		// throwing.
 		get(w, 0);
-		WasmEmitHelper.emitCharvecToStrCall(w);
+		WasmEmitHelper.emitCharvecToStrCall(w, charvecPossible);
 		set(w, 0);
 		get(w, 1);
-		WasmEmitHelper.emitCharvecToStrCall(w);
+		WasmEmitHelper.emitCharvecToStrCall(w, charvecPossible);
 		set(w, 1);
 		// arrA/lenA, arrB/lenB: the framed byte arrays and their lengths.
 		setStrArray(w, 0, arrA);

@@ -1141,21 +1141,75 @@ final class WasmEmitHelper {
 	 * through unchanged. Inserted after the string operand of every string consumer
 	 * (char, subseq, string=/-equal, case/trim/concat, write-string, read-from-string,
 	 * intern, make-symbol) so a fill-pointered/adjustable character vector behaves as a
-	 * string there. See {@link WasmStringRuntimeBuilder#buildCharvecToStrBody()}.
+	 * string there -- and NOTHING at all when
+	 * {@link WasmLispCompiler.Ctx#charvecPossible} says the program can never make one.
+	 * See {@link WasmStringRuntimeBuilder#buildCharvecToStrBody()}.
 	 * @param ctx the compilation context (its writer receives the instructions)
 	 */
+	/**
+	 * Fails the compile when a charvec CONSTRUCTOR is reached in a module whose
+	 * {@link WasmLispCompiler.Ctx#charvecPossible} gate said nothing can be a mutable
+	 * character vector. The gate is an allowlist over the program's operators, so this is
+	 * unreachable: an injected runtime body is compiled with the flag forced ON, and the
+	 * user's own program reaches a constructor only by spelling an operator the allowlist
+	 * does not know. If an entry that CAN construct one ever joins that list, this is
+	 * where the build has to stop -- past it the missing normalization is a SILENT wrong
+	 * answer at the host boundary rather than a crash (the discipline
+	 * {@code SpecialVarCollector} under-collection gets on the JVM).
+	 * @param ctx the compilation context
+	 * @param site what is being emitted, for the message
+	 */
+	/**
+	 * The second half of {@link #requireCharvecPossible}: fails the compile when the
+	 * program's OWN code calls an injected runtime defun while the charvec gate is
+	 * closed. Those bodies -- the built-in wrapper catalog and the shared sequence
+	 * helpers -- are compiled as if a character vector were possible, which is sound only
+	 * while nothing can reach them: an allowlisted operator neither constructs one nor
+	 * lowers to a helper that does, and no catalog name is spelled (spelling it would
+	 * open the gate). A call from the program is the one shape that would break that, so
+	 * it stops here instead of shipping a module whose fixed runtime no longer normalizes
+	 * what the helper built.
+	 * @param ctx the compilation context
+	 * @param name the callee
+	 */
+	static void requireNoCharvecHelper(WasmLispCompiler.Ctx ctx, String name) {
+		if (!ctx.charvecPossible && !ctx.injectedRuntimeBody && ctx.injectedRuntimeDefunNames.contains(name)) {
+			throw new IllegalStateException("internal: " + name
+					+ " is injected runtime, compiled as if a character vector were possible, and the program "
+					+ "reaches it with the charvec gate closed -- take the operator that lowers to it off "
+					+ "CHARVEC_FREE_OPERATORS");
+		}
+	}
+
+	static void requireCharvecPossible(WasmLispCompiler.Ctx ctx, String site) {
+		if (!ctx.charvecPossible) {
+			throw new IllegalStateException("internal: " + site
+					+ " can make a mutable character vector in a program whose operators are all on "
+					+ "CHARVEC_FREE_OPERATORS -- take the offending operator off that list "
+					+ "rather than removing this check");
+		}
+	}
+
 	static void emitCharvecToStrCall(WasmLispCompiler.Ctx ctx) {
-		emitCharvecToStrCall(ctx.writer);
+		emitCharvecToStrCall(ctx.writer, ctx.charvecPossible);
 	}
 
 	/**
 	 * The raw-{@link WasmWriter} counterpart of
 	 * {@link #emitCharvecToStrCall(WasmLispCompiler.Ctx)}, for the runtime builders
 	 * ({@code _equal}/{@code _hash}/{@code _print_val}/{@code _princ_val} normalize their
-	 * argument at entry through it).
+	 * argument at entry through it). The flag is a PARAMETER rather than a read of some
+	 * shared state so that no fixed runtime body can emit the call -- and with it root
+	 * the 1,961-byte normalization group -- in a module where nothing can be a character
+	 * vector.
 	 * @param w the writer for the function body being emitted
+	 * @param charvecPossible {@link WasmLispCompiler.Ctx#charvecPossible}: nothing is
+	 * emitted when it is false
 	 */
-	static void emitCharvecToStrCall(WasmWriter w) {
+	static void emitCharvecToStrCall(WasmWriter w, boolean charvecPossible) {
+		if (!charvecPossible) {
+			return;
+		}
 		w.write(Instruction.CALL);
 		w.writeUnsignedLeb128(WasmLispCompiler.FUNC_CHARVEC_TO_STR);
 	}
@@ -1180,6 +1234,9 @@ final class WasmEmitHelper {
 		if (!ctx.mutableStringProducers) {
 			return;
 		}
+		// The third charvec CONSTRUCTOR (the other two are WasmSubseqCompiler's
+		// _subseq_str route and WasmArrayCompiler.compileMake's marker).
+		requireCharvecPossible(ctx, "a flipped string producer");
 		ctx.writer.write(Instruction.CALL);
 		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.FUNC_TO_MUT_STR);
 	}

@@ -82,6 +82,55 @@ below it dangles every symbol interned during the call, so a call that interns a
 the host's buffer. A string INPUT stream's copy is permanent and NOT guarded -- the same trade
 `cabi_post_*` makes, and the reason the output free list lives in the TABLE ([[wasm-export-no-wasi]]).
 
+## The normalization is GATED on a charvec being possible at all
+`_charvec_to_str` is inserted after the string operand of every string consumer and at the
+entry of `_equal` / `_hash` / `_print_val` / `_princ_val` / `_str_to_mem` / `_string_concat` /
+`_write_line` / `_write_stream_str` / the `equalp` key fold. One `:string` boundary is enough to
+root the whole group, and the group is **1,961 bytes** in a module that never makes a character
+vector. `Ctx.charvecPossible` decides whether ANY of those sites is emitted -- all of them or
+none, since one call roots the same six functions (`_charvec_to_str` 517, `_charvec_p` 281, the
+vector walk 398, the UTF-8 encode 533, `_str_from_mem` 87, and a data segment only they
+addressed).
+
+**The gate is an ALLOWLIST over the program's operators, and the obvious tighter answer is
+WRONG.** Deriving it from the three CONSTRUCTORS -- a character-element-type `make-array`
+(`WasmArrayCompiler.compileMake`'s marker), the `subseq` string lane (`_subseq_str` ->
+`_str_to_cv`) and the flipped producers' wrap (`_to_mut_str`) -- reads as the precise question
+and under-approximates, because those constructors are introduced by **Pass 2 lowerings the
+source never spells**. Measured 2026-09-12, both with a constructor-name gate that saw nothing:
+`(write-string "hello" t :start 1 :end 3)` and `(format t "~:d" 1000000)` each reach
+`_subseq_str` through the injected `%subseq-runtime` and trapped with `wasm trap: cast failure`
+at the un-normalized consumer. A missing normalization is a SILENT wrong answer at the host
+boundary, so the gate closes only for a program whose every operator is on
+`WasmLispCompiler.CHARVEC_FREE_OPERATORS` -- control flow, arithmetic, the type predicates, the
+cons cell, the two `wasm-` directives -- plus its own defuns. An operator that list has never
+heard of OPENS it. `-Drontolisp.debug.charvecgate=true` names the operator holding it open.
+
+Three things make the allowlist safe rather than lucky:
+- **The only strings such a program holds are LITERALS, and a literal is never a character
+  vector** (`.kb/string-write-runtime.md`). That is the proof, not the list's length.
+- **Each constructor asserts the flag** (`WasmEmitHelper.requireCharvecPossible`), so an entry
+  that turns out to lower to one fails the BUILD instead of shipping the wrong module.
+- **An injected runtime body is compiled with the flag forced ON** -- the wrapper catalog and the
+  shared sequence helpers, which a gate-closed program cannot reach (it spells no catalog name,
+  and `anyNameResolvable` already opens the gate) -- so the tree shaker drops them whole. The one
+  shape that would break that, the program CALLING such a helper, is a compile-time throw too
+  (`requireNoCharvecHelper`). An allowlist entry must therefore neither construct a character
+  vector nor lower to a helper that does.
+
+Measured on the `.todo/789` reactor (two host imports, one taking two `:string`s, `fib`, two
+exports; `--no-wasi --optimize=size`): **4,623 -> 2,725 bytes (-41%)**, code 4,019 -> 2,190 over
+40 -> 34 functions, data 117 -> 94 -- the dead `"TRIVIAL-GARBAGE"` package-designator segment
+was reachable ONLY from the normalization group, so it goes with it and needs no data-section
+shake of its own. `examples/browser/webgl-triangle` (10 imports, GLSL crossing as `:string`
+literals): **4,431 -> 2,487 (-44%)**. A program that does anything else with a string is
+byte-identical: `hello_world` 588, `pi_approx` 4,826 (its `format` opens the gate),
+`webgl-cube` 26,686, `webgl-galaxy` 20,281. Pins:
+`WasmImportCompilerTest.theCharvecNormalizationIsAbsentFromAModuleThatCannotMakeOne` and
+`.anOperatorThatLowersToAConstructorKeepsTheNormalization` (the pair, not an absolute size), and
+the CONTENT against a Node host in `WasmStringParamBoundaryE2eTest`, whose fill-pointered
+character-vector argument is exactly the case a wrong gate would corrupt.
+
 ## Other constraints
 - `emitGrowHeapTo` guards at string builders are KEPT: the scratch grows ON DEMAND, so peak linear
   memory is bounded by the largest single live string, not the sum of all builds.

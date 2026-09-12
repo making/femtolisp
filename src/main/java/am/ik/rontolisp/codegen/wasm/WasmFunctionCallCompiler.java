@@ -82,6 +82,7 @@ final class WasmFunctionCallCompiler {
 	private static void compileDirectCall(String name, LispCons cons, WasmLispCompiler.Ctx ctx) {
 		WasmLispCompiler.WasmFunctionInfo fi = ctx.functions.get(name);
 		if (fi != null) {
+			WasmEmitHelper.requireNoCharvecHelper(ctx, name);
 			List<LispVal> args = cons.toList();
 			int supplied = args.size() - 1;
 			int required = fi.variadic() ? fi.paramCount() - 1 : fi.paramCount();

@@ -71,7 +71,7 @@ final class WasmEqualpKeyRuntimeBuilder {
 	 * @param gasGlobalIndex the {@code (mut i32)} work-budget global
 	 * @return the function body
 	 */
-	static byte[] build(int depthGlobalIndex, int gasGlobalIndex) {
+	static byte[] build(int depthGlobalIndex, int gasGlobalIndex, boolean charvecPossible) {
 		ByteArrayOutputStream body = new ByteArrayOutputStream();
 		WasmWriter w = new WasmWriter(body);
 
@@ -128,7 +128,7 @@ final class WasmEqualpKeyRuntimeBuilder {
 		// below and two equal-content keys collide -- _hash already folds them alike,
 		// and without this the vector fell to the "its own key" arm and never matched.
 		getLocal(w, 0);
-		WasmEmitHelper.emitCharvecToStrCall(w);
+		WasmEmitHelper.emitCharvecToStrCall(w, charvecPossible);
 		setLocal(w, 0);
 
 		// A framed string -> _string_upcase

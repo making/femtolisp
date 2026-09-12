@@ -59,7 +59,7 @@ final class WasmStringStreamRuntimeBuilder {
 	 * _write_str (which keeps the fresh-line tracking). Returns the string.
 	 * @return the function body bytes
 	 */
-	static byte[] buildWriteStreamStrBody() {
+	static byte[] buildWriteStreamStrBody(boolean charvecPossible) {
 		ByteArrayOutputStream body = new ByteArrayOutputStream();
 		WasmWriter w = new WasmWriter(body);
 		// params: STR=0 (ref), STREAM=1 (ref) ; i32 locals: OFF=2, LEN=3, H=4, REC=5,
@@ -77,7 +77,7 @@ final class WasmStringStreamRuntimeBuilder {
 		// A mutable character vector (a subseq/copy-seq result being written) renders
 		// once here; any other value passes through _charvec_to_str unchanged.
 		getLocal(w, STR);
-		WasmEmitHelper.emitCharvecToStrCall(w);
+		WasmEmitHelper.emitCharvecToStrCall(w, charvecPossible);
 		setLocal(w, NSTR);
 		// The DESTINATION is decided before the string is staged anywhere: a string
 		// output stream copies GC array to GC array and must not touch linear memory at

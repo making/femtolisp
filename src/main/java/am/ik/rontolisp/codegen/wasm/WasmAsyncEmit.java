@@ -809,6 +809,11 @@ final class WasmAsyncEmit {
 			// like the same form in a defun, or an async program's format nil /
 			// concatenate result would lose its identity depending on where it ran.
 			.mutableStringProducers(proto.mutableStringProducers)
+			// NOT optional: the boundary normalization has to be emitted in a chunk
+			// exactly where it is emitted in a defun. Taking the default (true) would
+			// not be wrong, only heavier -- one chunk's call is enough to root the
+			// 1,961-byte group in a module that can never make a character vector.
+			.charvecPossible(proto.charvecPossible)
 			.ehDepthGlobalIndex(proto.ehDepthGlobalIndex)
 			// NOT optional: freshCtx builds the synchronous top level's CHUNKS, where an
 			// unboxed local's shadow is marked authoritative by reading this module

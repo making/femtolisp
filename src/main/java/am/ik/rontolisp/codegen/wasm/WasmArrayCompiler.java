@@ -252,6 +252,9 @@ final class WasmArrayCompiler {
 			refNull(ctx);
 		}
 		if (charVector) {
+			// One of the three charvec CONSTRUCTORS -- see WasmSubseqCompiler for why
+			// this is a throw and not a silent widening.
+			WasmEmitHelper.requireCharvecPossible(ctx, "a character-element-type make-array");
 			// The marker 1 MEANS "a rank-1 character array", i.e. a string, so it is set
 			// only when the runtime rank is 1. Above rank 1 a character element type
 			// selects no representation of its own: the value is the plain general

@@ -641,6 +641,46 @@ class WasmImportCompilerTest {
 		return count;
 	}
 
+	private static byte[] compileNoWasiSize(String source) {
+		List<LispVal> program = LispReader.readAllFromString(source);
+		return new WasmLispCompiler(false, false, true, OptimizeLevel.SIZE).compile(program);
+	}
+
+	// The charvec normalization is the biggest single thing a :string boundary drags in
+	// (.kb/wasm-gc-strings.md), and a program that cannot MAKE a mutable character
+	// vector must not carry it. The pin is the PAIR, not an absolute size: the same
+	// module with one flipped producer added has to carry it, and the difference is the
+	// whole group rather than the one call.
+	@Test
+	void theCharvecNormalizationIsAbsentFromAModuleThatCannotMakeOne() {
+		String reactor = """
+				(rontolisp:wasm-import 'host-log :from "env" :as "host_log" :params '(:string) :returns nil)
+				(defun init-app () (host-log %s))
+				(rontolisp:wasm-export 'init-app :as "InitApp" :params '() :returns nil)
+				""";
+		int free = compileNoWasiSize(reactor.formatted("\"module initialized\"")).length;
+		// string-upcase answers a mutable character vector (MutableStringProducers), so
+		// the same boundary has something to normalize again.
+		int withProducer = compileNoWasiSize(reactor.formatted("(string-upcase \"module initialized\")")).length;
+		assertThat(withProducer - free).isGreaterThan(1_000);
+	}
+
+	// The gate is an ALLOWLIST over the program's operators, so an operator it has never
+	// heard of has to OPEN it: write-string's :start/:end becomes a subseq at Pass 2,
+	// and a module that dropped the normalization there handed the host an unrendered
+	// character vector (measured as a cast-failure trap).
+	@Test
+	void anOperatorThatLowersToAConstructorKeepsTheNormalization() {
+		String reactor = """
+				(rontolisp:wasm-import 'host-log :from "env" :as "host_log" :params '(:string) :returns nil)
+				(defun init-app () (host-log "module initialized") %s)
+				(rontolisp:wasm-export 'init-app :as "InitApp" :params '() :returns nil)
+				""";
+		int free = compileNoWasiSize(reactor.formatted("nil")).length;
+		int lowered = compileNoWasiSize(reactor.formatted("(write-string \"hello\" nil :start 1 :end 3)")).length;
+		assertThat(lowered - free).isGreaterThan(1_000);
+	}
+
 	// The global section's entry count (0 when the section is absent).
 	private static int globalCount(byte[] module) {
 		byte[] payload = section(module, 6);

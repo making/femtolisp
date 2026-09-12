@@ -1540,7 +1540,7 @@ final class WasmIoRuntimeBuilder {
 	 * @param st the string table (for the newline byte)
 	 * @return the function body bytes
 	 */
-	static byte[] buildWriteLineBody(WasmLispCompiler.StringTable st) {
+	static byte[] buildWriteLineBody(WasmLispCompiler.StringTable st, boolean charvecPossible) {
 		ByteArrayOutputStream body = new ByteArrayOutputStream();
 		WasmWriter w = new WasmWriter(body);
 		// params: STR=0 (ref), FD_VAL=1 (ref) ; i32 locals: OFF=2, LEN=3, FD=4, REC=5
@@ -1559,7 +1559,7 @@ final class WasmIoRuntimeBuilder {
 		// A mutable character vector (a subseq/copy-seq result being written) renders
 		// once here; any other value passes through _charvec_to_str unchanged.
 		getLocal(w, STR);
-		WasmEmitHelper.emitCharvecToStrCall(w);
+		WasmEmitHelper.emitCharvecToStrCall(w, charvecPossible);
 		setLocal(w, NSTR);
 		// fd = stream is an i31 handle ? i31.get_s(stream) : 1 (stdout) -- nil and the
 		// designator t (a redirected *standard-output*'s default) both mean stdout. The

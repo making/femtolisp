@@ -598,6 +598,12 @@ public final class WasmLispCompiler implements LispCompiler {
 	 */
 	private boolean usesInstances;
 
+	// Whether a mutable character vector can exist at run time (Ctx.charvecPossible).
+	// A per-compile fact rather than an option, set once the injected runtime defuns
+	// are known, and read both by the expression compiler (through Ctx) and by the
+	// fixed runtime bodies emitted below.
+	private boolean charvecPossible = true;
+
 	/**
 	 * Whether the program writes {@code (make-hash-table :test 'equalp)} somewhere. It
 	 * adds one {@code (mut i32)} global and one real body in the fixed function slot
@@ -3250,6 +3256,19 @@ public final class WasmLispCompiler implements LispCompiler {
 				// wrapper) lowers to intern, so it needs the _intern runtime too.
 				|| programUsesSymbol(program, LispNames.FIND_SYMBOL);
 
+		// Whether a mutable CHARACTER VECTOR can exist at run time
+		// (Ctx.charvecPossible). The question is decided by an ALLOWLIST -- the gate
+		// closes only when every operator the program spells is one that provably
+		// cannot make a string it was not given -- because a scan for the CONSTRUCTOR
+		// spellings silently under-approximates: the constructors are introduced by
+		// Pass 2 lowerings the source never names (measured 2026-09-12:
+		// `(write-string "hello" t :start 1 :end 3)` and `(format t "~:d" 1000000)`
+		// both reach _subseq_str through %subseq-runtime while naming neither, and a
+		// constructor-name gate turned them into a cast-failure trap at the boundary).
+		// An operator this list has never heard of therefore OPENS the gate.
+		this.charvecPossible = usesEval || anyNameResolvable(program, usesRead, usesLoad)
+				|| !charvecFreeProgram(program, defunNames(program, defuns));
+
 		// Inject built-in function wrappers (user defuns take priority)
 		Set<String> userDefinedNames = new HashSet<>();
 		for (DefunDecl defun : defuns) {
@@ -3696,6 +3715,7 @@ public final class WasmLispCompiler implements LispCompiler {
 			.printControlVariables(printControlVariables)
 			.usesSeqString(usesSeqString)
 			.mutableStringProducers(mutableStringProducers)
+			.charvecPossible(this.charvecPossible)
 			.ehDepthGlobalIndex(ehDepthGlobalIndex)
 			.rawSentinelGlobalIndex(rawSentinelGlobalIndex)
 			.functions(functions)
@@ -3784,10 +3804,19 @@ public final class WasmLispCompiler implements LispCompiler {
 		// Import wrapper bodies are deferred until after the lambda pass: a :string
 		// result calls the _str_from_mem helper, whose index follows the lambdas.
 		Map<String, Integer> importBodySlots = new HashMap<>();
+		ctxBuilder.injectedRuntimeDefunNames(injectedRuntimeDefuns);
 		for (DefunDecl defun : defuns) {
 			// See Ctx.injectedRuntimeBody: a wrapper catalog body is not the user's
 			// designator use, so its dispatches do not arm the name registry.
-			ctxBuilder.injectedRuntimeBody(injectedRuntimeDefuns.contains(defun.name));
+			boolean injectedBody = injectedRuntimeDefuns.contains(defun.name);
+			ctxBuilder.injectedRuntimeBody(injectedBody);
+			// An injected body is compiled as if a character vector were possible even
+			// when the gate is closed. It is not the program: it is the wrapper catalog
+			// and the shared sequence helpers, which a gate-closed program can only
+			// reach through a function VALUE -- so it is shaken out whole, and the
+			// alternative (compiling it with the gate) would leave a reachable helper
+			// constructing a character vector the callers no longer normalize.
+			ctxBuilder.charvecPossible(this.charvecPossible || injectedBody);
 			if (importWrappers.containsKey(defun.name) || componentImportWrappers.containsKey(defun.name)
 					|| componentDropWrappers.containsKey(defun.name) || componentAsyncWrappers.containsKey(defun.name)
 					|| componentCallStartWrappers.containsKey(defun.name)
@@ -3864,6 +3893,7 @@ public final class WasmLispCompiler implements LispCompiler {
 		// a lambda lifted out of a wrapper body is compiled here, and counting it as the
 		// user's is the conservative direction).
 		ctxBuilder.injectedRuntimeBody(false);
+		ctxBuilder.charvecPossible(this.charvecPossible);
 
 		// Pass 2b: Build _start function body
 		ByteArrayOutputStream startBody = new ByteArrayOutputStream();
@@ -4742,7 +4772,8 @@ public final class WasmLispCompiler implements LispCompiler {
 		byte[] writeStrBody = WasmRuntimeBuilder.buildWriteStrBody();
 		byte[] printValBody = WasmRuntimeBuilder.buildPrintValBody(stringTable, this.simd,
 				this.asyncMode ? asyncTypeBase() : -1, this.usesP1Streams ? p1StreamTypeBase() : -1,
-				this.usesInstances ? instanceTypeBase() : -1, renderPathGlobalIndex, renderDepthGlobalIndex);
+				this.usesInstances ? instanceTypeBase() : -1, renderPathGlobalIndex, renderDepthGlobalIndex,
+				this.charvecPossible);
 		byte[] printI32NoNlBody = WasmRuntimeBuilder.buildPrintI32Core(false);
 		byte[] schubUmulhiBody = WasmSchubfachRuntimeBuilder.buildUmulhiBody();
 		byte[] schubGBody = WasmSchubfachRuntimeBuilder.buildGBody(FUNC_SCHUB_UMULHI, schubBlobBase);
@@ -4759,7 +4790,8 @@ public final class WasmLispCompiler implements LispCompiler {
 		byte[] readLineBody = WasmRuntimeBuilder.buildReadLineBody(stringTable);
 		byte[] princValBody = WasmRuntimeBuilder.buildPrincValBody(stringTable, this.simd,
 				this.asyncMode ? asyncTypeBase() : -1, this.usesP1Streams ? p1StreamTypeBase() : -1,
-				this.usesInstances ? instanceTypeBase() : -1, renderPathGlobalIndex, renderDepthGlobalIndex);
+				this.usesInstances ? instanceTypeBase() : -1, renderPathGlobalIndex, renderDepthGlobalIndex,
+				this.charvecPossible);
 
 		// Build the eval runtime (interpreter + function-name registry). The registry
 		// maps a symbol-name string offset to (funcId, arity). Because the string table
@@ -6790,7 +6822,7 @@ public final class WasmLispCompiler implements LispCompiler {
 					.addFunction(WasmRatioRuntimeBuilder.buildRatRoundBody())
 					.addFunction(WasmRuntimeBuilder.buildToStringBody(FUNC_PRINC_VAL, 1))
 					.addFunction(WasmRuntimeBuilder.buildToStringBody(FUNC_PRINT_VAL, 1))
-					.addFunction(WasmStringRuntimeBuilder.buildStringConcatBody())
+					.addFunction(WasmStringRuntimeBuilder.buildStringConcatBody(this.charvecPossible))
 					.addFunction(WasmStringRuntimeBuilder.buildCaseConvertBody(true))
 					.addFunction(WasmStringRuntimeBuilder.buildCaseConvertBody(false))
 					.addFunction(WasmStringRuntimeBuilder.buildCapitalizeBody())
@@ -6800,8 +6832,9 @@ public final class WasmLispCompiler implements LispCompiler {
 					.addFunction(WasmStringRuntimeBuilder.buildTrimBody())
 					.addFunction(WasmIoRuntimeBuilder.buildOpenBody())
 					.addFunction(WasmIoRuntimeBuilder.buildCloseBody(stringTable, ostreamTableGlobalIndex))
-					.addFunction(WasmIoRuntimeBuilder.buildWriteLineBody(stringTable))
-					.addFunction(WasmRuntimeBuilder.buildEqualBody(this.usesInstances ? instanceTypeBase() : -1))
+					.addFunction(WasmIoRuntimeBuilder.buildWriteLineBody(stringTable, this.charvecPossible))
+					.addFunction(WasmRuntimeBuilder.buildEqualBody(this.usesInstances ? instanceTypeBase() : -1,
+							this.charvecPossible))
 					.addFunction(WasmGetenvRuntimeBuilder.build(scratchBase));
 				// Dispatch function bodies
 				for (byte[] body : dispatchBodies) {
@@ -6811,7 +6844,7 @@ public final class WasmLispCompiler implements LispCompiler {
 				code.addFunction(WasmPlistRuntimeBuilder.buildPlistGet());
 				// Hash-table runtime helper bodies (FUNC_HASH, FUNC_HASH_RESIZE)
 				code.addFunction(WasmRuntimeBuilder.buildHashBody(this.usesInstances ? instanceTypeBase() : -1,
-						hashDepthGlobalIndex, hashGasGlobalIndex));
+						hashDepthGlobalIndex, hashGasGlobalIndex, this.charvecPossible));
 				code.addFunction(WasmRuntimeBuilder.buildHashResizeBody(this.usesIdentityHashTables,
 						this.usesInstances ? instanceTypeBase() : -1));
 				// Modulo / remainder runtime helper bodies (FUNC_RAT_REM, FUNC_RAT_MOD)
@@ -6826,7 +6859,7 @@ public final class WasmLispCompiler implements LispCompiler {
 				code.addFunction(WasmIoRuntimeBuilder.buildWriteByteBody());
 				// string-stream runtime helper bodies (FUNC_WRITE_STREAM_STR,
 				// FUNC_MAKE_STR_OSTREAM, FUNC_MAKE_STR_ISTREAM, FUNC_STR_STREAM_CONTENTS)
-				code.addFunction(WasmStringStreamRuntimeBuilder.buildWriteStreamStrBody());
+				code.addFunction(WasmStringStreamRuntimeBuilder.buildWriteStreamStrBody(this.charvecPossible));
 				code.addFunction(WasmStringStreamRuntimeBuilder.buildMakeOutputStreamBody(ostreamTableGlobalIndex));
 				code.addFunction(WasmStringStreamRuntimeBuilder.buildMakeInputStreamBody());
 				code.addFunction(WasmStringStreamRuntimeBuilder.buildContentsBody());
@@ -6848,7 +6881,7 @@ public final class WasmLispCompiler implements LispCompiler {
 				code.addFunction(WasmStringRuntimeBuilder.buildStrFreshBody());
 				// _str_to_mem (FUNC_STR_TO_MEM): copy a string's GC array into
 				// linear[ptr..).
-				code.addFunction(WasmStringRuntimeBuilder.buildStrToMemBody());
+				code.addFunction(WasmStringRuntimeBuilder.buildStrToMemBody(this.charvecPossible));
 				// _write_str_gc (FUNC_WRITE_STR_GC): print a string value from its GC
 				// array.
 				code.addFunction(WasmStringRuntimeBuilder.buildWriteStrGcBody());
@@ -6986,7 +7019,8 @@ public final class WasmLispCompiler implements LispCompiler {
 				// equalp key-fold body (FUNC_EQUALP_KEY); an identity stub unless the
 				// program writes a :test 'equalp table, since nothing else calls it.
 				code.addFunction(equalpDepthGlobalIndex < 0 ? WasmEqualpKeyRuntimeBuilder.buildStub()
-						: WasmEqualpKeyRuntimeBuilder.build(equalpDepthGlobalIndex, equalpGasGlobalIndex));
+						: WasmEqualpKeyRuntimeBuilder.build(equalpDepthGlobalIndex, equalpGasGlobalIndex,
+								this.charvecPossible));
 				// file-length body (FUNC_FILE_LENGTH), over the fd_filestat_get import.
 				code.addFunction(WasmIoRuntimeBuilder.buildFileLengthBody());
 				// arithmetic non-number landing bodies (FUNC_TYPE_ERR_INT,
@@ -7843,6 +7877,194 @@ public final class WasmLispCompiler implements LispCompiler {
 				|| programUsesSymbol(program, LispNames.WRITE_SEQUENCE) || programContainsArrayLiteral(program);
 	}
 
+	/**
+	 * The operators a program may be built out of while remaining provably free of
+	 * mutable CHARACTER VECTORS: control flow, arithmetic, the type predicates and the
+	 * cons cell. None of them can answer a string it was not handed, so the only strings
+	 * such a program holds are LITERALS -- and a literal is never a character vector
+	 * ({@code .kb/string-write-runtime.md}).
+	 *
+	 * <p>
+	 * It is an ALLOWLIST, and that direction is the whole point. Deriving the gate from
+	 * the CONSTRUCTOR spellings ({@code make-string}, {@code subseq}, the flipped
+	 * producers) reads as the tighter answer and is WRONG: those constructors are
+	 * introduced by Pass 2 lowerings, so a program that spells none of them still builds
+	 * one -- {@code write-string}'s {@code :start}/{@code :end} becomes a {@code subseq},
+	 * and so does a {@code format} directive that groups digits. Both were measured
+	 * handing an unrendered character vector to the boundary. An operator missing from
+	 * this list costs the normalization a module would have paid anyway; an operator
+	 * wrongly ON it is a silent wrong answer, which is why nothing joins it without the
+	 * lowering being read.
+	 */
+	private static final Set<String> CHARVEC_FREE_OPERATORS = Set.of(LispNames.QUOTE, LispNames.FUNCTION,
+			LispNames.DEFUN, LispNames.LAMBDA, LispNames.IF, LispNames.PROGN, LispNames.LET, LispNames.LET_STAR,
+			LispNames.SETQ, LispNames.BLOCK, LispNames.RETURN_FROM, LispNames.TAGBODY, LispNames.GO, LispNames.THE,
+			LispNames.DECLARE, LispNames.WHEN, LispNames.UNLESS, LispNames.COND, LispNames.AND, LispNames.OR,
+			LispNames.NOT, LispNames.NULL, LispNames.ADD, LispNames.SUB, LispNames.MUL, LispNames.DIV, LispNames.MOD,
+			LispNames.REM, LispNames.ABS, LispNames.MIN, LispNames.MAX, LispNames.FLOOR, LispNames.CEILING,
+			LispNames.TRUNCATE, LispNames.ROUND, LispNames.EXPT, LispNames.SQRT, LispNames.ONE_PLUS,
+			LispNames.ONE_MINUS, LispNames.ZEROP, LispNames.PLUSP, LispNames.MINUSP, LispNames.EVENP, LispNames.ODDP,
+			LispNames.EQ, LispNames.LT, LispNames.GT, LispNames.LE, LispNames.GE, LispNames.NE, LispNames.EQ_GENERAL,
+			LispNames.EQL, LispNames.ATOM, LispNames.CONSP, LispNames.LISTP, LispNames.NUMBERP, LispNames.INTEGERP,
+			LispNames.FLOATP, LispNames.SYMBOLP, LispNames.CHARACTERP, LispNames.STRINGP, LispNames.CONS, LispNames.CAR,
+			LispNames.CDR, LispNames.FIRST, LispNames.REST, LispNames.LIST, LispNames.NTH, LispNames.LENGTH,
+			LispNames.WASM_IMPORT, LispNames.WASM_EXPORT, LispNames.DEFVAR, LispNames.DEFPARAMETER,
+			LispNames.DEFCONSTANT, LispNames.DOTIMES, LispNames.DOLIST, LispNames.INCF, LispNames.DECF, LispNames.PSETQ,
+			LispNames.VALUES, LispNames.CASE, LispNames.WHILE);
+
+	/**
+	 * The function names the program DEFINES: its own defuns (top level and nested) plus
+	 * the synthetic defun each {@code wasm-import} became. A call to one of these is a
+	 * call into code {@link #charvecFreeProgram} is reading anyway, so the name itself
+	 * says nothing.
+	 * @param program the top-level forms
+	 * @param defuns the declarations collected so far
+	 * @return every name the program defines as a function
+	 */
+	private static Set<String> defunNames(List<LispVal> program, List<DefunDecl> defuns) {
+		Set<String> names = new HashSet<>();
+		for (DefunDecl defun : defuns) {
+			names.add(defun.name);
+		}
+		names.addAll(GlobalVarCollector.collectAllNestedDefunNames(program));
+		return names;
+	}
+
+	/**
+	 * True when NOTHING in the program can be a mutable character vector: every operator
+	 * it spells is on {@link #CHARVEC_FREE_OPERATORS} or is one of its own functions. See
+	 * that field for why the answer is an allowlist rather than a hunt for the
+	 * constructors.
+	 * @param program the top-level forms, expanded and with the libraries already pruned
+	 * to what the program reaches
+	 * @param defined the names the program defines as functions
+	 * @return {@code true} when the charvec normalization can be left out entirely
+	 */
+	private static boolean charvecFreeProgram(List<LispVal> program, Set<String> defined) {
+		for (LispVal form : program) {
+			if (!charvecFreeForm(form, defined)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	// A name in OPERATOR or DESIGNATOR position: safe when the allowlist knows it, when
+	// the program defines it, or when it is a keyword (data, never a call).
+	private static boolean charvecFreeName(String name) {
+		return CHARVEC_FREE_OPERATORS.contains(name) || CHARVEC_FREE_OPERATORS.contains(LispSymbol.memberName(name))
+				|| name.startsWith(":");
+	}
+
+	// One form in VALUE position. An atom is a literal or a variable read -- neither can
+	// be a character vector in a program built out of the allowlist -- so only the cons
+	// shapes have anything to check.
+	private static boolean charvecFreeForm(LispVal form, Set<String> defined) {
+		if (!(form instanceof LispCons cons)) {
+			return true;
+		}
+		if (!(cons.car() instanceof LispSymbol head)) {
+			// ((lambda ...) arg): every element is a form of its own.
+			return charvecFreeForms(cons, defined);
+		}
+		String name = head.name();
+		if (!charvecFreeName(name) && !defined.contains(name)) {
+			if (Boolean.getBoolean("rontolisp.debug.charvecgate")) {
+				System.err.println("[charvec-gate] the charvec normalization stays because of: " + name);
+			}
+			return false;
+		}
+		List<LispVal> parts = cons.toList();
+		String member = LispSymbol.memberName(name);
+		if (member.equals(LispNames.QUOTE) || member.equals(LispNames.FUNCTION)) {
+			// A quoted or #'-taken symbol is a DESIGNATOR: the program can funcall it,
+			// so it is read exactly like an operator.
+			return charvecFreeData(cons.cdr(), defined);
+		}
+		if (member.equals(LispNames.DECLARE)) {
+			return true;
+		}
+		if (member.equals(LispNames.DEFUN)) {
+			// (defun name params . body) -- the name binds, the params bind.
+			return charvecFreeBindings(parts.size() > 2 ? parts.get(2) : LispNil.INSTANCE, defined)
+					&& charvecFreeForms(parts.subList(Math.min(3, parts.size()), parts.size()), defined);
+		}
+		if (member.equals(LispNames.LAMBDA)) {
+			return charvecFreeBindings(parts.size() > 1 ? parts.get(1) : LispNil.INSTANCE, defined)
+					&& charvecFreeForms(parts.subList(Math.min(2, parts.size()), parts.size()), defined);
+		}
+		if (member.equals(LispNames.DOTIMES) || member.equals(LispNames.DOLIST)) {
+			// (dotimes (var count [result]) . body) -- the head of the spec binds, the
+			// rest of the spec are forms.
+			return charvecFreeBindings(
+					parts.size() > 1 ? new LispCons(parts.get(1), LispNil.INSTANCE) : LispNil.INSTANCE, defined)
+					&& charvecFreeForms(parts.subList(Math.min(2, parts.size()), parts.size()), defined);
+		}
+		if (member.equals(LispNames.LET) || member.equals(LispNames.LET_STAR)) {
+			return charvecFreeBindings(parts.size() > 1 ? parts.get(1) : LispNil.INSTANCE, defined)
+					&& charvecFreeForms(parts.subList(Math.min(2, parts.size()), parts.size()), defined);
+		}
+		if (member.equals(LispNames.SETQ)) {
+			// (setq var value ...) -- the odd elements are the values.
+			for (int i = 2; i < parts.size(); i += 2) {
+				if (!charvecFreeForm(parts.get(i), defined)) {
+					return false;
+				}
+			}
+			return true;
+		}
+		if (member.equals(LispNames.BLOCK) || member.equals(LispNames.RETURN_FROM) || member.equals(LispNames.THE)) {
+			// The second element is a NAME or a type specifier, not a form.
+			return charvecFreeForms(parts.subList(Math.min(2, parts.size()), parts.size()), defined);
+		}
+		return charvecFreeForms(cons.cdr(), defined);
+	}
+
+	// Every element of a form list.
+	private static boolean charvecFreeForms(LispVal list, Set<String> defined) {
+		LispVal rest = list;
+		while (rest instanceof LispCons cons) {
+			if (!charvecFreeForm(cons.car(), defined)) {
+				return false;
+			}
+			rest = cons.cdr();
+		}
+		return true;
+	}
+
+	private static boolean charvecFreeForms(List<LispVal> forms, Set<String> defined) {
+		for (LispVal form : forms) {
+			if (!charvecFreeForm(form, defined)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	// A lambda list or a let binding list: each element binds a NAME, and a cons element
+	// carries an init form beside it.
+	private static boolean charvecFreeBindings(LispVal bindings, Set<String> defined) {
+		LispVal rest = bindings;
+		while (rest instanceof LispCons cons) {
+			if (cons.car() instanceof LispCons binding) {
+				if (!charvecFreeForms(binding.cdr(), defined)) {
+					return false;
+				}
+			}
+			rest = cons.cdr();
+		}
+		return true;
+	}
+
+	// Quoted data: every symbol in it is a designator the program could funcall.
+	private static boolean charvecFreeData(LispVal data, Set<String> defined) {
+		return switch (data) {
+			case LispSymbol sym -> charvecFreeName(sym.name()) || defined.contains(sym.name());
+			case LispCons cons -> charvecFreeData(cons.car(), defined) && charvecFreeData(cons.cdr(), defined);
+			default -> true;
+		};
+	}
+
 	// True when a self-evaluating array literal (#(...)) appears anywhere in the
 	// program.
 	private static boolean programContainsArrayLiteral(List<LispVal> program) {
@@ -8584,6 +8806,37 @@ public final class WasmLispCompiler implements LispCompiler {
 		boolean mutableStringProducers = false;
 
 		/**
+		 * True when a MUTABLE CHARACTER VECTOR can exist at run time, i.e. when the
+		 * program can reach one of this backend's three charvec CONSTRUCTORS -- a
+		 * {@code make-array} of a character element type
+		 * ({@link WasmArrayCompiler#compileMake}), the {@code subseq} string lane
+		 * ({@code _subseq_str}) and the flipped producers' wrap ({@code _to_mut_str}).
+		 * When it is false nothing can BE one, so the boundary normalization
+		 * ({@code _charvec_to_str}, inserted after every string consumer's operand and at
+		 * the entry of {@code _equal}/{@code _hash}/{@code _print_val}/{@code _princ_val}
+		 * / {@code _str_to_mem}) is emitted NOWHERE and the six functions behind it are
+		 * never rooted -- 1,961 bytes on a module that never makes one
+		 * ({@code .kb/wasm-gc-strings.md}).
+		 *
+		 * <p>
+		 * A wrong {@code false} would be a silently WRONG answer at the boundary rather
+		 * than a crash, so each of the three constructors carries a compile-time throw
+		 * against this flag (the {@code SpecialVarCollector} discipline): an
+		 * under-approximating scan fails the build at the constructor site instead of
+		 * shipping a module that hands the host a rendered-as-nothing character vector.
+		 */
+		boolean charvecPossible = true;
+
+		/**
+		 * The names of the INJECTED runtime defuns -- the built-in wrapper catalog and
+		 * the shared sequence helpers. Read only by the charvec gate's guard: those
+		 * bodies are compiled as if a character vector were possible, so a call REACHING
+		 * one from the program's own code while the gate is closed would be the one way a
+		 * charvec could exist after all ({@link WasmEmitHelper#requireNoCharvecHelper}).
+		 */
+		Set<String> injectedRuntimeDefunNames = Set.of();
+
+		/**
 		 * The wasm global index of the handler-depth counter (a {@code (mut i32)} = 0
 		 * appended after the user-variable globals), or -1 outside EH mode. The
 		 * {@code handler-case} region increments/decrements it (the JVM
@@ -9002,6 +9255,8 @@ public final class WasmLispCompiler implements LispCompiler {
 			this.typedArrayCodes = builder.typedArrayCodes;
 			this.usesSeqString = builder.usesSeqString;
 			this.mutableStringProducers = builder.mutableStringProducers;
+			this.charvecPossible = builder.charvecPossible;
+			this.injectedRuntimeDefunNames = builder.injectedRuntimeDefunNames;
 			this.ehDepthGlobalIndex = builder.ehDepthGlobalIndex;
 			this.rawSentinelGlobalIndex = builder.rawSentinelGlobalIndex;
 			this.simd = builder.simd;
@@ -9132,6 +9387,10 @@ public final class WasmLispCompiler implements LispCompiler {
 			private boolean usesSeqString = false;
 
 			private boolean mutableStringProducers = false;
+
+			private boolean charvecPossible = true;
+
+			private Set<String> injectedRuntimeDefunNames = Set.of();
 
 			private int ehDepthGlobalIndex = -1;
 
@@ -9361,6 +9620,16 @@ public final class WasmLispCompiler implements LispCompiler {
 
 			Builder mutableStringProducers(boolean mutableStringProducers) {
 				this.mutableStringProducers = mutableStringProducers;
+				return this;
+			}
+
+			Builder charvecPossible(boolean charvecPossible) {
+				this.charvecPossible = charvecPossible;
+				return this;
+			}
+
+			Builder injectedRuntimeDefunNames(Set<String> injectedRuntimeDefunNames) {
+				this.injectedRuntimeDefunNames = injectedRuntimeDefunNames;
 				return this;
 			}
 
