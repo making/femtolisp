@@ -4449,6 +4449,27 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void evalNsubstituteFamilyWritesThroughVectorArgument() {
+		// .todo/773: .todo/623's plain reuse of substitute's non-destructive form (the
+		// test above) checks only the VALUE nsubstitute answers; ANSI
+		// (NSUBSTITUTE-VECTOR.3/.32/.33 and their -IF/-IF-NOT twins) expects the
+		// ARGUMENT itself to change, which a fresh-sequence answer never did.
+		assertThat(evalMulti("(let ((x (vector 1 2 1))) (nsubstitute 9 1 x) x)").print()).isEqualTo("#(9 2 9)");
+		assertThat(evalMulti("(let ((x (vector 1 2 3))) (nsubstitute-if 0 #'oddp x) x)").print()).isEqualTo("#(0 2 0)");
+		assertThat(evalMulti("(let ((x (vector 1 2 3))) (nsubstitute-if-not 0 #'oddp x) x)").print())
+			.isEqualTo("#(1 0 3)");
+		assertThat(eval("(let ((x (vector 1 2 1))) (eq x (nsubstitute 9 1 x)))").print()).isEqualTo("T");
+		// The funcall/apply path (a separate Java closure on the interpreter) gets the
+		// same fix.
+		assertThat(evalMulti("(let ((x (vector 1 2 1))) (funcall #'nsubstitute 9 1 x) x)").print())
+			.isEqualTo("#(9 2 9)");
+		// A source-literal string cannot be written in place, so it keeps answering a
+		// fresh copy instead of corrupting the shared constant
+		// (.kb/string-write-runtime.md).
+		assertThat(eval("(nsubstitute #\\X #\\a \"aba\")").print()).isEqualTo("\"XbX\"");
+	}
+
+	@Test
 	void evalPositionIf() {
 		assertThat(eval("(position-if #'evenp '(1 3 5 6 7))").print()).isEqualTo("3");
 		assertThat(eval("(position-if #'oddp '(2 4 5))").print()).isEqualTo("2");

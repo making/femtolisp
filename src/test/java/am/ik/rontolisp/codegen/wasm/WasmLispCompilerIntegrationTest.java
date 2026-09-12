@@ -5850,6 +5850,21 @@ class WasmLispCompilerIntegrationTest {
 	}
 
 	@Test
+	void nsubstituteFamilyWritesThroughVectorArgument() throws Exception {
+		// .todo/773: the test above checks only the VALUE nsubstitute answers; ANSI
+		// expects the ARGUMENT itself to change, which .todo/623's plain reuse of
+		// substitute's non-destructive form never did over a vector.
+		assertThat(compileAndRun("(let ((x (vector 1 2 1))) (nsubstitute 9 1 x) (print x))")).isEqualTo("#(9 2 9)");
+		assertThat(compileAndRun("(let ((x (vector 1 2 3))) (nsubstitute-if 0 #'oddp x) (print x))"))
+			.isEqualTo("#(0 2 0)");
+		assertThat(compileAndRun("(let ((x (vector 1 2 3))) (nsubstitute-if-not 0 #'oddp x) (print x))"))
+			.isEqualTo("#(1 0 3)");
+		assertThat(compileAndRun("(let ((x (vector 1 2 1))) (print (eq x (nsubstitute 9 1 x))))")).isEqualTo("T");
+		assertThat(compileAndRun("(let ((x (vector 1 2 1))) (funcall #'nsubstitute 9 1 x) (print x))"))
+			.isEqualTo("#(9 2 9)");
+	}
+
+	@Test
 	void sleepSpinsOnTheClockOnPreview1() throws Exception {
 		// Preview 1 imports a clock but no host timer, so sleep loops on
 		// get-internal-real-time -- the interval really elapses, which is what this

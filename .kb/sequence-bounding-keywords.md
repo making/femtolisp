@@ -108,6 +108,30 @@ Two families of newly-REACHED failures this exposed, both out of scope here:
 While closing the gap, `Environment.seqAsList` was found to have no arm for a rank-1
 `LispFloatArray` -- see `.kb/seq-coerce-runtime.md`.
 
+### `nsubstitute`/`-if`/`-if-not` over a vector or string now write through (`.todo/773`, 2026-09-12)
+
+The vector/string arm of the three destructive substitute spellings routed through
+`substitute`'s own (non-destructive) vector/string handling, so it answered a correct VALUE
+but left the argument unchanged -- `.todo/623`'s "a destructive form may answer a fresh
+sequence" latitude, applied where ANSI actually pins identity. Fixed by giving that shared
+handling a `destructive` flag (the `sort`/`nreverse` precedent, `seqResultDispatchForm`) that
+writes the freshly-built vector/string back into the argument's own storage instead of
+answering it as new: `LispMacroExpander.expandSubstitute`/`expandSubstituteIf` (private
+3rd/4th-arg overloads) for the call-position and compiled forms, `LispEvaluator
+.sequenceScanValues` (via `Environment.seqResultDestructive`) for first-class use. A
+SOURCE-LITERAL string still answers a fresh copy (cannot be written in place,
+`.kb/string-write-runtime.md`) -- already the destructive dispatch's own fallback, nothing
+extra needed. `delete`/`-if`/`-if-not` over a vector is unaffected: it removes elements, so
+the result can never be the argument's own storage.
+
+**Measured 2026-09-12** (`ansi-test/measure.sh sequences`, suite `ca06bd9`, interpreter):
+2,937 -> 2,950 / 3,287 (89.4% -> 89.7%), errors 221 -> 215, fails 129 -> 122. A name-by-name
+diff of the FAIL/ERROR sets: **13 tests fixed, zero regressed** -- the census in the note
+above named only the 9 `*-VECTOR.3/.32/.33` rows; the STRING twins
+(`NSUBSTITUTE-STRING.32/.33/.34`, `NSUBSTITUTE-IF-STRING.32/.33/.34`) were ERRORing for the
+same reason and are fixed by the same generic (string-or-vector) dispatch change, the way
+`.todo/740` found more than its own census too.
+
 ## `remove-duplicates` / `delete-duplicates`: the window bounds what is CONSIDERED
 
 The two spellings take the same 17.2.1 set minus `:count` (`:from-end`, `:test`,
