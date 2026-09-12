@@ -7240,11 +7240,21 @@ public final class WasmLispCompiler implements LispCompiler {
 		int stringDataSegIndex = upperFoldSegIndex - 1;
 		List<am.ik.wasm.WasmTreeShaker.DroppableDataRange> stringRanges = stringData.length == 0 ? List.of()
 				: stringTable.shakeableRanges(stringDataSegIndex, dataBase, internBase, internRows, funNameBase);
+		// The two --no-wasi host setters, offered to the shaker as cell hooks: each is an
+		// export (hence a root, hence immortal) whose only effect is a store to one cell,
+		// so a module in which no OTHER surviving body names that cell can drop the hook
+		// entirely -- body, function entry and export name. Offered on every build shape;
+		// a build that exports neither has nothing to decide. See
+		// .kb/wasm-export-no-wasi.md.
+		List<am.ik.wasm.WasmTreeShaker.HostCellHook> hostCellHooks = List.of(
+				new am.ik.wasm.WasmTreeShaker.HostCellHook("__ronto_seed_random", RANDOM_STATE_ADDR),
+				new am.ik.wasm.WasmTreeShaker.HostCellHook("__ronto_set_time", HOST_TIME_ADDR));
 		@Nullable Map<Integer, String> funcSizeNames = debugFuncSizes()
 				? funcSizeNames(functions, lambdaDecls, dispatchPageFuncBase, dispatchPageBodies.size()) : null;
 		if (this.component) {
 			if (this.optimize.eliminatesDeadCode()) {
-				coreModule = shakeCore(coreModule, caseFoldSegments, stringRanges, funcSizeNames, hostImports.size());
+				coreModule = shakeCore(coreModule, caseFoldSegments, stringRanges, hostCellHooks, funcSizeNames,
+						hostImports.size());
 			}
 			else if (funcSizeNames != null) {
 				dumpFuncSizes(coreModule, funcSizeNames, hostImports.size(),
@@ -7324,7 +7334,8 @@ public final class WasmLispCompiler implements LispCompiler {
 			return WasmComponentBuilder.build(coreModule, componentExportDecls, componentImports, narrowing);
 		}
 		if (this.optimize.eliminatesDeadCode()) {
-			return shakeCore(coreModule, caseFoldSegments, stringRanges, funcSizeNames, hostImports.size());
+			return shakeCore(coreModule, caseFoldSegments, stringRanges, hostCellHooks, funcSizeNames,
+					hostImports.size());
 		}
 		if (funcSizeNames != null) {
 			dumpFuncSizes(coreModule, funcSizeNames, hostImports.size(),
@@ -7387,7 +7398,8 @@ public final class WasmLispCompiler implements LispCompiler {
 	 */
 	private static byte[] shakeCore(byte[] coreModule,
 			List<am.ik.wasm.WasmTreeShaker.OwnedDataSegment> caseFoldSegments,
-			List<am.ik.wasm.WasmTreeShaker.DroppableDataRange> stringRanges, @Nullable Map<Integer, String> funcNames,
+			List<am.ik.wasm.WasmTreeShaker.DroppableDataRange> stringRanges,
+			List<am.ik.wasm.WasmTreeShaker.HostCellHook> hostCellHooks, @Nullable Map<Integer, String> funcNames,
 			int importShift) {
 		// The type-test fold first, then the call redirection through the forwarders it
 		// leaves: both rewrite bodies in place and renumber nothing, so the segment and
@@ -7431,10 +7443,10 @@ public final class WasmLispCompiler implements LispCompiler {
 		}
 		coreModule = am.ik.wasm.WasmCallForwarding.redirect(am.ik.wasm.WasmRefTypeFolder.fold(coreModule));
 		if (funcNames == null) {
-			return am.ik.wasm.WasmTreeShaker.shake(coreModule, caseFoldSegments, stringRanges);
+			return am.ik.wasm.WasmTreeShaker.shake(coreModule, caseFoldSegments, stringRanges, hostCellHooks);
 		}
 		am.ik.wasm.WasmTreeShaker.ShakeResult res = am.ik.wasm.WasmTreeShaker.shakeWithRemap(coreModule,
-				caseFoldSegments, stringRanges);
+				caseFoldSegments, stringRanges, hostCellHooks);
 		dumpFuncSizes(res.module(), funcNames, importShift, res.importedFunctionCount(), res.funcRemap());
 		return res.module();
 	}

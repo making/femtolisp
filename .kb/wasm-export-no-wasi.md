@@ -293,3 +293,33 @@ casts the struct to the declared type and traps with `illegal cast` on the very 
 (`wasmtime --invoke`); `WasmImportCompilerTest`; `NoWasiLoadPathRefusalsTest`. Limitations: README
 "Exporting Lisp functions". Component typed exports: `.kb/wasi-component.md`. Unfinished: memory-ABI
 CI.
+
+## Both hooks are DROPPED from a module whose program cannot use them
+
+The two setters above are emitted on every `--no-wasi` core module the emitter builds, and every
+`--optimize` level but `off` then drops the ones the program cannot use. On a module that draws no
+random number and reads no clock that is **65 bytes** -- two bodies, two function-section entries and
+two names in the export section -- out of 1,723, and the export names are 41 of it.
+
+An export is a root, so a tree shaker can never reach this on its own: the hook survives precisely
+BECAUSE it is exported. Nor is the decision a call graph question -- nothing calls a setter, the cell
+is the whole channel between it and its reader, and `random` is INLINED at the draw site
+(`.kb/random.md`), so there is not even a reader function to ask about. What decides it is the same
+kind of OBSERVATION `WasmTreeShaker.DroppableDataRange` already makes about data: a hook is kept when
+some function that survives the shake WITHOUT it -- any function but the hook's own body, which names
+the cell it writes by construction -- holds an `i32.const` equal to the cell address.
+
+`WasmTreeShaker.HostCellHook(exportName, cellAddress)` is the vocabulary;
+`WasmLispCompiler.shakeCore` offers both hooks on every build shape (a build that exports neither has
+nothing to decide) and the shaker runs a small fixpoint: root everything but the undecided hooks,
+close the call graph, keep a hook whose cell a survivor names, repeat. Keeping a hook only widens the
+survivor set, so it settles in at most one round per hook. A dead hook's export ENTRY goes with its
+body -- an export naming a dropped function is not a module.
+
+A linear-memory reference is an indistinguishable `i32.const`, so the test is conservative in the
+safe direction: an unrelated constant that happens to equal 216 or 224 only KEEPS a hook. The
+contract itself is unchanged -- call the hook before `_initialize` -- it just stops appearing on
+modules that have nothing to seed. Pinned by
+`WasmExportCompilerTest.anOptimizedModuleDropsTheHostHooksItsProgramCannotUse` (a program that draws
+keeps only the seed hook, one that reads a clock only the clock hook, `--optimize=off` keeps both)
+and `WasmTreeShakerTest.dropsAHostCellHookNoOtherSurvivorReads`.

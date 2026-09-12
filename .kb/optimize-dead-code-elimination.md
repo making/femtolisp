@@ -116,9 +116,10 @@ invariant is deliberately broken**, and only because every reference site is rew
 
 ### Type section
 - **roots** -- each surviving function's function-section entry, each surviving import's `typeidx`,
-  every tag (the tag section is copied verbatim), the global section's value types and
-  initializers, and every type immediate in a surviving body (GC-op `typeidx`es,
-  `ref.test`/`ref.cast`/`ref.null` heap types, block types, locals).
+  every tag (the tag section is copied verbatim), each SURVIVING global's value type and
+  initializer (see "Global section" below -- a dead global's type references die with it), and every
+  type immediate in a surviving body (GC-op `typeidx`es, `ref.test`/`ref.cast`/`ref.null` heap
+  types, block types, locals).
 - **edges** -- type-to-type references inside the type section: a struct/array field's
   `(ref null $t)`, a func type's params/results, a `sub` clause's supertypes.
 - **a `rec` group is atomic**: its structural identity under wasm-GC canonicalization is a property
@@ -131,6 +132,33 @@ invariant is deliberately broken**, and only because every reference site is rew
   data segments). The backend emits none.
 - Pins: `dropsTypesTheSurvivorsNoLongerName`, `keepsTheTypesAnEhModeModuleStillNames`,
   `WasmTreeShakerCorpusTest` (`wasm-tools validate` over the `ci-spec.yaml` corpus, both WASI modes).
+
+### Global section
+The shaker walked functions, types and data; a GLOBAL nothing reads used to survive it. The backends
+emit one `(mut (ref null eq)) = null` per top-level Lisp variable whether or not the program has a
+reader, so the runtime's own specials travelled into every module: fifteen globals, 79 bytes, on a
+1.8 KB `--no-wasi` reactor that read none of them.
+
+- **roots** -- every IMPORTED global (dropping an import changes the host contract, and its index is
+  part of it), every EXPORTED global, and every global a SURVIVING function body reads or writes
+  (`global.get`/`global.set`, now `WasmSections.RefKind.GLOBAL` rather than a skipped LEB).
+- **edges** -- a live global's initializer expression may name another global.
+- Survivors are renumbered exactly like functions and types, in bodies, in initializers and in the
+  export section (`rebuildExportSection` learned the global index space for this).
+- The win is not only the global section: a dead global's initializer may name a concrete type, and
+  that type's whole `rec` group then retires with it. `(print 1)` loses 34 bytes of type section
+  that way -- one global built a struct in its initializer and nothing else named the group. Which
+  is why `WasmLispCompilerTest.wasmContainsRecTypeGroup` asks the UNOPTIMIZED module: a shaken
+  `(print 1)` carries no `rec` group at all.
+- Pins: `WasmTreeShakerTest.dropsGlobalsNoSurvivorReadsAndRenumbersTheRest`,
+  `keepsAnExportedGlobalAndTheOnesItsInitializerNames`.
+
+### Host cell hooks: an export decided by who reads its cell
+`WasmTreeShaker.HostCellHook(exportName, cellAddress)` drops an export that exists only so a HOST can
+write one linear-memory cell, when no surviving function reads that cell. The two claimants are the
+`--no-wasi` setters `__ronto_seed_random` and `__ronto_set_time`; the full reasoning, the fixpoint
+and the pins are in `.kb/wasm-export-no-wasi.md`, "Both hooks are DROPPED from a module whose program
+cannot use them".
 
 ### Owned data segments
 `WasmTreeShaker.OwnedDataSegment(segmentIndex, ownerFuncIndices)` names a segment whose bytes are
@@ -359,6 +387,35 @@ reaches in only through `alias core func (instance N) "name"` (`ComponentWriter.
 EXPORTS and hence already shaker roots**; the core's imports are satisfied `from-exports`, so a
 dropped import leaves one unused name in the map. `WasmComponentBuilder.memModuleFor` reads the
 core's `mem`/`memory` **memory** import, kept verbatim with every other non-function import.
+
+## What an external optimizer still finds (measured 2026-09-12)
+
+`wasm-opt -Oz --all-features` (binaryen 132) run as a PROBE over the shaken output -- not a proposed
+build step, and the core libraries take no external dependency. Read it as "how much is left", by
+section and by corpus. `bench.lisp` is the reactor module of `.todo/789`; the rontolisp column is
+`--optimize=size` except `webgl-triangle`, which is `--optimize`.
+
+| Program | before globals+hooks | after | delta | then `-Oz` | residue |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `bench.lisp` `--no-wasi` | 1,808 | **1,658** | -150 (-8.3%) | 1,505 | 153 (9.2%) |
+| `examples/browser/webgl-triangle` | 1,830 | **1,683** | -147 (-8.0%) | 1,340 | 343 (20.4%) |
+| `hello_world` `--no-wasi` | 643 | **493** | -150 (-23.3%) | 349 | 144 (29.2%) |
+| `hello_world` (WASI) | 590 | **509** | -81 (-13.7%) | 391 | 118 (23.2%) |
+| `pi_approx` `--no-wasi` | 1,688 | **1,528** | -160 (-9.5%) | 1,022 | 506 (33.1%) |
+| `pi_approx` (WASI) | 1,635 | **1,544** | -91 (-5.6%) | 1,064 | 480 (31.1%) |
+| `zlib` `--no-wasi` | 94,172 | **94,069** | -103 (-0.1%) | 75,517 | 18,552 (19.7%) |
+| `zlib` (WASI) | 94,167 | **94,099** | -68 (-0.1%) | 75,887 | 18,212 (19.4%) |
+
+Two things the table says. The globals/types/hooks drop is a FLOOR effect: a fixed ~80-150 bytes
+every module paid, which is a quarter of `hello_world` and a rounding error on `zlib`. And 65 of it
+is below what an external optimizer can reach at all -- `-Oz` on the old `bench.lisp` stopped at
+1,574, sixty-nine bytes above the new floor of 1,505, because the host hooks are EXPORTS and an
+export is a root for binaryen too.
+
+The residue column is the second thing, and it is not what `.todo/791` estimated before `790`
+landed: not ~114 bytes of tidying on a toy, but **19-33% of every module in the corpus**, 18.5 KB on
+`zlib`. That is a sized opportunity for a post-emit code-section pass, not a cleanup -- see
+`.todo/791`.
 
 ## The funcall-dispatch gate (what makes `--optimize` reach library code)
 **A function gets an arity-dispatch case, and a `_lookup` registry row, only when the program can

@@ -171,7 +171,8 @@ The clock and randomness are the two services with a choice to make, because
 both are values the module cannot produce for itself. A core module exports one
 hook for each — `__ronto_set_time` (nanoseconds since the Unix epoch) and
 `__ronto_seed_random` — to be called **before `_initialize`**, which is what
-makes a library that timestamps or draws while it *loads* loadable at all; and
+makes a library that timestamps or draws while it *loads* loadable at all (under
+`--optimize`, each hook appears only on a module whose program can use it); and
 `--host-random` seeds the generator from a host import instead. Unseeded, the
 generator repeats one sequence; unset, the clock signals rather than report
 1970, and it holds the value you wrote until you write another (so `(sleep n)`

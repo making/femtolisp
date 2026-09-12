@@ -109,6 +109,15 @@ Skip the call and you get the deterministic sequence, unchanged. The hook is on 
 core-module shape only — a reactor component (`--component --no-wasi`) runs its top
 level at instantiation, so there is no window before the first draw.
 
+Under `--optimize` (any level but `off`) the hook is exported only when the program
+can actually draw. A module that never calls `random` has nothing to seed, so it
+carries neither the hook's body nor its name — so test for it rather than calling it
+blind:
+
+```js
+instance.exports.__ronto_seed_random?.(seed);
+```
+
 Seeding makes the sequence unpredictable per instance but **does not** re-enable
 `rontolisp:random-bytes`: the generator is invertible from a single output, so a
 seeded stream is not cryptographically strong, and the API that promises entropy
@@ -128,6 +137,10 @@ Calling it before `_initialize` is what makes a library that timestamps while it
 *loads* loadable at all — `lack-middleware-session` reads the clock from a
 top-level form, and without this the module dies during initialization rather
 than at the first request.
+
+The same rule as the seed hook applies: under `--optimize` a module that reads no
+clock exports no `__ronto_set_time`, so call it through `?.` if your host serves
+modules it did not build.
 
 The clock does not tick on its own: it holds the value you wrote until you write
 another. That is less of a restriction than it sounds — a Cloudflare Worker's own

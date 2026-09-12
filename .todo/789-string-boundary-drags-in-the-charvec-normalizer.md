@@ -72,8 +72,11 @@ spike removed beyond that is the limb promotion an overflowing `+` needs.
 The `wasm-opt` column is a PROBE, not a proposed build step -- it was run to size the
 opportunity before the spikes, and it mostly finds the same dead code this item and `790`
 remove for reasons. Note the last row: once both land, an external optimizer has 221 bytes
-left to find. What that residue is, and why it is small enough to write by hand, is
-[`791`](791-module-level-slack-globals-types-data-hooks.md).
+left to find on the SPIKED module. That figure did not survive re-measurement -- `790`
+landed as a byte-level fold rather than the spike, and on the real corpus the residue is
+19-33% of every module (18.5 KB on `zlib`), not a couple of hundred bytes. The numbers are
+in `.kb/optimize-dead-code-elimination.md`, "What an external optimizer still finds", and
+the item is [`791`](791-module-level-slack-globals-types-data-hooks.md).
 
 ## This item
 

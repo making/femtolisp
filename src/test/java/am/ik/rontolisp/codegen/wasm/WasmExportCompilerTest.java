@@ -451,6 +451,50 @@ class WasmExportCompilerTest {
 	}
 
 	@Test
+	void anOptimizedModuleDropsTheHostHooksItsProgramCannotUse() {
+		// Both hooks used to be emitted on EVERY --no-wasi core module: two bodies, two
+		// function-section entries and two names in the export section -- 65 bytes, 4%
+		// of a 1.7 KB reactor that draws no random number and reads no clock. The shake
+		// decides it by OBSERVATION rather than by name: a hook survives only while
+		// some other surviving body still holds an i32.const naming the cell it writes
+		// (WasmTreeShaker.HostCellHook).
+		String neither = """
+				(defun fib (n) (if (<= n 1) n (+ (fib (- n 1)) (fib (- n 2)))))
+				(rontolisp:wasm-export 'fib :params '(:s32) :returns :s32)
+				""";
+		byte[] unoptimized = compileNoWasi(neither);
+		assertThat(containsExportName(unoptimized, "__ronto_seed_random")).as("--optimize=off keeps both").isTrue();
+		assertThat(containsExportName(unoptimized, "__ronto_set_time")).as("--optimize=off keeps both").isTrue();
+
+		byte[] optimized = compileNoWasiOptimized(neither);
+		assertThat(containsExportName(optimized, "__ronto_seed_random")).as("no draw, no seed hook").isFalse();
+		assertThat(containsExportName(optimized, "__ronto_set_time")).as("no clock read, no clock hook").isFalse();
+		assertThat(containsAscii(optimized, "__ronto_seed_random")).as("and the NAME goes with the entry").isFalse();
+		assertThat(optimized.length).isLessThan(unoptimized.length);
+
+		// Each hook answers for its own cell: a program that only draws keeps only the
+		// seed hook, one that only reads the clock only the clock hook.
+		byte[] draws = compileNoWasiOptimized("""
+				(defun draw () (random 100))
+				(rontolisp:wasm-export 'draw :params '() :returns :s32)
+				""");
+		assertThat(containsExportName(draws, "__ronto_seed_random")).as("a draw keeps its seed hook").isTrue();
+		assertThat(containsExportName(draws, "__ronto_set_time")).as("but not the clock hook").isFalse();
+
+		byte[] clocks = compileNoWasiOptimized("""
+				(defun now () (mod (get-universal-time) 100000))
+				(rontolisp:wasm-export 'now :params '() :returns :s32)
+				""");
+		assertThat(containsExportName(clocks, "__ronto_set_time")).as("a clock read keeps its clock hook").isTrue();
+		assertThat(containsExportName(clocks, "__ronto_seed_random")).as("but not the seed hook").isFalse();
+	}
+
+	private static byte[] compileNoWasiOptimized(String source) {
+		return new WasmLispCompiler(false, false, true, OptimizeLevel.SIZE)
+			.compile(LispReader.readAllFromString(source));
+	}
+
+	@Test
 	void noWasiCoreModuleExportsTheHostClockHook() {
 		// The same move as the seed hook, for the one service a module with no imports
 		// cannot answer on its own: the host writes the time it really knows (nanos

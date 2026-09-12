@@ -856,7 +856,11 @@ class WasmLispCompilerTest {
 
 	@Test
 	void wasmContainsRecTypeGroup() {
-		byte[] wasm = compile("(print 1)");
+		// The UNOPTIMIZED module: the shaker now retires a rec group whose last user was
+		// a dead GLOBAL, and `(print 1)` declares no top-level variable, so the shaken
+		// module carries none at all -- the group's last citation was the initializer of
+		// a global nothing read.
+		byte[] wasm = compileUnshaken("(print 1)");
 		// rec group marker 0x4E should be present in the type section
 		assertThat(containsByte(wasm, (byte) 0x4E)).isTrue();
 	}

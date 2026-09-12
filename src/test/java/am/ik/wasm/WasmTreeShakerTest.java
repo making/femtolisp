@@ -94,6 +94,196 @@ class WasmTreeShakerTest {
 	}
 
 	@Test
+	void dropsGlobalsNoSurvivorReadsAndRenumbersTheRest() {
+		// The shaker walked functions, types and data; a GLOBAL nothing reads survived
+		// it. The backends emit one per top-level Lisp variable whether or not the
+		// program has a reader, so a 1.7 KB --no-wasi module carried fifteen of them and
+		// read none.
+		ByteArrayOutputStream live = new ByteArrayOutputStream();
+		WasmWriter lw = new WasmWriter(live);
+		lw.write(0); // no locals
+		lw.write(Instruction.GET_GLOBAL);
+		lw.writeUnsignedLeb128(2); // only the third global is read
+		lw.write(Instruction.DROP);
+		lw.write(Instruction.END);
+		ByteArrayOutputStream dead = new ByteArrayOutputStream();
+		WasmWriter dw = new WasmWriter(dead);
+		dw.write(0);
+		dw.write(Instruction.GET_GLOBAL);
+		dw.writeUnsignedLeb128(0); // read only from a function nothing calls
+		dw.write(Instruction.DROP);
+		dw.write(Instruction.END);
+		ByteArrayOutputStream out = new ByteArrayOutputStream();
+		new WasmWriter(out).write("\0asm")
+			.writeLittleEndian4(1)
+			.writeTypeSection(types -> types.addFunc(new Type[] {}, new Type[] {}))
+			.writeFunction(functions -> functions.addFunction(0).addFunction(0))
+			.writeGlobal(globals -> {
+				for (int i = 0; i < 3; i++) {
+					globals.addGlobal(Type.I32, Mutability.VAR, g -> {
+						g.write(Instruction.I32_CONST);
+						g.writeSignedLeb128(0);
+					});
+				}
+			})
+			.writeExport(exports -> exports.addExport("live", ExternalKind.FUNCTION, 0))
+			.writeCode(code -> code.addFunction(live.toByteArray()).addFunction(dead.toByteArray()));
+
+		byte[] shaken = WasmTreeShaker.shake(out.toByteArray());
+
+		assertThat(globalCount(shaken)).as("only the global a surviving body reads is kept").isEqualTo(1);
+		// ... and the surviving read now names index 0, not 2.
+		assertThat(Module.parse(shaken).definedFunctionCount()).isEqualTo(1);
+		assertThat(shaken).as("global.get renumbered onto the survivor")
+			.containsSequence((byte) Instruction.GET_GLOBAL, (byte) 0x00);
+		assertThat(WasmTreeShaker.shake(shaken)).as("idempotent").isEqualTo(shaken);
+	}
+
+	@Test
+	void keepsAnExportedGlobalAndTheOnesItsInitializerNames() {
+		// Two roots the body walk cannot see: an EXPORTED global is part of the host
+		// contract, and a live global's initializer may name another global.
+		ByteArrayOutputStream body = new ByteArrayOutputStream();
+		WasmWriter bw = new WasmWriter(body);
+		bw.write(0);
+		bw.write(Instruction.END);
+		ByteArrayOutputStream out = new ByteArrayOutputStream();
+		new WasmWriter(out).write("\0asm")
+			.writeLittleEndian4(1)
+			.writeTypeSection(types -> types.addFunc(new Type[] {}, new Type[] {}))
+			.writeFunction(functions -> functions.addFunction(0))
+			.writeGlobal(globals -> {
+				globals.addGlobal(Type.I32, Mutability.CONST, g -> {
+					g.write(Instruction.I32_CONST);
+					g.writeSignedLeb128(7);
+				});
+				globals.addGlobal(Type.I32, Mutability.VAR, g -> {
+					g.write(Instruction.I32_CONST);
+					g.writeSignedLeb128(0);
+				});
+				// Global 2 is exported and its initializer reads global 0, so both live
+				// while global 1 goes.
+				globals.addGlobal(Type.I32, Mutability.CONST, g -> {
+					g.write(Instruction.GET_GLOBAL);
+					g.writeUnsignedLeb128(0);
+				});
+			})
+			.writeExport(
+					exports -> exports.addExport("f", ExternalKind.FUNCTION, 0).addExport("g", ExternalKind.GLOBAL, 2))
+			.writeCode(code -> code.addFunction(body.toByteArray()));
+
+		byte[] shaken = WasmTreeShaker.shake(out.toByteArray());
+
+		assertThat(globalCount(shaken)).isEqualTo(2);
+		assertThat(exportedGlobalIndices(shaken)).as("the export follows its global's new index").containsExactly(1);
+	}
+
+	@Test
+	void dropsAHostCellHookNoOtherSurvivorReads() {
+		// A host setter is an export, hence a root, hence immortal -- and on a module
+		// that reads nothing out of the cell it writes, it is 65 bytes of name, body,
+		// function entry and export entry with no effect. The hook's own body names the
+		// cell by construction, so the test is whether any OTHER survivor does.
+		byte[] reader = cellBody(Instruction.I32_LOAD, 216);
+		byte[] readHook = cellStore(216);
+		byte[] unreadHook = cellStore(224);
+		ByteArrayOutputStream out = new ByteArrayOutputStream();
+		new WasmWriter(out).write("\0asm")
+			.writeLittleEndian4(1)
+			.writeTypeSection(types -> types.addFunc(new Type[] {}, new Type[] {}))
+			.writeFunction(functions -> functions.addFunction(0).addFunction(0).addFunction(0))
+			.writeMemory(memories -> memories.addMemory(1))
+			.writeExport(exports -> exports.addExport("read", ExternalKind.FUNCTION, 0)
+				.addExport("__ronto_seed_random", ExternalKind.FUNCTION, 1)
+				.addExport("__ronto_set_time", ExternalKind.FUNCTION, 2))
+			.writeCode(code -> code.addFunction(reader).addFunction(readHook).addFunction(unreadHook));
+
+		byte[] shaken = WasmTreeShaker.shake(out.toByteArray(), List.of(), List.of(),
+				List.of(new WasmTreeShaker.HostCellHook("__ronto_seed_random", 216),
+						new WasmTreeShaker.HostCellHook("__ronto_set_time", 224)));
+
+		Module m = Module.parse(shaken);
+		m.assertWellFormed();
+		assertThat(m.exportedFunctionNames()).as("the hook whose cell a survivor reads stays")
+			.containsExactly("read", "__ronto_seed_random");
+		assertThat(m.definedFunctionCount()).as("the unread hook's body goes with its export").isEqualTo(2);
+		// A hook the module does not export at all is not a hook to drop: the same list
+		// is offered for every build shape.
+		assertThat(
+				WasmTreeShaker.shake(shaken, List.of(), List.of(),
+						List.of(new WasmTreeShaker.HostCellHook("__ronto_seed_random", 216),
+								new WasmTreeShaker.HostCellHook("__ronto_set_time", 224))))
+			.as("idempotent")
+			.isEqualTo(shaken);
+	}
+
+	// A body that loads from `address` and drops the value: a READER of the cell.
+	private static byte[] cellBody(int load, int address) {
+		ByteArrayOutputStream body = new ByteArrayOutputStream();
+		WasmWriter w = new WasmWriter(body);
+		w.write(0); // no locals
+		w.write(Instruction.I32_CONST);
+		w.writeSignedLeb128(address);
+		w.write(load);
+		w.writeUnsignedLeb128(2); // align
+		w.writeUnsignedLeb128(0); // offset
+		w.write(Instruction.DROP);
+		w.write(Instruction.END);
+		return body.toByteArray();
+	}
+
+	// A host setter's body: store a constant into `address` and return.
+	private static byte[] cellStore(int address) {
+		ByteArrayOutputStream body = new ByteArrayOutputStream();
+		WasmWriter w = new WasmWriter(body);
+		w.write(0);
+		w.write(Instruction.I32_CONST);
+		w.writeSignedLeb128(address);
+		w.write(Instruction.I32_CONST);
+		w.writeSignedLeb128(1);
+		w.write(Instruction.I32_STORE);
+		w.writeUnsignedLeb128(2);
+		w.writeUnsignedLeb128(0);
+		w.write(Instruction.END);
+		return body.toByteArray();
+	}
+
+	private static int globalCount(byte[] module) {
+		byte[] payload = sectionPayload(module, 6);
+		return payload == null ? 0 : leb(payload, new int[] { 0 });
+	}
+
+	private static List<Integer> exportedGlobalIndices(byte[] module) {
+		byte[] payload = java.util.Objects.requireNonNull(sectionPayload(module, 7));
+		int[] p = { 0 };
+		int count = leb(payload, p);
+		List<Integer> indices = new ArrayList<>();
+		for (int i = 0; i < count; i++) {
+			int nameLength = leb(payload, p);
+			p[0] += nameLength;
+			int kind = payload[p[0]++] & 0xff;
+			int index = leb(payload, p);
+			if (kind == 0x03) {
+				indices.add(index);
+			}
+		}
+		return indices;
+	}
+
+	private static byte @org.jspecify.annotations.Nullable [] sectionPayload(byte[] module, int wanted) {
+		int[] p = { 8 };
+		while (p[0] < module.length) {
+			int id = module[p[0]++] & 0xff;
+			int size = leb(module, p);
+			if (id == wanted) {
+				return java.util.Arrays.copyOfRange(module, p[0], p[0] + size);
+			}
+			p[0] += size;
+		}
+		return null;
+	}
+
+	@Test
 	void dropsUnusedWasiImports() {
 		// A program that only prints uses fd_write; the other seven WASI imports are
 		// dead.

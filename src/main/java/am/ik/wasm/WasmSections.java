@@ -3,6 +3,7 @@ package am.ik.wasm;
 import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 import org.jspecify.annotations.Nullable;
 
@@ -48,7 +49,12 @@ public final class WasmSections {
 		/** A type index encoded as an unsigned LEB (an instruction's {@code typeidx}). */
 		TYPE_U,
 		/** A type index encoded as a signed s33 (a {@code heaptype} or a blocktype). */
-		TYPE_S
+		TYPE_S,
+		/**
+		 * A global index (unsigned LEB): a {@code global.get} / {@code global.set}
+		 * operand, in a function body or in another global's initializer.
+		 */
+		GLOBAL
 
 	}
 
@@ -267,6 +273,31 @@ public final class WasmSections {
 		return types;
 	}
 
+	/**
+	 * One entry of the global section: the byte span it occupies within the section
+	 * payload and every index immediate inside it (its value type's type references and
+	 * the global references its initializer expression makes).
+	 */
+	record GlobalEntry(int start, int end, List<Ref> refs) {
+	}
+
+	// The global section split per entry, so a caller that drops globals can keep each
+	// survivor's bytes and rewrite only its own immediates.
+	static List<GlobalEntry> scanGlobalEntries(byte[] payload) {
+		List<GlobalEntry> entries = new ArrayList<>();
+		int[] p = { 0 };
+		int count = readU(payload, p);
+		for (int i = 0; i < count; i++) {
+			int start = p[0];
+			List<Ref> refs = new ArrayList<>();
+			scanValType(payload, p, refs);
+			p[0]++; // mutability
+			scanConstExpr(payload, p, refs, null);
+			entries.add(new GlobalEntry(start, p[0], refs));
+		}
+		return entries;
+	}
+
 	// globalsec := vec(globaltype expr); globaltype := valtype mut
 	static List<Ref> scanGlobalSection(byte[] payload) {
 		return scanGlobalSection(payload, null);
@@ -321,19 +352,41 @@ public final class WasmSections {
 	}
 
 	static byte[] rebuildExportSection(byte[] payload, int[] remap) {
+		return rebuildExportSection(payload, remap, null, Set.of());
+	}
+
+	// globalRemap null means the global index space was not renumbered; dropped names
+	// are the exports to leave out entirely.
+	static byte[] rebuildExportSection(byte[] payload, int[] remap, int @Nullable [] globalRemap,
+			Set<String> droppedNames) {
 		int[] p = { 0 };
 		int count = readU(payload, p);
-		ByteArrayOutputStream body = new ByteArrayOutputStream();
-		writeU(body, count);
+		ByteArrayOutputStream entries = new ByteArrayOutputStream();
+		int kept = 0;
 		for (int i = 0; i < count; i++) {
 			int nameStart = p[0];
-			skipName(payload, p);
-			writeRaw(body, slice(payload, nameStart, p[0]));
+			String name = readName(payload, p);
+			byte[] rawName = slice(payload, nameStart, p[0]);
 			int kind = payload[p[0]++] & 0xff;
 			int index = readU(payload, p);
-			body.write(kind);
-			writeU(body, kind == KIND_FUNC ? remap[index] : index);
+			if (droppedNames.contains(name)) {
+				continue;
+			}
+			kept++;
+			writeRaw(entries, rawName);
+			entries.write(kind);
+			int rewritten = index;
+			if (kind == KIND_FUNC) {
+				rewritten = remap[index];
+			}
+			else if (kind == KIND_GLOBAL && globalRemap != null) {
+				rewritten = globalRemap[index];
+			}
+			writeU(entries, rewritten);
 		}
+		ByteArrayOutputStream body = new ByteArrayOutputStream();
+		writeU(body, kept);
+		writeRaw(body, entries.toByteArray());
 		return body.toByteArray();
 	}
 
@@ -420,7 +473,10 @@ public final class WasmSections {
 				}
 			}
 			// One label/index immediate.
-			case 0x0C, 0x0D, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x42 -> skipLeb(buf, p);
+			case 0x0C, 0x0D, 0x20, 0x21, 0x22, 0x25, 0x26, 0x42 -> skipLeb(buf, p);
+			// global.get / global.set: the one index immediate this pass renumbers
+			// besides functions and types.
+			case 0x23, 0x24 -> recordGlobalRef(buf, p, refs);
 			case 0x41 -> { // i32.const: also a candidate linear-memory address
 				int value = readS(buf, p);
 				if (i32Constants != null) {
@@ -467,6 +523,13 @@ public final class WasmSections {
 		int start = p[0];
 		int target = readU(buf, p);
 		refs.add(new Ref(start, p[0], target, RefKind.FUNC));
+	}
+
+	// An unsigned-LEB globalidx immediate.
+	private static void recordGlobalRef(byte[] buf, int[] p, List<Ref> refs) {
+		int start = p[0];
+		int index = readU(buf, p);
+		refs.add(new Ref(start, p[0], index, RefKind.GLOBAL));
 	}
 
 	// An unsigned-LEB typeidx immediate.
@@ -611,6 +674,13 @@ public final class WasmSections {
 		p[0] += len;
 	}
 
+	static String readName(byte[] buf, int[] p) {
+		int len = readU(buf, p);
+		String name = new String(buf, p[0], len, java.nio.charset.StandardCharsets.UTF_8);
+		p[0] += len;
+		return name;
+	}
+
 	private static void skipLeb(byte[] buf, int[] p) {
 		while ((buf[p[0]] & 0x80) != 0) {
 			p[0]++;
@@ -680,6 +750,15 @@ public final class WasmSections {
 		private int[] values = new int[16];
 
 		private int size;
+
+		boolean contains(int value) {
+			for (int i = 0; i < this.size; i++) {
+				if (this.values[i] == value) {
+					return true;
+				}
+			}
+			return false;
+		}
 
 		void add(int value) {
 			if (this.size == this.values.length) {

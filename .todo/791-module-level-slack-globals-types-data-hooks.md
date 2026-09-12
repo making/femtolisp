@@ -1,74 +1,97 @@
-# The shaker leaves globals, types and data behind, and 221 bytes of tidying after them
+# The code section an external optimizer still halves
 
-**Status:** open. Measured 2026-09-12.
+**Status:** open, items 1 and 2 LANDED. Re-measured 2026-09-12 on `e0bcf42f0`, after `790`
+(`4531562b0`) moved the baseline: the program below is **1,808 bytes**, not the 1,090 of
+the spike this item was written against. What is left is item 3 alone, and the measurement
+below RESIZES it.
 
-Difficulty: Medium
+Difficulty: High (what is left is a post-emit code-section pass over a 19-33% residue, not
+the "~114 bytes of ordinary tidying" the original text estimated)
 
 Third of the four items on the measurement in
 [`789`](789-string-boundary-drags-in-the-charvec-normalizer.md); the program and flags are
 there.
 
-## The finding
+## Items 1 and 2 -- DONE
 
-**This item is entirely in-tree work. An external optimizer was run ONCE, as a probe, to
-find out how much is here before deciding whether it was worth writing -- the answer is 221
-bytes, and nothing about the plan below depends on that tool.** The core libraries take no
-external dependency and this pass would not be the first one.
+Landed numbers, mechanism and pins:
+**`.kb/optimize-dead-code-elimination.md`, "Global section" and "Host cell hooks"**, and
+**`.kb/wasm-export-no-wasi.md`, "Both hooks are DROPPED from a module whose program cannot
+use them"**. In short:
 
-| Module | rontolisp | what an external `-Oz` still finds |
-| --- | ---: | ---: |
-| the measurement program, today | 4,623 | -2,062 |
-| the same with `789` + `790` spiked in | 1,090 | **-221** |
+- **Globals, and the types that die with them.** `WasmTreeShaker` walked functions, types
+  and data; a global nothing read survived it, one per top-level Lisp variable, so the
+  runtime's own specials travelled into every module (15 globals, 79 bytes, on a 1.8 KB
+  reactor that read none). `global.get`/`global.set` became a renumbered ref kind, imported
+  and exported globals are roots, initializers are edges. The type section wins too: a dead
+  global's initializer can be a `rec` group's last citation (`(print 1)` loses 34 bytes of
+  types that way).
+- **The two `--no-wasi` host hooks.** `__ronto_seed_random` / `__ronto_set_time` are
+  exports, hence roots, hence immortal -- on a module that draws no random number and reads
+  no clock, 65 bytes writing cells nothing reads. `WasmTreeShaker.HostCellHook` decides it
+  by OBSERVATION rather than by name: a hook is kept when some function surviving the shake
+  WITHOUT it holds an `i32.const` equal to the cell address.
 
-Read the two rows together: on today's module an optimizer looks impressive (40 functions
-to 20, 15 globals to 1) because it is deleting the SAME dead runtime that `789` and `790`
-delete at the source. Once those land it has 221 bytes left -- and that residue is this
-item, because most of it is not clever.
+**The finding that changed the plan for item 2.** This item said to read the reachability
+off `compiler/NoWasiLoadPathRefusals`. That class walks the LOAD path -- the top-level
+forms and what they call -- which is strictly narrower than the question: a program whose
+only `(random ...)` is inside a `wasm-export` would have lost the hook it needs. Nor is a
+call graph the answer, because nothing CALLS a setter and `random` is inlined at the draw
+site (`.kb/random.md`), so there is no reader function to ask about. The cell is the whole
+channel, so the citation of the cell is the test.
 
-Where the 221 sits (the 1,090-byte module, as emitted vs. the probe):
+| Program | before | after | delta |
+| --- | ---: | ---: | ---: |
+| the measurement program, `--no-wasi` | 1,808 | **1,658** | -8.3% |
+| `examples/browser/webgl-triangle` | 1,830 | **1,683** | -8.0% |
+| `hello_world` `--no-wasi` / WASI | 643 / 590 | **493 / 509** | -23.3% / -13.7% |
+| `pi_approx` `--no-wasi` / WASI | 1,688 / 1,635 | **1,528 / 1,544** | -9.5% / -5.6% |
+| `zlib` `--no-wasi` / WASI | 94,172 / 94,167 | **94,069 / 94,099** | -0.1% |
 
-| Section | as emitted | probe | Worth | Note |
-| --- | ---: | ---: | ---: | --- |
-| globals | 79 / 15 | 6 / 1 | 73 | **14 dead globals survive the shaker** |
-| code | 627 / 17 fn | 513 / 9 fn | 114 | inline one-call-site bodies, drop unused locals |
-| types | 116 / 17 | 96 / 12 | 20 | rec groups outlive their last user |
-| data | 94 / 6 | 88 | 6 | a segment nothing addresses |
-| exports | 92 / 6 | 92 | 0 | the probe cannot know; item 2 below is 65 more |
+It is a FLOOR effect: a fixed 80-150 bytes every module paid, a quarter of `hello_world`
+and a rounding error on `zlib`. Sixty-five of it is below what an external optimizer can
+reach at all -- the hooks are exports, and an export is a root for binaryen too.
 
-Three of the five rows are deletions the shaker simply does not attempt, not optimizations.
+## Item 3 -- open, and bigger than this item said
 
-## What to do
+**What the re-measurement showed.** `wasm-opt -Oz --all-features` (binaryen 132) over the
+SHAKEN output, as a probe:
 
-**1. Shake globals, types and data segments, not just functions.**
-`WasmTreeShaker` walks functions. A global nothing reads, a type nothing references and a
-data segment no instruction addresses all survive it. In a 1 KB module the globals alone
-are 7.7% of the file. This is the cheapest item here and the one with no design question
-in it.
+| Program | rontolisp | then `-Oz` | residue |
+| --- | ---: | ---: | ---: |
+| the measurement program, `--no-wasi` | 1,658 | 1,505 | 153 (9.2%) |
+| `examples/browser/webgl-triangle` | 1,683 | 1,340 | 343 (20.4%) |
+| `hello_world` `--no-wasi` / WASI | 493 / 509 | 349 / 391 | 144 / 118 (29% / 23%) |
+| `pi_approx` `--no-wasi` / WASI | 1,528 / 1,544 | 1,022 / 1,064 | 506 / 480 (33% / 31%) |
+| `zlib` `--no-wasi` / WASI | 94,069 / 94,099 | 75,517 / 75,887 | **18,552 / 18,212 (~19.5%)** |
 
-**2. Stop exporting the two `--no-wasi` host hooks unconditionally.**
-`__ronto_seed_random` and `__ronto_set_time` are emitted on every `--no-wasi` core module
-whether or not the program can reach `random`, `get-universal-time`,
-`get-internal-real-time` or `get-internal-run-time`. Their two bodies, two function-section
-entries, and their names in the export section are about **65 bytes** -- 6% of a 1 KB
-module. The build already computes exactly the reachability this needs:
-`compiler/NoWasiLoadPathRefusals` walks the program to decide which of these primitives a
-module can reach, and prints a host obligation when it can. Emit each hook when its
-primitive is reachable, keep emitting both when the answer is unknown, and say so in
-`.kb/wasm-export-no-wasi.md` next to the existing "an EXPORT, not an import" reasoning --
-the hook's contract (call it before `_initialize`) is unchanged, it just stops appearing on
-modules that have nothing to seed.
+The original text estimated this residue at ~114 bytes and called it "ordinary post-emit
+tidying ... stop at the point where the next transform starts needing a dataflow
+framework". That estimate was taken on ONE 1,090-byte spiked module before `790` landed.
+On the corpus the line was supposed to be scoped against, it is **19-33% of every module**
+and 18.5 KB on `zlib` -- so the line the item drew is in the wrong place: this is a sized
+opportunity, not a cleanup, and it is worth its own design rather than a list of local
+rewrites.
 
-**3. A cleanup pass in `am.ik.wasm`, written here.**
-The ~114 bytes left in the code section are ordinary post-emit tidying: inline a body with
-one call site, merge identical bodies (the AST path already folds duplicates -- see
-`.kb/optimize-dead-code-elimination.md` -- but nothing does it after emission), drop unused
-locals, fold `local.set`/`local.get` pairs. Each is a local rewrite over a function body
-the module already parses; none of it needs a general optimizer framework, and it belongs
-beside the shaker where it is language-independent by construction. Scope it against the
-`size-report` corpus rather than this one program -- the win on `zlib` is what decides
-whether it earns its maintenance -- and stop at the point where the next transform starts
-needing a dataflow framework: that is the line between this item and a project nobody
-asked for.
+**What to do next, in order.**
+
+1. **Find out WHAT the 18.5 KB on `zlib` is before writing a pass.** `-Oz` is a pipeline of
+   dozens of passes; the number above says how much, not which. Run binaryen's passes
+   individually (`--metrics`, and `-O` with single `--pass` runs) over `zlib.wasm` and
+   `pi_approx.wasm` and rank them. The deliverable of that step is a table in
+   `.kb/optimize-dead-code-elimination.md`: pass name, bytes, and whether the same win is
+   already available at the AST level (where rontolisp has types and names) rather than
+   post-emit. **Do not start with the local rewrites the original text listed** -- inline a
+   one-call-site body, merge identical bodies, drop unused locals, fold `local.set`/`get`
+   pairs -- until the ranking says they are where the bytes are. `WasmBodyFolder` already
+   merges identical bodies, so at least one of them is spent.
+2. Only then decide the shape: a post-emit pass beside the shaker in `am.ik.wasm`
+   (language-independent by construction, and the module already parses there), an AST-level
+   pass in `compiler`, or emitter changes at the sites the ranking names.
+3. Whatever lands, measure it on `size-report/programs/` -- `zlib` is what decides whether
+   it earns its maintenance -- and on `WasmTreeShakerCorpusTest`'s `wasm-tools validate`
+   sweep, which is the only cheap guard against a rewrite that validates on the toy and not
+   on the corpus.
 
 ## Also seen, not size
 
@@ -81,7 +104,7 @@ the measurement says anything.
 
 ## Touch points
 
-- `am/ik/wasm/WasmTreeShaker.java` (globals, types, data), and the new pass beside it
-- `codegen/wasm/WasmLispCompiler.java` (the hook emission block, the data section)
-- `compiler/NoWasiLoadPathRefusals.java` (the reachability the hooks should read)
-- `.kb/wasm-export-no-wasi.md`, `.kb/optimize-dead-code-elimination.md`
+- `am/ik/wasm/WasmTreeShaker.java`, `am/ik/wasm/WasmSections.java` -- items 1 and 2, landed
+- `codegen/wasm/WasmLispCompiler.java` (`shakeCore` offers the two `HostCellHook`s)
+- `.kb/optimize-dead-code-elimination.md`, `.kb/wasm-export-no-wasi.md` -- the numbers and
+  the mechanics
