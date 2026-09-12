@@ -11045,7 +11045,13 @@ public final class LispEvaluator {
 	 * {@code rplaca} for the substitute family, a {@code rplacd} splice for
 	 * {@code delete}. The splice runs only when no bounding keyword was given, matching
 	 * what the compile paths do with a bounded {@code delete} (CLHS lets a destructive
-	 * operator answer a fresh sequence, and the caller must use the RESULT either way).
+	 * operator answer a fresh sequence, and the caller must use the RESULT either way). A
+	 * DESTRUCTIVE substitute over a vector/string has no cons cells to rewrite, so ANSI's
+	 * "the argument itself changes" is served the {@code sort}/{@code nreverse} way
+	 * instead ({@code Environment.seqResultDestructive}): the freshly-built result is
+	 * written back into the argument's own storage. {@code delete} over a vector/string
+	 * is NOT the same answer -- it removes elements, so the result cannot be the
+	 * argument's own storage, and stays a fresh sequence.
 	 * @param name the operator, for the messages
 	 * @param args the evaluated arguments
 	 * @param mode how an element is matched
@@ -11165,6 +11171,18 @@ public final class LispEvaluator {
 			else if (!acted[i]) {
 				result = new LispCons(elements.get(i), result);
 			}
+		}
+		if (destructive && action == SeqScanAction.SUBSTITUTE) {
+			// Reaching here means listArgument was false (the list case returned above by
+			// rplaca-ing its own cons cells): a vector/string argument has no cons cells
+			// to rewrite, so ANSI's "the argument itself changes" is served by writing
+			// the
+			// freshly-built result back into the argument's own storage
+			// (seqResultDestructive, the sort/nreverse precedent) instead of answering it
+			// as a new sequence (.todo/773 -- .todo/623's plain seqResult reuse answered
+			// a
+			// fresh sequence here and left the argument unchanged).
+			return Environment.seqResultDestructive(original, result);
 		}
 		return Environment.seqResult(original, result);
 	}
