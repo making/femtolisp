@@ -57,6 +57,13 @@ final class JvmApplyCompiler {
 				ctx.emit(Opcode.ASTORE);
 				ctx.emit(argsSlot);
 				int required = fi.variadic() ? fi.paramCount() - 1 : fi.paramCount();
+				// The count guard. This call reaches no dispatcher, so no no-match arm
+				// can report a wrong count for it, and the walk below is car/cdr -- a
+				// short list would BIND nil for the parameters it does not reach and a
+				// long one would drop its tail. _arityChk measures the list against the
+				// shape baked here and throws ClosRegistry.arityMessage's text, the same
+				// helper a SPREAD dispatcher case carries.
+				emitArityGuard(ctx, className, argsSlot, required, fi.variadic());
 				for (int i = 0; i < required; i++) {
 					ctx.emit(Opcode.ALOAD);
 					ctx.emit(argsSlot);
@@ -129,6 +136,25 @@ final class JvmApplyCompiler {
 						ctx.cp.addUtf8("(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;")));
 		ctx.emit(Opcode.INVOKESTATIC);
 		ctx.emitU2(applyRef.index());
+	}
+
+	/**
+	 * Emits {@code _arityChk(args, shape)} in front of the physical direct call, and
+	 * records the shape so the emitter knows the helper is reachable
+	 * ({@code JvmLispCompiler.Ctx.arityGuardShapes}).
+	 */
+	private static void emitArityGuard(JvmLispCompiler.Ctx ctx, String className, int argsSlot, int required,
+			boolean variadic) {
+		int shape = JvmRuntimeBuilder.arityShape(required, variadic);
+		ctx.arityGuardShapes.add(shape);
+		MethodrefConstant chkRef = ctx.cp.addMethodref(ctx.cp.addClass(ctx.cp.addUtf8(className)),
+				ctx.cp.addNameAndType(ctx.cp.addUtf8(JvmRuntimeBuilder.ARITY_CHK_NAME),
+						ctx.cp.addUtf8(JvmRuntimeBuilder.ARITY_CHK_DESC)));
+		ctx.emit(Opcode.ALOAD);
+		ctx.emit(argsSlot);
+		JvmEmitHelper.emitIntConst(ctx, shape);
+		ctx.emit(Opcode.INVOKESTATIC);
+		ctx.emitU2(chkRef.index());
 	}
 
 	// Replaces the cons on the stack with its car (field 0) or cdr (field 1); nil

@@ -1618,6 +1618,9 @@ public final class JvmLispCompiler implements LispCompiler {
 		// Ctx.spelledLiterals). Filled while the bodies are emitted, read below by the
 		// dispatch gate's name probes.
 		Set<String> spelledLiterals = new HashSet<>();
+		// The shapes a literal (apply #'f ... list) guarded at its call site; non-empty
+		// is what makes _arityChk reachable (see Ctx.arityGuardShapes).
+		Set<Integer> arityGuardShapes = new HashSet<>();
 
 		if (usesEval) {
 			for (int arity = 0; arity <= JvmEvalRuntimeBuilder.MAX_CALLABLE_ARITY; arity++) {
@@ -1925,6 +1928,7 @@ public final class JvmLispCompiler implements LispCompiler {
 			.lambdaDecls(lambdaDecls)
 			.indirectCallArities(indirectCallArities)
 			.valueFuncIds(valueFuncIds)
+			.arityGuardShapes(arityGuardShapes)
 			.spelledLiterals(spelledLiterals)
 			.nextFuncId(nextFuncId)
 			.appendMethod(appendMethod)
@@ -2500,16 +2504,26 @@ public final class JvmLispCompiler implements LispCompiler {
 		MethodrefConstant lookupRefForDispatch = needsLookup
 				? cp.addMethodref(thisClass, cp.addNameAndType(lookupName, lookupDesc)) : null;
 		List<DispatchMethod> dispatchMethods = new ArrayList<>();
-		// The arity reporters the dispatchers signal a wrong argument COUNT through,
-		// emitted only for a program that has a dispatcher at all: without one no
-		// indirect call exists and the class is byte-identical to a build that never
+		// The arity reporters a wrong argument COUNT is signalled through, each emitted
+		// only for a program that has the site it serves: _arityErr for a per-arity
+		// dispatcher's no-match arm, _arityChk for a SPREAD case or a literal apply's
+		// direct call. A program with neither is byte-identical to a build that never
 		// knew about the check (JvmRuntimeBuilder.ArityReporting).
 		JvmRuntimeBuilder.ArityReporting arityReporting = JvmRuntimeBuilder.ArityReporting.NONE;
-		if (!indirectCallArities.isEmpty()) {
-			arityReporting = new JvmRuntimeBuilder.ArityReporting(cp.addMethodref(thisClass, cp.addNameAndType(
-					cp.addUtf8(JvmRuntimeBuilder.ARITY_ERR_NAME), cp.addUtf8(JvmRuntimeBuilder.ARITY_ERR_DESC))));
+		boolean reportsMiss = !indirectCallArities.isEmpty();
+		boolean reportsCount = usesEval || !arityGuardShapes.isEmpty();
+		if (reportsMiss || reportsCount) {
+			arityReporting = new JvmRuntimeBuilder.ArityReporting(
+					reportsMiss ? cp.addMethodref(thisClass,
+							cp.addNameAndType(cp.addUtf8(JvmRuntimeBuilder.ARITY_ERR_NAME),
+									cp.addUtf8(JvmRuntimeBuilder.ARITY_ERR_DESC)))
+							: null,
+					reportsCount
+							? cp.addMethodref(thisClass, cp.addNameAndType(cp.addUtf8(JvmRuntimeBuilder.ARITY_CHK_NAME),
+									cp.addUtf8(JvmRuntimeBuilder.ARITY_CHK_DESC)))
+							: null);
 			dispatchMethods.addAll(JvmRuntimeBuilder.buildArityMethods(functions, lambdaDecls, cp, thisClass,
-					stringClass, dispatchableFuncIds));
+					objectArrayClass, stringClass, dispatchableFuncIds, reportsMiss, reportsCount));
 		}
 		for (int arity : indirectCallArities) {
 			dispatchMethods.addAll(JvmRuntimeBuilder.buildDispatchMethods(arity, functions, lambdaDecls,
@@ -6002,6 +6016,17 @@ public final class JvmLispCompiler implements LispCompiler {
 		 */
 		Set<String> spelledLiterals;
 
+		/**
+		 * The callee SHAPES (see {@code JvmRuntimeBuilder.arityShape}) a literal
+		 * {@code (apply #'f ... list)} guarded at its call site. Such a call compiles to
+		 * a PHYSICAL direct call that walks the list itself, so it reaches no dispatcher
+		 * and no no-match arm can report a wrong count for it -- the guard is a
+		 * {@code _arityChk} call emitted beside the walk. One mutable set shared by every
+		 * {@code Ctx}, like {@link #valueFuncIds}: non-empty is what tells the emitter
+		 * that {@code _arityChk} is reachable and has to be built.
+		 */
+		Set<Integer> arityGuardShapes;
+
 		int[] nextFuncId;
 
 		/**
@@ -6705,6 +6730,7 @@ public final class JvmLispCompiler implements LispCompiler {
 			this.lambdaDecls = builder.lambdaDecls;
 			this.indirectCallArities = builder.indirectCallArities;
 			this.valueFuncIds = builder.valueFuncIds;
+			this.arityGuardShapes = builder.arityGuardShapes;
 			this.spelledLiterals = builder.spelledLiterals;
 			this.nextFuncId = builder.nextFuncId;
 			this.ctxBuilder = builder;
@@ -6875,6 +6901,8 @@ public final class JvmLispCompiler implements LispCompiler {
 			private Set<Integer> indirectCallArities = new HashSet<>();
 
 			private Set<Integer> valueFuncIds = new HashSet<>();
+
+			private Set<Integer> arityGuardShapes = new HashSet<>();
 
 			private Set<String> spelledLiterals = new HashSet<>();
 
@@ -7311,6 +7339,11 @@ public final class JvmLispCompiler implements LispCompiler {
 
 			Builder valueFuncIds(Set<Integer> valueFuncIds) {
 				this.valueFuncIds = valueFuncIds;
+				return this;
+			}
+
+			Builder arityGuardShapes(Set<Integer> arityGuardShapes) {
+				this.arityGuardShapes = arityGuardShapes;
 				return this;
 			}
 

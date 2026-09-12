@@ -1905,7 +1905,7 @@ final class WasmRuntimeBuilder {
 			List<WasmLispCompiler.LambdaInfo> lambdaDecls, int numDefuns, WasmLispCompiler.StringTable st,
 			boolean usesEval, int userFuncBase) {
 		DispatchFunctions built = buildDispatch(arity, defuns, lambdaDecls, numDefuns, st, usesEval, userFuncBase,
-				false, null, 0, null);
+				false, null, 0, null, -1);
 		if (!built.pages().isEmpty()) {
 			throw new IllegalStateException("dispatcher for arity " + arity + " needs pages; use buildDispatch");
 		}
@@ -1954,7 +1954,7 @@ final class WasmRuntimeBuilder {
 	static DispatchFunctions buildDispatch(int arity, List<WasmLispCompiler.DefunDecl> defuns,
 			List<WasmLispCompiler.LambdaInfo> lambdaDecls, int numDefuns, WasmLispCompiler.StringTable st,
 			boolean usesEval, int userFuncBase, boolean spread, @Nullable Set<Integer> dispatchable, int pageFuncBase,
-			@Nullable ArityReport report) {
+			@Nullable ArityReport report, int arityChkIndex) {
 		int dispatchArgs = spread ? 1 : arity;
 		List<DispatchTarget> targets = dispatchTargets(arity, defuns, lambdaDecls, spread, dispatchable, userFuncBase);
 		// The callables this dispatcher CANNOT serve: their funcId reaching it is a call
@@ -1986,7 +1986,7 @@ final class WasmRuntimeBuilder {
 			ByteArrayOutputStream body = new ByteArrayOutputStream();
 			WasmWriter w = new WasmWriter(body);
 			emitDispatchPrologue(w, arity, dispatchArgs, spread, usesEval, report != null);
-			emitDispatchCases(w, targets, missShapes, arity, dispatchArgs, spread, 0, report);
+			emitDispatchCases(w, targets, missShapes, arity, dispatchArgs, spread, 0, report, arityChkIndex);
 			byte[] single = body.toByteArray();
 			// levels == 1: every callable is inside one page already, so the body is
 			// large because its CASES are (a spread dispatcher over ten-parameter
@@ -2013,7 +2013,7 @@ final class WasmRuntimeBuilder {
 			SortedMap<Integer, Integer> pageMisses = missShapes.subMap(leaf.getKey() << DISPATCH_PAGE_BITS,
 					((leaf.getKey() + 1) << DISPATCH_PAGE_BITS));
 			pages.add(buildDispatchLeafPage(leaf.getValue(), pageMisses, leaf.getKey(), arity, dispatchArgs, spread,
-					report));
+					report, arityChkIndex));
 		}
 		for (int level = 1; level <= levels - 2; level++) {
 			Map<Integer, Map<Integer, Integer>> parents = new TreeMap<>();
@@ -2160,15 +2160,139 @@ final class WasmRuntimeBuilder {
 	}
 
 	/**
+	 * {@code _arity_chk(argList, shape) -> i32}: throw unless the list is a count the
+	 * callee shape can take. The two sites that call it -- a SPREAD dispatcher case and
+	 * the physical direct call a literal {@code (apply #'f list)} compiles to -- both
+	 * hold the shape as a compile-time constant and the count only as the LENGTH of a
+	 * list, which is why neither is a dispatch miss the {@code br_table}'s report arms
+	 * could catch, and why one shared function serves both. Seven bytes at a call site
+	 * instead of the ~100 an inline throw would cost, over a spread dispatcher that is
+	 * one case per callable in the program.
+	 *
+	 * <p>
+	 * The walk stops at the first non-cons, so an IMPROPER tail ends the count instead of
+	 * trapping on the {@code ref.cast}: {@code (apply #'f '(1 . 2))} is undefined in CL
+	 * and answered {@code (f 1)} before this guard existed, and a guard is no place to
+	 * start trapping on it. It reuses the {@code ((ref null eq), i32) -> i32} signature
+	 * ({@code TYPE_STR_TO_MEM}), so no module gains a type entry; the result is always 0
+	 * and every call site drops it.
+	 * @param report the message pieces and the {@code program-error} layout
+	 * @return the function body
+	 */
+	static byte[] buildArityChkBody(ArityReport report) {
+		ByteArrayOutputStream body = new ByteArrayOutputStream();
+		WasmWriter w = new WasmWriter(body);
+		// Params: 0 = argList, 1 = shape. Locals: 2 = got (i32), 3 = cursor, 4 = slots,
+		// 5 = msg.
+		int got = 2, cursor = 3, slots = 4, msg = 5;
+		w.write(2); // 2 local groups
+		w.write(1);
+		w.write(Type.I32);
+		w.write(3);
+		w.writeRefType(true, Type.EQ.code());
+		w.write(Instruction.I32_CONST);
+		w.writeSignedLeb128(0);
+		w.write(Instruction.SET_LOCAL);
+		w.writeUnsignedLeb128(got);
+		w.write(Instruction.GET_LOCAL);
+		w.writeUnsignedLeb128(0);
+		w.write(Instruction.SET_LOCAL);
+		w.writeUnsignedLeb128(cursor);
+		w.write(Instruction.BLOCK, 0x40); // $counted
+		w.write(Instruction.LOOP, 0x40); // $walk
+		w.write(Instruction.GET_LOCAL);
+		w.writeUnsignedLeb128(cursor);
+		w.write(Instruction.GC_PREFIX, Instruction.REF_TEST);
+		w.writeHeapType(WasmLispCompiler.TYPE_CONS);
+		w.write(Instruction.I32_EQZ);
+		w.write(Instruction.BR_IF, 1); // $counted
+		w.write(Instruction.GET_LOCAL);
+		w.writeUnsignedLeb128(got);
+		w.write(Instruction.I32_CONST);
+		w.writeSignedLeb128(1);
+		w.write(Instruction.I32_ADD);
+		w.write(Instruction.SET_LOCAL);
+		w.writeUnsignedLeb128(got);
+		w.write(Instruction.GET_LOCAL);
+		w.writeUnsignedLeb128(cursor);
+		w.write(Instruction.GC_PREFIX, Instruction.REF_CAST);
+		w.writeHeapType(WasmLispCompiler.TYPE_CONS);
+		w.write(Instruction.GC_PREFIX, Instruction.STRUCT_GET);
+		w.writeUnsignedLeb128(WasmLispCompiler.TYPE_CONS);
+		w.writeUnsignedLeb128(1); // cdr
+		w.write(Instruction.SET_LOCAL);
+		w.writeUnsignedLeb128(cursor);
+		w.write(Instruction.BR, 0); // $walk
+		w.write(Instruction.END); // $walk
+		w.write(Instruction.END); // $counted
+		// The count fits when it is the required one, or larger with a &rest tail to
+		// take the surplus.
+		emitArityFits(w, got);
+		w.write(Instruction.IF, 0x40);
+		w.write(Instruction.I32_CONST);
+		w.writeSignedLeb128(0);
+		w.write(Instruction.RETURN);
+		w.write(Instruction.END);
+		emitArityThrow(w, report, 1, slots, msg, () -> {
+			w.write(Instruction.GET_LOCAL);
+			w.writeUnsignedLeb128(got);
+		});
+		w.write(Instruction.END); // end function
+		return body.toByteArray();
+	}
+
+	/**
+	 * The body a module that reserved {@code _arity_chk}'s slot emits when it turns out
+	 * to have no {@code program-error} representation to throw: answer 0 and check
+	 * nothing. The slot is decided in the pre-pass (it shifts every user function index),
+	 * the representation only once the class layouts are baked, so the two can disagree;
+	 * a stub keeps the index space honest without inventing a throw the module cannot
+	 * catch.
+	 * @return the function body
+	 */
+	static byte[] buildArityChkStubBody() {
+		ByteArrayOutputStream body = new ByteArrayOutputStream();
+		WasmWriter w = new WasmWriter(body);
+		w.write(0); // 0 locals
+		w.write(Instruction.I32_CONST);
+		w.writeSignedLeb128(0);
+		w.write(Instruction.END);
+		return body.toByteArray();
+	}
+
+	/**
+	 * Pushes 1 when {@code gotLocal} is a count the shape in local 1 can take:
+	 * {@code got == required}, or {@code got > required} with a {@code &rest} tail.
+	 */
+	private static void emitArityFits(WasmWriter w, int gotLocal) {
+		w.write(Instruction.GET_LOCAL);
+		w.writeUnsignedLeb128(gotLocal);
+		emitShapeRequired(w, 1);
+		w.write(Instruction.I32_EQ);
+		w.write(Instruction.GET_LOCAL);
+		w.writeUnsignedLeb128(gotLocal);
+		emitShapeRequired(w, 1);
+		w.write(Instruction.I32_GT_U);
+		w.write(Instruction.GET_LOCAL);
+		w.writeUnsignedLeb128(1);
+		w.write(Instruction.I32_CONST);
+		w.writeSignedLeb128(1);
+		w.write(Instruction.I32_AND);
+		w.write(Instruction.I32_AND);
+		w.write(Instruction.I32_OR);
+	}
+
+	/**
 	 * The wrong-argument-count landing: assemble the message from the report's pieces
-	 * (the callee shape is in {@code shapeLocal}, the count this dispatcher was called
-	 * with is a constant), build the {@code program-error} instance the way
-	 * {@code %obj-new} does, and throw the {@code (instance . message)} payload on
-	 * {@code $lisp-cond} -- the channel {@code %error-cond} uses, so a
+	 * (the callee shape is in {@code shapeLocal}, the count pushed by {@code pushGot} --
+	 * a constant for a per-arity dispatcher, a local for the shared count guard, whose
+	 * count is the LENGTH of an argument list), build the {@code program-error} instance
+	 * the way {@code %obj-new} does, and throw the {@code (instance . message)} payload
+	 * on {@code $lisp-cond} -- the channel {@code %error-cond} uses, so a
 	 * {@code program-error} clause matches and the entry landing pad reports it.
 	 */
 	private static void emitArityThrow(WasmWriter w, ArityReport report, int shapeLocal, int slotsLocal, int msgLocal,
-			int got) {
+			Runnable pushGot) {
 		report.intern();
 		emitStrConst(w, Objects.requireNonNull(report.prefix));
 		// a &rest tail makes the count a lower bound
@@ -2202,8 +2326,7 @@ final class WasmRuntimeBuilder {
 		w.write(Instruction.END);
 		emitStrConst(w, Objects.requireNonNull(report.infix));
 		emitConcat(w);
-		w.write(Instruction.I32_CONST);
-		w.writeSignedLeb128(got);
+		pushGot.run();
 		emitDecimal(w);
 		emitConcat(w);
 		w.write(Instruction.SET_LOCAL);
@@ -2467,7 +2590,7 @@ final class WasmRuntimeBuilder {
 	 */
 	private static void emitDispatchCases(WasmWriter w, List<DispatchTarget> targets,
 			SortedMap<Integer, Integer> missShapes, int arity, int dispatchArgs, boolean spread, int funcIdBias,
-			@Nullable ArityReport report) {
+			@Nullable ArityReport report, int arityChkIndex) {
 		int funcIdLocal = dispatchArgs + 1;
 		int argListLocal = dispatchArgs + 2;
 		if (targets.isEmpty() && missShapes.isEmpty()) {
@@ -2553,6 +2676,20 @@ final class WasmRuntimeBuilder {
 			}
 			DispatchTarget target = targets.get(targetIdx);
 			if (spread) {
+				// The count guard. A short list would otherwise BIND nil for the
+				// parameters it does not reach and a long one would drop its tail,
+				// because the walk below is car/cdr and both answer nil past the end --
+				// neither of which is a dispatch MISS, so the report arms above never
+				// see it (buildArityChkBody).
+				if (arityChkIndex >= 0) {
+					w.write(Instruction.GET_LOCAL);
+					w.writeUnsignedLeb128(1);
+					w.write(Instruction.I32_CONST);
+					w.writeSignedLeb128(target.required() * 2 + (target.variadic() ? 1 : 0));
+					w.write(Instruction.CALL);
+					w.writeUnsignedLeb128(arityChkIndex);
+					w.write(Instruction.DROP);
+				}
 				// cursor = argList; the required parameters come off the front and a
 				// variadic target takes what is left.
 				w.write(Instruction.GET_LOCAL);
@@ -2630,7 +2767,10 @@ final class WasmRuntimeBuilder {
 
 		if (!armShapes.isEmpty()) {
 			w.write(Instruction.END); // $arityerr
-			emitArityThrow(w, Objects.requireNonNull(report), funcIdLocal, argListLocal, dispatchArgs + 3, arity);
+			emitArityThrow(w, Objects.requireNonNull(report), funcIdLocal, argListLocal, dispatchArgs + 3, () -> {
+				w.write(Instruction.I32_CONST);
+				w.writeSignedLeb128(arity);
+			});
 		}
 
 		// End result block
@@ -2645,12 +2785,13 @@ final class WasmRuntimeBuilder {
 	 * symbol designator into one -- so it only has to read the funcId back out.
 	 */
 	private static byte[] buildDispatchLeafPage(List<DispatchTarget> targets, SortedMap<Integer, Integer> missShapes,
-			int page, int arity, int dispatchArgs, boolean spread, @Nullable ArityReport report) {
+			int page, int arity, int dispatchArgs, boolean spread, @Nullable ArityReport report, int arityChkIndex) {
 		ByteArrayOutputStream body = new ByteArrayOutputStream();
 		WasmWriter w = new WasmWriter(body);
 		emitPageLocals(w, report != null);
 		emitPageFuncIdDigit(w, dispatchArgs, 0);
-		emitDispatchCases(w, targets, missShapes, arity, dispatchArgs, spread, page << DISPATCH_PAGE_BITS, report);
+		emitDispatchCases(w, targets, missShapes, arity, dispatchArgs, spread, page << DISPATCH_PAGE_BITS, report,
+				arityChkIndex);
 		return body.toByteArray();
 	}
 

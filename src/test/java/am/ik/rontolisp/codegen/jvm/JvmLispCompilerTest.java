@@ -3858,13 +3858,24 @@ class JvmLispCompilerTest {
 			.isEqualTo("\"Function expects 1 argument, got 0\"");
 		assertThat(compileAndRun(defs + caught.formatted("(funcall #'g)")))
 			.isEqualTo("\"Function expects at least 1 argument, got 0\"");
-		// apply is NOT covered: its dispatcher has a case for every callable and reads
-		// the parameters out of a list, so a wrong count is not a dispatch miss there.
-		// It still answers what it always did (.kb/error-handling.md).
-		assertThat(compileAndRun(defs + caught.formatted("(apply #'f '(1 2))"))).isEqualTo("1");
-		// The right count still runs, through both routes.
-		assertThat(compileAndRun(defs + "(print (list (funcall #'f 1) (apply #'f '(2)) (funcall #'g 3 4)))"))
-			.isEqualTo("(1 2 (3 (4)))");
+		// apply reaches no dispatch miss -- the LITERAL target compiles to a physical
+		// direct call and a computed one to the spread dispatcher, which has a case for
+		// every callable -- so both sites carry a _arityChk count guard instead
+		// (.kb/error-handling.md).
+		assertThat(compileAndRun(defs + caught.formatted("(apply #'f '(1 2))")))
+			.isEqualTo("\"Function expects 1 argument, got 2\"");
+		assertThat(compileAndRun(defs + caught.formatted("(apply #'f '())")))
+			.isEqualTo("\"Function expects 1 argument, got 0\"");
+		assertThat(compileAndRun(defs + caught.formatted("(apply #'g '())")))
+			.isEqualTo("\"Function expects at least 1 argument, got 0\"");
+		assertThat(compileAndRun(defs + caught.formatted("(let ((h #'f)) (apply h '(1 2)))")))
+			.isEqualTo("\"Function expects 1 argument, got 2\"");
+		assertThat(compileAndRun(defs + caught.formatted("(let ((h #'g)) (apply h '()))")))
+			.isEqualTo("\"Function expects at least 1 argument, got 0\"");
+		// The right count still runs, through every route.
+		assertThat(compileAndRun(defs + "(print (list (funcall #'f 1) (apply #'f '(2)) (funcall #'g 3 4)"
+				+ " (apply #'g 5 '(6)) (let ((h #'f)) (apply h '(7)))))"))
+			.isEqualTo("(1 2 (3 (4)) (5 (6)) 7)");
 	}
 
 	@Test

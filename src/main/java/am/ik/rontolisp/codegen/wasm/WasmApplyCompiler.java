@@ -81,11 +81,26 @@ final class WasmApplyCompiler {
 				int argsSlot = ctx.allocTemp();
 				ctx.writer.write(Instruction.SET_LOCAL);
 				ctx.writer.writeUnsignedLeb128(argsSlot);
+				int required = fi.variadic() ? fi.paramCount() - 1 : fi.paramCount();
+				// The count guard. This call reaches no dispatcher, so no no-match arm
+				// can report a wrong count for it, and the walk below is car/cdr -- a
+				// short list would BIND nil for the parameters it does not reach and a
+				// long one would drop its tail. _arity_chk measures the list against the
+				// shape baked here and throws ClosRegistry.arityMessage's text, the same
+				// function a SPREAD dispatcher case calls.
+				if (ctx.arityChkFuncIndex >= 0) {
+					ctx.writer.write(Instruction.GET_LOCAL);
+					ctx.writer.writeUnsignedLeb128(argsSlot);
+					ctx.writer.write(Instruction.I32_CONST);
+					ctx.writer.writeSignedLeb128(required * 2 + (fi.variadic() ? 1 : 0));
+					ctx.writer.write(Instruction.CALL);
+					ctx.writer.writeUnsignedLeb128(ctx.arityChkFuncIndex);
+					ctx.writer.write(Instruction.DROP);
+				}
 				// Push null env first (defun functions ignore it), like the direct-call
 				// convention.
 				ctx.writer.write(Instruction.REF_NULL);
 				ctx.writer.writeHeapType(Type.EQ.code());
-				int required = fi.variadic() ? fi.paramCount() - 1 : fi.paramCount();
 				for (int i = 0; i < required; i++) {
 					ctx.writer.write(Instruction.GET_LOCAL);
 					ctx.writer.writeUnsignedLeb128(argsSlot);

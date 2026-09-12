@@ -51,6 +51,14 @@ CL-USER> (f 1)
 Function expects 2 arguments, got 1
 ```
 
+Only a call that names the function directly can be checked at compile time. A call through a function *value* -- `funcall`, `apply`, `mapcar`, a variable holding `#'f` -- is checked at run time and signals a catchable `program-error` with the same text, on every backend.
+
+```lisp
+(defun f (a b) (+ a b))
+(handler-case (apply #'f '(1)) (program-error (c) (princ-to-string c)))
+; => "Function expects 2 arguments, got 1"
+```
+
 ## setf-function names
 
 The `name` may be a `(setf name)` list instead of a plain symbol. This defines a *setf-function*: the writer invoked when `name` is used as a `setf` place. The new value is passed as the first argument (it is the last required parameter of the setf lambda list, per the Common Lisp convention), so `(setf (name arg...) value)` calls the writer with `value` followed by `arg...`. The function is also first-class through `#'(setf name)`.

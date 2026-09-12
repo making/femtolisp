@@ -87,21 +87,23 @@ final class JvmRuntimeBuilder {
 	 * throw site has no channel for a condition).
 	 *
 	 * <p>
-	 * The SPREAD dispatcher is deliberately NOT covered: it carries a case for every
-	 * callable and reads the parameters out of a list, so a wrong count there is not a
-	 * dispatch miss at all and the check would have to live in every case. What that
-	 * check FINDS first is {@code .todo/192} -- a failing cl-ppcre scan leaks
-	 * {@code *reg-starts*} past the special binding that shadowed it, and the phantom
-	 * register becomes a second argument to a one-parameter replacement function. So
-	 * {@code apply} keeps answering nil for now; {@code .kb/error-handling.md} records
-	 * the gap.
+	 * The SPREAD dispatcher has no such arm: it carries a case for every callable and
+	 * reads the parameters out of a LIST, so a wrong count there is no dispatch miss at
+	 * all. Its cases -- and the physical direct call a literal {@code (apply #'f list)}
+	 * compiles to, which does not reach a dispatcher either -- carry a
+	 * {@code _arityChk(argList, shape)} call instead, which measures the list against the
+	 * callee shape baked at the site and throws the same message. One shared helper for
+	 * both, because both sites are the same question asked of the same two values.
 	 *
 	 * @param errRef {@code _arityErr(funcId, got)}, the per-arity dispatchers' no-match
 	 * arm: it maps the funcId back to the callee's shape and throws
+	 * @param chkRef {@code _arityChk(argList, shape)}, the spread cases' and the literal
+	 * {@code apply} call sites' count guard
 	 */
-	record ArityReporting(@org.jspecify.annotations.Nullable MethodrefConstant errRef) {
+	record ArityReporting(@org.jspecify.annotations.Nullable MethodrefConstant errRef,
+			@org.jspecify.annotations.Nullable MethodrefConstant chkRef) {
 
-		static final ArityReporting NONE = new ArityReporting(null);
+		static final ArityReporting NONE = new ArityReporting(null, null);
 
 	}
 
@@ -116,6 +118,15 @@ final class JvmRuntimeBuilder {
 	static final String ARITY_ERR_NAME = "_arityErr";
 
 	static final String ARITY_ERR_DESC = "(II)Ljava/lang/Object;";
+
+	/**
+	 * {@code _arityChk(Object argList, int shape)}: the count guard a SPREAD case and a
+	 * literal {@code apply}'s direct call share. It counts the list and throws
+	 * {@code _arityMsg(shape, got)} when the shape cannot take that many.
+	 */
+	static final String ARITY_CHK_NAME = "_arityChk";
+
+	static final String ARITY_CHK_DESC = "(Ljava/lang/Object;I)V";
 
 	/**
 	 * As above, with {@code spread} selecting the SPREAD dispatcher {@code _invoke_v}:
@@ -180,7 +191,7 @@ final class JvmRuntimeBuilder {
 			// The spread dispatcher takes EVERY callable: its case reads the parameters
 			// out of the list, so no arity has to match and no ceiling applies.
 			if (spread) {
-				cases.add(renderSpreadCase(fi, -1, objectArrayClass));
+				cases.add(renderSpreadCase(fi, -1, objectArrayClass, arityReporting));
 			}
 			else if (dispatchMatches(fi.paramCount(), fi.variadic(), arity)) {
 				cases.add(renderCase(fi, arity, restSlot, -1, objectClass));
@@ -192,7 +203,7 @@ final class JvmRuntimeBuilder {
 				continue;
 			}
 			if (spread) {
-				cases.add(renderSpreadCase(lambdaFuncInfos.get(i), fvSlot, objectArrayClass));
+				cases.add(renderSpreadCase(lambdaFuncInfos.get(i), fvSlot, objectArrayClass, arityReporting));
 			}
 			else if (dispatchMatches(lambda.paramNames().size(), lambda.variadic(), arity)) {
 				cases.add(renderCase(lambdaFuncInfos.get(i), arity, restSlot, fvSlot, objectClass));
@@ -455,9 +466,11 @@ final class JvmRuntimeBuilder {
 	private static final int ARITY_TABLE_MAX_SPAN = 30_000;
 
 	/**
-	 * Builds the arity-reporting helpers a program's dispatchers share: {@code _arityMsg}
-	 * (the message), {@code _arityErr} (the per-arity dispatchers' no-match arm) and --
-	 * when a spread dispatcher exists -- {@code _arityChk} (its per-case count guard).
+	 * Builds the arity-reporting helpers a program shares: {@code _arityMsg} (the
+	 * message), {@code _arityErr} (the per-arity dispatchers' no-match arm) and
+	 * {@code _arityChk} (the count guard a SPREAD case and a literal {@code apply}'s
+	 * direct call carry). The last two are emitted only for a program that has such a
+	 * site, so a program with only one kind pays only for that kind.
 	 *
 	 * <p>
 	 * {@code _arityErr} maps the funcId back to the callee's shape through a STRING
@@ -475,11 +488,16 @@ final class JvmRuntimeBuilder {
 	 * @param objectArrayClass the {@code Object[]} class constant (a cons cell)
 	 * @param stringClass the {@code String} class constant
 	 * @param dispatchable the funcIds reachable as a function value, or null for all
+	 * @param withErr whether the program has a per-arity dispatcher, whose no-match arm
+	 * {@code _arityErr} serves
+	 * @param withChk whether the program has a spread case or a literal {@code apply}
+	 * call site, which {@code _arityChk} serves
 	 * @return the helper methods
 	 */
 	static List<JvmLispCompiler.DispatchMethod> buildArityMethods(Map<String, JvmLispCompiler.FunctionInfo> functions,
 			List<JvmLispCompiler.LambdaInfo> lambdaDecls, ConstantPool cp, ClassConstant thisClass,
-			ClassConstant stringClass, @org.jspecify.annotations.Nullable Set<Integer> dispatchable) {
+			ClassConstant objectArrayClass, ClassConstant stringClass,
+			@org.jspecify.annotations.Nullable Set<Integer> dispatchable, boolean withErr, boolean withChk) {
 		SortedMap<Integer, Integer> shapes = new java.util.TreeMap<>();
 		for (JvmLispCompiler.FunctionInfo fi : functions.values()) {
 			if (fi.isClosure() || (dispatchable != null && !dispatchable.contains(fi.funcId()))) {
@@ -502,9 +520,88 @@ final class JvmRuntimeBuilder {
 		List<JvmLispCompiler.DispatchMethod> methods = new ArrayList<>();
 		methods.add(new JvmLispCompiler.DispatchMethod(cp.addUtf8(ARITY_MSG_NAME), cp.addUtf8(ARITY_MSG_DESC),
 				buildArityMsgBody(cp), 4));
-		methods.add(new JvmLispCompiler.DispatchMethod(cp.addUtf8(ARITY_ERR_NAME), cp.addUtf8(ARITY_ERR_DESC),
-				buildArityErrBody(shapes, cp, stringClass, runtimeEx, exCtor, msgRef), 3));
+		if (withErr) {
+			methods.add(new JvmLispCompiler.DispatchMethod(cp.addUtf8(ARITY_ERR_NAME), cp.addUtf8(ARITY_ERR_DESC),
+					buildArityErrBody(shapes, cp, stringClass, runtimeEx, exCtor, msgRef), 3));
+		}
+		if (withChk) {
+			methods.add(new JvmLispCompiler.DispatchMethod(cp.addUtf8(ARITY_CHK_NAME), cp.addUtf8(ARITY_CHK_DESC),
+					buildArityChkBody(objectArrayClass, runtimeEx, exCtor, msgRef), 5));
+		}
 		return methods;
+	}
+
+	/**
+	 * {@code _arityChk(argList, shape)}: throw unless the list is a count the shape can
+	 * take. The two sites that carry it -- a SPREAD dispatcher case and the physical
+	 * direct call a literal {@code (apply #'f list)} compiles to -- both hold the callee
+	 * shape as a compile-time constant and the count only as the LENGTH of a list, which
+	 * is why neither is a dispatch miss and why one shared helper serves both.
+	 *
+	 * <p>
+	 * The walk is the whole list, not the first {@code required + 1} cells: the count it
+	 * reports has to be the real one ({@code Function expects 1 argument, got 3}, as the
+	 * interpreter says it), and an {@code apply} argument list is the arguments of ONE
+	 * call. Nothing here allocates, and the common case returns after the walk. It stops
+	 * at the first non-cons rather than casting, so an IMPROPER tail ends the count
+	 * instead of raising: {@code (apply #'f '(1 . 2))} is undefined in CL and answered
+	 * {@code (f 1)} before this guard existed, and a guard is no place to start failing
+	 * on it.
+	 */
+	private static List<Integer> buildArityChkBody(ClassConstant objectArrayClass, ClassConstant runtimeEx,
+			MethodrefConstant exCtor, MethodrefConstant msgRef) {
+		// Params: 0 = argList, 1 = shape. Locals: 2 = got, 3 = cursor, 4 = required.
+		int argList = 0, shape = 1, got = 2, cursor = 3, required = 4;
+		JvmAsm a = new JvmAsm();
+		int loop = a.label();
+		int counted = a.label();
+		int variadic = a.label();
+		int bad = a.label();
+		int ok = a.label();
+		a.iconst(0);
+		a.istore(got);
+		a.aload(argList);
+		a.astore(cursor);
+		a.bind(loop);
+		a.aload(cursor);
+		a.instanceOf(objectArrayClass);
+		a.branch(Opcode.IFEQ, counted);
+		a.iinc(got, 1);
+		a.aload(cursor);
+		a.checkcast(objectArrayClass);
+		a.iconst(1);
+		a.aaload();
+		a.astore(cursor);
+		a.branch(Opcode.GOTO, loop);
+		a.bind(counted);
+		a.iload(shape);
+		a.iconst(1);
+		a.op(Opcode.IUSHR);
+		a.istore(required);
+		// a &rest tail makes the required count a lower bound
+		a.iload(shape);
+		a.iconst(1);
+		a.op(Opcode.IAND);
+		a.branch(Opcode.IFNE, variadic);
+		a.iload(got);
+		a.iload(required);
+		a.branch(Opcode.IF_ICMPEQ, ok);
+		a.branch(Opcode.GOTO, bad);
+		a.bind(variadic);
+		a.iload(got);
+		a.iload(required);
+		a.branch(Opcode.IF_ICMPGE, ok);
+		a.bind(bad);
+		a.anew(runtimeEx);
+		a.dup();
+		a.iload(shape);
+		a.iload(got);
+		a.invokestatic(msgRef);
+		a.invokespecial(exCtor);
+		a.op(Opcode.ATHROW);
+		a.bind(ok);
+		a.op(Opcode.RETURN);
+		return a.code;
 	}
 
 	/**
@@ -705,9 +802,20 @@ final class JvmRuntimeBuilder {
 	 * instructions per parameter and keeps the case body self-contained so it can be
 	 * spliced into any segment.
 	 */
-	private static Case renderSpreadCase(JvmLispCompiler.FunctionInfo fi, int fvSlot, ClassConstant objectArrayClass) {
+	private static Case renderSpreadCase(JvmLispCompiler.FunctionInfo fi, int fvSlot, ClassConstant objectArrayClass,
+			ArityReporting arityReporting) {
 		List<Integer> code = new ArrayList<>();
 		int required = fi.variadic() ? fi.paramCount() - 1 : fi.paramCount();
+		// The count guard. A short list would otherwise BIND nil for the parameters it
+		// does not reach and a long one would drop its tail, because the walk below is
+		// car/cdr and both answer nil past the end -- neither of which is a dispatch
+		// miss, so the shared no-match arm never sees it (ArityReporting).
+		if (arityReporting.chkRef() != null) {
+			code.add(Opcode.ALOAD_1);
+			emitIntConstStatic(code, arityShape(required, fi.variadic()));
+			code.add(Opcode.INVOKESTATIC);
+			emitU2(code, arityReporting.chkRef().index());
+		}
 		if (fvSlot >= 0) {
 			code.add(Opcode.ALOAD);
 			code.add(fvSlot);

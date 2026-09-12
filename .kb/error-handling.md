@@ -659,8 +659,8 @@ report's two top rows: 370 + 299 lost forms) and to fail the COMPILE on the comp
 - **Arity**: the interpreter's `Function expects N argument(s), got M` (lambda application), `Macro X
   expects ...`, `Environment.requireArgCount*` and every inline `X expects N arguments, got M` built-in
   check are `program-error`s (the ANSI suite's next six rows). The compiled backends signal the same
-  through a function VALUE ("A wrong argument COUNT" below); `apply` is the one shape still
-  unreported. The first-class twins are pinned on
+  through a function VALUE ("A wrong argument COUNT" below), `apply` included since 2026-09-12.
+  The first-class twins are pinned on
   `#'member` / `#'find` / `#'position` and, since the family took the bounding keywords, on
   `#'remove` too -- its wrapper now forwards a keyword tail instead of taking a fixed two arguments
   ([sequence-bounding-keywords.md](sequence-bounding-keywords.md)).
@@ -702,15 +702,32 @@ passed interpreted and returned a WRONG VALUE compiled. Pinned by ci-spec
   handler landing pad only; outside it the arm is the `unreachable` it was, byte for byte. The
   pieces are interned on FIRST USE: eagerly interning them costs a module whose dispatchers all turn
   out to be dead an extra data-segment header.
-- **`apply` is NOT yet covered** (`.todo/785`). The spread dispatcher carries a case for EVERY
-  callable and reads the parameters out of a list, so a wrong count there is no dispatch miss and
-  the check would have to sit in every case. When it was first written, what it found FIRST was not
-  a user bug but a compile-path leak: a failing cl-ppcre scan left `*reg-starts*` bound past the
-  special `let` that shadowed it, and the phantom register became a second argument to a
-  one-parameter `:simple-calls` replacement function. That leak is closed (2026-09-12, the
-  every-exit restore in [dynamic-special-variables.md](dynamic-special-variables.md)), so the
-  `apply` half is unblocked; until it lands `(apply #'f '(1 2))` still answers `1` on both compiled
-  backends where the interpreter signals, and ci-spec pins the gap rather than hiding it.
+- **`apply` is covered by a COUNT GUARD, not by a dispatch miss** (2026-09-12). Neither of its two
+  shapes can miss: a literal `(apply #'f ... list)` compiles to a physical direct call that reaches
+  no dispatcher (`Jvm/WasmApplyCompiler`), and a computed designator reaches the SPREAD dispatcher,
+  which carries a case for every callable and reads the parameters out of the list with car/cdr --
+  both answer nil past its end, so a short list BINDS nil and a long one drops its tail. Both sites
+  therefore carry one shared helper that measures the LIST against the callee shape baked at the
+  site: `_arityChk(argList, shape)` on the JVM (`JvmRuntimeBuilder.buildArityChkBody`, ~6 B per
+  site) and `_arity_chk(argList, shape) -> i32` on wasm-GC
+  (`WasmRuntimeBuilder.buildArityChkBody`, 7 B per site including the `drop`). The wasm helper is a
+  CONDITIONAL function index (`WasmLispCompiler.arityChkFuncIndex`, right after the extra per-arity
+  dispatchers) decided in the pre-pass, because it shifts `userFuncBase()`; a module without it is
+  byte-identical. Inlining the throw instead would have cost ~100 B at every one of those sites,
+  over a spread dispatcher that is one case per callable.
+  - The walk **stops at the first non-cons**, so an improper tail ends the count rather than
+    trapping on the `ref.cast` / `checkcast`: `(apply #'f '(1 . 2))` is undefined in CL and
+    answered `(f 1)` before the guard existed.
+  - The guard is why this half waited: what it found FIRST was not a user bug but a compile-path
+    leak, a failing cl-ppcre scan leaving `*reg-starts*` bound past the special `let` that shadowed
+    it, the phantom register arriving as a second argument to a one-parameter `:simple-calls`
+    replacement. That leak is closed (`.todo/192`, the every-exit restore in
+    [dynamic-special-variables.md](dynamic-special-variables.md)) and the guard is green over the
+    real cl-ppcre corpus on both compiled backends.
+  - `WasmAsyncEmit.freshCtx` must forward `arityChkFuncIndex`: it builds the SYNCHRONOUS top level
+    too, so dropping it leaves a top-level literal `apply` unguarded while the same form inside a
+    defun reports -- the same trap `callArityCeiling` and `extraDispatchFuncBase` are listed there
+    for.
 - **A BUILT-IN designator diverges in TEXT, not in class**: `(funcall #'car)` is a `program-error`
   everywhere, but the interpreter names the operator (`CAR expects 1 arguments, got 0`) while the
   compiled backends go through the `BuiltinFunctionWrappers` lambda and say `Function expects 1
@@ -728,6 +745,23 @@ passed interpreted and returned a WRONG VALUE compiled. Pinned by ci-spec
   handler-case (the sixth classification arm) and +678 B on any program with a dispatcher
   (`_arityMsg` + `_arityErr` + the funcId table); wasm pays nothing without a landing pad, +6 B when
   its dispatchers are all shaken away, and +190 B when the arms are live.
+
+  The `apply` half on top of that (2026-09-12, same method, the four rows above unchanged by it):
+
+  | program | JVM before | after | wasm before | after |
+  |---|---|---|---|---|
+  | a `defun` + a wrong-arity LITERAL `apply` under `handler-case` | 47,513 | 48,075 | 13,528 | 13,780 |
+  | the same through a function VALUE (`(let ((h #'f)) (apply h '(1 2)))`) | 47,624 | 48,185 | 32,120 | 32,851 |
+  | a `defun` + a RIGHT-arity literal `apply`, no `handler-case` | 7,093 | 7,522 | 11,206 | 11,206 |
+  | the real cl-ppcre exercise (`asdf:load-system`) | 767,584 | 769,410 | 713,188 | 713,188 |
+  | the same exercise under `handler-case` | 774,886 | 776,712 | 719,698 | 722,198 |
+
+  The JVM pays +429 B for `_arityMsg` + `_arityChk` on any program with a guarded site, then ~6 B
+  per site; wasm pays nothing at all without a landing pad -- the cl-ppcre module is byte-identical
+  there, `establishesLandingPad` being false for it -- and ~2.5 KB (+0.35%) on the same corpus with
+  one. The plan this landed from feared +28 KB on wasm from 14 B in every spread case pushing a 2,000-callable
+  program past `DISPATCH_PAGE_BUDGET_BYTES` ([wasm-function-body-size.md](wasm-function-body-size.md));
+  the shared function made it 7 B and the measurement is an order of magnitude under that.
 
 ## Out of scope (still)
 The interactive debugger (`break`, `*debugger-hook*`, rendering a restart's `:report` or running its

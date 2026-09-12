@@ -51,6 +51,14 @@ CL-USER> (f 1)
 Function expects 2 arguments, got 1
 ```
 
+コンパイル時に検査できるのは、関数を直接名指しする呼び出しだけです。関数*値*を介した呼び出し(`funcall`、`apply`、`mapcar`、`#'f` を保持する変数)は実行時に検査され、すべてのバックエンドで同じ本文を持つ捕捉可能な `program-error` を通知します。
+
+```lisp
+(defun f (a b) (+ a b))
+(handler-case (apply #'f '(1)) (program-error (c) (princ-to-string c)))
+; => "Function expects 2 arguments, got 1"
+```
+
 ## setf 関数名
 
 `name` にはプレーンなシンボルの代わりに `(setf name)` のリストを指定できます。これは *setf 関数* を定義します。すなわち、`name` を `setf` のプレースとして使ったときに呼び出される書き込み用の関数です。新しい値は最初の引数として渡されます(Common Lisp の慣習どおり、setf ラムダリストの最後の必須パラメータになります)。したがって `(setf (name arg...) value)` は書き込み関数を `value` に続いて `arg...` の順で呼び出します。`#'(setf name)` を通じてファーストクラス値としても扱えます。

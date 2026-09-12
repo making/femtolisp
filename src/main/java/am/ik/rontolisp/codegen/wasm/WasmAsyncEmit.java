@@ -823,6 +823,11 @@ final class WasmAsyncEmit {
 			// module's own extra dispatcher.
 			.callArityCeiling(proto.callArityCeiling)
 			.extraDispatchFuncBase(proto.extraDispatchFuncBase)
+			// NOT optional either: freshCtx also builds the synchronous top level, so
+			// dropping it leaves a literal (apply #'f list) there unguarded while the
+			// same form inside a defun reports a wrong argument count
+			// (Ctx.arityChkFuncIndex).
+			.arityChkFuncIndex(proto.arityChkFuncIndex)
 			.numDefuns(proto.numDefuns)
 			.userDefunNames(proto.userDefunNames)
 			.usesFmakunbound(proto.usesFmakunbound)

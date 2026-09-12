@@ -460,7 +460,35 @@ public final class WasmLispCompiler implements LispCompiler {
 	 * shifts, and only when one of those conditional blocks is present.
 	 */
 	int userFuncBase() {
+		return arityChkFuncBase() + (this.emitsArityChk ? 1 : 0);
+	}
+
+	/**
+	 * The index of {@code _arity_chk}, right after the extra per-arity dispatchers, so
+	 * adding it moves no fixed index -- only {@link #userFuncBase()}, which every
+	 * consumer already reads dynamically. Only meaningful when {@link #emitsArityChk} is
+	 * set.
+	 */
+	private int arityChkFuncBase() {
 		return extraDispatchFuncBase() + this.extraCallArity;
+	}
+
+	/**
+	 * The module index a SPREAD dispatcher case and a literal {@code apply}'s direct call
+	 * guard their argument count through, or {@code -1} when this module carries no
+	 * guard.
+	 *
+	 * <p>
+	 * A wrong count through either site is NOT a dispatch miss -- the spread dispatcher
+	 * has a case for every callable and the literal call reaches no dispatcher at all --
+	 * so the {@code br_table}'s report arms cannot catch it and a shared function does
+	 * ({@code WasmRuntimeBuilder.buildArityChkBody}). Gated exactly like the report arms:
+	 * EH mode behind a handler landing pad, which is where a thrown {@code program-error}
+	 * has both a representation and something to catch it.
+	 * @return the function index, or -1
+	 */
+	int arityChkFuncIndex() {
+		return this.emitsArityChk ? arityChkFuncBase() : -1;
 	}
 
 	/**
@@ -609,6 +637,13 @@ public final class WasmLispCompiler implements LispCompiler {
 	 * about the extra tier.
 	 */
 	private int extraCallArity;
+
+	/**
+	 * Whether this module carries {@code _arity_chk}, the wrong-argument-count guard a
+	 * SPREAD dispatcher case and a literal {@code (apply #'f list)} call site share. Set
+	 * in the pre-pass, because {@link #userFuncBase()} shifts by it.
+	 */
+	private boolean emitsArityChk;
 
 	/**
 	 * The widest call this module can make through a per-arity dispatcher -- a
@@ -2964,6 +2999,17 @@ public final class WasmLispCompiler implements LispCompiler {
 		// can find -- and the --component narrowing below reads this same fact rather
 		// than re-deriving one, so the two cannot drift apart.
 		boolean uncaughtReportPad = WasmUncaughtReportCompiler.emittedFor(ehMode);
+		// Whether this module carries _arity_chk: it shifts userFuncBase(), so the
+		// decision has to be made here, in front of pass 2, rather than beside the
+		// dispatchers that call it. The site scan is deliberately loose -- the literal
+		// (apply #'f list) sites live in bodies not yet compiled, and an INJECTED
+		// wrapper can add one after this point -- so it asks only whether the program
+		// mentions apply at all; a module that turns out to have no guarded site pays
+		// one unreferenced function. The rest of the gate is the report arms' own
+		// (WasmRuntimeBuilder.ArityReport): EH mode behind a handler landing pad, which
+		// is where a thrown program-error has both a representation and a catcher.
+		this.emitsArityChk = ehMode && hasLandingPad && this.usesInstances
+				&& (usesApplyRuntime || programUsesSymbol(program, LispNames.APPLY));
 		// The rontolisp:tcp-* built-ins are component-only the same way: they are the
 		// spliced sockets.lisp defuns over a wit-imported wasi:sockets@0.3.0 (an
 		// ordinary user import -- the base variant; the dedicated sockets blob variant
@@ -3681,6 +3727,7 @@ public final class WasmLispCompiler implements LispCompiler {
 			.userFuncBase(userFuncBase())
 			.callArityCeiling(callArityCeiling())
 			.extraDispatchFuncBase(extraDispatchFuncBase())
+			.arityChkFuncIndex(arityChkFuncIndex())
 			.numDefuns(defuns.size())
 			.userDefunNames(Set.copyOf(userDefinedNames))
 			.warnedClRedefinitions(warnedClRedefinitions)
@@ -4599,13 +4646,23 @@ public final class WasmLispCompiler implements LispCompiler {
 		// `unreachable` it was -- so a module that reports nothing is byte-identical,
 		// down to the five interned message pieces this does not add.
 		WasmRuntimeBuilder.ArityReport arityReport = arityReport(
-				ehMode && hasLandingPad && this.usesInstances && (!indirectCallArities.isEmpty() || usesApplyRuntime),
+				ehMode && hasLandingPad && this.usesInstances
+						&& (!indirectCallArities.isEmpty() || usesApplyRuntime || this.emitsArityChk),
 				closRegistry, stringTable, layoutAddresses);
+		// The guard the SPREAD cases and the literal apply call sites share. Its slot was
+		// reserved in the pre-pass (userFuncBase() shifts by it), so a module that
+		// reserved one and turns out to have no program-error representation to throw
+		// gets a body that answers 0 -- the silence it had before -- rather than a hole
+		// where its index is.
+		byte[] arityChkBody = this.emitsArityChk ? (arityReport != null
+				? WasmRuntimeBuilder.buildArityChkBody(arityReport) : WasmRuntimeBuilder.buildArityChkStubBody())
+				: new byte[0];
+		int arityChkIndex = arityReport != null ? arityChkFuncIndex() : -1;
 		for (int arity = 0; arity <= MAX_CALLABLE_ARITY; arity++) {
 			if (indirectCallArities.contains(arity)) {
 				WasmRuntimeBuilder.DispatchFunctions built = WasmRuntimeBuilder.buildDispatch(arity, defuns,
 						lambdaDecls, numDefuns, stringTable, usesEval, userFuncBase(), false, dispatchableFuncIds,
-						dispatchPageFuncBase + dispatchPageBodies.size(), arityReport);
+						dispatchPageFuncBase + dispatchPageBodies.size(), arityReport, arityChkIndex);
 				dispatchBodies.add(built.body());
 				for (byte[] page : built.pages()) {
 					dispatchPageBodies.add(page);
@@ -4628,7 +4685,7 @@ public final class WasmLispCompiler implements LispCompiler {
 		if (usesApplyRuntime) {
 			WasmRuntimeBuilder.DispatchFunctions built = WasmRuntimeBuilder.buildDispatch(0, defuns, lambdaDecls,
 					numDefuns, stringTable, usesEval, userFuncBase(), true, dispatchableFuncIds,
-					dispatchPageFuncBase + dispatchPageBodies.size(), arityReport);
+					dispatchPageFuncBase + dispatchPageBodies.size(), arityReport, arityChkIndex);
 			dispatchBodies.add(built.body());
 			for (byte[] page : built.pages()) {
 				dispatchPageBodies.add(page);
@@ -4656,7 +4713,7 @@ public final class WasmLispCompiler implements LispCompiler {
 			if (indirectCallArities.contains(arity)) {
 				WasmRuntimeBuilder.DispatchFunctions built = WasmRuntimeBuilder.buildDispatch(arity, defuns,
 						lambdaDecls, numDefuns, stringTable, usesEval, userFuncBase(), false, dispatchableFuncIds,
-						dispatchPageFuncBase + dispatchPageBodies.size(), arityReport);
+						dispatchPageFuncBase + dispatchPageBodies.size(), arityReport, arityChkIndex);
 				extraDispatchBodies.add(built.body());
 				for (byte[] page : built.pages()) {
 					dispatchPageBodies.add(page);
@@ -6149,6 +6206,12 @@ public final class WasmLispCompiler implements LispCompiler {
 				for (int i = 0; i < this.extraCallArity; i++) {
 					fnDef.addFunction(extraCallableTypeBase() + i);
 				}
+				// The wrong-argument-count guard, right after them: reuses
+				// TYPE_STR_TO_MEM's ((ref null eq), i32) -> i32 signature, so no module
+				// gains a type entry for it.
+				if (this.emitsArityChk) {
+					fnDef.addFunction(TYPE_STR_TO_MEM);
+				}
 				// User defun functions
 				for (DefunDecl defun : defuns) {
 					fnDef.addFunction(TYPE_CALLABLE_BASE + defun.paramNames.size());
@@ -7001,6 +7064,10 @@ public final class WasmLispCompiler implements LispCompiler {
 				// order.
 				for (byte[] body : extraDispatchBodies) {
 					code.addFunction(body);
+				}
+				// The wrong-argument-count guard body, in arityChkFuncBase() order.
+				if (this.emitsArityChk) {
+					code.addFunction(arityChkBody);
 				}
 				// User defun function bodies
 				for (byte[] body : userFunctionBodies) {
@@ -8548,6 +8615,14 @@ public final class WasmLispCompiler implements LispCompiler {
 		int extraDispatchFuncBase = FUNC_USER_BASE;
 
 		/**
+		 * The module index of {@code _arity_chk}, or {@code -1} when this module carries
+		 * no wrong-argument-count guard. A literal {@code (apply #'f ... list)} compiles
+		 * to a physical direct call that reaches no dispatcher, so nothing else can
+		 * report a wrong count for it (see {@code WasmLispCompiler.arityChkFuncIndex}).
+		 */
+		int arityChkFuncIndex = -1;
+
+		/**
 		 * The number of emitted defun bodies -- the defuns LIST size, one module function
 		 * per definition. NOT {@link #functions}{@code .size()}: that map holds one entry
 		 * per NAME, so a redefined defun (fast-http redefines 11 struct readers) makes it
@@ -8926,6 +9001,7 @@ public final class WasmLispCompiler implements LispCompiler {
 			this.userFuncBase = builder.userFuncBase;
 			this.callArityCeiling = builder.callArityCeiling;
 			this.extraDispatchFuncBase = builder.extraDispatchFuncBase;
+			this.arityChkFuncIndex = builder.arityChkFuncIndex;
 			this.numDefuns = builder.numDefuns;
 			this.userDefunNames = builder.userDefunNames;
 			this.usesFmakunbound = builder.usesFmakunbound;
@@ -9061,6 +9137,8 @@ public final class WasmLispCompiler implements LispCompiler {
 			private int callArityCeiling = MAX_CALLABLE_ARITY;
 
 			private int extraDispatchFuncBase = FUNC_USER_BASE;
+
+			private int arityChkFuncIndex = -1;
 
 			private int numDefuns = 0;
 
@@ -9356,6 +9434,11 @@ public final class WasmLispCompiler implements LispCompiler {
 
 			Builder extraDispatchFuncBase(int extraDispatchFuncBase) {
 				this.extraDispatchFuncBase = extraDispatchFuncBase;
+				return this;
+			}
+
+			Builder arityChkFuncIndex(int arityChkFuncIndex) {
+				this.arityChkFuncIndex = arityChkFuncIndex;
 				return this;
 			}
 
