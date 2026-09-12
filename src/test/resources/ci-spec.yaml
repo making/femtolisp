@@ -918,6 +918,39 @@ cases:
       ((2 C))
       (1 2 3 4)
       (1 3 2)
+  # stable-sort (and the sort call it routes through for :key) and reduce used to
+  # evaluate their sequence/predicate/keyword forms in the EXPANSION's own fixed
+  # structural order rather than the call's -- reduce's :from-end was worse: a
+  # computed one was decided in Java from the unevaluated form and its side effect
+  # never ran at all. search took no :test-not whatsoever. All fixed by hoisting every
+  # non-literal positional and keyword form into one source-ordered let (KeywordTail),
+  # and, for reduce's :from-end, branching between the two fold shapes at RUN time
+  # instead of deciding in Java.
+  - name: reduce-sort-search-order
+    source: |
+      (let ((ci-rso-log nil))
+        (print (stable-sort (progn (setq ci-rso-log (cons 1 ci-rso-log)) (list 3 1 2))
+                             (progn (setq ci-rso-log (cons 2 ci-rso-log)) #'<)
+                             :key (progn (setq ci-rso-log (cons 3 ci-rso-log)) #'-)))
+        (print (reverse ci-rso-log)))
+      (let ((ci-rso-log nil))
+        (print (reduce (progn (setq ci-rso-log (cons 1 ci-rso-log)) #'cons)
+                       (progn (setq ci-rso-log (cons 2 ci-rso-log)) (list 'a 'b 'c 'd 'e 'f))
+                       :from-end (progn (setq ci-rso-log (cons 3 ci-rso-log)) t)
+                       :initial-value (progn (setq ci-rso-log (cons 4 ci-rso-log)) nil)
+                       :start (progn (setq ci-rso-log (cons 5 ci-rso-log)) 1)
+                       :end (progn (setq ci-rso-log (cons 6 ci-rso-log)) 4)
+                       :key (progn (setq ci-rso-log (cons 7 ci-rso-log)) #'identity)))
+        (print (reverse ci-rso-log)))
+      (print (search '(nil a b nil) '(z z z a a b b z z z)
+                     :test-not (complement #'eql)
+                     :key #'identity :start1 1 :end1 3 :start2 1 :end2 8 :from-end t))
+    expected: |
+      (3 2 1)
+      (1 2 3)
+      (B C D)
+      (1 2 3 4 5 6 7)
+      4
   # The interpreter answers (coerce x 'list|'string|'vector) in Java for the
   # representations it can serve identically and DECLINES the rest to the shared
   # expansion (.kb/seq-coerce-runtime.md); the compile paths keep the expansion

@@ -55,11 +55,72 @@ The scans that carry the `:test`/`:test-not`/`:key` set: `expandMember`, `expand
 (over `SeqScanScaffold` -- `.kb/sequence-bounding-keywords.md`),
 `expandRemoveDuplicates`, and the set operations
 `expandAdjoin`/`expandUnion`/`expandIntersection`/`expandSetDifference`/`expandSubsetp`.
-NOT covered: `subst`/`sublis` (`:test`/`:key`), `sort`/`stable-sort`/`merge` and
-`search`/`reduce` (`:key`) -- ANSI's `subst.order.2`, `sort.order.2`, `search.order.2`,
-`reduce.order.2/3` are still red (`.todo/777`). Each is `KeywordTail.of(parts, start,
-prefix)` plus `tail.parts()` plus `tail.wrap(...)`; what needs checking is where their
-positional arguments bind and which surface the interpreter uses for them.
+**`subst`/`nsubst`/`sublis`/`nsublis`/`merge` were never in this list, and measurement
+(2026-09-12) shows they needed nothing:** all five are ordinary prelude `defun`s
+(`LispPreludeLibrary`), not expansions -- an ordinary function call already evaluates
+every argument, keyword values included, exactly once, in the order the call spells them
+(`LispEvaluator.evalArgs`, and the same shape on both compile paths via
+`LambdaLists.desugarProgram`/`toNative`), which is CLHS 3.1.2.1.2.3 by construction. A
+prior version of this file guessed they needed the same `KeywordTail` treatment as the
+scans above and filed that guess as a todo; the ANSI order tests it named
+(`subst.order.2`, `nsubst.order.1/2`, `sublis.order.1/2`, `nsublis.order.1/2`) already
+passed before any code changed, and `merge.order.1` (the only order test the suite has for
+`merge`, which takes no designator besides `:key`) does too. Verified directly against the
+interpreter, not inferred from the reason census: each order test's own body, run as a
+plain program, prints exactly ANSI's expected values and evaluation-count tuple.
+
+`sort`/`stable-sort` and `search`/`reduce` were the real gap, fixed 2026-09-12:
+
+- **`sort`/`stable-sort`**: `expandStableSort` (the expansion a `sort` call with keywords
+  routes through, `expandSortWithKey`) bound the predicate OUTERMOST and left the sequence
+  argument inlined at the innermost dispatch position, so a call's own order (sequence,
+  predicate, `:key`) came out as (predicate, `:key`, sequence) regardless of keywords --
+  ANSI's `sort.order.2`, `stable-sort.order.1/2`. Fixed by moving the predicate/`:key`/
+  scratch bindings from wrapping the whole `seqResultDispatchForm` call to wrapping the
+  BODY `seqResultDispatchForm` hands its `algo` callback -- the dispatch's own sequence
+  binding is then outermost, and the call's positional-then-keyword order falls out
+  without touching `seqResultDispatchForm` itself.
+- **`search`**: the prelude `defun`'s lambda list took no `:test-not` parameter at all, so
+  spelling one signalled `Unknown keyword argument: :TEST-NOT` (`search.order.2`,
+  `search-list.16`, and the same gap in `search-vector`/`search-string`/
+  `search-bitvector`). Fixed by adding the parameter and branching on it inline (`:test`
+  wins when both are spelled, matching every other scan's precedence here); still an
+  ordinary function call, so the order came free once the parameter existed.
+- **`reduce`**: `expandReduce` decided `:from-end`'s truth in JAVA from the unevaluated
+  keyword form (`fromEndForm != null && !isNilForm(fromEndForm)`) and never spliced a
+  non-literal form's side effect into the generated code at all -- a computed
+  `:from-end` simply never ran (ANSI's `reduce.order.2/3`: the evaluation count came up
+  one short and the `:from-end` variable stayed at its `let`-initial value). Every other
+  keyword value was also read from the unevaluated call and re-assembled into a NEW
+  structural shape (`(mapcar key (subseq seq start end))` wrapped in `reduce` or, under
+  `:from-end`, `(reduce swapped (reverse ...))`), so its position in THAT shape decided
+  evaluation order, not the call's own spelling -- with `:key`/`:start`/`:end`/
+  `:initial-value` free to be spelled in any order (ANSI's `.2` and `.3` swap them
+  against each other), no fixed structural shape can match both. Fixed the same way as
+  `sort`/`stable-sort`: `KeywordTail.of(parts, 3, "__reduce")` hoists `fn`/`seq` and every
+  non-literal keyword value (`:from-end` included) into one source-ordered `let`, so the
+  downstream reassembly only ever references already-evaluated variables; `:from-end`'s
+  boolean is still folded away in Java when its form is a literal `t`/`nil` (byte-
+  identical to before), and only a genuinely computed one costs a runtime
+  `(if from-end backward forward)` branch over both fold shapes -- the
+  `remove-duplicates` computed-`:from-end` precedent just above. A hoisted (therefore
+  possibly-nil-at-runtime) `:key` is defaulted to `#'identity` the way every other
+  designator here is; a literal one, nil included, is decided statically as before, no
+  wrapper paid.
+
+Each of the three fixes is `KeywordTail.of(parts, start, prefix)` plus `tail.parts()` plus
+`tail.wrap(...)`, same as every entry above, EXCEPT that `sort`/`stable-sort`'s existing
+structural bug (predicate bound outside the dispatch that reads the sequence) and
+`reduce`'s runtime-vs-Java `:from-end` decision needed their own surgery beyond the three
+lines -- what to check for the next operator is exactly this: whether its own expansion's
+bindings already sit in call order before applying `KeywordTail`, and whether any of its
+keywords decides between two STRUCTURALLY DIFFERENT expansions (a runtime branch) rather
+than just a value used once.
+
+Pinning: ci-spec `reduce-sort-search-order` (interpreter, JVM, both WASM backends, and the
+native-image E2E, `--simd` included) -- computed `stable-sort` sequence/predicate/`:key`,
+a computed `reduce` `:from-end`/`:initial-value`/`:start`/`:end`/`:key` together, and
+`search` with a computed `:test-not`.
 
 Two argument-order defects in the set operations were the same bug without a keyword and
 are fixed beside it: `union` evaluated list-b before list-a (its `do` bound the cursor
@@ -104,6 +165,18 @@ A third gap stood in that list until 2026-09-11:
 `:start`/`:end`/`:test-not` and a COMPUTED `:from-end`, which `expandRemoveDuplicates`
 rejected. Fixed (4 more tests, sequences 2,891 -> 2,895) --
 `.kb/sequence-bounding-keywords.md`, "the window bounds what is CONSIDERED".
+
+### `sort`/`stable-sort`/`search`/`reduce` (2026-09-12)
+
+`ansi-test/measure.sh sequences cons` (interpreter, suite `ca06bd9`): sequences 2,950 ->
+2,964 / 3,287 (89.7% -> 90.2%), errors 215 -> 206, fails 122 -> 117; cons unchanged
+(1,630 / 1,879) -- `subst`/`nsubst`/`sublis`/`nsublis` needed no code change, see "Who is
+covered" above. A name-by-name diff: **14 tests fixed, zero regressed** --
+`sort.order.2`, `stable-sort.order.1/2`, `reduce.order.2/3` (5 fails), and
+`search.order.2`/`search-list.16` plus the same `:test-not`-shaped fix reaching
+`search-vector`/`search-string`/`search-bitvector`'s own order/keyword tests (7 errors --
+the `Unknown keyword argument: :X` census fell from 30 to 21, exactly this count, with
+`mismatch`'s own missing `:test-not` -- out of scope here -- still red).
 
 ## What a variadic complement costs (2026-09-11)
 

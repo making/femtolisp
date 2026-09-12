@@ -2241,8 +2241,15 @@ public final class LispPreludeLibrary {
 		// O(n^2*m). Everything the cursor cannot answer -- a non-list operand, a
 		// negative or non-integer start, a bound past the end -- pins a nil cursor and
 		// reads through the original elt call.
+		// :test-not is spelled out here (not defaulted into :test) so the precedence CLHS
+		// leaves to the implementation matches every other scan in this codebase: a
+		// :test spelled alongside it wins, and only an ABSENT :test falls back to the
+		// (complemented) :test-not, then to eql (ANSI's search.order.2 and
+		// search-list.16). SequenceScanFast.search already declines any keyword it does
+		// not recognize, so a :test-not call simply falls through to this body -- no
+		// change needed there.
 		SOURCES.put(LispNames.SEARCH, """
-				(defun search (seq1 seq2 &key (start1 0) end1 (start2 0) end2 (test #'eql) key from-end)
+				(defun search (seq1 seq2 &key (start1 0) end1 (start2 0) end2 test test-not key from-end)
 				  (let* ((e1 (or end1 (length seq1)))
 				         (e2 (or end2 (length seq2)))
 				         (w (- e1 start1))
@@ -2264,9 +2271,12 @@ public final class LispPreludeLibrary {
 				                (b (if (consp c2)
 				                       (prog1 (car c2) (setq c2 (cdr c2)))
 				                       (elt seq2 (+ pos i)))))
-				            (unless (funcall test (if key (funcall key a) a)
-				                             (if key (funcall key b) b))
-				              (setq ok nil))))
+				            (let ((ka (if key (funcall key a) a))
+				                  (kb (if key (funcall key b) b)))
+				              (unless (if test
+				                          (funcall test ka kb)
+				                          (if test-not (not (funcall test-not ka kb)) (eql ka kb)))
+				                (setq ok nil)))))
 				        (setq h2 (if (consp h2) (cdr h2) h2))
 				        (when ok (setq result pos))))))
 				""");

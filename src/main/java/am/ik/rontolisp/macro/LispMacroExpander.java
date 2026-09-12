@@ -2821,22 +2821,34 @@ public final class LispMacroExpander {
 			// A plain (reduce fn seq) still needs the empty-sequence guard below.
 			return buildPlainReduce(parts.get(1), parts.get(2), null, null);
 		}
-		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
-		LispVal fromEndForm = keywordValue(parts, 3, LispNames.FROM_END_KEYWORD);
-		LispVal startForm = keywordValue(parts, 3, LispNames.START_KEYWORD);
-		LispVal endForm = keywordValue(parts, 3, LispNames.END_KEYWORD);
+		LispVal keyFormRaw = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
+		LispVal fromEndFormRaw = keywordValue(parts, 3, LispNames.FROM_END_KEYWORD);
+		LispVal startFormRaw = keywordValue(parts, 3, LispNames.START_KEYWORD);
+		LispVal endFormRaw = keywordValue(parts, 3, LispNames.END_KEYWORD);
 		// Lower whenever :from-end/:key/:start/:end is present at all -- even a nil
 		// value must be stripped, since the native reduce rejects those keywords. A nil
 		// value is treated as absent (:from-end nil = left fold, :key nil = identity,
 		// :end nil = the whole sequence).
-		if (keyForm == null && fromEndForm == null && startForm == null && endForm == null) {
+		if (keyFormRaw == null && fromEndFormRaw == null && startFormRaw == null && endFormRaw == null) {
 			return null;
 		}
-		boolean hasKey = keyForm != null && !isNilForm(keyForm);
-		boolean fromEnd = fromEndForm != null && !isNilForm(fromEndForm);
-		LispVal fnForm = parts.get(1);
-		LispVal seqForm = parts.get(2);
-		LispVal initForm = keywordValue(parts, 3, LispNames.INITIAL_VALUE_KEYWORD);
+		// CLHS 3.1.2.1.2.3: fn, seq and every keyword value form evaluate once, in the
+		// order the call spells them. KeywordTail hoists every non-literal one (fn/seq
+		// included) into one source-ordered let chain -- a call whose values are all
+		// literal hoists nothing, so the common case below is untouched
+		// (ANSI's reduce.order.2/3: :from-end used to be dropped from the
+		// generated code entirely -- decided in Java from the unevaluated form -- and
+		// every other keyword's VALUE ran in the expansion's own fixed structural order
+		// instead of the call's).
+		KeywordTail tail = KeywordTail.of(parts, 3, "__reduce");
+		List<LispVal> call = tail.parts();
+		LispVal fnForm = call.get(1);
+		LispVal seqForm = call.get(2);
+		LispVal keyForm = keywordValue(call, 3, LispNames.KEY_KEYWORD);
+		LispVal fromEndForm = keywordValue(call, 3, LispNames.FROM_END_KEYWORD);
+		LispVal startForm = keywordValue(call, 3, LispNames.START_KEYWORD);
+		LispVal endForm = keywordValue(call, 3, LispNames.END_KEYWORD);
+		LispVal initForm = keywordValue(call, 3, LispNames.INITIAL_VALUE_KEYWORD);
 		// :start/:end restrict the fold to a subsequence (subseq accepts a nil end).
 		if (startForm != null || endForm != null) {
 			seqForm = listToCons(List.of(new LispSymbol(LispNames.SUBSEQ), seqForm,
@@ -2844,24 +2856,42 @@ public final class LispMacroExpander {
 		}
 		// :key maps every element (via mapcar, which leaves the initial value untouched;
 		// a string sequence is coerced to its character list first, since mapcar is
-		// list-only).
-		LispVal seqExpr = hasKey
-				? listToCons(List.of(new LispSymbol(LispNames.MAPCAR), keyForm, seqAsListForm(seqForm))) : seqForm;
-		if (!fromEnd) {
-			return buildPlainReduce(fnForm, seqExpr, initForm, null);
+		// list-only). A HOISTED key form (keyForm no longer the same object as the
+		// call's own, unevaluated keyFormRaw) can be nil at run time without the
+		// expansion able to tell -- defaulted to #'identity the way every other
+		// designator here is (subsetp.order.2's precedent); a literal key form, nil
+		// included, is decided from keyFormRaw exactly as before, no wrapper paid.
+		boolean keyAbsent = keyFormRaw == null || isNilForm(keyFormRaw);
+		LispVal keyUse = keyForm != keyFormRaw
+				? listToCons(List.of(new LispSymbol(LispNames.OR), keyForm,
+						listToCons(List.of(new LispSymbol(LispNames.FUNCTION), new LispSymbol(LispNames.IDENTITY)))))
+				: keyForm;
+		LispVal seqExpr = keyAbsent ? seqForm
+				: listToCons(List.of(new LispSymbol(LispNames.MAPCAR), keyUse, seqAsListForm(seqForm)));
+		LispVal forward = buildPlainReduce(fnForm, seqExpr, initForm, null);
+		// The direction decides which of two shapes to fold with, so a literal
+		// :from-end is folded away here (byte-identical to before) and only a COMPUTED
+		// one -- necessarily a hoisted variable now, its value unknowable in Java --
+		// costs a runtime branch over both shapes (remove-duplicates' :from-end
+		// precedent, .kb/sequence-bounding-keywords.md).
+		if (fromEndForm == null || isLiteralNil(fromEndForm)) {
+			return tail.wrap(forward);
 		}
 		// Right fold: reverse the (mapped) sequence and swap the folding function's args
-		// so
-		// the accumulator stays on the right. Bind the function once to avoid
-		// re-evaluating
-		// the designator expression on every step.
+		// so the accumulator stays on the right. The function is bound once (not
+		// re-evaluated -- it may already be a hoisted variable, but the SWAPPED lambda
+		// still needs its own name to close over).
 		LispSymbol fnVar = new LispSymbol(REDUCE_FN_VAR);
 		LispSymbol a = new LispSymbol(REDUCE_A_VAR);
 		LispSymbol b = new LispSymbol(REDUCE_B_VAR);
 		LispVal swapped = listToCons(List.of(new LispSymbol(LispNames.LAMBDA), listToCons(List.of(a, b)),
 				listToCons(List.of(new LispSymbol(LispNames.FUNCALL), fnVar, b, a))));
 		LispVal reversed = listToCons(List.of(new LispSymbol(LispNames.REVERSE), seqExpr));
-		return makeLet(REDUCE_FN_VAR, fnForm, buildPlainReduce(swapped, reversed, initForm, fnVar));
+		LispVal backward = makeLet(REDUCE_FN_VAR, fnForm, buildPlainReduce(swapped, reversed, initForm, fnVar));
+		if (isLiteralTrue(fromEndForm)) {
+			return tail.wrap(backward);
+		}
+		return tail.wrap(makeIf(fromEndForm, backward, forward));
 	}
 
 	/**
@@ -3194,18 +3224,24 @@ public final class LispMacroExpander {
 		LispVal undecorate = listToCons(List.of(new LispSymbol(LispNames.LAMBDA), listToCons(List.of(e)),
 				callOf(LispNames.CDR, callOf(LispNames.CDR, e))));
 		LispVal mapcarResult = listToCons(List.of(new LispSymbol(LispNames.MAPCAR), undecorate, sorted));
+		// CLHS 3.1.2.1.2.3: the sequence, predicate and :key forms evaluate once, in the
+		// order the call spells them. seqResultDispatchForm already binds the sequence
+		// (parts.get(1)) FIRST, outside `algo`, so pred/key/dec/idx must bind INSIDE algo
+		// -- not around the whole dispatch, where they used to run before the sequence
+		// ever did (ANSI's sort.order.2, stable-sort.order.1/2).
 		LispVal dispatch = seqResultDispatchForm(parts.get(1), lst -> {
 			LispVal bindings = listToCons(List.of(listToCons(List.of(cur, lst, callOf(LispNames.CDR, cur)))));
 			LispVal scan = expandDo((LispCons) listToCons(
 					List.of(new LispSymbol(LispNames.DO), bindings, endClause, accumulate, increment)));
-			return makeProgn(List.of(scan, mapcarResult));
+			LispVal body = makeProgn(List.of(scan, mapcarResult));
+			LispVal wrapped = makeLet(idx.name(), new LispInteger(0), body);
+			wrapped = makeLet(dec.name(), LispNil.INSTANCE, wrapped);
+			if (hasKey && keyForm != null) {
+				wrapped = makeLet(key.name(), keyForm, wrapped);
+			}
+			return makeLet(pred.name(), parts.get(2), wrapped);
 		}, arraysExist, true);
-		LispVal result = makeLet(idx.name(), new LispInteger(0), dispatch);
-		result = makeLet(dec.name(), LispNil.INSTANCE, result);
-		if (hasKey && keyForm != null) {
-			result = makeLet(key.name(), keyForm, result);
-		}
-		return makeLet(pred.name(), parts.get(2), result);
+		return dispatch;
 	}
 
 	private static LispVal makeProgn(List<LispVal> exprs) {
