@@ -101,8 +101,9 @@ instantiate a transpiled GC component, while Chrome can.
 
 ## Reactor Modules by Hand
 
-A reactor module (`--no-wasi` or `--no-gc`) imports nothing, so the whole
-host side is "instantiate, then call the exports" — and it is the same code
+A reactor module (`--no-wasi` or `--no-gc`) imports nothing unless the program
+declares a host function, so the whole host side is "instantiate, then call the
+exports" — and it is the same code
 in Node and the browser. Here is a complete, copy-paste example end to end.
 Start with a small kit of three exports:
 

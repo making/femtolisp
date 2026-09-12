@@ -634,15 +634,16 @@ public final class RontoLispCli {
 					+ " a .wasm module has no threads to split the --simd kernels across."
 					+ " Use --simd alone on a .wasm output");
 		}
-		// --emit-js-glue writes the host half of a boundary only a --no-wasi core module
-		// has: a component is instantiated through its own bindings (jco), and --no-gc
-		// rejects rontolisp:wasm-import outright, so there is no import object to write
-		// and `new WebAssembly.Instance(module, {})` is already the whole of its glue.
+		// --emit-js-glue writes the host half of a boundary only a --no-wasi wasm-GC core
+		// module has: a component is instantiated through its own bindings (jco), and
+		// --no-gc's boundary is flat scalars and (ptr,len) pairs over its own exported
+		// memory -- an import object a host writes in a few lines, with no staging,
+		// no arena bracket and no suspending entry to derive.
 		if (jsGlue && !(noWasi && !component && !noGc && outputFile.endsWith(".wasm"))) {
 			throw new UnsupportedOperationException("--emit-js-glue requires --no-wasi and a .wasm output, without"
-					+ " --component (a component's host glue is its bindings generator's) or --no-gc (which imports"
-					+ " nothing: `new WebAssembly.Instance(module, {})` is the whole glue)"
-					+ " -- e.g. -o out.wasm --no-wasi --emit-js-glue");
+					+ " --component (a component's host glue is its bindings generator's) or --no-gc (whose host"
+					+ " functions take flat scalars and (ptr,len) pairs over its exported memory: write the import"
+					+ " object directly) -- e.g. -o out.wasm --no-wasi --emit-js-glue");
 		}
 		// --host-random routes the wasm-GC backend's random_get slot at a host import,
 		// so it means nothing anywhere else. The backend-selection half is checked here
@@ -673,14 +674,15 @@ public final class RontoLispCli {
 		// --host-boundary chooses between two shapes only the --no-wasi wasm-GC core
 		// module HAS. Everywhere else the envelope is not a choice: a reactor component's
 		// host functions cross the canonical ABI (no :bytes import to take a body out
-		// through), --no-gc has no packed array to carry one in, and a WASI command
+		// through), --no-gc has no packed array to carry one in (its host imports carry
+		// flat scalars and strings), and a WASI command
 		// module's host is `wasmtime run`, which satisfies no env.* import. Refused
 		// rather than ignored -- a build script that names a boundary it is not getting
 		// is exactly the silence this flag exists to end.
 		if (hostBoundary != null && !(noWasi && !component && !noGc && outputFile.endsWith(".wasm"))) {
 			throw new UnsupportedOperationException("--host-boundary requires --no-wasi and a .wasm output, without"
 					+ " --component (whose host functions cross the canonical ABI, so its bodies are in band"
-					+ " already) or --no-gc (which imports nothing at all)"
+					+ " already) or --no-gc (which has no packed array to carry a body in)"
 					+ " -- e.g. -o out.wasm --no-wasi --host-boundary=" + HostBoundary.ENVELOPE.spelling());
 		}
 		// --reentrant relaxes the wasm-GC reactor's one-call-at-a-time contract, so it

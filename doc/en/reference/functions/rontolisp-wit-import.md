@@ -146,7 +146,7 @@ WIT does not name as a function. See
 | JVM (`-o Prog.class`) | the same `defun`s, compiled |
 | Preview 1 WASM (`-o prog.wasm`) | one [`rontolisp:wasm-import`](rontolisp-wasm-import.md) per WIT function |
 | `--component` | a component-model **instance import** of the interface, each function `canon lower`ed into the core module |
-| `--no-gc` | a compile error (its MVP module imports nothing) |
+| `--no-gc` | the same `rontolisp:wasm-import` per WIT function, keeping each integer's own width (its house integer is `i64`); an `async func` is a compile error |
 
 On Preview 1 the module is **byte-identical** to the hand-written equivalent, and
 [tree shaking](../../compiling/wasm.md#optimize-tree-shaking) still shakes out the
@@ -217,7 +217,7 @@ whose bytes have to stay the same.
 | interpreter, JVM | a call into the interface's provider, with the member name `"bucket-drop"` and the handle as its only argument |
 | Preview 1 WASM (`-o prog.wasm`) | a **no-op**. A handle there is an opaque integer the host handed over and the guest holds nothing; importing a release function the WIT never declared would be inventing one |
 | `--component` | `canon resource.drop` — the handle goes back to the host's own table |
-| `--no-gc` | it rejects `rontolisp:wit-import` itself |
+| `--no-gc` | a **no-op**, for the same reason as Preview 1 above |
 
 Two things follow, and both matter more than tidiness:
 
@@ -340,10 +340,12 @@ decides what to make of it.
 
 ## Limitations
 
-- `--no-gc` rejects the directive with a clear error: its contract is a plain MVP
-  module that imports nothing at all.
-- On the Preview 1 boundary only the flat set above crosses; a `record`,
-  `option`, `result` or `s64` is a compile error naming the WIT file and line —
+- `--no-gc` takes the directive through the same Preview 1 lowering, and carries
+  every integer width (its house integer is `i64`, so `s64`/`u64` cross and a
+  `u32` keeps its own width instead of collapsing onto `s32`). Its one refusal is
+  an `async func`: `:async t` answers a future, and that value model has none.
+- On the default (wasm-GC) Preview 1 boundary only the flat set above crosses; a
+  `record`, `option`, `result` or `s64` is a compile error naming the WIT file and line —
   `wit/store.wit:12: 'bucket-get': the WIT type of the result does not cross the Preview 1 WASM import boundary, which carries the flat set (...)` —
   even though `--component`, the interpreter and the JVM all bind it. The
   `wasi:keyvalue` example above is therefore a component (or an interpreter/JVM)

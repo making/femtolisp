@@ -136,7 +136,7 @@ const { instance } = await WebAssembly.instantiate(bytes, imports);
 
 制限:
 
-- デフォルト(wasm-GC)の Preview 1 出力専用です: `--component` と `--no-gc` はこのディレクティブをエラーで拒否します。
+- コアモジュール専用です: `--component` はこのディレクティブをエラーで拒否します。[`--no-gc`](wasm-nogc.md#host-imports-rontolispwasm-import) は受け付けます。型の語彙はより広く(ハウス整数が `i64` なので 64 ビットの指定子も渡ります)、`:s-expr`・`:bytes`・`:async t` はありません。
 - インタプリタと JVM バックエンドでは、このディレクティブは呼び出すとエラーを通知するスタブを定義します。共有ソースはどこでもロードできますが、実際にインポートを呼び出すには WASM ホストが必要です。
 - インポートされた関数にも wasm-GC 値モデルの他の関数と同じ 10 パラメータのアリティ上限があります。
 - モジュールのインスタンス化には宣言したすべてのインポートの提供が必要です: `wasmtime run` はインポートモジュール名ごとに `--preload <module>=<file>.wasm` を必要とし、JavaScript ホストはインポートオブジェクトを渡します。
@@ -172,7 +172,7 @@ $ wasm-tools print worker.wasm | grep -oE '\(import "[^"]+" "[^"]+"'
 
 **ここでデフォルトが移動しました。気づくのは再ビルドのときです。** これ以前はすべての `--no-wasi` リアクタがボディをエンベロープの外へ出していました。フラグなしで再ビルドしたモジュールは今後ボディをエンベロープの中に入れます — 上の 3 ケースにとっては実際の劣化であり、それ以外にとっては何でもありません。`--host-boundary=streaming` を足せばモジュールはバイト単位で以前と同じです。
 
-`--host-boundary` は `--no-wasi` と `.wasm` 出力を必要とし、`--component` や `--no-gc` とは併用できません: その 2 つはすでに in-band です(コンポーネントのホスト関数は canonical ABI を渡り、`--no-gc` は何もインポートしません)。素の WASI コマンドモジュールも同様で、そのホストは `wasmtime run` であり `env.*` インポートを何も満たしません。手書きのリアクター — `clack:clackup` を経由せず自前のエンベロープアダプタを書くもの — は `rontolisp-body-imports` リーダーフィーチャーでビルドに追従します。これらのインポートが存在する場所ちょうどで有効になります:
+`--host-boundary` は `--no-wasi` と `.wasm` 出力を必要とし、`--component` や `--no-gc` とは併用できません: その 2 つはすでに in-band です(コンポーネントのホスト関数は canonical ABI を渡り、`--no-gc` にはボディを運ぶパック配列がありません — そのホストインポートが運ぶのはフラットなスカラーと文字列です)。素の WASI コマンドモジュールも同様で、そのホストは `wasmtime run` であり `env.*` インポートを何も満たしません。手書きのリアクター — `clack:clackup` を経由せず自前のエンベロープアダプタを書くもの — は `rontolisp-body-imports` リーダーフィーチャーでビルドに追従します。これらのインポートが存在する場所ちょうどで有効になります:
 
 ```lisp
 #+rontolisp-body-imports
@@ -233,7 +233,7 @@ export default worker(module);
 
 どちらもデフォルトであって置き換えではありません。`worker(module, options)` は `host`(導出されたエントリの上に 1 つずつ重ねるインポートエントリ)と `remoteAddr`(エンベロープの任意項目であるクライアントアドレスを返す `(request, env, ctx) => string`)を受け取ります。後者はランタイム中立なファイルが推測してはならない唯一のものです(Cloudflare では `(r) => r.headers.get("cf-connecting-ip")`)。書き出されないのはプログラム自身が宣言したインポートです: それは `instantiate` が名前で要求し続け、生成ファイル冒頭のスケッチも `worker(module, { host })` に変わります。
 
-このフラグは `--no-wasi` と `.wasm` 出力を必要とします: コンポーネントは自身のバインディングジェネレータ経由でインスタンス化され、`--no-gc` モジュールは何もインポートしないので `new WebAssembly.Instance(module, {})` がグルーのすべてです。両方の境界にまたがる実例が 9 つあります — [examples/cloudflare-workers](https://github.com/making/rontolisp/tree/develop/examples/cloudflare-workers) 配下のリアクタは 1 つを除きすべてで、`src/worker.js` は生成されてチェックインされ、`src/index.js` は上の 3 行です。例外は [httpbin](https://github.com/making/rontolisp/tree/develop/examples/cloudflare-workers/httpbin) で、理由もそこに書いてあります: `rontolisp:wasm-export` を手で宣言しており、エンベロープ自身のエントリポイントとして認識されるのは*合成された*ブリッジだけなので、`worker()` は書き出されず、ホストは手書きのままです。
+このフラグは `--no-wasi` と `.wasm` 出力を必要とします: コンポーネントは自身のバインディングジェネレータ経由でインスタンス化され、`--no-gc` モジュールのホスト関数はエクスポートされたメモリ上のフラットなスカラーと `(ptr, len)` の組を取るだけなので — ステージングもアリーナのブラケットもサスペンドするエントリも導出せず — インポートオブジェクトを直接書けます。両方の境界にまたがる実例が 9 つあります — [examples/cloudflare-workers](https://github.com/making/rontolisp/tree/develop/examples/cloudflare-workers) 配下のリアクタは 1 つを除きすべてで、`src/worker.js` は生成されてチェックインされ、`src/index.js` は上の 3 行です。例外は [httpbin](https://github.com/making/rontolisp/tree/develop/examples/cloudflare-workers/httpbin) で、理由もそこに書いてあります: `rontolisp:wasm-export` を手で宣言しており、エンベロープ自身のエントリポイントとして認識されるのは*合成された*ブリッジだけなので、`worker()` は書き出されず、ホストは手書きのままです。
 
 ## 呼び出しのオーバーラップ (--reentrant)
 

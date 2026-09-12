@@ -204,8 +204,10 @@ Boundary details beyond the scalar types:
 
 Limitations:
 
-- Default (wasm-GC) Preview 1 output only: `--component` and `--no-gc` reject
-  the directive with an error.
+- Core modules only: `--component` rejects the directive with an error.
+  [`--no-gc`](wasm-nogc.md#host-imports-rontolispwasm-import) takes it, with a
+  wider type vocabulary (its house integer is `i64`, so the 64-bit designators
+  cross there) and without `:s-expr`, `:bytes` or `:async t`.
 - On the interpreter and JVM backends the directive defines a stub that
   signals an error when called, so a shared source still loads everywhere, but
   actually calling an import needs the WASM host.
@@ -272,7 +274,8 @@ the module is byte-for-byte what it was.
 
 `--host-boundary` needs `--no-wasi` and a `.wasm` output, without `--component`
 or `--no-gc`: those two are in band already (a component's host functions cross
-the canonical ABI, and `--no-gc` imports nothing at all), and so is a plain WASI
+the canonical ABI, and `--no-gc` has no packed array to carry a body in — its
+host imports carry flat scalars and strings), and so is a plain WASI
 command module, whose host is `wasmtime run` and satisfies no `env.*` import. A
 hand-written reactor — one that spells out its own envelope adapter instead of
 going through `clack:clackup` — follows the build with the `rontolisp-body-imports`
@@ -381,8 +384,9 @@ the program declared itself: `instantiate` still names it, and the sketch at the
 top of the generated file then says `worker(module, { host })` instead.
 
 The flag needs `--no-wasi` and a `.wasm` output: a component is instantiated
-through its own bindings generator, and a `--no-gc` module imports nothing, so
-`new WebAssembly.Instance(module, {})` is already the whole of its glue. Nine
+through its own bindings generator, and a `--no-gc` module's host functions take
+flat scalars and `(ptr, len)` pairs over its exported memory — an import object
+written directly, with no staging, arena bracket or suspending entry to derive. Nine
 worked examples on both boundaries — every reactor under
 [examples/cloudflare-workers](https://github.com/making/rontolisp/tree/develop/examples/cloudflare-workers)
 but one: `src/worker.js` is generated and checked in, and `src/index.js` is the

@@ -1,13 +1,13 @@
 # WASM 非 GC 出力(`--no-gc`)
 
-GC 値モデルの出力は — 最適化されたリアクターであっても — すべての値が GC ヒープ型(`i31ref`、float 構造体、`(ref eq)`)であるため、依然として **wasm-GC 対応**ランタイムを必要とします。`--no-gc` を追加すると、代わりに素の **MVP** モジュールが出力されます: rec グループなし、`struct`/`array`/`i31` 型なし、`eqref` なし、インポートなしです(素のリニアメモリはプログラムが文字列を使うときのみ追加され — [後述](#strings) — 単一の `fd_write` インポートは[印字](#printing-print--princ--terpri)するときのみ追加されます)。印字しないモジュールはインポートオブジェクトなしでインスタンス化でき、**wasm-GC 対応不要**で任意の MVP クラスのランタイムで動作します:
+GC 値モデルの出力は — 最適化されたリアクターであっても — すべての値が GC ヒープ型(`i31ref`、float 構造体、`(ref eq)`)であるため、依然として **wasm-GC 対応**ランタイムを必要とします。`--no-gc` を追加すると、代わりに素の **MVP** モジュールが出力されます: rec グループなし、`struct`/`array`/`i31` 型なし、`eqref` なし、頼んでいないインポートもなしです(素のリニアメモリはプログラムが文字列を使うときのみ追加され — [後述](#strings) — 単一の `fd_write` インポートは[印字](#printing-print--princ--terpri)するときのみ、ホスト関数はプログラムが[宣言した](#host-imports-rontolispwasm-import)ぶんだけ追加されます)。印字せずホストインポートもないモジュールは、インポートオブジェクトなしでインスタンス化でき、**wasm-GC 対応不要**で任意の MVP クラスのランタイムで動作します:
 
 ```bash
 rontolisp fact.lisp --no-gc -o fact.wasm
 wasmtime run --invoke fact fact.wasm 5      # => 120, ~108 bytes, no wasm-GC runtime needed
 ```
 
-これは、各値をアンボックスな wasm スカラーへ直接ローワリングし、文字列には小さなリニアメモリ表現を加えることで達成されます — そのため対象サブセットは言語の制限であって、別の言語ではありません。プログラムの形も制限されます: トップレベルには `defun` と `rontolisp:wasm-export` ディレクティブ**のみ**を置けます(純粋計算リアクターであり、`_start` はありません)。境界指定子は `:int`、`:long`、`:float`、`:bool`、`:string`(および `:void`/省略)です。`:s-expr` は**非対応**です — このバックエンドが意図的に省いている cons/リーダー/プリンターのランタイムを必要とするためです。
+これは、各値をアンボックスな wasm スカラーへ直接ローワリングし、文字列には小さなリニアメモリ表現を加えることで達成されます — そのため対象サブセットは言語の制限であって、別の言語ではありません。プログラムの形も制限されます: トップレベルには `defun`、`rontolisp:wasm-export`、[`rontolisp:wasm-import`](#host-imports-rontolispwasm-import) ディレクティブ**のみ**を置けます(ホスト駆動のリアクターであり、`_start` はありません)。境界指定子は固定幅整数(`:int`/`:long` を含む)、`:float`、`:bool`、`:string`(および `:void`/省略)です。`:s-expr` は**非対応**です — このバックエンドが意図的に省いている cons/リーダー/プリンターのランタイムを必要とするためです。
 
 数値ベクトルカーネル([`vec:` パッケージ](simd-acceleration.md))も `--no-gc` で動作し、デフォルトでは素のスカラーループへローワリングされます — そのためベクトルプログラムも上記の「任意の MVP ランタイムで動く」性質を保ちます。[`--simd`](../compiling/wasm.md#simd-acceleration---simd) を追加すると、それらのカーネルはネイティブの WebAssembly SIMD(`v128`)へローワリングされ、SIMD プロポーザル対応のランタイム(wasmtime ではデフォルト有効)が必要になります。
 
@@ -165,6 +165,74 @@ wasm-GC バックエンドも同じ `__ronto_alloc_mark`/`__ronto_alloc_reset` �
 ```
 
 アリーナがあれば 10 万回の反復も初期リニアメモリ内に収まります。なければ同じループは反復ごとにベクトル 1 つ分成長します。エスケープ契約は `__ronto_alloc_reset` と同じです: **本体内で確保されたものは、本体自身の値を除き、本体の後から到達可能であってはなりません。** インタプリタ、JVM バックエンド、デフォルト(wasm-GC)出力では、`with-arena` は観測上は素の `progn` です — 本物のガベージコレクタがすでに回収します — そのため同じソースがすべてのバックエンドで動作します。
+
+## ホストインポート(`rontolisp:wasm-import`)
+
+`--no-gc` モジュールからホストを呼び出せます。ホスト関数を
+[`rontolisp:wasm-import`](wasm-host-boundary.md#importing-host-functions)
+で宣言すると、トップレベルの `defun` と同じように Lisp から呼び出せます:
+
+```lisp
+;; badge.lisp
+(rontolisp:wasm-import 'set-text :from "env" :as "setText"
+                       :params '(:string :string) :returns :void)
+(rontolisp:wasm-import 'measure :from "env" :as "measure"
+                       :params '(:s32) :returns :s64)
+
+(defun refresh (n)
+  (set-text "status" "running")
+  (measure n))
+
+(rontolisp:wasm-export 'refresh :params '(:s32) :returns :s64)
+```
+
+```bash
+rontolisp badge.lisp --no-gc --no-wasi --optimize=size -o badge.wasm
+```
+
+指定子は固定幅整数のファミリ全体(`:s8` … `:u64`、`:int`/`:long` は
+`:s32`/`:s64` の別名)、`:float`、`:bool`、`:string`、結果としての `:void`
+です。これは**デフォルトバックエンドのインポート語彙より広い**もので、
+あちらは `:s32` を運び 64 ビット型は運びません: 受け付ける集合はハウス整数に
+従い、ここではそれが `i64` だからです。`:s-expr` と `:bytes` は運べません —
+どちらもこの値モデルにランタイムのないヒープオブジェクトです。
+
+宣言された型がそのまま内部表現なので、境界の通過自体はほとんどコストが
+ありません:
+
+- 整数、`:float`、`:bool` の引数は非ボックス値そのもので、幅が違うところ
+  だけ変換されます;
+- `:string` 引数はモジュールがすでに保持しているブロックの `(ptr, len)` と
+  して渡ります — エンコードもコピーも発生せず、1 回の呼び出しの複数の文字列
+  引数はそれぞれ自分の領域として渡ります;
+- `:string` **結果**は、ホストがエクスポートされた `__ronto_alloc`
+  ([アリーナ API](#reclaiming-memory-the-arena-api))経由でこのモジュールの
+  リニアメモリに書いたバイト列で、ラッパがそれを内部の `[len][bytes]`
+  ブロックへコピーします。
+
+押さえておくべき規則が 3 つあります:
+
+- **境界は値を正確に運ぶか、トラップします**(双方向)— ハウス `i64` より
+  狭い引数(2^40 を渡された `:s32`)も、2^63 以上の `:u64` 結果も、黙って
+  ラップされて届く代わりに呼び出しを止めます。
+- **エクスポートから到達するインポートだけがインポートされます。** 宣言
+  しても呼ばれないホスト関数は、どの最適化レベルでもモジュールに 1 バイトも
+  足しません。
+- **`rontolisp:wit-import` もここで使えます。** 展開先はまさにこれ — WIT の
+  関数 1 つにつき `wasm-import` 1 つで、手書きのブロックとバイト単位で同一
+  です([WIT コントラクト](wit-contracts.md))。唯一の例外は `async func` で、
+  `:async t` は future を返しますが、このバックエンドに future を表す値は
+  ありません。`--no-gc --component` もホストインポートを取りません —
+  コンポーネントのインポートは正準 ABI を通るもので、コアモジュールのラップは
+  それを組み立てないからです。
+
+ホストインポートこそこのバックエンドの用途です。ホストから呼ばれることが
+仕事のモジュール — ホスト関数がいくつか、算術、文字列リテラル、エクスポート
+2 つ — は、ここでは数百バイトです。同じソースをデフォルトの wasm-GC
+バックエンドでコンパイルすると数キロバイトになります。あちらはそれを行うために
+ボックス化された値モデルを積む必要があるからです。実測のフラグ行列は
+[size report](https://github.com/making/rontolisp/tree/develop/size-report)
+にあります。
 
 ## コンパクトなコンポーネント出力(`--no-gc --component`)
 

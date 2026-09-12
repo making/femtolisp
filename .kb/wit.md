@@ -206,7 +206,18 @@ directive stands for; no I/O, no codegen.
   `async-defun`.
 - **`--component`**: a component-model instance import, each function `canon lower`ed
   (`(rontolisp::%component-import ...)`) — every variant, `rontolisp:http-handler` included.
-- **`--no-gc`**: a clear error — its MVP module imports nothing.
+- **`--no-gc`**: the SAME Preview 1 lowering (`boolean wasm` in `WitImportDirective.lower` is
+  true for both core-module backends), so one world serves both. It differs in two places, both
+  because the vocabulary follows the HOUSE INTEGER: the designator is read straight off the prim
+  name (`BoundaryType.forWitName`, the way the EXPORT side already reads it) rather than through
+  the width-losing `WitTypeMapper.Rep`, so `s64`/`u64` cross and a `u32` keeps its width instead
+  of collapsing onto `:INT`; and an `async func` is a compile error naming the WIT member, since
+  `:async t` answers a future that value model has none of. An import and an export of ONE world
+  must not disagree about which backend can bind it — the export side carried `s64` long before
+  the import side did, and that was the asymmetry. Pins:
+  `WitImportDirectiveTest.theNoGcBackendGetsThePreview1LoweringWithItsOwnWidths`,
+  `NoGcWasmImportE2eTest.aWitImportedInterfaceIsTheHandWrittenImportBlock` (byte identity with
+  the hand-written block, then run on node).
 
 ### Pass order — the IMPORT inliner runs BEFORE `UserMacroExpander`
 `eval/WitImportInliner` runs straight after `LoadInliner`, BEFORE `UserMacroExpander`. It has to:

@@ -2261,4 +2261,216 @@ class NoGcWasmCompilerTest {
 		assertThat(small).isEqualTo(fast);
 	}
 
+	// --- rontolisp:wasm-import -------------------------------------------------------
+
+	@Test
+	void aHostImportBecomesTheModulesOnlyImportEntry() {
+		// The declaration's (module, field) pair is what the module imports, and nothing
+		// else joins it: an import-free --no-gc module has no import section at all, so
+		// this section's whole content is the declared entries in declaration order.
+		byte[] module = compile("""
+				(rontolisp:wasm-import 'host-add :from "host" :as "add" :params '(:int :int) :returns :int)
+				(rontolisp:wasm-import 'host-tick :from "host" :as "tick" :params '() :returns :void)
+				(defun sum (a b) (host-tick) (host-add a b))
+				(rontolisp:wasm-export 'sum :params '(:int :int) :returns :int)
+				""");
+		assertThat(importedFunctions(module)).containsExactly("host.add", "host.tick");
+	}
+
+	@Test
+	void theHostImportsPrecedeAPrintingModulesFdWrite() {
+		// The spec puts every imported function ahead of every defined one, and the
+		// injector prepends the declared entries at the FRONT of the section -- so a
+		// printing program's fd_write moves out of index 0 and every reference in the
+		// module shifts with it. If that shift were missed, __write_stdout would call a
+		// host function instead.
+		byte[] module = compile("""
+				(rontolisp:wasm-import 'host-add :from "host" :as "add" :params '(:int :int) :returns :int)
+				(defun sum (a b) (print a) (host-add a b))
+				(rontolisp:wasm-export 'sum :params '(:int :int) :returns :int)
+				""");
+		assertThat(importedFunctions(module)).containsExactly("host.add", "wasi_snapshot_preview1.fd_write");
+	}
+
+	@Test
+	void aDeclaredButUncalledImportCostsTheModuleNothing() {
+		// Reachability from the exports decides what the module holds, for an import
+		// exactly as for a defun: a host function nothing calls is not imported, at
+		// EVERY optimize level -- the byte-identity is with the program that never
+		// declared it.
+		String withUnused = """
+				(rontolisp:wasm-import 'never :from "host" :as "never" :params '(:int) :returns :int)
+				(defun twice (n) (* n 2))
+				(rontolisp:wasm-export 'twice :params '(:int) :returns :int)
+				""";
+		String without = """
+				(defun twice (n) (* n 2))
+				(rontolisp:wasm-export 'twice :params '(:int) :returns :int)
+				""";
+		assertThat(compile(withUnused)).isEqualTo(compile(without));
+	}
+
+	@Test
+	void aScalarImportNeedsNeitherMemoryNorAnAllocator() {
+		// The narrow types ARE the internal representation, so an import that trades
+		// only integers adds no linear memory, no allocator and no data segment -- the
+		// module stays the memoryless shape a pure-numeric --no-gc program has.
+		byte[] module = compile("""
+				(rontolisp:wasm-import 'host-add :from "host" :as "add" :params '(:int :int) :returns :int)
+				(defun sum (a b) (host-add a b))
+				(rontolisp:wasm-export 'sum :params '(:int :int) :returns :int)
+				""");
+		assertThat(sections(module)).doesNotContainKey(5).doesNotContainKey(11);
+		assertScalarFuncTypes(Objects.requireNonNull(sections(module).get(1)));
+	}
+
+	@Test
+	void aStringBoundaryOnAnImportPullsInTheMemoryAndTheAllocator() {
+		// A :string crossing either way is linear memory: an ARGUMENT is handed over as
+		// the (ptr,len) of a block the module already holds, and a RESULT is bytes the
+		// host wrote here through the exported __ronto_alloc. Both need the memory
+		// exported, so both flag it used.
+		byte[] param = compile("""
+				(rontolisp:wasm-import 'emit :from "host" :as "emit" :params '(:string) :returns :void)
+				(defun go () (emit "hi") 1)
+				(rontolisp:wasm-export 'go :params '() :returns :int)
+				""");
+		byte[] result = compile("""
+				(rontolisp:wasm-import 'fetch-name :from "host" :as "name" :params '() :returns :string)
+				(defun go () (length (fetch-name)))
+				(rontolisp:wasm-export 'go :params '() :returns :int)
+				""");
+		for (byte[] module : List.of(param, result)) {
+			assertThat(sections(module)).containsKey(5);
+			assertThat(exportNames(Objects.requireNonNull(sections(module).get(7)))).contains("memory",
+					"__ronto_alloc");
+		}
+	}
+
+	@Test
+	void theImportTypeDesignatorsThisBackendRefusesNameWhatItTakes() {
+		// Two designators, both a heap object the scalar value model has no runtime for
+		// --
+		// and both perfectly valid one backend over, so the message says "not supported
+		// with --no-gc" rather than "unknown", and names the set that IS taken. The
+		// vocabulary follows the HOUSE INTEGER: this backend's is i64, so the whole
+		// fixed-width family crosses here where the wasm-GC i31ref takes only :s32.
+		assertThatThrownBy(() -> compile("""
+				(rontolisp:wasm-import 'ask :from "host" :as "ask" :params '(:s-expr) :returns :int)
+				(defun go () (ask 1))
+				(rontolisp:wasm-export 'go :params '() :returns :int)
+				""")).isInstanceOf(UnsupportedOperationException.class)
+			.hasMessageContaining("type designator :S-EXPR is not supported with --no-gc")
+			.hasMessageContaining(":STRING");
+		assertThatThrownBy(() -> compile("""
+				(rontolisp:wasm-import 'read-chunk :from "host" :as "read" :params '() :returns :bytes)
+				(defun go () (read-chunk 1))
+				(rontolisp:wasm-export 'go :params '() :returns :int)
+				""")).isInstanceOf(UnsupportedOperationException.class)
+			.hasMessageContaining("type designator :BYTES is not supported with --no-gc")
+			.hasMessageContaining(":STRING");
+	}
+
+	@Test
+	void anAsyncImportIsRefusedBecauseThereIsNoFutureToAnswerWith() {
+		// :async t says the call answers a future. Started == settled is still a future,
+		// and this value model has nothing to represent one -- the rest of the async
+		// surface is already refused by name, so this one is too.
+		assertThatThrownBy(() -> compile("""
+				(rontolisp:wasm-import 'slow :from "host" :as "slow" :params '(:int) :returns :int :async t)
+				(defun go (n) (slow n))
+				(rontolisp:wasm-export 'go :params '(:int) :returns :int)
+				""")).isInstanceOf(UnsupportedOperationException.class)
+			.hasMessageContaining("rontolisp:wasm-import :async is not supported with --no-gc");
+	}
+
+	@Test
+	void aComponentBuildRefusesAHostImport() {
+		// The --no-gc component wrap has no import block at all: a component's imports
+		// are component-model imports through the canonical ABI, which it does not
+		// build. The reactor form is what takes host imports.
+		assertThatThrownBy(() -> compileComponent("""
+				(rontolisp:wasm-import 'host-add :from "host" :as "add" :params '(:int :int) :returns :int)
+				(defun sum (a b) (host-add a b))
+				(rontolisp:wasm-export 'sum :as "sum" :params '(:int :int) :returns :int)
+				""")).isInstanceOf(UnsupportedOperationException.class)
+			.hasMessageContaining("is not supported with --no-gc --component");
+	}
+
+	@Test
+	void oneNameNamesOneFunction() {
+		assertThatThrownBy(() -> compile("""
+				(rontolisp:wasm-import 'thing :from "host" :as "a" :params '() :returns :int)
+				(rontolisp:wasm-import 'thing :from "host" :as "b" :params '() :returns :int)
+				(defun go () (thing))
+				(rontolisp:wasm-export 'go :params '() :returns :int)
+				""")).isInstanceOf(UnsupportedOperationException.class).hasMessageContaining("declares 'THING' twice");
+		assertThatThrownBy(() -> compile("""
+				(rontolisp:wasm-import 'thing :from "host" :as "a" :params '() :returns :int)
+				(defun thing () 1)
+				(defun go () (thing))
+				(rontolisp:wasm-export 'go :params '() :returns :int)
+				""")).isInstanceOf(UnsupportedOperationException.class)
+			.hasMessageContaining("has the same name as a top-level defun");
+	}
+
+	@Test
+	void theTopLevelRefusalNamesTheSubsetRatherThanTheOtherBackend() {
+		// The first refusal a user hits is the one that decides whether they rewrite one
+		// form or move to a backend that costs three times the bytes, so it says what
+		// the subset is instead of only what it is not.
+		assertThatThrownBy(() -> compile("""
+				(defvar *counter* 0)
+				(defun go () 1)
+				(rontolisp:wasm-export 'go :params '() :returns :int)
+				""")).isInstanceOf(UnsupportedOperationException.class)
+			.hasMessageContaining("(rontolisp:wasm-import ...)")
+			.hasMessageContaining("pure-compute reactor")
+			.hasMessageContaining("no cons or list");
+	}
+
+	@Test
+	void aConsumedPackageDeclarationIsDroppedRatherThanRefused() {
+		// defpackage resolves to the quoted package name and in-package to
+		// (setq *package* :P). Both are consumed declarations by the time the backend
+		// sees them, and it has no top-level init body to evaluate a value in -- so
+		// both are dropped, which is what lets a user package (and rontolisp:wit-import,
+		// whose lowering writes a defpackage) reach this backend at all.
+		byte[] packaged = compile("""
+				(defpackage app (:use cl) (:export run))
+				(in-package app)
+				(defun run (n) (* n 2))
+				(rontolisp:wasm-export 'app:run :as "run" :params '(:int) :returns :int)
+				""");
+		assertThat(exportNames(Objects.requireNonNull(sections(packaged).get(7)))).contains("run");
+	}
+
+	// The "module.field" of every function import, in index order.
+	private static List<String> importedFunctions(byte[] module) {
+		byte[] section = sections(module).get(2);
+		if (section == null) {
+			return List.of();
+		}
+		List<String> out = new ArrayList<>();
+		int[] p = { 0 };
+		int count = readUleb(section, p);
+		for (int i = 0; i < count; i++) {
+			String moduleName = readName(section, p);
+			String field = readName(section, p);
+			int kind = section[p[0]++] & 0xFF;
+			readUleb(section, p);
+			if (kind == 0x00) {
+				out.add(moduleName + "." + field);
+			}
+		}
+		return out;
+	}
+
+	private static String readName(byte[] section, int[] p) {
+		int len = readUleb(section, p);
+		String name = new String(section, p[0], len, StandardCharsets.UTF_8);
+		p[0] += len;
+		return name;
+	}
+
 }

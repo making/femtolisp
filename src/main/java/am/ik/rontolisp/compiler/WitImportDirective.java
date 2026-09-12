@@ -66,7 +66,10 @@ import org.jspecify.annotations.Nullable;
  * </ul>
  *
  * <p>
- * {@code --no-gc} is rejected here (its MVP module imports nothing).
+ * {@code --no-gc} takes the Preview&nbsp;1 lowering unchanged: a WIT function reaches
+ * only the flat integer/float/bool/string set, which the scalar backend's unboxed value
+ * model carries, so one world serves both WASM core-module backends. Its one refusal is
+ * an {@code async func}, which would bind a future that backend has no value for.
  *
  * <p>
  * Like {@link WitExportDirective} this class does no I/O and no codegen: the caller reads
@@ -288,10 +291,6 @@ public final class WitImportDirective {
 	 */
 	public static List<LispVal> lower(Directive directive, String witSource, String witPath,
 			WitExportDirective.Backend backend, @Nullable Set<String> memberFilter, @Nullable Set<String> dropFilter) {
-		if (backend == WitExportDirective.Backend.WASM_NO_GC) {
-			throw new UnsupportedOperationException("rontolisp:wit-import is not supported with --no-gc: the scalar "
-					+ "backend emits a plain MVP module with no imports");
-		}
 		WitParseResult parsed;
 		try {
 			parsed = WitParser.parseLocated(witSource);
@@ -311,7 +310,15 @@ public final class WitImportDirective {
 			throw new UnsupportedOperationException(witPath + ":" + locations.lineOf(iface) + ": interface '"
 					+ iface.name() + "' declares no functions");
 		}
-		boolean wasm = backend == WitExportDirective.Backend.WASM_GC;
+		// Preview 1 core-module lowering: one rontolisp:wasm-import per WIT function. The
+		// --no-gc backend takes the SAME lowering -- the directive is the same shape, the
+		// injector the same pass, and every type a WIT function can reach here (the flat
+		// integer/float/bool/string set) is one that backend's unboxed value model
+		// carries -- so a wit-imported interface is byte-for-byte the hand-written import
+		// block on both, and one WIT world serves both.
+		boolean wasm = backend == WitExportDirective.Backend.WASM_GC
+				|| backend == WitExportDirective.Backend.WASM_NO_GC;
+		boolean noGc = backend == WitExportDirective.Backend.WASM_NO_GC;
 		boolean component = backend == WitExportDirective.Backend.WASM_COMPONENT;
 		String module = directive.module() == null ? iface.name() : directive.module();
 		// The provider registry is keyed by the interface's CANONICAL id, never by the
@@ -338,7 +345,7 @@ public final class WitImportDirective {
 			String name = directive.pkg() == null ? member : PackageRegistry.qualify(directive.pkg(), member);
 			if (component) {
 				validateComponentFunc(func, witPath, locations, resolver, iface, member);
-				List<Param> params = parameters(func, witPath, locations, resolver, iface, member, false, true);
+				List<Param> params = parameters(func, witPath, locations, resolver, iface, member, false, true, false);
 				if (func.def().func().async()) {
 					// An `async func` member async-lowers: the call starts as a subtask
 					// (%member-start, returning a (packed . retptr) token cons), which
@@ -368,8 +375,17 @@ public final class WitImportDirective {
 				}
 				continue;
 			}
-			List<Param> params = parameters(func, witPath, locations, resolver, iface, member, wasm, false);
-			String returns = resultDesignator(func, witPath, locations, resolver, iface, member, wasm);
+			if (noGc && func.def().func().async()) {
+				// :async t answers a (settled) future, and the --no-gc value model has
+				// nothing to represent one -- the whole async surface is refused there.
+				// Say so against the WIT member, not against the wasm-import the
+				// lowering would have produced.
+				throw new UnsupportedOperationException(witPath + ":" + locations.lineOf(func.def()) + ": '" + member
+						+ "' is an async func, which --no-gc cannot bind (the scalar backend has no future value);"
+						+ " compile it on the default GC backend, or against a synchronous WIT world");
+			}
+			List<Param> params = parameters(func, witPath, locations, resolver, iface, member, wasm, false, noGc);
+			String returns = resultDesignator(func, witPath, locations, resolver, iface, member, wasm, noGc);
 			if (!wasm && func.def().func().async()) {
 				// An `async func` member on the interpreter / the JVM: the provider call
 				// is synchronous, but the binding is an async-defun so callers get a
@@ -1005,7 +1021,8 @@ public final class WitImportDirective {
 	// The lambda list of a binding. A resource method takes the handle as its leading
 	// parameter (the WIT `self` receiver, which the model does not spell out).
 	private static List<Param> parameters(WitResolver.Func func, String witPath, WitLocations locations,
-			WitResolver resolver, WitItem.InterfaceDef iface, String member, boolean wasm, boolean component) {
+			WitResolver resolver, WitItem.InterfaceDef iface, String member, boolean wasm, boolean component,
+			boolean noGc) {
 		List<Param> params = new ArrayList<>();
 		boolean method = func.resource() != null && func.def().kind() == WitItem.FuncKind.PLAIN;
 		if (method) {
@@ -1013,7 +1030,7 @@ public final class WitImportDirective {
 		}
 		for (var param : func.def().func().params()) {
 			String designator = designatorOf(param.type(), witPath, locations, resolver, iface, func, member,
-					"parameter '" + param.name() + "'", wasm, component);
+					"parameter '" + param.name() + "'", wasm, component, noGc);
 			String name = param.name();
 			if (method && "self".equals(name)) {
 				throw new UnsupportedOperationException(witPath + ":" + locations.lineOf(func.def()) + ": '" + member
@@ -1028,7 +1045,7 @@ public final class WitImportDirective {
 	// The wasm-import :returns designator (":VOID" when the function returns nothing). A
 	// constructor returns its resource, which the WIT model leaves implicit.
 	private static String resultDesignator(WitResolver.Func func, String witPath, WitLocations locations,
-			WitResolver resolver, WitItem.InterfaceDef iface, String member, boolean wasm) {
+			WitResolver resolver, WitItem.InterfaceDef iface, String member, boolean wasm, boolean noGc) {
 		if (func.def().kind() == WitItem.FuncKind.CONSTRUCTOR) {
 			return ":INT";
 		}
@@ -1039,7 +1056,7 @@ public final class WitImportDirective {
 		// resultDesignator is only reached on the non-component path (the component path
 		// binds through the WIT text, not a flat designator), so component is always
 		// false.
-		return designatorOf(result, witPath, locations, resolver, iface, func, member, "the result", wasm, false);
+		return designatorOf(result, witPath, locations, resolver, iface, func, member, "the result", wasm, false, noGc);
 	}
 
 	// The one place a WIT type is judged. On the WASM boundary only the flat set
@@ -1050,7 +1067,22 @@ public final class WitImportDirective {
 	// value at all until language-level async lands -- are refused.
 	private static String designatorOf(WitType type, String witPath, WitLocations locations, WitResolver resolver,
 			WitItem.InterfaceDef iface, WitResolver.Func func, String member, String what, boolean wasm,
-			boolean component) {
+			boolean component, boolean noGc) {
+		// --no-gc carries EVERY type that has a WIT spelling -- its house integer is i64,
+		// so the 64-bit widths cross where the wasm-GC i31ref has to refuse them. The
+		// designator is therefore read straight off the prim name, the way the EXPORT
+		// side already reads it, instead of through the width-losing Rep below: an s64
+		// import and an s64 export of one world must not disagree about which backend
+		// can bind them.
+		if (noGc) {
+			WitType resolved = resolveAliases(type, resolver, iface).type();
+			if (resolved instanceof WitType.Prim prim) {
+				BoundaryType boundary = BoundaryType.forWitName(prim.name());
+				if (boundary != null) {
+					return boundary.designator();
+				}
+			}
+		}
 		WitTypeMapper.Rep rep = repOf(type, witPath, locations, resolver, iface, func, member, what);
 		if (rep == WitTypeMapper.Rep.STREAM_HANDLE || rep == WitTypeMapper.Rep.FUTURE_HANDLE) {
 			if (component) {

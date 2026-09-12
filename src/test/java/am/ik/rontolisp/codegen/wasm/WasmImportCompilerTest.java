@@ -454,13 +454,21 @@ class WasmImportCompilerTest {
 	}
 
 	@Test
-	void rejectsNoGcMode() {
+	void theNoGcBackendTakesTheSameDirectiveThroughItsOwnWrappers() {
+		// The directive is backend-independent; what differs is the wrapper the backend
+		// builds for it. --no-gc used to refuse the form outright, which cost a
+		// host-driven module -- exactly the shape --no-gc is for -- about three times
+		// its bytes on the GC backend. Its own marshalling lives in NoGcWasmCompiler and
+		// is pinned there; here it is enough that the form compiles, and that the
+		// vocabulary widens with the house integer (i64 there, i31ref here).
 		List<LispVal> program = LispReader.readAllFromString("""
-				(rontolisp:wasm-import 'add :params '(:int :int) :returns :int)
+				(rontolisp:wasm-import 'add :params '(:long :long) :returns :long)
 				(defun add10 (n) (add n 10))
-				(rontolisp:wasm-export 'add10 :params '(:int) :returns :int)
+				(rontolisp:wasm-export 'add10 :params '(:long) :returns :long)
 				""");
-		assertThatThrownBy(() -> new NoGcWasmCompiler().compile(program)).hasMessageContaining("--no-gc");
+		assertThat(new NoGcWasmCompiler().compile(program)).isNotEmpty();
+		assertThatThrownBy(() -> new WasmLispCompiler(false, false, true).compile(program))
+			.hasMessageContaining("type designator :LONG is not supported");
 	}
 
 	@Test

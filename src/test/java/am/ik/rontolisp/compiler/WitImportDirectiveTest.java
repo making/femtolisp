@@ -788,15 +788,37 @@ class WitImportDirectiveTest {
 	}
 
 	@Test
-	void rejectsTheNoGcBackend() {
-		// --no-gc emits a plain MVP module with no imports at all, so the directive
-		// cannot
-		// mean anything there -- and says so before it even reads the WIT.
-		assertThatThrownBy(
-				() -> lower(KEYVALUE, Backend.WASM_NO_GC, new Directive(WIT, STORE, "kv", null, FieldStyle.CAMEL)))
+	void theNoGcBackendGetsThePreview1LoweringWithItsOwnWidths() {
+		// Both WASM core-module backends lower a wit-import to the same
+		// rontolisp:wasm-import block -- same directive, same injector, one world serving
+		// both. What differs is the WIDTH each designator keeps, because the vocabulary
+		// follows the house integer, and --no-gc's is i64: the whole fixed-width family
+		// crosses there, so a `u32` stays :U32 (and zero-extends) where the i31ref
+		// backend has to collapse it onto :INT, and s64/u64 -- which that backend refuses
+		// by name -- cross at all. Its wit-EXPORT side already carries those widths: an
+		// import and an export of ONE world must not disagree about which backend can
+		// bind it.
+		assertThat(printed(lowerApi("  count: func(name: string) -> u32;", Backend.WASM_GC)))
+			.isEqualTo("(RONTOLISP:WASM-IMPORT '|count| :FROM \"api\" :AS \"count\" :PARAMS '(:STRING) :RETURNS :INT)");
+		assertThat(printed(lowerApi("  count: func(name: string) -> u32;", Backend.WASM_NO_GC)))
+			.isEqualTo("(RONTOLISP:WASM-IMPORT '|count| :FROM \"api\" :AS \"count\" :PARAMS '(:STRING) :RETURNS :U32)");
+
+		String wide = "  ticks: func(since: s64) -> u64;";
+		assertThat(printed(lowerApi(wide, Backend.WASM_NO_GC)))
+			.isEqualTo("(RONTOLISP:WASM-IMPORT '|ticks| :FROM \"api\" :AS \"ticks\" :PARAMS '(:S64) :RETURNS :U64)");
+		assertThatThrownBy(() -> lowerApi(wide, Backend.WASM_GC)).isInstanceOf(UnsupportedOperationException.class)
+			.hasMessageContaining("does not cross the Preview 1 WASM import boundary");
+	}
+
+	@Test
+	void theNoGcBackendRefusesAnAsyncFuncAgainstTheWitFile() {
+		// :async t answers a (settled) future, and --no-gc has no value for one. The
+		// refusal names the WIT member and line, not the wasm-import the lowering would
+		// have produced.
+		assertThatThrownBy(() -> lowerApi("  pull: async func(url: string) -> string;", Backend.WASM_NO_GC))
 			.isInstanceOf(UnsupportedOperationException.class)
-			.hasMessage("rontolisp:wit-import is not supported with --no-gc: the scalar backend emits a plain MVP "
-					+ "module with no imports");
+			.hasMessageStartingWith("kv.wit:4: 'pull' is an async func, which --no-gc cannot bind")
+			.hasMessageContaining("no future value");
 	}
 
 	@Test

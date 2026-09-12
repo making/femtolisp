@@ -387,6 +387,7 @@ public final class NoGcWasmCompiler implements LispCompiler {
 		// I/O), which scalar mode does not support.
 		Map<String, Defun> defuns = new HashMap<>();
 		List<WasmExportCompiler.Decl> exportDecls = new ArrayList<>();
+		LinkedHashMap<String, WasmImportCompiler.Decl> importDecls = new LinkedHashMap<>();
 		for (LispVal expr : program) {
 			if (expr instanceof LispCons cons && cons.car() instanceof LispSymbol sym
 					&& LispNames.DEFUN.equals(sym.name())) {
@@ -401,14 +402,41 @@ public final class NoGcWasmCompiler implements LispCompiler {
 				// backend; on WASM it is a no-op, exactly as wasm-export is on the JVM.
 			}
 			else if (WasmImportCompiler.isImportForm(expr)) {
-				throw new UnsupportedOperationException(
-						"rontolisp:wasm-import is not supported with --no-gc (use the default GC backend)");
+				// A host function, callable from Lisp like a top-level defun: the
+				// directive is parsed by the shared backend-independent front end and
+				// becomes a synthetic internal function whose body marshals the scalar
+				// boundary and calls a PLACEHOLDER index the WasmImportInjector resolves
+				// once the module is assembled -- the same mechanism the wasm-GC backend
+				// uses, over this backend's unboxed value model.
+				WasmImportCompiler.Decl decl = WasmImportCompiler.parse((LispCons) expr,
+						WasmImportCompiler.SCALAR_PARAM_TYPES, "--no-gc");
+				validateImport(decl);
+				if (importDecls.put(decl.name(), decl) != null) {
+					throw new UnsupportedOperationException(
+							"rontolisp:wasm-import declares '" + decl.name() + "' twice");
+				}
+			}
+			else if (isConsumedPackageResidue(expr)) {
+				// What PackageResolver leaves where a (defpackage ...) / (in-package ...)
+				// stood: the package name as a quoted symbol, and the runtime half of the
+				// switch as (setq *package* :P). Both are consumed declarations by the
+				// time this backend sees them, and it has no top-level init body -- nor
+				// any *package* to assign -- so both are dropped. A program that READS
+				// *package* still fails, at the read, naming the symbol. This is what
+				// lets a user defpackage (and therefore rontolisp:wit-import, whose
+				// lowering writes one) reach the scalar backend at all.
 			}
 			else {
-				throw new UnsupportedOperationException("--no-gc supports only (defun ...) and "
-						+ "(rontolisp:wasm-export ...) at top level, got: " + expr.print());
+				throw new UnsupportedOperationException(unsupportedTopLevel(expr));
 			}
 		}
+		for (String name : importDecls.keySet()) {
+			if (defuns.containsKey(name)) {
+				throw new UnsupportedOperationException("rontolisp:wasm-import '" + name
+						+ "' has the same name as a top-level defun (one name, one function)");
+			}
+		}
+		this.imports = importDecls;
 		if (exportDecls.isEmpty()) {
 			throw new UnsupportedOperationException(
 					"--no-gc requires at least one (rontolisp:wasm-export ...) directive (there is nothing to export)");
@@ -437,7 +465,9 @@ public final class NoGcWasmCompiler implements LispCompiler {
 		// below: a (defun sqrt ...) is never enqueued, because every (sqrt ...) call
 		// site compiles to the built-in -- that is exactly the override the dispatcher
 		// warns about.
-		this.definedNames = Set.copyOf(defuns.keySet());
+		LinkedHashSet<String> defined = new LinkedHashSet<>(defuns.keySet());
+		defined.addAll(importDecls.keySet());
+		this.definedNames = Set.copyOf(defined);
 
 		// Determine the reachable, eligible functions and assign each a stable index in
 		// discovery (BFS) order. collectCalls both validates eligibility (throwing on an
@@ -452,27 +482,43 @@ public final class NoGcWasmCompiler implements LispCompiler {
 		while (!work.isEmpty()) {
 			String name = work.poll();
 			reachable.add(name);
+			if (importDecls.containsKey(name)) {
+				// A host import has no body to walk: its parameter and result types are
+				// DECLARED, and its only out-edge is the host call itself.
+				continue;
+			}
 			Defun defun = Objects.requireNonNull(defuns.get(name));
 			Set<String> callees = new LinkedHashSet<>();
 			collectCalls(progn(defun.body()), new HashSet<>(defun.params()), defuns, callees, name);
 			for (String callee : callees) {
-				if (!defuns.containsKey(callee)) {
+				if (!defuns.containsKey(callee) && !importDecls.containsKey(callee)) {
 					throw new UnsupportedOperationException(
 							"--no-gc: call to undefined function '" + callee + "' in '" + name + "'");
 				}
 				enqueue(callee, index, work);
 			}
 		}
+		// The import ordinals the placeholder call indices are emitted against, in
+		// DECLARATION order (what the import section then reads as, like the wasm-GC
+		// backend) restricted to the REACHED ones: a declared-but-uncalled import is
+		// never enqueued, so it costs the module neither an import entry nor a byte --
+		// the same "only what the exports reach" rule every other function here follows.
+		LinkedHashMap<String, Integer> importOrdinals = new LinkedHashMap<>();
+		for (String name : importDecls.keySet()) {
+			if (index.containsKey(name)) {
+				importOrdinals.put(name, importOrdinals.size());
+			}
+		}
 
 		// Infer the i64/f64/i32 type of every parameter, local and return value.
-		Types types = inferTypes(reachable, defuns, exportDecls);
+		Types types = inferTypes(reachable, defuns, importDecls, exportDecls);
 
 		// Lay out string literals in linear memory and decide whether the module needs
 		// the
 		// memory/allocator machinery at all (only when a string literal or a :string
 		// boundary type is present).
 		int internalCount = reachable.size();
-		Mem mem = planMemory(reachable, defuns, exportDecls, internalCount, types);
+		Mem mem = planMemory(reachable, defuns, importDecls, exportDecls, internalCount, types);
 
 		// Internal functions occupy indices 0..N-1; the emitted wrappers follow in
 		// export-directive order; the memory helpers (when present) come after the
@@ -481,7 +527,10 @@ public final class NoGcWasmCompiler implements LispCompiler {
 		// is emitted and the export names the internal function directly.
 		List<byte[]> internalBodies = new ArrayList<>();
 		for (String name : reachable) {
-			internalBodies.add(compileDefunBody(Objects.requireNonNull(defuns.get(name)), name, types, index, mem));
+			WasmImportCompiler.Decl imported = importDecls.get(name);
+			internalBodies.add(imported != null
+					? compileImportWrapperBody(imported, Objects.requireNonNull(importOrdinals.get(name)), mem)
+					: compileDefunBody(Objects.requireNonNull(defuns.get(name)), name, types, index, mem));
 		}
 		List<byte[]> wrapperBodies = new ArrayList<>();
 		int[] wrapperOrdinals = new int[exportDecls.size()];
@@ -500,8 +549,15 @@ public final class NoGcWasmCompiler implements LispCompiler {
 			}
 		}
 
+		// The reached imports in ordinal order: assemble() appends their host-ABI type
+		// entries after every other type and resolves the placeholder call indices
+		// (WasmImportInjector), so the module handed to the tree shaker below is valid.
+		List<WasmImportCompiler.Decl> hostImports = new ArrayList<>();
+		for (String name : importOrdinals.keySet()) {
+			hostImports.add(Objects.requireNonNull(importDecls.get(name)));
+		}
 		byte[] module = assemble(reachable, internalBodies, exportDecls, wrapperBodies, wrapperOrdinals, exportOrdinals,
-				internalCount, types, mem);
+				internalCount, types, mem, hostImports);
 		if (this.optimize.eliminatesDeadCode()) {
 			module = am.ik.wasm.WasmTreeShaker.shake(module);
 		}
@@ -546,6 +602,68 @@ public final class NoGcWasmCompiler implements LispCompiler {
 					+ " --component for '" + decl.name() + "' (a printing program's exports are lifted async"
 					+ " automatically; every other I/O op is rejected at compile time)");
 		}
+	}
+
+	/**
+	 * Validates a {@code rontolisp:wasm-import} directive beyond the type vocabulary
+	 * ({@link WasmImportCompiler#SCALAR_PARAM_TYPES}) the parse has already enforced:
+	 * both refusals here are about the SHAPE of the call, not about a value crossing it.
+	 * The types themselves cross for free -- an integer designator, {@code :float} and
+	 * {@code :bool} ARE the internal representation, and a {@code :string} already IS a
+	 * {@code (ptr,len)} region of the module's own linear memory.
+	 * @param decl the parsed declaration
+	 */
+	private void validateImport(WasmImportCompiler.Decl decl) {
+		if (this.component) {
+			throw new UnsupportedOperationException("rontolisp:wasm-import '" + decl.name()
+					+ "' is not supported with --no-gc --component: a component's imports are component-model"
+					+ " imports lowered through the canonical ABI, which the core-module wrap does not build."
+					+ " Compile the reactor form instead (--no-gc, with --no-wasi for a module that imports"
+					+ " nothing else)");
+		}
+		if (decl.async()) {
+			throw new UnsupportedOperationException("rontolisp:wasm-import :async is not supported with --no-gc for '"
+					+ decl.name() + "': a started-equals-settled future is still a future, and this backend has no"
+					+ " value to represent one (the whole async surface is rejected here). Drop :async t -- the host"
+					+ " call is synchronous");
+		}
+	}
+
+	/**
+	 * The message a top-level form this backend does not accept is refused with. It names
+	 * the SUBSET rather than only the offending form: a program is usually one form away
+	 * from fitting, and "use the default GC backend" answers a question the user did not
+	 * ask (that backend costs about ten times the bytes for the shape this one is for).
+	 * @param expr the refused top-level form
+	 * @return the message
+	 */
+	private static String unsupportedTopLevel(LispVal expr) {
+		return "--no-gc supports only (defun ...), (rontolisp:wasm-export ...) and (rontolisp:wasm-import ...) at top"
+				+ " level, got: " + expr.print() + " -- the scalar backend is a pure-compute reactor over unboxed"
+				+ " i64/f64 values and linear-memory strings: no top-level init body, no cons or list, no symbol or"
+				+ " hash value, no format, no eval, and packed float arrays only at rank 1 and 2. A program that"
+				+ " needs any of those compiles on the default GC backend (drop --no-gc)";
+	}
+
+	/**
+	 * Whether the top-level form is the residue a consumed package declaration leaves
+	 * behind: the quoted package name a {@code defpackage} resolves to, or the
+	 * {@code (setq *package* :P)} an {@code in-package} resolves to.
+	 * @param expr the top-level form
+	 * @return whether it can be dropped
+	 */
+	private static boolean isConsumedPackageResidue(LispVal expr) {
+		if (!(expr instanceof LispCons cons && cons.car() instanceof LispSymbol op
+				&& cons.cdr() instanceof LispCons rest)) {
+			return false;
+		}
+		if (LispNames.QUOTE.equals(op.name())) {
+			return rest.car() instanceof LispSymbol && rest.cdr() instanceof LispNil;
+		}
+		return LispNames.SETQ.equals(op.name()) && rest.car() instanceof LispSymbol name
+				&& LispNames.PACKAGE_VAR.equals(name.name()) && rest.cdr() instanceof LispCons valueCell
+				&& valueCell.car() instanceof LispSymbol value && value.isKeyword()
+				&& valueCell.cdr() instanceof LispNil;
 	}
 
 	private static void enqueue(String name, Map<String, Integer> index, Deque<String> work) {
@@ -612,13 +730,26 @@ public final class NoGcWasmCompiler implements LispCompiler {
 	}
 
 	private Types inferTypes(List<String> reachable, Map<String, Defun> defuns,
-			List<WasmExportCompiler.Decl> exportDecls) {
+			Map<String, WasmImportCompiler.Decl> imports, List<WasmExportCompiler.Decl> exportDecls) {
 		// Parameters of an exported function are pinned to the boundary designator (the
 		// host passes them in); every other parameter type, every local type and every
 		// return type starts at INT (bottom) and is only ever widened to FLOAT, so the
 		// fixpoint is monotone and terminates.
+		//
+		// A host IMPORT is pinned on BOTH sides and never walked: it has no body to
+		// infer from, and its declared designators are the whole contract -- so its
+		// parameters join the pinned `boundary` map (the sink then leaves them alone and
+		// every caller coerces to them, exactly as it does for an export) and its return
+		// type is set once, below.
 		Map<String, Ty[]> boundary = new HashMap<>();
 		for (WasmExportCompiler.Decl decl : exportDecls) {
+			Ty[] pinned = new Ty[decl.paramTypes().size()];
+			for (int i = 0; i < pinned.length; i++) {
+				pinned[i] = boundaryTy(decl.paramTypes().get(i));
+			}
+			boundary.put(decl.name(), pinned);
+		}
+		for (WasmImportCompiler.Decl decl : imports.values()) {
 			Ty[] pinned = new Ty[decl.paramTypes().size()];
 			for (int i = 0; i < pinned.length; i++) {
 				pinned[i] = boundaryTy(decl.paramTypes().get(i));
@@ -630,6 +761,13 @@ public final class NoGcWasmCompiler implements LispCompiler {
 		Map<String, Ty> returns = new HashMap<>();
 		Map<String, Map<String, Ty>> locals = new HashMap<>();
 		for (String name : reachable) {
+			WasmImportCompiler.Decl imported = imports.get(name);
+			if (imported != null) {
+				params.put(name, Objects.requireNonNull(boundary.get(name)).clone());
+				returns.put(name, importReturnTy(imported));
+				locals.put(name, new HashMap<>());
+				continue;
+			}
 			Defun d = Objects.requireNonNull(defuns.get(name));
 			params.put(name, boundary.containsKey(name) ? boundary.get(name).clone() : filled(d.params().size()));
 			returns.put(name, Ty.INT);
@@ -645,6 +783,10 @@ public final class NoGcWasmCompiler implements LispCompiler {
 			// types; local and return types accumulate in place (they only widen).
 			Map<String, Ty[]> nextParams = new HashMap<>();
 			for (String name : reachable) {
+				if (imports.containsKey(name)) {
+					nextParams.put(name, Objects.requireNonNull(boundary.get(name)).clone());
+					continue;
+				}
 				int arity = Objects.requireNonNull(defuns.get(name)).params().size();
 				nextParams.put(name, boundary.containsKey(name) ? boundary.get(name).clone() : filled(arity));
 			}
@@ -660,6 +802,9 @@ public final class NoGcWasmCompiler implements LispCompiler {
 				}
 			};
 			for (String name : reachable) {
+				if (imports.containsKey(name)) {
+					continue; // declared on both sides; nothing to walk
+				}
 				Defun d = Objects.requireNonNull(defuns.get(name));
 				TC tc = new TC(name, new HashSet<>(d.params()), types, sink, true, changed);
 				Ty rt = typeOf(progn(d.body()), paramEnv(d, params), tc);
@@ -677,6 +822,17 @@ public final class NoGcWasmCompiler implements LispCompiler {
 			}
 		}
 		return types;
+	}
+
+	/**
+	 * The internal value type an imported host function's result arrives as: the
+	 * designator's own internal kind, and INT for a {@code :void} import -- every
+	 * function here returns exactly one value, and nil IS the i64 zero.
+	 * @param decl the parsed import declaration
+	 * @return the internal type of the wrapper's result
+	 */
+	private static Ty importReturnTy(WasmImportCompiler.Decl decl) {
+		return decl.returnType() == BoundaryType.VOID ? Ty.INT : boundaryTy(decl.returnType());
 	}
 
 	private static Ty[] filled(int n) {
@@ -1095,12 +1251,17 @@ public final class NoGcWasmCompiler implements LispCompiler {
 
 	private static final int STR_DATA_BASE = 8;
 
-	private Mem planMemory(List<String> reachable, Map<String, Defun> defuns, List<WasmExportCompiler.Decl> exportDecls,
-			int internalCount, Types types) {
+	private Mem planMemory(List<String> reachable, Map<String, Defun> defuns,
+			Map<String, WasmImportCompiler.Decl> imports, List<WasmExportCompiler.Decl> exportDecls, int internalCount,
+			Types types) {
 		// Gather every string literal in every reachable body (deterministic order), then
-		// lay each out as a 4-byte-aligned [len:i32 LE][bytes] header.
+		// lay each out as a 4-byte-aligned [len:i32 LE][bytes] header. A host import has
+		// no body: everything below that walks one skips it.
 		LinkedHashSet<String> literals = new LinkedHashSet<>();
 		for (String name : reachable) {
+			if (imports.containsKey(name)) {
+				continue;
+			}
 			collectLiterals(progn(Objects.requireNonNull(defuns.get(name)).body()), literals);
 		}
 		// Printing: print/princ/terpri gate the fd_write import and the __write_stdout
@@ -1109,14 +1270,14 @@ public final class NoGcWasmCompiler implements LispCompiler {
 		// pool ONLY when used, so a print-free module keeps its exact bytes.
 		boolean printUsed = false;
 		for (String name : reachable) {
-			if (usesPrintOp(progn(Objects.requireNonNull(defuns.get(name)).body()))) {
+			if (!imports.containsKey(name) && usesPrintOp(progn(Objects.requireNonNull(defuns.get(name)).body()))) {
 				printUsed = true;
 				break;
 			}
 		}
 		boolean ftoaUsed = false;
 		for (String name : reachable) {
-			if (rendersFloat(name, Objects.requireNonNull(defuns.get(name)), types)) {
+			if (!imports.containsKey(name) && rendersFloat(name, Objects.requireNonNull(defuns.get(name)), types)) {
 				ftoaUsed = true;
 				break;
 			}
@@ -1176,12 +1337,25 @@ public final class NoGcWasmCompiler implements LispCompiler {
 				boundaryString = true;
 			}
 		}
+		// A host import's :string boundary is the same linear-memory crossing an
+		// export's is, in the other direction: an argument is handed over as the
+		// (content ptr, len) of a block this module already holds, and a result is bytes
+		// the host wrote here (through the exported memory + __ronto_alloc) that the
+		// wrapper copies into a fresh [len][bytes] block. Either way the module needs
+		// the memory and the allocator.
+		for (String name : reachable) {
+			WasmImportCompiler.Decl decl = imports.get(name);
+			if (decl != null
+					&& (decl.returnType() == BoundaryType.STRING || decl.paramTypes().contains(BoundaryType.STRING))) {
+				boundaryString = true;
+			}
+		}
 		// A body can produce a string without any literal or :string boundary (e.g.
 		// (length (princ-to-string n)) on an :int export), so string-producing ops also
 		// flag the memory as used.
 		boolean stringOp = false;
 		for (String name : reachable) {
-			if (usesStringOp(progn(Objects.requireNonNull(defuns.get(name)).body()))) {
+			if (!imports.containsKey(name) && usesStringOp(progn(Objects.requireNonNull(defuns.get(name)).body()))) {
 				stringOp = true;
 				break;
 			}
@@ -1192,7 +1366,7 @@ public final class NoGcWasmCompiler implements LispCompiler {
 		// memory as used even in an otherwise pure-numeric program.
 		boolean floatVec = false;
 		for (String name : reachable) {
-			if (usesFloatArray(progn(Objects.requireNonNull(defuns.get(name)).body()))) {
+			if (!imports.containsKey(name) && usesFloatArray(progn(Objects.requireNonNull(defuns.get(name)).body()))) {
 				floatVec = true;
 				break;
 			}
@@ -1315,7 +1489,7 @@ public final class NoGcWasmCompiler implements LispCompiler {
 
 	private byte[] assemble(List<String> reachable, List<byte[]> internalBodies,
 			List<WasmExportCompiler.Decl> exportDecls, List<byte[]> wrapperBodies, int[] wrapperOrdinals,
-			int[] exportOrdinals, int internalCount, Types types, Mem mem) {
+			int[] exportOrdinals, int internalCount, Types types, Mem mem, List<WasmImportCompiler.Decl> hostImports) {
 		// The local (non-imported) function count: internals, the emitted wrappers
 		// (pass-through exports have none and name their internal function directly),
 		// then the six memory helpers (when memory is used), then __ftoa /
@@ -1353,6 +1527,9 @@ public final class NoGcWasmCompiler implements LispCompiler {
 		int shimBase = postBase + postKinds.size();
 		int totalFuncCount = localFuncCount
 				+ (componentStringAbi ? 1 + postKinds.size() + stringReturnDecls.size() : 0);
+		// Function index k uses type index k (shifted by funcBase), so the host-ABI
+		// types appended after the last function's type start here.
+		final int importTypeBase = mem.funcBase() + totalFuncCount;
 		ByteArrayOutputStream out = new ByteArrayOutputStream();
 		WasmWriter w = new WasmWriter(out);
 		w.write("\0asm")
@@ -1417,6 +1594,13 @@ public final class NoGcWasmCompiler implements LispCompiler {
 					for (int j : stringReturnDecls) {
 						typeSec.addFunc(WasmExportCompiler.paramWasmTypes(exportDecls.get(j)), new Type[] { Type.I32 });
 					}
+				}
+				// The host-ABI signature of each reached rontolisp:wasm-import, LAST --
+				// an import entry names a type index but no function index, so appending
+				// them here renumbers nothing and a module that declares none keeps its
+				// exact bytes.
+				for (WasmImportCompiler.Decl decl : hostImports) {
+					typeSec.addFunc(WasmImportCompiler.hostParamTypes(decl), WasmImportCompiler.hostResultTypes(decl));
 				}
 			});
 		// Import section: exactly the one fd_write, and only when the program prints.
@@ -1537,7 +1721,22 @@ public final class NoGcWasmCompiler implements LispCompiler {
 		if (mem.used() && mem.data().length > 0) {
 			w.writeDataSection(data -> data.addActiveData(0, mem.dataBase(), mem.data()));
 		}
-		return out.toByteArray();
+		byte[] module = out.toByteArray();
+		if (hostImports.isEmpty()) {
+			return module;
+		}
+		// Resolve the placeholder call indices the import wrappers emitted: the entries
+		// are prepended to the import section (ahead of a printing program's fd_write,
+		// which shifts along with every other function reference) and the whole module is
+		// renumbered in one sweep. The pre-injection module calls 2^27 and is NOT valid,
+		// so nothing may validate or emit it; the injector runs BEFORE the tree shaker,
+		// which renumbers what survives.
+		List<am.ik.wasm.WasmImportInjector.HostImport> entries = new ArrayList<>();
+		int typeIndex = importTypeBase;
+		for (WasmImportCompiler.Decl decl : hostImports) {
+			entries.add(new am.ik.wasm.WasmImportInjector.HostImport(decl.module(), decl.field(), typeIndex++));
+		}
+		return am.ik.wasm.WasmImportInjector.inject(module, entries, WasmImportCompiler.PLACEHOLDER_FUNC_BASE);
 	}
 
 	// __alloc(size i32) -> i32: a bump allocator over the heap-pointer global (index 0).
@@ -2064,6 +2263,127 @@ public final class NoGcWasmCompiler implements LispCompiler {
 				|| (decl.returnType() == BoundaryType.FLOAT && ret == Ty.FLOAT);
 	}
 
+	/**
+	 * The body of the synthetic internal function a {@code rontolisp:wasm-import} becomes
+	 * -- the mirror image of {@link #compileWrapperBody}, which is what an EXPORT gets.
+	 * It has the ordinary internal calling convention (one unboxed parameter per declared
+	 * type, one result), marshals each argument out to the host ABI, calls the imported
+	 * function through its placeholder index, and marshals the result back.
+	 *
+	 * <p>
+	 * The marshalling is nearly empty, which is the whole point of this backend's value
+	 * model: {@code :s64}/{@code :float} are the internal representation and cross
+	 * untouched, a narrower integer is a {@code i32.wrap_i64} behind the boundary's range
+	 * guard, {@code :bool} is one comparison, and a {@code :string} argument is the
+	 * {@code (ptr+4, [ptr])} pair of a block the module already holds -- no encode, no
+	 * copy. Only a {@code :string} RESULT copies, because the bytes the host wrote need
+	 * an internal {@code [len][bytes]} header in front of them.
+	 *
+	 * <p>
+	 * The boundary's rule is the export wrapper's, with the directions swapped: an
+	 * ARGUMENT leaves the house {@code i64} (so a narrow declared type is range-guarded,
+	 * exactly as an export's RESULT is), and a RESULT arrives into it (so only
+	 * {@code :u64}, the one type the signed house integer cannot state in full, is
+	 * guarded).
+	 * @param decl the parsed import declaration
+	 * @param ordinal the import's ordinal among the reached imports
+	 * @param mem the memory plan (the allocator and copy helpers a {@code :string} result
+	 * calls)
+	 * @return the code entry bytes
+	 */
+	private byte[] compileImportWrapperBody(WasmImportCompiler.Decl decl, int ordinal, Mem mem) {
+		ByteArrayOutputStream bodyStream = new ByteArrayOutputStream();
+		WasmWriter w = new WasmWriter(bodyStream);
+		List<Ty> locals = new ArrayList<>();
+		int nextLocal = decl.paramTypes().size();
+		for (int p = 0; p < decl.paramTypes().size(); p++) {
+			BoundaryType hostType = decl.paramTypes().get(p);
+			if (hostType == BoundaryType.STRING) {
+				// The internal [len][bytes] pointer IS the region the host reads: hand
+				// over (content ptr, len) without moving a byte.
+				w.write(Instruction.GET_LOCAL)
+					.writeUnsignedLeb128(p)
+					.write(Instruction.I32_CONST)
+					.writeSignedLeb128(4)
+					.write(Instruction.I32_ADD);
+				w.write(Instruction.GET_LOCAL).writeUnsignedLeb128(p).write(Instruction.I32_LOAD, 0x02, 0x00);
+				continue;
+			}
+			w.write(Instruction.GET_LOCAL).writeUnsignedLeb128(p);
+			switch (hostType) {
+				// The internal f64 is the host f64 (:float pins the parameter to FLOAT).
+				case FLOAT -> {
+				}
+				// nil (0) -> 0, anything else -> 1.
+				case BOOL -> {
+					i64Const(w, 0);
+					w.write(Instruction.I64_NE);
+				}
+				default -> {
+					nextLocal += emitBoundaryRangeGuard(w, hostType, false, nextLocal, locals);
+					if (hostType.bits() < 64) {
+						w.write(Instruction.I32_WRAP_I64);
+					}
+				}
+			}
+		}
+		w.write(Instruction.CALL).writeUnsignedLeb128(WasmImportCompiler.PLACEHOLDER_FUNC_BASE + ordinal);
+		switch (decl.returnType()) {
+			// Nothing came back; every function here answers one value, and nil IS 0.
+			case VOID -> i64Const(w, 0);
+			case FLOAT -> {
+			}
+			// Normalize to the 0/1 the rest of the backend reads as nil/t, so (eq r t)
+			// holds for a host that answers any non-zero i32.
+			case BOOL -> {
+				w.write(Instruction.I32_EQZ);
+				w.write(Instruction.I32_EQZ);
+				w.write(Instruction.I64_EXTEND_U_I32);
+			}
+			// (ptr,len) the host wrote into this module's linear memory -> a fresh
+			// internal [len][bytes] block.
+			case STRING -> {
+				int hp = nextLocal++;
+				int len = nextLocal++;
+				int dst = nextLocal++;
+				locals.add(Ty.STRING);
+				locals.add(Ty.STRING);
+				locals.add(Ty.STRING);
+				w.write(Instruction.SET_LOCAL).writeUnsignedLeb128(len);
+				w.write(Instruction.SET_LOCAL).writeUnsignedLeb128(hp);
+				w.write(Instruction.I32_CONST).writeSignedLeb128(4);
+				w.write(Instruction.GET_LOCAL).writeUnsignedLeb128(len).write(Instruction.I32_ADD);
+				w.write(Instruction.CALL).writeUnsignedLeb128(mem.allocIndex());
+				w.write(Instruction.SET_LOCAL).writeUnsignedLeb128(dst);
+				w.write(Instruction.GET_LOCAL).writeUnsignedLeb128(dst);
+				w.write(Instruction.GET_LOCAL).writeUnsignedLeb128(len).write(Instruction.I32_STORE, 0x02, 0x00);
+				w.write(Instruction.GET_LOCAL)
+					.writeUnsignedLeb128(dst)
+					.write(Instruction.I32_CONST)
+					.writeSignedLeb128(4)
+					.write(Instruction.I32_ADD);
+				w.write(Instruction.GET_LOCAL).writeUnsignedLeb128(hp);
+				w.write(Instruction.GET_LOCAL).writeUnsignedLeb128(len);
+				w.write(Instruction.CALL).writeUnsignedLeb128(mem.memcpyIndex());
+				w.write(Instruction.GET_LOCAL).writeUnsignedLeb128(dst);
+			}
+			// An integer the house i64 states exactly needs only the widening in its own
+			// signedness; :s64 is the identity and :u64 is the one value range the
+			// SIGNED house integer cannot hold, so it is the one guarded here.
+			default -> {
+				BoundaryType type = decl.returnType();
+				if (type.bits() < 64) {
+					w.write(type.signed() ? Instruction.I64_EXTEND_S_I32 : Instruction.I64_EXTEND_U_I32);
+				}
+				else {
+					nextLocal += emitBoundaryRangeGuard(w, type, false, nextLocal, locals);
+				}
+			}
+		}
+		w.write(Instruction.END);
+		return withLocals(bodyStream.toByteArray(), locals);
+	}
+
 	private byte[] compileWrapperBody(WasmExportCompiler.Decl decl, int targetIndex, Types types, Mem mem) {
 		ByteArrayOutputStream bodyStream = new ByteArrayOutputStream();
 		WasmWriter w = new WasmWriter(bodyStream);
@@ -2579,6 +2899,13 @@ public final class NoGcWasmCompiler implements LispCompiler {
 	private final java.util.Set<String> warnedClRedefinitions = new java.util.HashSet<>();
 
 	private Set<String> definedNames = Set.of();
+
+	/**
+	 * The {@code rontolisp:wasm-import} declarations of the compile in flight, by Lisp
+	 * name -- what makes a call to a host function an eligible callee in
+	 * {@link #collectCallsCons}, exactly like a top-level defun.
+	 */
+	private Map<String, WasmImportCompiler.Decl> imports = Map.of();
 
 	private Ty compileUserCall(String name, List<LispVal> args, Fn fn) {
 		Ty[] paramTypes = fn.types.params().get(name);
@@ -5402,7 +5729,7 @@ public final class NoGcWasmCompiler implements LispCompiler {
 			}
 			return;
 		}
-		if (defuns.containsKey(name)) {
+		if (defuns.containsKey(name) || this.imports.containsKey(name)) {
 			callees.add(name);
 			for (int i = 1; i < args.size(); i++) {
 				collectCalls(args.get(i), bound, defuns, callees, fnName);

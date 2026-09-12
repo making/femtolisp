@@ -83,6 +83,22 @@ public final class CompileFrontendAccess {
 	}
 
 	/**
+	 * Reads and expands a WASM program whose relative paths (a
+	 * {@code rontolisp:wit-import}'s {@code .wit}) resolve against a directory on disk,
+	 * for whichever of the two core-module backends {@code noGc} names.
+	 * @param source the program text
+	 * @param baseDir the directory relative paths resolve against
+	 * @param noGc {@code --no-gc}
+	 * @return the expanded, spliced and pruned top-level forms
+	 */
+	public static List<LispVal> wasmReactor(String source, String baseDir, boolean noGc) {
+		return CompileFrontend
+			.run(source, null, baseDir, List.of(), DistClient.createDefault(List.of()), List.of(), true, false, false,
+					false, true, noGc, false, null, false, false)
+			.program();
+	}
+
+	/**
 	 * Compiles a source text through the WHOLE front end the CLI runs -- the read (with
 	 * the target's own feature set), the {@code (load ...)} and ASDF inlining over the
 	 * real filesystem, and the pass pipeline -- for a test that hands a library E2E's

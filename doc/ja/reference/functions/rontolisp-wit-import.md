@@ -145,7 +145,7 @@ rontolisp が与えた綴りです。
 | JVM (`-o Prog.class`) | the same `defun`s, compiled |
 | Preview 1 WASM (`-o prog.wasm`) | one [`rontolisp:wasm-import`](rontolisp-wasm-import.md) per WIT function |
 | `--component` | a component-model **instance import** of the interface, each function `canon lower`ed into the core module |
-| `--no-gc` | a compile error (its MVP module imports nothing) |
+| `--no-gc` | WIT の関数 1 つにつき同じ `rontolisp:wasm-import`。各整数は自分の幅を保ちます(ハウス整数が `i64` のため)。`async func` はコンパイルエラーです |
 
 Preview 1 では、生成されるモジュールは手書きの等価物と**バイト単位で同一**であり、
 [ツリーシェイキング](../../compiling/wasm.md#optimize-tree-shaking)
@@ -219,7 +219,7 @@ wasmtime 組み込みのキーバリュープロバイダはインスタンス�
 | interpreter, JVM | a call into the interface's provider, with the member name `"bucket-drop"` and the handle as its only argument |
 | Preview 1 WASM (`-o prog.wasm`) | a **no-op**. A handle there is an opaque integer the host handed over and the guest holds nothing; importing a release function the WIT never declared would be inventing one |
 | `--component` | `canon resource.drop` — the handle goes back to the host's own table |
-| `--no-gc` | it rejects `rontolisp:wit-import` itself |
+| `--no-gc` | a **no-op**, for the same reason as Preview 1 above |
 
 ここから 2 つのことが導かれます。どちらも「行儀の良さ」以上の話です。
 
@@ -345,10 +345,13 @@ variant のどの case でもないキーワードを渡すのは**型エラー*
 
 ## 制限事項
 
-- `--no-gc` はこのディレクティブを明確なエラーで拒否します。その契約は、何もインポート
-  しない素の MVP モジュールだからです。
-- Preview 1 の境界を渡れるのは上表のフラットな集合だけです。`record`、`option`、
-  `result`、`s64` は WIT ファイル名と行番号を示すコンパイルエラーになります —
+- `--no-gc` は同じ Preview 1 のローワリングでこのディレクティブを受け付け、整数は
+  すべての幅を運びます(ハウス整数が `i64` なので `s64`/`u64` も渡り、`u32` は
+  `s32` に潰れず自分の幅を保ちます)。唯一の拒否は `async func` です:
+  `:async t` は future を返しますが、あの値モデルに future はありません。
+- デフォルト (wasm-GC) の Preview 1 境界を渡れるのは上表のフラットな集合だけです。
+  `record`、`option`、`result`、`s64` は WIT ファイル名と行番号を示すコンパイル
+  エラーになります —
   `wit/store.wit:12: 'bucket-get': the WIT type of the result does not cross the Preview 1 WASM import boundary, which carries the flat set (...)` —
   `--component`、インタプリタ、JVM のいずれもが束縛できるとしてもです。上の
   `wasi:keyvalue` の例はしたがって Preview 1 のプログラムではなく、コンポーネント

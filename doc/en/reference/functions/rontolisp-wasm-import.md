@@ -104,9 +104,12 @@ spells both directions `async func`, and the directive carries the direction.)
 
 ## Limitations
 
-- Applies to the default (wasm-GC) Preview 1 core module only; `--component`
-  and `--no-gc` reject the directive with an error. On the interpreter and JVM
-  the declared name signals an error when called.
+- Core modules only: `--component` rejects the directive with an error. On the
+  interpreter and JVM the declared name signals an error when called.
+- [`--no-gc`](../../guides/wasm-nogc.md#host-imports-rontolispwasm-import) takes
+  the directive, with its own type vocabulary: the whole fixed-width integer
+  family (its house integer is `i64`), `:float`, `:bool`, `:string` and `:void`,
+  but not `:s-expr`, not `:bytes`, not `:async t`, and not under `--component`.
 - The directive must appear at top level, before use like a `defun`.
 - Instantiating the compiled module requires the host to provide every declared
   import; `wasmtime run` needs a `--preload <module>=<file>.wasm` for each

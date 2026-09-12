@@ -72,6 +72,26 @@ final class WasmImportCompiler {
 	private static final List<BoundaryType> KNOWN_PARAM_TYPES = List.of(BoundaryType.S32, BoundaryType.FLOAT,
 			BoundaryType.BOOL, BoundaryType.STRING, BoundaryType.S_EXPR, BoundaryType.BYTES);
 
+	/**
+	 * The boundary types the {@code --no-gc} backend may name -- the same directive, a
+	 * different vocabulary, because the vocabulary follows the HOUSE INTEGER and that
+	 * backend's is {@code i64} rather than {@code i31ref}. So the whole fixed-width
+	 * integer family crosses there, guarded in the direction each end can overflow (an
+	 * argument leaves the house integer, a result arrives into it; see
+	 * {@code .kb/no-gc-scalar-wasm.md}), while {@code :s-expr} and {@code :bytes} -- both
+	 * heap objects with no scalar representation -- do not.
+	 *
+	 * <p>
+	 * Which makes it exactly the set of types that have a WIT spelling, and that is not a
+	 * coincidence worth restating twice: a WIT world names flat values, and flat values
+	 * are what an unboxed scalar model carries. Deriving it from
+	 * {@link BoundaryType#witName()} keeps this vocabulary and the one
+	 * {@code rontolisp:wit-import} lowers against from drifting apart.
+	 */
+	static final List<BoundaryType> SCALAR_PARAM_TYPES = java.util.Arrays.stream(BoundaryType.values())
+		.filter(type -> type.witName() != null)
+		.toList();
+
 	private WasmImportCompiler() {
 	}
 
@@ -110,13 +130,29 @@ final class WasmImportCompiler {
 	 * unknown type designator
 	 */
 	static Decl parse(LispCons form) {
+		return parse(form, KNOWN_PARAM_TYPES, "");
+	}
+
+	/**
+	 * Parses a directive form against a backend's own import vocabulary.
+	 * @param form the directive form
+	 * @param accepted the boundary types this backend's wrappers marshal
+	 * ({@link #KNOWN_PARAM_TYPES} on wasm-GC, {@link #SCALAR_PARAM_TYPES} under
+	 * {@code --no-gc})
+	 * @param backend the flag naming that backend in an error message, or {@code ""} for
+	 * the default one
+	 * @return the parsed declaration
+	 * @throws UnsupportedOperationException if the directive is malformed or names a type
+	 * designator this backend does not carry
+	 */
+	static Decl parse(LispCons form, List<BoundaryType> accepted, String backend) {
 		WasmImportDirective directive = WasmImportDirective.parse(form);
 		List<BoundaryType> params = new ArrayList<>();
 		for (String t : directive.paramTypes()) {
-			params.add(knownType(t, form, false));
+			params.add(knownType(t, form, false, accepted, backend));
 		}
 		BoundaryType returns = directive.returnType() == null ? BoundaryType.VOID
-				: knownType(directive.returnType(), form, true);
+				: knownType(directive.returnType(), form, true, accepted, backend);
 		return new Decl(directive.name(), directive.module(), directive.field(), List.copyOf(params), returns,
 				directive.async());
 	}
@@ -124,15 +160,24 @@ final class WasmImportCompiler {
 	// One designator from the directive, restricted to the import vocabulary. The
 	// designator spelling is the shared one, so :int is accepted as the alias of :s32
 	// here
-	// exactly as it is on the export side.
-	private static BoundaryType knownType(String designator, LispCons form, boolean result) {
+	// exactly as it is on the export side. A designator that names a REAL boundary type
+	// this backend does not carry is reported as unsupported-here rather than unknown:
+	// the two are a different fix, and :s-expr is a valid import type one backend over.
+	private static BoundaryType knownType(String designator, LispCons form, boolean result, List<BoundaryType> accepted,
+			String backend) {
 		BoundaryType type = BoundaryType.forDesignator(designator);
-		if (type != null && (KNOWN_PARAM_TYPES.contains(type) || (result && type == BoundaryType.VOID))) {
+		if (type != null && (accepted.contains(type) || (result && type == BoundaryType.VOID))) {
 			return type;
 		}
-		throw new UnsupportedOperationException("Unknown rontolisp:wasm-import type designator " + designator + " in "
-				+ form.print() + " (expected one of "
-				+ KNOWN_PARAM_TYPES.stream().map(BoundaryType::designator).toList() + (result ? " or :void)" : ")"));
+		String takes = " (expected one of " + accepted.stream().map(BoundaryType::designator).toList()
+				+ (result ? " or :void)" : ")");
+		if (type != null) {
+			throw new UnsupportedOperationException(
+					"rontolisp:wasm-import type designator " + designator + " is not supported"
+							+ (backend.isEmpty() ? "" : " with " + backend) + " in " + form.print() + takes);
+		}
+		throw new UnsupportedOperationException(
+				"Unknown rontolisp:wasm-import type designator " + designator + " in " + form.print() + takes);
 	}
 
 	/**

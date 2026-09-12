@@ -5,7 +5,7 @@ Opt-in (CLI `--no-gc`; `NoGcWasmCompiler(optimize, simd[, component[, noWasi]])`
 `RontoLispCli.compileToFile` — NOT a flag threaded through `WasmLispCompiler`, so the GC path
 stays untouched. Emits a **plain MVP module**: no rec group, no `struct`/`array`/`i31`/
 `eqref`, no linear memory unless the program uses strings, the single `fd_write` import only
-when it prints.
+when it prints, and a host function only where the program declares one ("Host imports").
 
 "non-GC" is the **value model** (unboxed `i64`/`f64`/linear-memory pointers), ORTHOGONAL to
 hardware SIMD: the `simd` ctor arg toggles `vec:` kernels between scalar linear-memory loops
@@ -88,10 +88,64 @@ documented divergences (README "Non-GC Output"): no rational type, and `0` is fa
   allocated inside may be reachable after except the body's value; a `return` unwinding
   across the boundary skips the pop (leak, not corruption).
 
+## Host imports (`rontolisp:wasm-import`)
+The directive is taken here too, and this backend is what a host-driven module WANTS: the
+`.todo/789` measurement reactor -- two host imports (one taking two `:string`s), a fixnum
+recursion, two exports -- is **528 bytes** at `--no-gc --no-wasi --optimize=size` against **1,658** for the
+same source on wasm-GC (measured 2026-09-12, after `790`/`791` landed). Refusing it used to cost
+exactly that 3.1x, on the shape this backend exists for.
+
+**Everything above the codegen is shared, nothing is re-derived**: `compiler/WasmImportDirective`
+parses, `WasmImportCompiler.parse`/`hostParamTypes`/`hostResultTypes` settle the host signature,
+and `am.ik.wasm.WasmImportInjector` resolves the `PLACEHOLDER_FUNC_BASE` encoding on the finished
+module (`.kb/wasm-import.md`). Only the WRAPPER BODY is this backend's own, because only the
+value model differs.
+
+- **Each import is a synthetic internal function** in the same BFS index space as the defuns:
+  `collectCalls` accepts its name as an eligible callee, `inferTypes` PINS both sides from the
+  declared designators (it joins the `boundary` map exports use, and its body is never walked),
+  and `compileUserCall` then emits an ordinary `call` after coercing to those types. Nothing in
+  the call path knows it is an import.
+- **The type vocabulary follows the house integer**: `WasmImportCompiler.SCALAR_PARAM_TYPES`,
+  derived as `BoundaryType.witName() != null` -- the whole fixed-width integer family, `:float`,
+  `:bool`, `:string`, and `:void` as a result. `:s-expr`/`:bytes` are refused by name. That the
+  set is exactly "the types a WIT world can spell" is why one world serves both core-module
+  backends.
+- **Marshalling is nearly empty**: `:s64`/`:float` are the identity; a narrower integer is
+  `i32.wrap_i64` behind the guard below; `:bool` is one `i64.ne 0` out / `i32.eqz;i32.eqz` in;
+  `:void` answers the i64 zero. A `:string` ARGUMENT is `(ptr+4, [ptr])` of a block the module
+  already holds -- **no staging, no copy, and therefore none of the aliasing the wasm-GC
+  wrapper had to fix** (`.kb/wasm-import.md`). Only a `:string` RESULT copies: the host's
+  `(ptr,len)` into a fresh `[len][bytes]` block via `__alloc`/`__memcpy`.
+- **The boundary carries the value exactly or traps, in BOTH directions** -- the export
+  wrapper's rule with the directions swapped. An ARGUMENT leaves the house `i64`, so a narrow
+  or unsigned declared type is range-guarded (the same `emitBoundaryRangeGuard`); a RESULT
+  arrives into it, so only `:u64` is.
+- **Only REACHED imports are imported.** A declared-but-uncalled host function is never enqueued,
+  so it costs neither an import entry nor a byte at any optimize level -- the rule every other
+  function here follows. Ordinals are assigned in DECLARATION order among the reached ones.
+- **Refusals**: `:async t` (a settled future is still a future, and there is no value for one)
+  and `--component` (a component's imports are canonical-ABI imports the core-module wrap does
+  not build). `rontolisp:wit-import` lowers to this and is accepted, except an `async func`.
+- The host types are appended AFTER every other type-section entry (nothing renumbers), and the
+  injector prepends the entries ahead of a printing program's `fd_write`, which shifts with
+  everything else. Pins: `NoGcWasmCompilerTest` (`aHostImportBecomesTheModulesOnlyImportEntry`,
+  `theHostImportsPrecedeAPrintingModulesFdWrite`, `aDeclaredButUncalledImportCostsTheModuleNothing`,
+  `aScalarImportNeedsNeitherMemoryNorAnAllocator`, the refusals) and the node host in
+  `NoGcWasmImportE2eTest` (every type both ways, both guards, both flatness loops, the
+  wit-import byte identity).
+
 ## Scope and pipeline
 Only `(rontolisp:wasm-export ...)` functions with boundary types
-`:int`/`:float`/`:bool`/`:string`/`:void`. Top level may contain ONLY defuns + export
-directives (a pure-compute reactor; the `_start` command-module stretch is `.todo/111`).
+`:int`/`:float`/`:bool`/`:string`/`:void`. Top level may contain ONLY defuns + export/import
+directives (a host-driven reactor; the `_start` command-module stretch is `.todo/111`). The ONE
+other thing tolerated there is the residue `PackageResolver` leaves where a consumed package
+declaration stood -- a quoted symbol (`defpackage`) or `(setq *package* :P)` (`in-package`) --
+which is DROPPED: there is no top-level init body to evaluate a value in and no `*package*` to
+assign, and without this a user `defpackage` (hence any `rontolisp:wit-import`, whose lowering
+writes one) could not reach this backend at all. The refusal message for anything else names the
+SUBSET, not the other backend: a program is usually one form away from fitting, and "use the
+default GC backend" is an answer that costs ~3x the bytes.
 `collectCalls` (BFS from export targets, throwing `UnsupportedOperationException` naming the
 op + function for cons/char/symbol/hash/`eval`/I/O/list iteration/global-`setq`/free var,
 yielding reachable defuns in discovery order with stable indices) -> `inferTypes` fixpoint ->
@@ -176,7 +230,13 @@ SYNC lifts). **Do NOT re-split this from the GC half.**
 `componentStringExportAppendsTheCanonicalStringAbi`,
 `componentSharesOnePostReturnPerFlatResultSignature`, `componentPrintWiresTheMicroAdapter`,
 `noWasiReplacesTheFdWriteImportWithADiscardingSink`,
-`componentNoWasiPrintingProgramTakesThePrintFreeShape`. Runtime parity: the `noGc*` cases in
+`componentNoWasiPrintingProgramTakesThePrintFreeShape`, and the host-import group
+(`aHostImportBecomesTheModulesOnlyImportEntry`, `theHostImportsPrecedeAPrintingModulesFdWrite`,
+`aDeclaredButUncalledImportCostsTheModuleNothing`, `aScalarImportNeedsNeitherMemoryNorAnAllocator`,
+`aStringBoundaryOnAnImportPullsInTheMemoryAndTheAllocator`, the four refusals,
+`aConsumedPackageDeclarationIsDroppedRatherThanRefused`). Host imports at RUNTIME are a JS host on
+node: `NoGcWasmImportE2eTest` -- nothing smaller can read a `:string` argument's bytes or write a
+`:string` result's, since a preloaded wasm host has its own linear memory. Runtime parity: the `noGc*` cases in
 `WasmLispCompilerIntegrationTest` (string primitives, print vs the interpreter, flat-heap
 loops under a 2-page cap, WAVE invoke with no flags, the canonical string ABI, `--optimize`
 composition, the print micro-adapter and its chunk cap). The `:string`-parameter side needs a

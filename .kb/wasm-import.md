@@ -3,9 +3,10 @@
 `(rontolisp:wasm-import 'name :from "module" :as "field" :params '(T...) :returns T)` declares a
 host function (JS import object key `module`, property `field`; wasmtime `--preload module=...`)
 and makes it callable from Lisp like a top-level defun. Type designators are shared with
-`WasmExportCompiler` (`:int`/`:float`/`:bool`/`:string`/`:s-expr`/`:bytes`, `:void` return).
-Generic parsing: `compiler/WasmImportDirective` (shared with the JVM backend); WASM
-validation/codegen: `WasmImportCompiler`.
+`WasmExportCompiler` (`:int`/`:float`/`:bool`/`:string`/`:s-expr`/`:bytes`, `:void` return; the
+ACCEPTED SUBSET is per-backend -- see "Modes" below). Generic parsing:
+`compiler/WasmImportDirective` (shared with the JVM backend); WASM validation/codegen:
+`WasmImportCompiler` on wasm-GC, `NoGcWasmCompiler` under `--no-gc`.
 
 ## How the fixed-index invariant survives adding imports
 The WASM spec puts all imported functions before all defined ones, so a new import would shift
@@ -63,9 +64,20 @@ CONTENT against a Node host in `WasmStringParamBoundaryE2eTest` (every combinati
 runtime-built string, the flat-memory loop).
 
 ## Modes, other backends, aliases
-- `--component` and `--no-gc` throw a clear `UnsupportedOperationException`. Interpreter and JVM
+- `--component` throws a clear `UnsupportedOperationException`. Interpreter and JVM
   define error-signalling stubs so shared sources load everywhere (`JvmLispCompiler` pass 1
   synthesizes `(defun name (...) (error ...))`; the directive is an `ACONST_NULL` no-op).
+- **`--no-gc` takes the directive too** (`.kb/no-gc-scalar-wasm.md`, "Host imports"), through
+  wrappers of its own over the unboxed value model. What is SHARED is everything above the
+  codegen: `WasmImportDirective` parses it, `WasmImportCompiler.parse`/`hostParamTypes`/
+  `hostResultTypes` settle the host signature, and `am.ik.wasm.WasmImportInjector` resolves the
+  same `PLACEHOLDER_FUNC_BASE` encoding. **The accepted TYPE SET is per-backend and follows the
+  house integer**, which is why `parse` takes it as an argument: `KNOWN_PARAM_TYPES` here
+  (`:s32`, `:float`, `:bool`, `:string`, `:s-expr`, `:bytes` -- the house integer is `i31ref`),
+  `SCALAR_PARAM_TYPES` there (every type with a WIT spelling, i.e. the whole fixed-width integer
+  family plus `:float`/`:bool`/`:string` -- the house integer is `i64`, and `:s-expr`/`:bytes`
+  are heap objects that model has no runtime for). `SCALAR_PARAM_TYPES` is DERIVED from
+  `BoundaryType.witName() != null` so it cannot drift from what a WIT world can name.
 - A `:string` result forces the `__ronto_alloc`/`_str_from_mem` pair (`memoryHelpers`); an
   `:s-expr` result forces `usesRead`. **Latent gap fixed:** `usesStrFromMem` named only `:string`,
   so an `:s-expr`-only module exported no `__ronto_alloc` (`TypeError`); pinned by
@@ -86,9 +98,10 @@ through the funcall dispatcher, so `--optimize` cannot shake them.
 On Preview 1 a `rontolisp:wit-import` expands to exactly one directive per WIT function -- same
 shape, same synthetic-defun mechanism, same injector -- so the module is byte-identical to the
 hand-written block. `:from` defaults to the interface's bare name; the WIT label becomes the `:as`
-field camelCased (`:field-style :camel`, default) or verbatim (`:kebab`). Only
+field camelCased (`:field-style :camel`, default) or verbatim (`:kebab`). On wasm-GC only
 `:int`/`:float`/`:bool`/`:string` are reachable from a WIT type, so anything outside that flat set
-is a compile error naming the WIT file and line. **One directive binds one interface into one
+is a compile error naming the WIT file and line; under `--no-gc` the whole fixed-width integer
+family is reachable too, each at its own width ([[wit]]). **One directive binds one interface into one
 module.** GL objects cross as `type shader = s32` handle ALIASES. `webgl-common/gl-imports.js` is
 GENERATED from the same gl.wit (`GlImportObjectTest` reuses
 `WitImportDirective.FieldStyle.CAMEL` so JS field names cannot drift from the lowering).

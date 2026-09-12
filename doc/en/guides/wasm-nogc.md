@@ -4,11 +4,12 @@ Every GC-value-model output — even an optimized reactor — needs a **wasm-GC
 capable** runtime, because every value is a GC heap type (`i31ref`, the
 float struct, `(ref eq)`). Add `--no-gc` to emit a plain **MVP** module
 instead: no rec group, no `struct`/`array`/`i31` type, no `eqref` and no
-import (a plain linear memory is added only when the program uses strings —
-see [below](#strings) — and the single `fd_write` import only when it
-[prints](#printing-print--princ--terpri)). A print-free module instantiates
-with no import object and runs on any MVP-class runtime, **no wasm-GC support
-needed**:
+import it was not asked for (a plain linear memory is added only when the
+program uses strings — see [below](#strings) — the single `fd_write` import
+only when it [prints](#printing-print--princ--terpri), and a host function
+only where the program [declares one](#host-imports-rontolispwasm-import)). A
+print-free module with no host imports instantiates with no import object and
+runs on any MVP-class runtime, **no wasm-GC support needed**:
 
 ```bash
 rontolisp fact.lisp --no-gc -o fact.wasm
@@ -19,11 +20,12 @@ It achieves this by lowering each value directly onto an unboxed wasm
 scalar, plus a small linear-memory representation for strings — so the
 eligible subset is a restriction of the language, not a different one. The
 program shape is also restricted: the top level may contain **only**
-`defun`s and `rontolisp:wasm-export` directives (a pure-compute reactor —
-there is no `_start`), and the boundary designators are `:int`, `:long`,
-`:float`, `:bool`, `:string` (and `:void`/omitted); `:s-expr` is **not**
-supported — it would need the cons/reader/printer runtime this backend
-deliberately omits.
+`defun`s, `rontolisp:wasm-export` and
+[`rontolisp:wasm-import`](#host-imports-rontolispwasm-import) directives (a
+host-driven reactor — there is no `_start`), and the boundary designators are
+the fixed-width integers (`:int`/`:long` among them), `:float`, `:bool`,
+`:string` (and `:void`/omitted); `:s-expr` is **not** supported — it would
+need the cons/reader/printer runtime this backend deliberately omits.
 
 Numeric vector kernels (the [`vec:` package](simd-acceleration.md)) work
 under `--no-gc` too, lowered to plain scalar loops by default — so a vector
@@ -319,6 +321,74 @@ body's own value.** On the interpreter, the JVM backend and the default
 (wasm-GC) output, `with-arena` is observationally a plain `progn` — a real
 garbage collector already reclaims — so the same source runs on every
 backend.
+
+## Host imports (`rontolisp:wasm-import`)
+
+A `--no-gc` module can call out. Declare the host function with
+[`rontolisp:wasm-import`](wasm-host-boundary.md#importing-host-functions)
+and it is callable from Lisp like a top-level `defun`:
+
+```lisp
+;; badge.lisp
+(rontolisp:wasm-import 'set-text :from "env" :as "setText"
+                       :params '(:string :string) :returns :void)
+(rontolisp:wasm-import 'measure :from "env" :as "measure"
+                       :params '(:s32) :returns :s64)
+
+(defun refresh (n)
+  (set-text "status" "running")
+  (measure n))
+
+(rontolisp:wasm-export 'refresh :params '(:s32) :returns :s64)
+```
+
+```bash
+rontolisp badge.lisp --no-gc --no-wasi --optimize=size -o badge.wasm
+```
+
+The designators are the whole fixed-width integer family (`:s8` … `:u64`,
+with `:int`/`:long` as the aliases of `:s32`/`:s64`), `:float`, `:bool`,
+`:string`, and `:void` as a result. That is **wider than the default
+backend's import vocabulary**, which carries `:s32` and not the 64-bit
+types: the accepted set follows the house integer, and here it is `i64`.
+`:s-expr` and `:bytes` are not carried — both are heap objects this value
+model has no runtime for.
+
+The crossing itself costs almost nothing, because the declared types
+already *are* the internal representation:
+
+- an integer, `:float` or `:bool` argument is the unboxed value, converted
+  only where the widths differ;
+- a `:string` argument crosses as the `(ptr, len)` of a block the module
+  already holds — nothing is encoded and nothing is copied, and several
+  string arguments in one call each cross as their own region;
+- a `:string` **result** is bytes the host writes into this module's linear
+  memory through the exported `__ronto_alloc` (see [the arena
+  API](#reclaiming-memory-the-arena-api)), which the wrapper then copies
+  into an internal `[len][bytes]` block.
+
+Three rules worth knowing:
+
+- **The boundary carries the value exactly or traps**, in both directions —
+  an argument narrower than the house `i64` (a `:s32` handed 2^40) and a
+  `:u64` result at or above 2^63 both stop the call instead of arriving
+  silently wrapped.
+- **Only the imports your exports reach are imported.** A declared but
+  uncalled host function costs the module nothing, at every optimize level.
+- **`rontolisp:wit-import` works here too**, and lowers to exactly this —
+  one `wasm-import` per WIT function, byte-for-byte the hand-written block
+  ([WIT contracts](wit-contracts.md)). Its one exception is an `async func`:
+  `:async t` answers a future, and this backend has no value for one.
+  `--no-gc --component` takes no host imports either — a component's
+  imports go through the canonical ABI, which the core-module wrap does not
+  build.
+
+Host imports are what this backend is for. A module whose whole job is to
+be called by its host — a few host functions, some arithmetic, string
+literals, a couple of exports — is a few hundred bytes here, against a few
+kilobytes for the same source on the default wasm-GC backend, which has to
+carry a boxed value model to do it. The measured flag matrix is in the
+[size report](https://github.com/making/rontolisp/tree/develop/size-report).
 
 ## Compact Component Output (`--no-gc --component`)
 

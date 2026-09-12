@@ -519,17 +519,22 @@ the store stays, and the next `kv:open` sees every key still in it.
 
 Current limitations:
 
-- `--no-gc` rejects the directive with a clear error: its contract is a plain
-  MVP module that imports nothing at all.
 - On the Preview 1 boundary only the types `rontolisp:wasm-import` can carry
-  cross — the integer scalars up to 32 bits, the float scalars, `bool`,
-  `string`, `list<u8>` and resource handles. A `record`, `option`, `result`
-  or `s64` is a compile error naming the WIT file and line, even though
-  `--component`, the interpreter and the JVM all bind it (the `wasi:keyvalue`
-  program above is therefore a component or an interpreter/JVM program, not
-  a Preview 1 one: its `result` arms keep it off that boundary). A core
-  import is a bare host function, with no component type to describe a
-  richer shape with. `stream` and `future` are rejected on every backend.
+  cross — the integer scalars, the float scalars, `bool`, `string`,
+  `list<u8>` and resource handles. A `record`, `option` or `result` is a
+  compile error naming the WIT file and line, even though `--component`, the
+  interpreter and the JVM all bind it (the `wasi:keyvalue` program above is
+  therefore a component or an interpreter/JVM program, not a Preview 1 one:
+  its `result` arms keep it off that boundary). A core import is a bare host
+  function, with no component type to describe a richer shape with. `stream`
+  and `future` are rejected on every backend.
+- Which integer widths cross follows the backend's own value model:
+  [`--no-gc`](wasm-nogc.md#host-imports-rontolispwasm-import) carries the
+  whole family, up to `s64`/`u64`, and keeps each one's width; the default
+  (wasm-GC) core module carries up to 32 bits and refuses `s64`/`u64` by
+  name, because its house integer is `i31ref`. `--no-gc` refuses an
+  `async func` instead: `:async t` answers a future, and that value model
+  has none.
 - Under `--component` a **`list<T>` argument** (other than `list<u8>`), and
   `flags` anywhere, is a compile error; a `list<T>` still crosses as a
   result.
