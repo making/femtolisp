@@ -1176,17 +1176,21 @@ final class WasmEmitHelper {
 		if (!ctx.charvecPossible && !ctx.injectedRuntimeBody && ctx.injectedRuntimeDefunNames.contains(name)) {
 			throw new IllegalStateException("internal: " + name
 					+ " is injected runtime, compiled as if a character vector were possible, and the program "
-					+ "reaches it with the charvec gate closed -- take the operator that lowers to it off "
-					+ "CHARVEC_FREE_OPERATORS");
+					+ "reaches it with the charvec gate closed -- either an operator that lowers to it is "
+					+ "wrongly on CHARVEC_FREE_OPERATORS, or the program defines a function on that operator's "
+					+ "name that the backend intercepts as a `cl` operator instead of dispatching to (see "
+					+ "ClRedefinitionWarnings#redefinesClFunction); check both before changing the allowlist");
 		}
 	}
 
 	static void requireCharvecPossible(WasmLispCompiler.Ctx ctx, String site) {
 		if (!ctx.charvecPossible) {
 			throw new IllegalStateException("internal: " + site
-					+ " can make a mutable character vector in a program whose operators are all on "
-					+ "CHARVEC_FREE_OPERATORS -- take the offending operator off that list "
-					+ "rather than removing this check");
+					+ " can make a mutable character vector in a program whose gate said none was possible -- "
+					+ "either an operator on CHARVEC_FREE_OPERATORS constructs one, or a name the program "
+					+ "defines is a `cl` function the backend intercepts as an operator instead of dispatching "
+					+ "to (see ClRedefinitionWarnings#redefinesClFunction); check both before changing the "
+					+ "allowlist");
 		}
 	}
 

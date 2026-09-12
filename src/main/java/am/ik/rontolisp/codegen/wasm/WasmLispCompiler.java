@@ -35,6 +35,7 @@ import am.ik.rontolisp.compiler.DeadTypeBranchPruner;
 import am.ik.rontolisp.compiler.ToplevelStatements;
 import am.ik.rontolisp.compiler.BoundaryType;
 import am.ik.rontolisp.compiler.BuiltinFunctionWrappers;
+import am.ik.rontolisp.compiler.ClRedefinitionWarnings;
 import am.ik.rontolisp.compiler.CompileTimeBoundp;
 import am.ik.rontolisp.compiler.CompileWarnings;
 import am.ik.rontolisp.compiler.ConcatenateForms;
@@ -7955,10 +7956,15 @@ public final class WasmLispCompiler implements LispCompiler {
 	 * The function names the program DEFINES: its own defuns (top level and nested) plus
 	 * the synthetic defun each {@code wasm-import} became. A call to one of these is a
 	 * call into code {@link #charvecFreeProgram} is reading anyway, so the name itself
-	 * says nothing.
+	 * says nothing -- EXCEPT for a name the backend intercepts as an operator
+	 * ({@link ClRedefinitionWarnings#redefinesClFunction}): a call there compiles to the
+	 * standard {@code cl} operator, not to the user's body, so trusting the definition
+	 * would read code that never runs. Such a name is left out here and falls back to
+	 * {@link #charvecFreeName}, which reads it as the operator it actually dispatches to.
 	 * @param program the top-level forms
 	 * @param defuns the declarations collected so far
-	 * @return every name the program defines as a function
+	 * @return every name the program defines as a function, minus any the backend
+	 * intercepts as a {@code cl} operator instead of dispatching to
 	 */
 	private static Set<String> defunNames(List<LispVal> program, List<DefunDecl> defuns) {
 		Set<String> names = new HashSet<>();
@@ -7966,6 +7972,8 @@ public final class WasmLispCompiler implements LispCompiler {
 			names.add(defun.name);
 		}
 		names.addAll(GlobalVarCollector.collectAllNestedDefunNames(program));
+		Set<String> allDefined = Set.copyOf(names);
+		names.removeIf(name -> ClRedefinitionWarnings.redefinesClFunction(name, allDefined));
 		return names;
 	}
 

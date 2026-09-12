@@ -103,8 +103,12 @@ source never spells**. Measured 2026-09-12, both with a constructor-name gate th
 at the un-normalized consumer. A missing normalization is a SILENT wrong answer at the host
 boundary, so the gate closes only for a program whose every operator is on
 `WasmLispCompiler.CHARVEC_FREE_OPERATORS` -- control flow, arithmetic, the type predicates, the
-cons cell, the two `wasm-` directives -- plus its own defuns. An operator that list has never
-heard of OPENS it. `-Drontolisp.debug.charvecgate=true` names the operator holding it open.
+cons cell, the two `wasm-` directives -- plus its own defuns, MINUS any defun name that is a
+`cl` function the backend intercepts as an operator instead of dispatching to
+(`ClRedefinitionWarnings.redefinesClFunction`) -- a call there compiles to the standard
+operator, so trusting the user's body would read code that never runs. An operator that list
+has never heard of OPENS it. `-Drontolisp.debug.charvecgate=true` names the operator holding
+it open.
 
 The allowlist stays alongside the type-test fold (`.kb/wasm-ref-type-fold.md`): the normalization
 is a CALL whose callee tests a marker, not a `ref.test` on a type of its own, so the fold cannot

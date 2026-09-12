@@ -209,7 +209,13 @@ final class WasmStringRuntimeBuilder {
 		// A mutable character vector crossing this boundary (a subseq/copy-seq result
 		// handed to the host, a path, the reader scratch) renders once here; any other
 		// value passes through _charvec_to_str unchanged, so a TYPE_STRING costs one
-		// call and no walk.
+		// call and no walk. Measured 2026-09-12 for two reader-scratch routes only (an
+		// :s-expr export fed a two-element reader-built list, read back through a
+		// two-argument :string import, and the :s-expr-returning import direction): gate
+		// closed and gate open produced byte-identical output, so the reader did not
+		// hand this boundary a charvec on THOSE routes. read-from-string, load, `#`
+		// reader macros and pathname construction were not exercised -- do not read this
+		// as "the reader never builds one."
 		get(w, str);
 		WasmEmitHelper.emitCharvecToStrCall(w, charvecPossible);
 		set(w, str);

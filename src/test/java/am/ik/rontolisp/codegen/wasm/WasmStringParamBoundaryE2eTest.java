@@ -253,6 +253,36 @@ class WasmStringParamBoundaryE2eTest {
 		}
 	}
 
+	// .todo/793: a user (defun subseq ...) on a `cl` name the backend intercepts closed
+	// the charvec gate (defunNames trusted the definition) even though the call site
+	// still compiles to the STANDARD subseq operator -- the definition never runs
+	// (ClRedefinitionWarnings) -- which reaches %SUBSEQ-RUNTIME assuming a charvec is
+	// possible. The module must both build and answer "bc", the standard operator's
+	// result: shadowing `subseq` must not change what crosses the :string boundary.
+	@Test
+	void aUserDefunOnAClInterceptedNameStillBuildsAndRendersTheStandardResult() throws Exception {
+		String module = """
+				(rontolisp:wasm-import 'emit :from "env" :as "emit" :params '(:string) :returns nil)
+				(defun subseq (s a b) (if (< a b) s s))
+				(defun go () (emit (subseq "abcdef" 1 3)))
+				(rontolisp:wasm-export 'go :as "Go" :params '() :returns nil)
+				""";
+		String host = """
+				const fs = require('fs');
+				const dec = new TextDecoder();
+				let inst;
+				let seen = null;
+				const str = (p, n) => dec.decode(new Uint8Array(inst.exports.memory.buffer, p, n));
+				const env = { emit: (p, n) => { seen = str(p, n); } };
+				const mod = new WebAssembly.Module(fs.readFileSync(process.argv[2]));
+				inst = new WebAssembly.Instance(mod, { env });
+				inst.exports._initialize();
+				inst.exports.Go();
+				console.log(seen);
+				""";
+		assertThat(run(module, host, false, OptimizeLevel.SIZE, "gate793")).isEqualTo("bc");
+	}
+
 	private String run(String module, String driverJs, boolean reentrant) throws Exception {
 		return run(module, driverJs, reentrant, OptimizeLevel.NONE, reentrant ? "reentrant" : "strings");
 	}

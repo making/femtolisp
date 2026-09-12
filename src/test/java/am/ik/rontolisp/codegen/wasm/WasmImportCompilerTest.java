@@ -687,6 +687,96 @@ class WasmImportCompilerTest {
 		assertThat(lowered - free).isGreaterThan(1_000);
 	}
 
+	// A user (defun subseq ...) on a `cl` name the backend intercepts as an operator:
+	// the call still compiles to the standard subseq operator (ClRedefinitionWarnings --
+	// the definition never runs), which reaches %SUBSEQ-RUNTIME assuming a charvec is
+	// possible. defunNames used to trust the definition anyway and close the gate ahead
+	// of it, so this program stopped building. Reproduces the exact program from the bug
+	// report, at both optimize levels since the gate is level-independent.
+	@Test
+	void aUserDefunOnASubseqInterceptedNameStillOpensTheGate() {
+		String source = """
+				(rontolisp:wasm-import 'emit :from "env" :as "emit" :params '(:string) :returns nil)
+				(defun subseq (s a b) (if (< a b) s s))
+				(defun go () (emit (subseq "abcdef" 1 3)))
+				(rontolisp:wasm-export 'go :as "Go" :params '() :returns nil)
+				""";
+		assertThat(compileNoWasiSize(source)).isNotEmpty();
+		List<LispVal> program = LispReader.readAllFromString(source);
+		assertThat(new WasmLispCompiler(false, false, true, OptimizeLevel.DEFAULT).compile(program)).isNotEmpty();
+	}
+
+	// Same defect, the %SEQ-TO-LIST route: `copy-seq` reaches it through the same
+	// injected subseq-family runtime as a whole-sequence copy.
+	@Test
+	void aUserDefunOnACopySeqInterceptedNameStillOpensTheGate() {
+		String source = """
+				(rontolisp:wasm-import 'emit :from "env" :as "emit" :params '(:string) :returns nil)
+				(defun copy-seq (s) s)
+				(defun go () (emit (copy-seq "abcdef")))
+				(rontolisp:wasm-export 'go :as "Go" :params '() :returns nil)
+				""";
+		assertThat(compileNoWasiSize(source)).isNotEmpty();
+	}
+
+	// Same defect, `reverse`'s %SEQ-TO-LIST arm.
+	@Test
+	void aUserDefunOnAReverseInterceptedNameStillOpensTheGate() {
+		String source = """
+				(rontolisp:wasm-import 'emit :from "env" :as "emit" :params '(:string) :returns nil)
+				(defun reverse (s) s)
+				(defun go () (emit (reverse "abcdef")))
+				(rontolisp:wasm-export 'go :as "Go" :params '() :returns nil)
+				""";
+		assertThat(compileNoWasiSize(source)).isNotEmpty();
+	}
+
+	// Same defect, the flipped-string-producer arm of the assertion (`string-upcase` /
+	// `string-trim` construct their result rather than calling into injected runtime,
+	// but the over-trusted defunNames closed the gate ahead of them too).
+	@Test
+	void aUserDefunOnAStringUpcaseInterceptedNameStillOpensTheGate() {
+		String source = """
+				(rontolisp:wasm-import 'emit :from "env" :as "emit" :params '(:string) :returns nil)
+				(defun string-upcase (s) s)
+				(defun go () (emit (string-upcase "abcdef")))
+				(rontolisp:wasm-export 'go :as "Go" :params '() :returns nil)
+				""";
+		assertThat(compileNoWasiSize(source)).isNotEmpty();
+	}
+
+	@Test
+	void aUserDefunOnAStringTrimInterceptedNameStillOpensTheGate() {
+		String source = """
+				(rontolisp:wasm-import 'emit :from "env" :as "emit" :params '(:string) :returns nil)
+				(defun string-trim (bag s) s)
+				(defun go () (emit (string-trim " " "abcdef")))
+				(rontolisp:wasm-export 'go :as "Go" :params '() :returns nil)
+				""";
+		assertThat(compileNoWasiSize(source)).isNotEmpty();
+	}
+
+	// Negative (.todo/793): a user defun on a name that is NOT a `cl` function keeps the
+	// gate closed exactly as before -- fixing this by trusting every user defun would
+	// give back the bytes .todo/789 bought.
+	@Test
+	void aNonClUserDefunKeepsTheGateClosed() {
+		String bare = """
+				(rontolisp:wasm-import 'host-log :from "env" :as "host_log" :params '(:string) :returns nil)
+				(defun init-app () (host-log "module initialized"))
+				(rontolisp:wasm-export 'init-app :as "InitApp" :params '() :returns nil)
+				""";
+		String withNonClDefun = """
+				(rontolisp:wasm-import 'host-log :from "env" :as "host_log" :params '(:string) :returns nil)
+				(defun my-helper (s) s)
+				(defun init-app () (host-log (my-helper "module initialized")))
+				(rontolisp:wasm-export 'init-app :as "InitApp" :params '() :returns nil)
+				""";
+		// The normalization group alone is ~1,961 bytes (.kb/wasm-gc-strings.md); a plain
+		// extra one-line defun costs nowhere near that, so this stays well under it.
+		assertThat(compileNoWasiSize(withNonClDefun).length - compileNoWasiSize(bare).length).isLessThan(500);
+	}
+
 	// The global section's entry count (0 when the section is absent).
 	private static int globalCount(byte[] module) {
 		byte[] payload = section(module, 6);
