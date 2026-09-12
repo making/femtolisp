@@ -4927,6 +4927,23 @@ class LispEvaluatorTest {
 				          :test (progn (setf f (incf i)) #'=))
 				        i a b c d e f))
 				""").print()).isEqualTo("((3 1 2 4) 6 1 2 3 4 5 6)");
+		// FIRST CLASS, the same keyword set: #'remove-duplicates used to be a
+		// 1-argument eql comparison that read no keyword at all, so (apply
+		// #'remove-duplicates seq '(:test ...)) signalled an arity error.
+		assertThat(eval("(apply #'remove-duplicates '(0 1 2 3 1 2 3 9) '(:start 2 :end 6))").print())
+			.isEqualTo("(0 1 3 1 2 3 9)");
+		assertThat(eval("(funcall #'remove-duplicates '(0 1 2 3 1 2 3 9) :start 2 :end 6 :from-end t)").print())
+			.isEqualTo("(0 1 2 3 1 3 9)");
+		assertThat(eval("(funcall #'remove-duplicates '((1 a) (1 b) (2 c)) :test-not #'= :key #'car)").print())
+			.isEqualTo("((2 C))");
+		assertThat(eval("(apply #'delete-duplicates (list 1 2 3 1 3 1 2 4) '(:from-end t))").print())
+			.isEqualTo("(1 2 3 4)");
+		assertThat(eval("(funcall #'remove-duplicates \"abcabc\" :start 1)").print()).isEqualTo("\"aabc\"");
+		// No keyword at all is still the plain keep-last scan.
+		assertThat(eval("(funcall #'remove-duplicates '(1 2 1 3 2))").print()).isEqualTo("(1 3 2)");
+		// The rejection text is the call position's, not an arity error.
+		assertThatThrownBy(() -> eval("(funcall #'remove-duplicates '(1 2) :bogus 1)"))
+			.hasMessageContaining("REMOVE-DUPLICATES expects keyword arguments");
 	}
 
 	@Test

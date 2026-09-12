@@ -6714,6 +6714,10 @@ class JvmLispCompilerTest {
 				(print (remove-duplicates '(a b c d a e f d g) :test-not #'eql))
 				(print (delete-duplicates (list 1 2 3 1 3 1 2 4) :start 0 :end nil))
 				(print (remove-duplicates '(1 2 1 3 2) :from-end (> 1 0)))
+				(print (apply #'remove-duplicates '(0 1 2 3 1 2 3 9) '(:start 2 :end 6)))
+				(print (funcall #'remove-duplicates '((1 a) (1 b) (2 c)) :test-not #'= :key #'car))
+				(print (apply #'delete-duplicates (list 1 2 3 1 3 1 2 4) '(:from-end t)))
+				(print (funcall #'remove-duplicates '(1 2 1 3 2)))
 				""";
 		assertThat(compileAndRun(source)).isEqualTo("""
 				(0 1 3 1 2 3 9)
@@ -6722,7 +6726,11 @@ class JvmLispCompilerTest {
 				"aabc"
 				(G)
 				(3 1 2 4)
-				(1 2 3)""");
+				(1 2 3)
+				(0 1 3 1 2 3 9)
+				((2 C))
+				(1 2 3 4)
+				(1 3 2)""");
 	}
 
 	@Test

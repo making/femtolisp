@@ -2872,6 +2872,16 @@ public final class LispEvaluator {
 		this.globalEnv.defineFunction(LispNames.DELETE_IF_NOT,
 				new LispFunction(LispNames.DELETE_IF_NOT, args -> sequenceScanValues(LispNames.DELETE_IF_NOT, args,
 						SeqScanMode.PREDICATE_NOT, SeqScanAction.REMOVE, true)));
+		// remove-duplicates/delete-duplicates take the same 17.2.1 keywords with a
+		// DIFFERENT meaning for the window, so they have their own runtime twin of the
+		// expansion (removeDuplicatesValues) -- registered here, not in Environment,
+		// because the :test/:test-not/:key designators are applied through the
+		// evaluator. Both spellings share it: delete-duplicates' contract lets the
+		// caller use only the RESULT, which is what the expansion relies on too.
+		for (String dedupName : List.of(LispNames.REMOVE_DUPLICATES, LispNames.DELETE_DUPLICATES)) {
+			this.globalEnv.defineFunction(dedupName,
+					new LispFunction(dedupName, args -> removeDuplicatesValues(dedupName, args)));
+		}
 		this.globalEnv.defineFunction(LispNames.MAPCAN, new LispFunction(LispNames.MAPCAN,
 				args -> mapcanValues(args.get(0), requireMapLists(LispNames.MAPCAN, args), false)));
 		this.globalEnv.defineFunction(LispNames.SORT, new LispFunction(LispNames.SORT, args -> {
@@ -11049,6 +11059,79 @@ public final class LispEvaluator {
 			else if (!acted[i]) {
 				result = new LispCons(elements.get(i), result);
 			}
+		}
+		return Environment.seqResult(original, result);
+	}
+
+	/**
+	 * The runtime counterpart of {@code LispMacroExpander.expandRemoveDuplicates} for
+	 * {@code remove-duplicates} / {@code delete-duplicates} used as FUNCTION VALUES, so
+	 * {@code (apply #'remove-duplicates seq '(:test #'equal))} decides exactly what
+	 * {@code (remove-duplicates seq :test #'equal)} decides. The compile paths reach the
+	 * same agreement through {@code BuiltinFunctionWrappers.sequenceScanFamily}, which
+	 * feeds the runtime keywords back into the call-position expansion.
+	 *
+	 * <p>
+	 * These two are NOT the count/remove/substitute scan ({@link #sequenceScanValues}):
+	 * CLHS 17.2.1's window bounds which elements are CONSIDERED here, so an element
+	 * outside {@code :start}/{@code :end} is kept VERBATIM and never handed to a
+	 * designator, and {@code :from-end} picks which occurrence of a duplicate set
+	 * survives (the first instead of the last) rather than reversing the walk. The
+	 * duplicate is looked for by INDEX on the side of the element the direction picks --
+	 * {@code [i+1, end)} keeping the last, {@code [start, i)} keeping the first --
+	 * exactly as the expansion spells it (.kb/sequence-bounding-keywords.md).
+	 * @param name the operator, for the messages
+	 * @param args the evaluated arguments
+	 * @return the deduplicated sequence, in the argument's own representation
+	 */
+	private LispVal removeDuplicatesValues(String name, List<LispVal> args) {
+		if (args.isEmpty()) {
+			throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+					name + " expects at least 1 argument, got 0");
+		}
+		requireKeywordTail(name, args, 1, List.of(LispNames.TEST_KEYWORD, LispNames.TEST_NOT_KEYWORD,
+				LispNames.KEY_KEYWORD, LispNames.START_KEYWORD, LispNames.END_KEYWORD, LispNames.FROM_END_KEYWORD));
+		LispVal keyFn = presentKeyword(args, 1, LispNames.KEY_KEYWORD);
+		LispVal startValue = presentKeyword(args, 1, LispNames.START_KEYWORD);
+		LispVal endValue = presentKeyword(args, 1, LispNames.END_KEYWORD);
+		boolean keepFirst = presentKeyword(args, 1, LispNames.FROM_END_KEYWORD) != null;
+		long start = startValue == null ? 0 : Environment.requireIndex(name, startValue);
+		Long end = endValue == null ? null : (long) Environment.requireIndex(name, endValue);
+		RuntimeTest test = runtimeTest(args, 1);
+		LispVal original = args.get(0);
+		List<LispVal> elements = new ArrayList<>();
+		for (LispVal cursor = Environment.seqAsList(original); cursor instanceof LispCons cell; cursor = cell.cdr()) {
+			elements.add(cell.car());
+		}
+		int size = elements.size();
+		long last = end == null ? size : Math.min(end, size);
+		List<LispVal> kept = new ArrayList<>();
+		for (int i = 0; i < size; i++) {
+			LispVal element = elements.get(i);
+			if (i < start || i >= last) {
+				// Outside the window: kept verbatim, never compared.
+				kept.add(element);
+				continue;
+			}
+			LispVal probe = keyFn == null ? element : apply(keyFn, List.of(element), this.globalEnv);
+			long lower = keepFirst ? start : i + 1;
+			long upper = keepFirst ? i : last;
+			boolean duplicate = false;
+			for (long j = lower; j < upper; j++) {
+				LispVal candidate = elements.get((int) j);
+				LispVal other = keyFn == null ? candidate : apply(keyFn, List.of(candidate), this.globalEnv);
+				if (testMatches(test, probe, other)) {
+					duplicate = true;
+					break;
+				}
+			}
+			if (!duplicate) {
+				kept.add(element);
+			}
+		}
+		LispVal result = LispNil.INSTANCE;
+		for (int i = kept.size() - 1; i >= 0; i--) {
+			result = new LispCons(kept.get(i), result);
 		}
 		return Environment.seqResult(original, result);
 	}

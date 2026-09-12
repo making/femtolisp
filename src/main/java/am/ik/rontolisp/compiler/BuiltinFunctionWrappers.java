@@ -903,11 +903,20 @@ public final class BuiltinFunctionWrappers {
 	 * the wrapper used to take. A {@code :test-not} is normalized to a complemented
 	 * {@code :test}; the {@code -if}/{@code -if-not} spellings take neither ({@code item}
 	 * false), and {@code count} itself has no {@code :count} ({@code counted} false).
+	 *
+	 * <p>
+	 * {@code remove-duplicates} / {@code delete-duplicates} ride the same wrapper with
+	 * {@code operands} 0 -- they read the same keyword set minus {@code :count}, only
+	 * with the window meaning their own expansion gives it. The {@code :start} defaulted
+	 * to 0 and the computed {@code :from-end} this emits both land in that expansion's
+	 * GENERAL rendering rather than its index-free one, which is correct but never the
+	 * cheap shape: it is the price of one scan form per surface, paid only by a program
+	 * that names the function rather than calling it.
 	 * @param name the operator
 	 * @param item whether the operator compares an ITEM (so takes :test / :test-not)
 	 * @param counted whether the operator takes :count
 	 * @param operands how many arguments precede the sequence (2 for the substitute
-	 * family's new item plus its item/predicate)
+	 * family's new item plus its item/predicate, 0 for the duplicates pair)
 	 */
 	private static WrapperDef sequenceScanFamily(String name, boolean item, boolean counted, int operands) {
 		List<String> lambdaList = new ArrayList<>();
@@ -1439,10 +1448,11 @@ public final class BuiltinFunctionWrappers {
 			sequenceScanFamily(LispNames.COUNT_IF, false, false, 1), binary(LispNames.ASSOC),
 			binary(LispNames.ASSOC_IF), binary(LispNames.RASSOC), binary(LispNames.RASSOC_IF), ternary(LispNames.ACONS),
 			binary(LispNames.PAIRLIS), unary(LispNames.COPY_ALIST), binaryOptionalThird(LispNames.GETF),
-			unary(LispNames.REMOVE_DUPLICATES), unary(LispNames.DELETE_DUPLICATES), variadicNconc(),
-			unary(LispNames.IDENTITY), unary(LispNames.COPY_LIST), unary(LispNames.NREVERSE),
-			unary(LispNames.MAKE_LIST), binary(LispNames.UNION), binary(LispNames.INTERSECTION),
-			binary(LispNames.SET_DIFFERENCE), binary(LispNames.ADJOIN), binary(LispNames.SUBSETP),
+			sequenceScanFamily(LispNames.REMOVE_DUPLICATES, true, false, 0),
+			sequenceScanFamily(LispNames.DELETE_DUPLICATES, true, false, 0), variadicNconc(), unary(LispNames.IDENTITY),
+			unary(LispNames.COPY_LIST), unary(LispNames.NREVERSE), unary(LispNames.MAKE_LIST), binary(LispNames.UNION),
+			binary(LispNames.INTERSECTION), binary(LispNames.SET_DIFFERENCE), binary(LispNames.ADJOIN),
+			binary(LispNames.SUBSETP),
 			// every/some carry ANY number of sequences, the same as in call position,
 			// and notany/notevery are their complements over the same walk.
 			everySomeWrapper(LispNames.EVERY, true), everySomeWrapper(LispNames.SOME, false),

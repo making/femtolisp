@@ -137,8 +137,50 @@ computed direction pays for the index, the guard and the inner bounded scan. The
 `forceIndex` exists for the second case, where the BODY needs the element index though no
 guard does.
 
-First-class use is still 1-argument only (`(apply #'remove-duplicates seq :test ...)`
-signals), unlike the fifteen -- `.todo/778`.
+### First class, through the fifteen's own two pieces
+
+Both spellings take the same keyword set as FUNCTION VALUES, and they get there the way
+the fifteen do -- never with a scan shape of their own:
+
+- interpreter: `LispEvaluator.removeDuplicatesValues`, the runtime twin of the expansion,
+  registered in `LispEvaluator` rather than `Environment` because the `:test`/`:key`
+  designators are applied through the evaluator (which is why both names are in
+  `ShadowedBuiltins.EXPANSION_LOWERED`);
+- compile paths: `BuiltinFunctionWrappers.sequenceScanFamily` with `operands` 0, the same
+  keyword-forwarding wrapper the fifteen ride, so the expansion stays the only
+  implementation.
+
+Until 2026-09-12 both were a 1-argument `eql` comparison that read no keyword at all, so
+`(apply #'remove-duplicates seq '(:test #'equal))` signalled `REMOVE-DUPLICATES expects 1
+argument, got 3`.
+
+**What it moved: nothing, as `.todo/778` predicted** (`ansi-test/measure.sh sequences`,
+suite `ca06bd9`, interpreter, 2026-09-12): 2,933 / 3,287 before and after, and a
+name-by-name diff of the FAIL/ERROR sets shows **zero fixed and zero regressed** -- the
+only row that moves is `REMOVE-IF-RANDOM`, which is bad in both runs and merely trips over
+a different random parameter set first. The two tests that would exercise this,
+`random-remove-duplicates` / `random-delete-duplicates`, still stop at `make-sequence`
+with a computed result type long before the first-class call. The gap was worth closing
+for the surface agreement, not for a number.
+
+**What it costs** (bytes, JVM `.class` / WASM, measured 2026-09-12 on the same jar):
+
+| program | before | after |
+|---|---|---|
+| `(print (remove-duplicates (list 1 2 1)))` -- call position | 13,496 / 24,133 | **13,496 / 24,133** |
+| `(print (mapcar #'remove-duplicates (list (list 1 2 1) (list 3 3))))` | 13,811 / 24,306 | 24,817 / 36,095 |
+| the same shape over `#'remove` (the fifteen, unchanged code) | 29,275 / 36,323 | 29,553 / 36,367 |
+| `(let ((f #'reverse)) (print (funcall f (list 1 2 1))))` | 46,299 / 27,168 | 46,831 / 27,210 |
+
+So a CALL pays nothing, naming the function costs what naming `#'remove` has always cost
+(and lands under it), and a program that merely opens the function-VALUE tier without
+naming either spelling pays a few hundred bytes for the two wider wrappers in the
+registry. `.todo/774`'s trap -- a wrapper body injected on a REFERENCE dragging the apply
+runtime in, invisible to `needsApplyRuntime` -- does NOT fire here: the dedup expansion is
+`do`/`position`/`cons`, and the `:test-not` normalization spells
+`LispMacroExpander.twoArgumentComplement` rather than `complement`, so no `apply` reaches
+the injected body (on the JVM that gate alone would show as ~41 KB, four times the
+measured delta).
 
 **Measured 2026-09-11** (`ansi-test/measure.sh sequences cons`, suite `ca06bd9`,
 interpreter): sequences 2,891 -> 2,895 / 3,287 (88.0% -> 88.1%), cons unchanged at
@@ -155,7 +197,8 @@ tests, which stop at `make-sequence` with a computed result type before any of t
   piecewise/size invariant, and that `:start`/`:end` is an index bound rather than a `subseq`).
 - `LispMacroExpanderTest.aBoundedRemoveDuplicatesLooksForTheDuplicateInsideTheWindow` and
   `LispEvaluatorTest.evalRemoveDuplicatesTakesTheBoundingKeywords` (the two renderings, the
-  window's verbatim else arm, the computed direction), with
+  window's verbatim else arm, the computed direction, and the first-class keyword set on
+  both spellings), with
   `JvmLispCompilerTest.compileAndRunRemoveDuplicatesBoundingKeywords`,
   `WasmLispCompilerIntegrationTest.removeDuplicatesBoundingKeywords` and ci-spec
   `remove-duplicates-bounding-keywords` across the four backends.
