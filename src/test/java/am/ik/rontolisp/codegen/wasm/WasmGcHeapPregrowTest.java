@@ -125,6 +125,41 @@ class WasmGcHeapPregrowTest {
 			.isEqualTo(WasmLispCompiler.GC_HEAP_PREGROW_SERVE_BYTES);
 	}
 
+	/**
+	 * Every size the formula can produce is a power of two, so a program's heap size is
+	 * one of three reviewed values rather than a number redrawn from the emitted byte
+	 * count on every build.
+	 * <p>
+	 * wasmtime 47.3's copying collector breaks for narrow BANDS of GC-heap size -- a few
+	 * KB wide, moving with the program, reporting either "there should always be enough
+	 * room in the active semi-space" as an injected trap or a panic on a zeroed object
+	 * header. The ci-spec corpus landed on one such band on 2026-09-11 purely by adding
+	 * corpus cases: the emitted code grew, the unquantized size followed it onto the
+	 * band, and the WASM {@code --simd} leg went red with no compiler change. Quantized,
+	 * the same edit cannot move the size at all, and each of the three values the
+	 * compiler can emit is covered by the corpus run. See
+	 * {@code .kb/wasm-gc-heap-pregrow.md}.
+	 */
+	@Test
+	void pregrowSizeIsAlwaysAPowerOfTwo() {
+		for (long codeBytes : new long[] { 0, 1, 1024, 700_000, 1_000_000, 2_500_000, 4_078_697, 4_194_304,
+				40_000_000 }) {
+			int size = WasmLispCompiler.gcHeapPregrowBytes(false, codeBytes);
+			assertThat(Integer.bitCount(size))
+				.as("pre-grow size for %d bytes of code should be a power of two, was %d", codeBytes, size)
+				.isEqualTo(1);
+			assertThat(size).isBetween(WasmLispCompiler.GC_HEAP_PREGROW_BYTES,
+					WasmLispCompiler.GC_HEAP_PREGROW_MAX_BYTES);
+		}
+		// Rounded UP: the factor is chosen to leave ~2x the live set, and rounding down
+		// would spend that margin. 4,078,697 bytes of code is what the ci-spec corpus
+		// emitted on the day the leg broke; x16 is 62.24 MiB, which must land on the
+		// 64 MiB ceiling rather than back down on 32 MiB.
+		assertThat(WasmLispCompiler.gcHeapPregrowBytes(false, 4_078_697))
+			.isEqualTo(WasmLispCompiler.GC_HEAP_PREGROW_MAX_BYTES);
+		assertThat(WasmLispCompiler.gcHeapPregrowBytes(false, 1_500_000)).isEqualTo(32 * 1024 * 1024);
+	}
+
 	/** {@code count} defuns whose bodies are large enough to add up to a real stack. */
 	private static String manyDefuns(int count) {
 		StringBuilder out = new StringBuilder();

@@ -7930,6 +7930,18 @@ public final class WasmLispCompiler implements LispCompiler {
 	/**
 	 * The pre-grow size for a module carrying {@code codeBytes} of user code -- the
 	 * formula {@link #gcHeapPregrowBytes(List)} applies, exposed for the pinning test.
+	 * <p>
+	 * The scaled size is QUANTIZED UP to a power of two, so that the only heap sizes any
+	 * program can ask for are the floor, the ceiling and the powers of two between them
+	 * -- three values today. That is not a tidiness rule: wasmtime 47.3's copying
+	 * collector breaks for narrow BANDS of GC-heap size (it either injects "there should
+	 * always be enough room in the active semi-space" into the guest or panics on a
+	 * zeroed object header), the bands are a few KB wide and move with the program, and
+	 * an unquantized size is recomputed from the emitted byte count on every commit. One
+	 * corpus case added to {@code ci-spec.yaml} moved the size onto a band and turned the
+	 * WASM {@code --simd} leg red with no change to the compiler at all. Quantized, the
+	 * size is a reviewed value that the corpus run covers rather than a fresh draw per
+	 * build; the measurements and the bands are in {@code .kb/wasm-gc-heap-pregrow.md}.
 	 * @param serve whether this is a served component (per-instance, latency-bound)
 	 * @param codeBytes the emitted user function bodies' total size
 	 * @return the allocation size in bytes
@@ -7939,7 +7951,15 @@ public final class WasmLispCompiler implements LispCompiler {
 			return GC_HEAP_PREGROW_SERVE_BYTES;
 		}
 		long scaled = codeBytes * GC_HEAP_PREGROW_CODE_FACTOR;
-		return (int) Math.max(GC_HEAP_PREGROW_BYTES, Math.min(GC_HEAP_PREGROW_MAX_BYTES, scaled));
+		long clamped = Math.max(GC_HEAP_PREGROW_BYTES, Math.min(GC_HEAP_PREGROW_MAX_BYTES, scaled));
+		// Rounded UP, not to the nearest: the factor above is chosen to leave ~2x the
+		// live set, and rounding down would spend exactly that margin. Both bounds are
+		// powers of two, so the result never leaves the clamp.
+		long quantized = Long.highestOneBit(clamped);
+		if (quantized != clamped) {
+			quantized <<= 1;
+		}
+		return (int) quantized;
 	}
 
 	/**
