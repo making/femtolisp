@@ -94,7 +94,8 @@ Measured 2026-09-11, jose + rove + cl-ppcre through `asdf:load-system`, the wide
 dispatcher any shipped test builds: 2453 defuns + 526 lambdas, maxFuncId 2978, 2975
 targets, 260777 bytes unpaged — over the 128 KiB gate, 1367 bytes under the 256 KiB bound,
 and two levels deep. So the id that once reached the fourth level was ~5600x the live
-value. **Where it came from is still open (`.todo/770`).** Every funcId comes from
+value. **Where it came from was never established** (`.todo/770`, closed 2026-09-12 on the
+runs at the end of this section). Every funcId comes from
 `nextFuncId[0]++` and every increment registers a declaration, so `2^24` means one of two
 things and only one of them is catchable: either the counter ran ahead of the
 declarations, which the range check above names on a recurrence (it runs at the top of
@@ -149,6 +150,51 @@ and the four measurements above are what is left of that lead: warming every cac
 other programs, compiling them alongside, and interpreting them beside the compiles all
 leave the bytes identical. What has NOT been reproduced is the machine: aarch64, 16 cores,
 32 worker threads over them (here it is 32 over 64).
+
+**The machine ran it, 2026-09-12** -- macOS aarch64, 16 cores, Docker present,
+`forkCount=2`, JUnit parallelism 16, the failing box and the failing settings. FIVE full
+suites, no recurrence: two at `fae0bf14a` (242 classes, 10473 tests, 10-13 min each) and
+three in a worktree at `5946ae22f`, the tree that hung, carrying `1fc55d818`'s range check
+so that a corrupt id would name itself instead of spinning. Nothing threw and nothing
+stalled; a watchdog sampling `jstack` after four minutes without a new surefire report was
+armed on every run and never fired.
+
+Read that against two things the runs also measured:
+
+- **The configuration that hung is gone from `develop`.** `3fdf3fa78` replaced
+  `AsdfLibraryE2eSupport`'s hand-written six-pass copy with `CompileFrontendAccess`, so the
+  WASM legs now compile what the CLI front end builds, with `runtimeFeatures` set and the
+  component leg read under `#+rontolisp-component`. Repeating the suite on `develop` cannot
+  reach the old input at all -- the three worktree runs are the ones that did.
+- **A ladder completing says nothing about the id it carried.** In that revision the level
+  count ran only after an over-budget flat body, and every ladder body is far under the
+  gate, so a ladder returned BEFORE the count whatever its maxFuncId was. Probed on the
+  jose program in the worktree, one line per dispatcher: eleven arity ladders, 11506-64035
+  bytes, every one under the 131072-byte gate and an early return; only the spread
+  dispatcher reaches the count, at 260777 bytes (Preview 1) / 260863 (component). The
+  **arity-1 ladder carries the same maxFuncId as the spread dispatcher** -- 2978 and 2980
+  -- so "the ladders all completed, therefore the large id belonged to a callable only the
+  spread dispatcher carries" does not follow: a corrupt id anywhere would have been
+  invisible in the ladders and fatal only in the spread body. The current shape counts
+  levels, and so runs the range check, for EVERY dispatcher before it builds anything,
+  which is what makes those five runs a suite-wide tripwire rather than a jose-only one.
+
+So the value is not explained, and the two branches from here are unchanged -- except that
+nothing on the failing machine reproduces either of them, and a recurrence now throws with
+the counts instead of spinning.
+
+**The range check is a suite-wide tripwire, and that is why the item could be closed
+unexplained.** `buildDispatch` now counts levels from the funcId's bit length BEFORE it
+builds any body, so `dispatchTargets`'s `[0, defuns + lambdas)` check runs for EVERY
+dispatcher of every compile -- each arity ladder as well as the spread one, on per-compile
+state, so concurrent legs each throw on their own thread -- rather than only for a
+dispatcher whose flat body happened to clear the 128 KiB gate. A corrupt id can no longer
+hide in a ladder's early return the way the 2026-09-11 shape let it, and it can no longer
+spin whatever its size. `.todo/770` was closed on that record (2026-09-12, cancelled): what
+is left to learn needs an occurrence, and the check is what will name it -- funcId, bound,
+defun count, lambda count, arity and whether it is the spread dispatcher. If a recurrence
+instead throws NOTHING and still stalls, the population is what grew, and those same four
+numbers are what to take by hand.
 
 Ask of any new outlining path what the async top level failed: *is the piece it cuts
 bounded in BYTES, or only by where some syntactic marker falls?*
