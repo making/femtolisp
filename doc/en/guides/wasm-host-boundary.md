@@ -174,7 +174,9 @@ Boundary details beyond the scalar types:
 
 - A `:string`/`:s-expr` **argument** reaches the host as a `(ptr, len)` pair
   into the module's exported `memory` (an `:s-expr` argument is printed to
-  readable text first).
+  readable text first). Several on one import each get their own region, all
+  live for the duration of the call — and released once it returns, so the host
+  must read every argument it needs before it answers.
 - A `:string` **result** must be written into linear memory by the host —
   reserve the buffer with the exported `__ronto_alloc`, then return the
   `(ptr, len)` pair (a two-element array in JavaScript).

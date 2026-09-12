@@ -26,6 +26,42 @@ import and the `_argv` helper's `args_sizes_get`/`args_get` pair (`WasmArgvRunti
 [[uiop]]) are appended to `hostImports` LAST, after the directive-declared slots, so a program
 that also writes `rontolisp:wasm-import` keeps its ordinals and bytes.
 
+## Memory-typed PARAMETERS stage on a stack; the RESULT scratch does not
+A `:string`/`:s-expr` parameter crosses as `(ptr,len)` into linear memory, and N of them have
+to hold N regions AT ONCE, across the host call. `WasmExportCompiler.emitStringResult` writes
+at the un-advanced `HEAP_PTR` scratch DELIBERATELY -- right for its original caller, a single
+RESULT the host reads the instant the wrapper returns ([[wasm-gc-strings]]) -- so reusing it
+per PARAMETER aliased every one of them onto ONE base. Measured against a Node host on
+`:params '(:string :string)` (2026-09-12): `arg1 ptr 33089 len 12 = "BBBB\"AAAAAAA"`,
+`arg2 ptr 33089 len 4 = "BBBB"` -- the host saw the LAST argument's bytes under EVERY pointer,
+with the earlier argument's length. Silent: the module validated, instantiated and ran.
+`(:string :s-expr)` the same. `wasmtime --invoke` cannot read two pointers apart, which is why
+it survived to be found by generating a host.
+
+`WasmImportCompiler.emitStagedMemoryParam` stages each region instead:
+
+- **Serialised**: the bytes go to `HEAP_PTR` as before and `HEAP_PTR` is then ADVANCED past
+  them (8-aligned, like `__ronto_alloc`), making the scratch a stack. The wrapper takes ONE
+  mark up front and pops the whole run after the call -- the `:bytes` discipline, now shared
+  by both (`staging = bytesStaging || memStaging`, one mark, one restore).
+- **`--reentrant`**: an absolute pop is what two interleaved extents cannot share, so each
+  region is a park block (`_park_str_result`, the same helper an export RESULT uses), freed by
+  the wrapper after the call -- and a park block is the only staging that survives the park
+  itself. Two such parameters therefore pull `memoryHelpers` (hence the park allocator) on by
+  themselves, even when nothing in the module RETURNS memory.
+- **One memory-typed parameter keeps the non-advancing scratch**: it has nothing to collide
+  with, so `stagesMemoryParams` gates the whole shape on `>= 2` and every module that was
+  already correct stays BYTE-IDENTICAL. `emitStringResult` likewise keeps its one remaining
+  job (results, export wrappers), so no existing module's bytes move.
+- **The host must read its memory-typed arguments before it answers**: the wrapper releases
+  the whole run on return, and the serialised regions are scratch anything may reuse.
+
+Pins: `WasmImportCompilerTest.twoMemoryTypedParamsStageOnDistinctRegions` (the `HEAP_PTR`
+advance, once per staged parameter, absent at one),
+`WasmReentrantCompilerTest.parkHelpersRideOnlyAReentrantModuleWithAMemoryBoundary`, and the
+CONTENT against a Node host in `WasmStringParamBoundaryE2eTest` (every combination, a
+runtime-built string, the flat-memory loop).
+
 ## Modes, other backends, aliases
 - `--component` and `--no-gc` throw a clear `UnsupportedOperationException`. Interpreter and JVM
   define error-signalling stubs so shared sources load everywhere (`JvmLispCompiler` pass 1
@@ -268,7 +304,8 @@ An `(unsigned-byte 8)` vector (the bare `TYPE_I8ARR` array, [[packed-integer-vec
 RAW bytes -- no UTF-8 in either direction, because the `:string` decoder is non-validating and
 hands back garbage code points for arbitrary binary. **`:string` is a value, `:bytes` is a
 transfer.**
-- A PARAMETER stages as `(ptr,len)` like a string but bump-ALLOCATED, so several can coexist.
+- A PARAMETER stages as `(ptr,len)` and is bump-ALLOCATED, so several coexist -- the same
+  staging a memory-typed parameter gets (above), sharing one mark and one restore with it.
 - A RESULT is the `read(2)` shape: the Lisp signature gains ONE trailing parameter (the receive
   buffer; `WasmImportDirective.lispParamCount` / `WasmImportCompiler.lispArity`, from which every
   backend's stub arity derives), the host is called with a trailing `(ptr, cap)` and answers the

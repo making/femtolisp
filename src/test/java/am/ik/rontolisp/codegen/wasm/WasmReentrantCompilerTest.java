@@ -60,6 +60,23 @@ class WasmReentrantCompilerTest {
 		// A reentrant module whose whole boundary is scalar has no cross-call staging
 		// and gains no park allocator either.
 		assertThat(containsAscii(compile(SUSPENDING_MODULE, true), "__ronto_park_alloc")).isFalse();
+		// Two or more :string/:s-expr PARAMETERS are cross-call staging too: they must
+		// hold their regions at once and across the park, which the bump-and-pop the
+		// serialised build uses cannot do -- so they pull the park allocator on by
+		// themselves, even though nothing in the module returns memory.
+		String twoStringParams = """
+				(rontolisp:wasm-import 'two :from "env" :params '(:string :string) :returns :int :async t)
+				(defun poke () (rontolisp::%future-force (two "a" "b")))
+				(rontolisp:wasm-export 'poke :params '() :returns :int)
+				""";
+		assertThat(containsAscii(compile(twoStringParams, true), "__ronto_park_alloc")).isTrue();
+		// ONE of them stays on the scratch, so the serialised shape is unchanged.
+		String oneStringParam = """
+				(rontolisp:wasm-import 'one :from "env" :params '(:string) :returns :int :async t)
+				(defun poke () (rontolisp::%future-force (one "a")))
+				(rontolisp:wasm-export 'poke :params '() :returns :int)
+				""";
+		assertThat(containsAscii(compile(oneStringParam, true), "__ronto_park_alloc")).isFalse();
 	}
 
 	@Test

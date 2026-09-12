@@ -36,11 +36,15 @@ A JS-host test that drives the Preview 1 memory ABI for real, run in CI:
    instantiate the Preview 1 module with eight no-op `wasi_snapshot_preview1`
    stubs, call `__ronto_alloc`, write UTF-8 input, call the export, read the
    `(ptr,len)` result back. Assert `:string` and `:s-expr` round-trips.
-2. It needs a JS WebAssembly host with WasmGC + i31 support (Node 22+ works), so
-   it cannot go in the Java Testcontainers path. Note there is **no JS CI job to
-   attach it to** -- `.github/workflows/` has only `ci.yaml` and `pages.yaml`, and
-   `pages.yaml` is a Maven `-Pweb` GraalVM build with no node/npm step. This
-   would mean creating a JS toolchain job from scratch.
+2. It needs a JS WebAssembly host with WasmGC + i31 support (Node 22+ works).
+   **Step 2's premise is stale (2026-09-12)**: no JS toolchain job is needed, and
+   several tests already do this -- a JUnit test spawns `node` on a driver written
+   to the temp dir and asserts on its stdout, gated by
+   `@EnabledIf(... nodeIsAvailable)`. `WasmBytesBoundaryE2eTest` (the `:bytes`
+   boundary), `WasmStringParamBoundaryE2eTest` (an import's memory-typed
+   PARAMETERS, the same raw `(ptr,len)` ABI in the other direction),
+   `WasmHostGlueE2eTest` and `WasmReentrantE2eTest` are the pattern to copy; what
+   is left here is the EXPORT direction's `:string`/`:s-expr` round trip.
 3. Keep the existing instantiate-only Testcontainers test as a cheap smoke check.
 
 ## Related

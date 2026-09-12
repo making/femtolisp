@@ -4108,9 +4108,16 @@ public final class WasmLispCompiler implements LispCompiler {
 			.stream()
 			.anyMatch(async -> async.stream() && !async.handleElement());
 		boolean bytesFromMem = bytesBoundary || streamReadsBytes;
+		// An import wrapper that stages two or more :string/:s-expr PARAMETERS needs the
+		// park allocator under --reentrant (the regions must survive a park, and an
+		// absolute pop is what interleaved extents cannot share), and the park helpers
+		// ride on the memory pair. Serialised staging needs neither, so only a reentrant
+		// module changes shape.
+		boolean importStagesMemoryParams = importDecls.stream().anyMatch(WasmImportCompiler::stagesMemoryParams);
 		boolean memoryHelpers = exportUsesMemory || importUsesStrFromMem || bytesBoundary
-				|| !componentImportWrappers.isEmpty() || !componentAsyncWrappers.isEmpty()
-				|| !componentCallStartWrappers.isEmpty() || !componentTaskReturnWrappers.isEmpty();
+				|| (this.reentrant && importStagesMemoryParams) || !componentImportWrappers.isEmpty()
+				|| !componentAsyncWrappers.isEmpty() || !componentCallStartWrappers.isEmpty()
+				|| !componentTaskReturnWrappers.isEmpty();
 		int allocFuncIndex = memoryHelpers ? exportHelperBase : -1;
 		int strFromMemFuncIndex = memoryHelpers ? exportHelperBase + 1 : -1;
 		// Host arena API: __ronto_alloc_mark / __ronto_alloc_reset, appended right after

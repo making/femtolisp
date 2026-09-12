@@ -182,6 +182,55 @@ class WasmImportCompilerTest {
 	}
 
 	@Test
+	void twoMemoryTypedParamsStageOnDistinctRegions() {
+		// The defect this pins: N :string/:s-expr parameters all staged at the ONE
+		// un-advanced HEAP_PTR scratch, so the host saw the LAST argument's bytes under
+		// every pointer. With two or more the wrapper advances the scratch past each
+		// region (8-aligned, then popped back to the wrapper's mark after the call) --
+		// counted here as the align-and-store of HEAP_PTR, once per staged parameter.
+		// A single memory-typed parameter has nothing to collide with and keeps the
+		// non-advancing scratch, so its module is byte-identical to a build made before
+		// this existed. The content is checked against a real host in
+		// WasmStringParamBoundaryE2eTest.
+		assertThat(countOf(compileNoWasi(importing("'(:string :string)")), HEAP_PTR_ADVANCE)).isEqualTo(2);
+		assertThat(countOf(compileNoWasi(importing("'(:string :s-expr)")), HEAP_PTR_ADVANCE)).isEqualTo(2);
+		assertThat(countOf(compileNoWasi(importing("'(:string :int :s-expr :string)")), HEAP_PTR_ADVANCE)).isEqualTo(3);
+		assertThat(countOf(compileNoWasi(importing("'(:string)")), HEAP_PTR_ADVANCE)).isZero();
+		assertThat(countOf(compileNoWasi(importing("'(:string :int)")), HEAP_PTR_ADVANCE)).isZero();
+		assertThat(WasmImportCompiler.stagesMemoryParams(parse("(rontolisp:wasm-import 'g :params '(:string))")))
+			.isFalse();
+		assertThat(WasmImportCompiler
+			.stagesMemoryParams(parse("(rontolisp:wasm-import 'g :params '(:string :bytes :string))"))).isTrue();
+	}
+
+	// One import of the given parameter list, called from an export so nothing shakes it
+	// out. Every parameter is passed the same literal, which the :s-expr designator
+	// takes as readily as the :string one.
+	private static String importing(String paramTypes) {
+		int arity = (int) paramTypes.chars().filter(c -> c == ':').count();
+		return "(rontolisp:wasm-import 'ask :from \"host\" :params " + paramTypes + " :returns :int)\n"
+				+ "(defun probe () (ask" + " \"s\"".repeat(arity) + "))\n"
+				+ "(rontolisp:wasm-export 'probe :params '() :returns :int)\n";
+	}
+
+	// i32.const 7; i32.add; i32.const -8; i32.and; i32.store align=2 offset=0 -- the
+	// 8-aligned bump of HEAP_PTR past one staged parameter region.
+	private static final byte[] HEAP_PTR_ADVANCE = { 0x41, 0x07, 0x6a, 0x41, 0x78, 0x71, 0x36, 0x02, 0x00 };
+
+	private static int countOf(byte[] module, byte[] needle) {
+		int count = 0;
+		outer: for (int i = 0; i <= module.length - needle.length; i++) {
+			for (int j = 0; j < needle.length; j++) {
+				if (module[i + j] != needle[j]) {
+					continue outer;
+				}
+			}
+			count++;
+		}
+		return count;
+	}
+
+	@Test
 	void rejectsUnknownOption() {
 		assertThatThrownBy(() -> parse("(rontolisp:wasm-import 'g :wat 1)")).hasMessageContaining(":WAT");
 	}

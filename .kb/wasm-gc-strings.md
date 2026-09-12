@@ -57,7 +57,9 @@ Two disciplines share the linear scratch at `HEAP_PTR_ADDR`:
   `array.copy` stamping the counter id itself.
 - `_str_to_mem(str,ptr)->len` (`FUNC_STR_TO_MEM`) -- the array->linear bridge for `open`/`load`,
   the reader input scratch (RESERVED so parse-time interns stack above the unparsed input),
-  `intern`, the host `:string` boundary (`WasmExportCompiler.emitStringResult`), the fetch wire,
+  `intern`, the host `:string` boundary (`WasmExportCompiler.emitStringResult`; a staged import
+  PARAMETER goes through `WasmImportCompiler.emitStagedMemoryParam`, which ADVANCES `HEAP_PTR`
+  past its region so several coexist -- [[wasm-import]]), the fetch wire,
   `tcp` host, and a string INPUT stream's source copy.
 - `_write_str_gc(str,from,to,esc)` (`FUNC_WRITE_STR_GC`) -- appends straight from the GC array to
   `CAPTURE_CUR` in capture mode (so it can never alias the capture buffer) or stages into scratch +

@@ -162,6 +162,31 @@ final class WasmImportCompiler {
 	}
 
 	/**
+	 * Returns whether the wrapper STAGES its memory-typed parameters
+	 * ({@code :string}/{@code :s-expr}) -- an advancing allocation per parameter,
+	 * released after the host call -- instead of leaving each at the un-advanced
+	 * {@code HEAP_PTR} scratch. True exactly when the declaration has two or more of
+	 * them: one region at the scratch has nothing to collide with, but the second write
+	 * lands on the first, so the host would see the LAST argument's bytes under every
+	 * pointer with the earlier argument's length. A single memory-typed parameter keeps
+	 * the scratch (the rule {@code .kb/wasm-gc-strings.md} documents), so every module
+	 * that was already correct stays byte-identical.
+	 * @param decl the parsed declaration
+	 * @return whether the wrapper stages memory-typed parameters
+	 */
+	static boolean stagesMemoryParams(Decl decl) {
+		return memoryParamCount(decl) >= 2;
+	}
+
+	private static int memoryParamCount(Decl decl) {
+		return (int) decl.paramTypes().stream().filter(WasmImportCompiler::isStagedMemoryType).count();
+	}
+
+	private static boolean isStagedMemoryType(BoundaryType type) {
+		return type == BoundaryType.STRING || type == BoundaryType.S_EXPR;
+	}
+
+	/**
 	 * The arity of the Lisp-visible function the declaration defines. A {@code :bytes}
 	 * RESULT adds one trailing parameter -- the {@code (unsigned-byte 8)} vector the
 	 * caller passes as the receive buffer (the caller-passes-the-buffer {@code read(2)}
@@ -231,6 +256,12 @@ final class WasmImportCompiler {
 		boolean bytesResult = decl.returnType() == BoundaryType.BYTES;
 		int numBytesParams = (int) decl.paramTypes().stream().filter(t -> t == BoundaryType.BYTES).count();
 		boolean bytesStaging = bytesResult || numBytesParams > 0;
+		// Two or more :string/:s-expr parameters have to hold their linear-memory
+		// regions AT THE SAME TIME, across the host call -- so they cannot share the
+		// un-advanced scratch emitStringResult writes at (see stagesMemoryParams).
+		boolean memStaging = stagesMemoryParams(decl);
+		int numMemParams = memStaging ? memoryParamCount(decl) : 0;
+		boolean staging = bytesStaging || memStaging;
 		ByteArrayOutputStream bodyStream = new ByteArrayOutputStream();
 		WasmWriter writer = new WasmWriter(bodyStream);
 		WasmLispCompiler.Ctx ctx = ctxBuilder.writer(writer).bodyStream(bodyStream).build();
@@ -253,20 +284,25 @@ final class WasmImportCompiler {
 		int resultPtrSlot = bytesParamBase + 2 * numBytesParams;
 		int resultCapSlot = resultPtrSlot + 1;
 		int resultLenSlot = resultPtrSlot + 2;
-		int numI32Temps = sExprTemps + (bytesStaging ? 1 + 2 * numBytesParams + (bytesResult ? 3 : 0) : 0);
+		// One (ptr,len) pair per staged memory-typed parameter, after the :bytes run so
+		// no existing slot moves: the pointer is what the region is released by under
+		// --reentrant, the length what the host is handed.
+		int memParamBase = resultPtrSlot + (bytesResult ? 3 : 0);
+		int numI32Temps = sExprTemps
+				+ (staging ? 1 + 2 * numBytesParams + (bytesResult ? 3 : 0) + 2 * numMemParams : 0);
 		ctx.nextLocal = numLispParams + 1 + numI32Temps;
 		int stagingAllocFuncIndex = reentrant ? ctx.parkAllocFuncIndex : allocFuncIndex;
+		if (staging && !reentrant) {
+			// mark = HEAP_PTR; every staged buffer below is a bump allocation popped
+			// back to this mark on return (a stack discipline, like the host arena
+			// API).
+			ctx.writer.write(Instruction.I32_CONST);
+			ctx.writer.writeSignedLeb128(WasmLispCompiler.HEAP_PTR_ADDR);
+			ctx.writer.write(Instruction.I32_LOAD, 0x02, 0x00);
+			ctx.writer.write(Instruction.SET_LOCAL);
+			ctx.writer.writeUnsignedLeb128(markSlot);
+		}
 		if (bytesStaging) {
-			if (!reentrant) {
-				// mark = HEAP_PTR; every staged buffer below is a bump allocation popped
-				// back to this mark on return (a stack discipline, like the host arena
-				// API).
-				ctx.writer.write(Instruction.I32_CONST);
-				ctx.writer.writeSignedLeb128(WasmLispCompiler.HEAP_PTR_ADDR);
-				ctx.writer.write(Instruction.I32_LOAD, 0x02, 0x00);
-				ctx.writer.write(Instruction.SET_LOCAL);
-				ctx.writer.writeUnsignedLeb128(markSlot);
-			}
 			// Stage each :bytes parameter: len = array.len(arg), ptr = alloc(len)
 			// (grow-guarded), then copy the vector's raw bytes into [ptr, ptr+len). The
 			// ref.cast inside the length read traps on a non-byte-vector argument --
@@ -316,6 +352,7 @@ final class WasmImportCompiler {
 			ctx.writer.writeSignedLeb128(2);
 		}
 		int k = 0;
+		int m = 0;
 		for (int i = 0; i < numParams; i++) {
 			if (decl.paramTypes().get(i) == BoundaryType.BYTES) {
 				ctx.writer.write(Instruction.GET_LOCAL);
@@ -323,6 +360,10 @@ final class WasmImportCompiler {
 				ctx.writer.write(Instruction.GET_LOCAL);
 				ctx.writer.writeUnsignedLeb128(bytesParamBase + 2 * k + 1);
 				k++;
+			}
+			else if (memStaging && isStagedMemoryType(decl.paramTypes().get(i))) {
+				emitStagedMemoryParam(ctx, decl.paramTypes().get(i), i + 1, memParamBase + 2 * m, reentrant);
+				m++;
 			}
 			else {
 				emitUnboxParam(ctx, decl.paramTypes().get(i), i + 1);
@@ -359,7 +400,7 @@ final class WasmImportCompiler {
 			ctx.writer.writeUnsignedLeb128(bytesFillFuncIndex);
 			ctx.writer.write(Instruction.DROP);
 			if (reentrant) {
-				emitParkFrees(ctx, numBytesParams, bytesParamBase, resultPtrSlot, true);
+				emitParkFrees(ctx, numBytesParams, bytesParamBase, resultPtrSlot, true, numMemParams, memParamBase);
 			}
 			else {
 				emitHeapRestore(ctx, markSlot);
@@ -372,13 +413,14 @@ final class WasmImportCompiler {
 		}
 		else {
 			emitBoxResult(ctx, decl.returnType(), ptrSlot, strFromMemFuncIndex, reentrant);
-			if (bytesStaging) {
+			if (staging) {
 				// The staged parameter regions are dead once the host call returned (a
 				// :string/:s-expr result was already copied out of linear memory by the
 				// boxing above), so pop the heap back to the mark (--reentrant: free
 				// the park blocks).
 				if (reentrant) {
-					emitParkFrees(ctx, numBytesParams, bytesParamBase, resultPtrSlot, false);
+					emitParkFrees(ctx, numBytesParams, bytesParamBase, resultPtrSlot, false, numMemParams,
+							memParamBase);
 				}
 				else {
 					emitHeapRestore(ctx, markSlot);
@@ -433,10 +475,16 @@ final class WasmImportCompiler {
 	// flatness the absolute pop used to buy, without the absolute store two
 	// interleaved pull loops cannot share.
 	private static void emitParkFrees(WasmLispCompiler.Ctx ctx, int numBytesParams, int bytesParamBase,
-			int resultPtrSlot, boolean bytesResult) {
+			int resultPtrSlot, boolean bytesResult, int numMemParams, int memParamBase) {
 		for (int k = 0; k < numBytesParams; k++) {
 			ctx.writer.write(Instruction.GET_LOCAL);
 			ctx.writer.writeUnsignedLeb128(bytesParamBase + 2 * k);
+			ctx.writer.write(Instruction.CALL);
+			ctx.writer.writeUnsignedLeb128(ctx.parkFreeFuncIndex);
+		}
+		for (int m = 0; m < numMemParams; m++) {
+			ctx.writer.write(Instruction.GET_LOCAL);
+			ctx.writer.writeUnsignedLeb128(memParamBase + 2 * m);
 			ctx.writer.write(Instruction.CALL);
 			ctx.writer.writeUnsignedLeb128(ctx.parkFreeFuncIndex);
 		}
@@ -458,6 +506,89 @@ final class WasmImportCompiler {
 		ctx.writer.write(Instruction.GET_LOCAL);
 		ctx.writer.writeUnsignedLeb128(markSlot);
 		ctx.writer.write(Instruction.I32_STORE, 0x02, 0x00);
+	}
+
+	// Pushes the (ptr,len) of a STAGED :string/:s-expr parameter: the same content
+	// pointer and length emitStringResult answers, but over a region that stays live
+	// until the host call returns, so several of them coexist.
+	//
+	// Serialised: the bytes are written at HEAP_PTR as usual and HEAP_PTR is then
+	// ADVANCED past them (8-aligned, like __ronto_alloc), making the scratch a stack --
+	// the next parameter, and anything else reaching for scratch, starts above this
+	// region. The whole run pops back to the wrapper's mark after the call.
+	//
+	// --reentrant: an absolute pop is what two interleaved extents cannot share, so each
+	// region is a park block instead (_park_str_result, the same helper an export result
+	// uses), freed by the wrapper after the call. A park block also survives the park
+	// itself, which the scratch does not.
+	private static void emitStagedMemoryParam(WasmLispCompiler.Ctx ctx, BoundaryType type, int argSlot, int ptrSlot,
+			boolean reentrant) {
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(argSlot);
+		if (type == BoundaryType.S_EXPR) {
+			// Any Lisp value -> readable s-expression text, then the string path.
+			ctx.writer.write(Instruction.CALL);
+			ctx.writer.writeUnsignedLeb128(WasmLispCompiler.FUNC_PRIN1_TO_STR);
+		}
+		int lenSlot = ptrSlot + 1;
+		if (reentrant) {
+			// _park_str_result answers the CONTENT (ptr,len) -- quotes already stripped
+			// -- and the pointer it answers is the one _park_free takes.
+			ctx.writer.write(Instruction.CALL);
+			ctx.writer.writeUnsignedLeb128(ctx.parkStrResultFuncIndex);
+			ctx.writer.write(Instruction.SET_LOCAL);
+			ctx.writer.writeUnsignedLeb128(lenSlot);
+			ctx.writer.write(Instruction.SET_LOCAL);
+			ctx.writer.writeUnsignedLeb128(ptrSlot);
+			ctx.writer.write(Instruction.GET_LOCAL);
+			ctx.writer.writeUnsignedLeb128(ptrSlot);
+			ctx.writer.write(Instruction.GET_LOCAL);
+			ctx.writer.writeUnsignedLeb128(lenSlot);
+			return;
+		}
+		int tmp = ctx.allocTemp();
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(tmp);
+		// ptr = HEAP_PTR (the quoted spelling's base); len = _str_to_mem(str, ptr),
+		// which grow-guards [ptr, ptr+len) before writing.
+		ctx.writer.write(Instruction.I32_CONST);
+		ctx.writer.writeSignedLeb128(WasmLispCompiler.HEAP_PTR_ADDR);
+		ctx.writer.write(Instruction.I32_LOAD, 0x02, 0x00);
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(ptrSlot);
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(tmp);
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(ptrSlot);
+		WasmEmitHelper.emitStrToMemCall(ctx.writer);
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(lenSlot);
+		// HEAP_PTR = align8(ptr + len)
+		ctx.writer.write(Instruction.I32_CONST);
+		ctx.writer.writeSignedLeb128(WasmLispCompiler.HEAP_PTR_ADDR);
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(ptrSlot);
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(lenSlot);
+		ctx.writer.write(Instruction.I32_ADD);
+		ctx.writer.write(Instruction.I32_CONST);
+		ctx.writer.writeSignedLeb128(7);
+		ctx.writer.write(Instruction.I32_ADD);
+		ctx.writer.write(Instruction.I32_CONST);
+		ctx.writer.writeSignedLeb128(-8);
+		ctx.writer.write(Instruction.I32_AND);
+		ctx.writer.write(Instruction.I32_STORE, 0x02, 0x00);
+		// The boundary is the CONTENT: skip the leading quote, drop both.
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(ptrSlot);
+		ctx.writer.write(Instruction.I32_CONST);
+		ctx.writer.writeSignedLeb128(1);
+		ctx.writer.write(Instruction.I32_ADD);
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(lenSlot);
+		ctx.writer.write(Instruction.I32_CONST);
+		ctx.writer.writeSignedLeb128(2);
+		ctx.writer.write(Instruction.I32_SUB);
 	}
 
 	// Pushes the host-ABI value(s) of the boxed Lisp argument in the given local slot.

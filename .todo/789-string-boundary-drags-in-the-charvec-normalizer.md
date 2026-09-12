@@ -112,8 +112,14 @@ program actually compiled.
 `+1`/`-2`. The bytes are already in the data segment at compile time: a literal (or any
 argument the compiler knows is a constant string) can pass its own `(ptr, len)` with no
 call and no copy, dropping both helpers when a module has nothing but literals crossing.
-It also sidesteps [`788`](788-wasm-import-multiple-memory-params-collide.md) for the
-literal case -- though `788` still has to be fixed on its own terms.
+`788` (the aliasing of several memory-typed parameters) is now FIXED on its own terms, so
+this is purely a size item -- but it inherits a constraint from that fix: with two or more
+memory-typed parameters the wrapper STAGES each one (advancing `HEAP_PTR`, popping the run
+after the call; park blocks under `--reentrant`). A literal lowered straight to its data
+segment needs no region at all, so it must be skipped by the staging AND by the slot/free
+accounting that walks the memory-typed parameters (`WasmImportCompiler.emitStagedMemoryParam`
+and the `memParamBase` run), not merely emitted differently.
+[`.kb/wasm-import.md`](../.kb/wasm-import.md) has the shape.
 
 **3. Shake the data section.**
 `"TRIVIAL-GRAY-STREAMS"` is emitted into every module's data section and nothing in this
