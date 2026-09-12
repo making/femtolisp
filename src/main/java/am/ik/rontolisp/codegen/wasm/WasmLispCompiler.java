@@ -4195,26 +4195,26 @@ public final class WasmLispCompiler implements LispCompiler {
 		LinkedHashMap<String, Integer> importSlotIndex = new LinkedHashMap<>();
 		List<ImportSlot> importSlots = new ArrayList<>();
 		for (WasmImportCompiler.Decl decl : importWrappers.values()) {
-			if (importSlotIndex.putIfAbsent(decl.module() + " " + decl.field(), importSlots.size()) == null) {
+			if (importSlotIndex.putIfAbsent(decl.module() + "\0" + decl.field(), importSlots.size()) == null) {
 				importSlots.add(new ImportSlot(decl.module(), decl.field(), WasmImportCompiler.hostParamTypes(decl),
 						WasmImportCompiler.hostResultTypes(decl)));
 			}
 		}
 		for (WasmComponentImportCompiler.Decl decl : componentImportWrappers.values()) {
-			if (importSlotIndex.putIfAbsent(decl.module() + " " + decl.field(), importSlots.size()) == null) {
+			if (importSlotIndex.putIfAbsent(decl.module() + "\0" + decl.field(), importSlots.size()) == null) {
 				importSlots
 					.add(new ImportSlot(decl.module(), decl.field(), WasmComponentImportCompiler.hostParamTypes(decl),
 							WasmComponentImportCompiler.hostResultTypes(decl)));
 			}
 		}
 		for (WasmComponentImportCompiler.Drop drop : componentDropWrappers.values()) {
-			if (importSlotIndex.putIfAbsent(drop.module() + " " + drop.field(), importSlots.size()) == null) {
+			if (importSlotIndex.putIfAbsent(drop.module() + "\0" + drop.field(), importSlots.size()) == null) {
 				importSlots.add(new ImportSlot(drop.module(), drop.field(),
 						WasmComponentImportCompiler.dropParamTypes(), new Type[] {}));
 			}
 		}
 		for (WasmComponentImportCompiler.Async async : componentAsyncWrappers.values()) {
-			if (importSlotIndex.putIfAbsent(async.module() + " " + async.field(), importSlots.size()) == null) {
+			if (importSlotIndex.putIfAbsent(async.module() + "\0" + async.field(), importSlots.size()) == null) {
 				importSlots.add(new ImportSlot(async.module(), async.field(),
 						WasmComponentImportCompiler.asyncParamTypes(async),
 						WasmComponentImportCompiler.asyncResultTypes(async)));
@@ -4224,7 +4224,7 @@ public final class WasmLispCompiler implements LispCompiler {
 		// (one set per interface, driven by every await wrapper of that interface), then
 		// the task-return built-ins.
 		for (WasmComponentImportCompiler.AsyncCall call : componentCallStartWrappers.values()) {
-			if (importSlotIndex.putIfAbsent(call.module() + " " + call.field(), importSlots.size()) == null) {
+			if (importSlotIndex.putIfAbsent(call.module() + "\0" + call.field(), importSlots.size()) == null) {
 				importSlots
 					.add(new ImportSlot(call.module(), call.field(), WasmComponentImportCompiler.hostParamTypes(call),
 							WasmComponentImportCompiler.hostResultTypes(call)));
@@ -4238,7 +4238,7 @@ public final class WasmLispCompiler implements LispCompiler {
 			// stream/future built-in wrappers park on it when BLOCKED -- so any
 			// interface with either binds the trio.
 			for (String field : WasmComponentImportCompiler.WAITABLE_FIELDS) {
-				if (importSlotIndex.putIfAbsent(imported.ifaceId() + " " + field, importSlots.size()) == null) {
+				if (importSlotIndex.putIfAbsent(imported.ifaceId() + "\0" + field, importSlots.size()) == null) {
 					importSlots.add(new ImportSlot(imported.ifaceId(), field,
 							WasmComponentImportCompiler.waitableParamTypes(field),
 							WasmComponentImportCompiler.waitableResultTypes(field)));
@@ -4246,7 +4246,7 @@ public final class WasmLispCompiler implements LispCompiler {
 			}
 		}
 		for (WasmComponentImportCompiler.TaskReturn tr : componentTaskReturnWrappers.values()) {
-			if (importSlotIndex.putIfAbsent(tr.module() + " " + tr.field(), importSlots.size()) == null) {
+			if (importSlotIndex.putIfAbsent(tr.module() + "\0" + tr.field(), importSlots.size()) == null) {
 				importSlots.add(new ImportSlot(tr.module(), tr.field(),
 						WasmComponentImportCompiler.taskReturnParamTypes(tr), new Type[] {}));
 			}
@@ -4314,24 +4314,24 @@ public final class WasmLispCompiler implements LispCompiler {
 		// onto one import.
 		{
 			for (WasmImportCompiler.Decl decl : importWrappers.values()) {
-				int ordinal = Objects.requireNonNull(importSlotIndex.get(decl.module() + " " + decl.field()));
+				int ordinal = Objects.requireNonNull(importSlotIndex.get(decl.module() + "\0" + decl.field()));
 				byte[] body = WasmImportCompiler.buildWrapperBody(ctxBuilder, decl, ordinal, strFromMemFuncIndex,
 						allocFuncIndex, bytesCopyFuncIndex, bytesFillFuncIndex);
 				userFunctionBodies.set(Objects.requireNonNull(importBodySlots.get(decl.name())), body);
 			}
 			for (WasmComponentImportCompiler.Decl decl : componentImportWrappers.values()) {
-				int ordinal = Objects.requireNonNull(importSlotIndex.get(decl.module() + " " + decl.field()));
+				int ordinal = Objects.requireNonNull(importSlotIndex.get(decl.module() + "\0" + decl.field()));
 				byte[] body = WasmComponentImportCompiler.buildWrapperBody(ctxBuilder, decl, ordinal, allocFuncIndex,
 						strFromMemFuncIndex);
 				userFunctionBodies.set(Objects.requireNonNull(importBodySlots.get(decl.lispName())), body);
 			}
 			for (WasmComponentImportCompiler.Drop drop : componentDropWrappers.values()) {
-				int ordinal = Objects.requireNonNull(importSlotIndex.get(drop.module() + " " + drop.field()));
+				int ordinal = Objects.requireNonNull(importSlotIndex.get(drop.module() + "\0" + drop.field()));
 				byte[] body = WasmComponentImportCompiler.buildDropBody(ctxBuilder, drop, ordinal);
 				userFunctionBodies.set(Objects.requireNonNull(importBodySlots.get(drop.lispName())), body);
 			}
 			for (WasmComponentImportCompiler.Async async : componentAsyncWrappers.values()) {
-				int ordinal = Objects.requireNonNull(importSlotIndex.get(async.module() + " " + async.field()));
+				int ordinal = Objects.requireNonNull(importSlotIndex.get(async.module() + "\0" + async.field()));
 				WasmComponentImportCompiler.WaitOrdinals asyncWaitOrdinals = new WasmComponentImportCompiler.WaitOrdinals(
 						Objects.requireNonNull(importSlotIndex
 							.get(async.module() + "\0" + WasmComponentImportCompiler.FIELD_WAITABLE_SET_NEW)),
@@ -4348,7 +4348,7 @@ public final class WasmLispCompiler implements LispCompiler {
 				userFunctionBodies.set(Objects.requireNonNull(importBodySlots.get(async.lispName())), body);
 			}
 			for (WasmComponentImportCompiler.AsyncCall call : componentCallStartWrappers.values()) {
-				int ordinal = Objects.requireNonNull(importSlotIndex.get(call.module() + " " + call.field()));
+				int ordinal = Objects.requireNonNull(importSlotIndex.get(call.module() + "\0" + call.field()));
 				byte[] body = WasmComponentImportCompiler.buildAsyncStartBody(ctxBuilder, call, ordinal, allocFuncIndex,
 						strFromMemFuncIndex);
 				userFunctionBodies.set(Objects.requireNonNull(importBodySlots.get(call.startName())), body);
@@ -4359,7 +4359,7 @@ public final class WasmLispCompiler implements LispCompiler {
 				userFunctionBodies.set(Objects.requireNonNull(importBodySlots.get(call.liftName())), body);
 			}
 			for (WasmComponentImportCompiler.TaskReturn tr : componentTaskReturnWrappers.values()) {
-				int ordinal = Objects.requireNonNull(importSlotIndex.get(tr.module() + " " + tr.field()));
+				int ordinal = Objects.requireNonNull(importSlotIndex.get(tr.module() + "\0" + tr.field()));
 				byte[] body = WasmComponentImportCompiler.buildTaskReturnBody(ctxBuilder, tr, ordinal, allocFuncIndex,
 						strFromMemFuncIndex);
 				userFunctionBodies.set(Objects.requireNonNull(importBodySlots.get(tr.lispName())), body);
