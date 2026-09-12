@@ -1,4 +1,4 @@
-# The emitter leaves ~45% of a small module on the floor after the tree-shaker
+# The shaker leaves globals, types and data behind, and 214 bytes of tidying after them
 
 **Status:** open. Measured 2026-09-12.
 
@@ -10,29 +10,32 @@ there.
 
 ## The finding
 
-`wasm-opt -Oz` over the module the backend already considers finished:
+**This item is entirely in-tree work. An external optimizer was run ONCE, as a probe, to
+find out how much is here before deciding whether it was worth writing -- the answer is 214
+bytes, and nothing about the plan below depends on that tool.** The core libraries take no
+external dependency and this pass would not be the first one.
 
-| Module | rontolisp | after `wasm-opt -Oz` |
+| Module | rontolisp | what an external `-Oz` still finds |
 | --- | ---: | ---: |
-| the measurement program, today | 4,563 | 2,508 |
-| the same with `789` + `790` spiked in | 1,030 | 816 |
+| the measurement program, today | 4,563 | -2,055 |
+| the same with `789` + `790` spiked in | 1,030 | **-214** |
 
-40 functions become 20; 15 globals become 1. No source change, no flag, no semantic
-difference -- the modules still run. This is not an argument for shipping a binaryen
-dependency (the core libraries take none, and `am.ik.wasm` is the language-independent
-half): it is a measurement of how much the emitter leaves behind AFTER
-`WasmTreeShaker.shake` has run, i.e. what a native cleanup pass in `am.ik.wasm` is worth.
+Read the two rows together: on today's module an optimizer looks impressive (40 functions
+to 20, 15 globals to 1) because it is deleting the SAME dead runtime that `789` and `790`
+delete at the source. Once those land it has 214 bytes left -- and that residue is this
+item, because most of it is not clever.
 
-Where it sits in a module that is already small (the 1,030-byte one, sections as emitted
-vs. after `-Oz`):
+Where the 214 sits (the 1,030-byte module, as emitted vs. the probe):
 
-| Section | rontolisp | `-Oz` | Note |
-| --- | ---: | ---: | --- |
-| code | 567 / 17 fn | 460 / 9 fn | inlining + local cleanup |
-| globals | 79 / 15 | 6 / 1 | **14 dead globals survive the shaker** |
-| types | 116 / 17 | 96 / 12 | rec groups outlive their last user |
-| exports | 92 / 6 | 92 | see below |
-| data | 92 / 6 | 86 | |
+| Section | as emitted | probe | Worth | Note |
+| --- | ---: | ---: | ---: | --- |
+| globals | 79 / 15 | 6 / 1 | 73 | **14 dead globals survive the shaker** |
+| code | 567 / 17 fn | 460 / 9 fn | 107 | inline one-call-site bodies, drop unused locals |
+| types | 116 / 17 | 96 / 12 | 20 | rec groups outlive their last user |
+| data | 92 / 6 | 86 | 6 | a segment nothing addresses |
+| exports | 92 / 6 | 92 | 0 | the probe cannot know; item 2 below is 65 more |
+
+Three of the five rows are deletions the shaker simply does not attempt, not optimizations.
 
 ## What to do
 
@@ -55,14 +58,17 @@ primitive is reachable, keep emitting both when the answer is unknown, and say s
 the hook's contract (call it before `_initialize`) is unchanged, it just stops appearing on
 modules that have nothing to seed.
 
-**3. A cleanup pass in `am.ik.wasm`.**
-What `-Oz` recovers beyond items 1 and 2 is ordinary post-emit tidying: inline a function
-with one call site, merge identical bodies (the code path already folds duplicate bodies at
-the AST level -- see `.kb/optimize-dead-code-elimination.md` -- but not after emission),
-drop unused locals, fold `local.set`/`local.get` pairs. It belongs beside the shaker, is
-language-independent by construction, and pays on every program rather than on small ones
-only. Scope it against the `size-report` corpus, not against this one program: the win on
-`zlib` decides whether it is worth the maintenance.
+**3. A cleanup pass in `am.ik.wasm`, written here.**
+The ~107 bytes left in the code section are ordinary post-emit tidying: inline a body with
+one call site, merge identical bodies (the AST path already folds duplicates -- see
+`.kb/optimize-dead-code-elimination.md` -- but nothing does it after emission), drop unused
+locals, fold `local.set`/`local.get` pairs. Each is a local rewrite over a function body
+the module already parses; none of it needs a general optimizer framework, and it belongs
+beside the shaker where it is language-independent by construction. Scope it against the
+`size-report` corpus rather than this one program -- the win on `zlib` is what decides
+whether it earns its maintenance -- and stop at the point where the next transform starts
+needing a dataflow framework: that is the line between this item and a project nobody
+asked for.
 
 ## Also seen, not size
 

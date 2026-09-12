@@ -59,9 +59,11 @@ two call sites named below):
 Both spiked modules still run correctly under a Node host (`_initialize`, `InitApp`,
 `RunComputation(20)` = 6765).
 
-**`wasm-opt -Oz` alone takes 4,563 to 2,508** -- 40 functions to 20, 15 globals to 1, no
-compiler change at all. That number is the slack a generic cleanup pass would recover and
-belongs to [`791`](791-module-level-slack-globals-types-data-hooks.md).
+The `wasm-opt` column is a PROBE, not a proposed build step -- it was run to size the
+opportunity before the spikes, and it mostly finds the same dead code this item and `790`
+remove for reasons. Note the last row: once both land, an external optimizer has 214 bytes
+left to find. What that residue is, and why it is small enough to write by hand, is
+[`791`](791-module-level-slack-globals-types-data-hooks.md).
 
 ## This item
 
