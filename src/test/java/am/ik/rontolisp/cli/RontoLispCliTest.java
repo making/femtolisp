@@ -1168,9 +1168,13 @@ class RontoLispCliTest {
 				(defun body (buf) (%pull buf))
 				#-rontolisp-body-imports
 				(defun body (buf) (declare (ignore buf)) nil)
-				(defun handle (json) (if (body nil) json json))
+				(defun handle (json)
+				  (if (body (make-array 0 :element-type '(unsigned-byte 8))) json json))
 				(rontolisp:wasm-export 'handle :params '(:string) :returns :string)
 				""");
+		// The buffer is a real byte vector: handing the :bytes import nil would be a type
+		// error the type-test fold proves, and the import -- unreachable past the trap --
+		// would be shaken out of the module the assertion below reads.
 		Path streaming = tempDir.resolve("hand-streaming.wasm");
 		runCli("", file.toString(), "-o", streaming.toString(), "--no-wasi", "--host-boundary=streaming");
 		assertThat(new String(Files.readAllBytes(streaming), StandardCharsets.ISO_8859_1))

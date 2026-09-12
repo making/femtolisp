@@ -17,7 +17,10 @@ of `:s32`/`:s64`). Table + exact-or-trap range rule: `.kb/wit.md` ("The integer 
 boundary and WIT world are one contract.
 
 - <=32-bit integer <-> i32 via `_int_new` on GC (i31 if it fits, else boxed exact,
-  `.kb/wasm-bignum.md`); `:s64`/`:u64` <-> i64 on every backend, u64 >= 2^63 traps.
+  `.kb/wasm-bignum.md`), outbound through `emitNarrowIntResult`'s exact lane (`_int_val`, the
+  declared range enforced on the i64) with the f64 lane only for a float/ratio result
+  (`.kb/wit.md`, "The integer boundary"); `:s64`/`:u64` <-> i64 on every backend, u64 >= 2^63
+  traps.
 - `:float` <-> `TYPE_FLOAT` f64; `:bool` <-> nil/t i32; `:string`/`:s-expr` <-> `(ptr,len)` in linear
   memory; omitted/nil/`:void` returns = void.
 - `:bytes` (both directives, GC core modules only): `(unsigned-byte 8)` vector, no UTF-8,

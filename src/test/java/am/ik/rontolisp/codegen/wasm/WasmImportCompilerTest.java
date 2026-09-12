@@ -207,10 +207,16 @@ class WasmImportCompilerTest {
 	// out. Every parameter is passed the same literal, which the :s-expr designator
 	// takes as readily as the :string one.
 	private static String importing(String paramTypes) {
-		int arity = (int) paramTypes.chars().filter(c -> c == ':').count();
+		// Each argument fits its declared type: an integer parameter handed a string
+		// would be a type error the type-test fold proves at compile time, and the
+		// wrapper's code after that unbox -- the stagings this pin counts -- would be
+		// dead code, correctly (.kb/wasm-ref-type-fold.md).
+		StringBuilder args = new StringBuilder();
+		for (String type : paramTypes.replace("'(", "").replace(")", "").trim().split("\\s+")) {
+			args.append(type.equals(":int") ? " 1" : " \"s\"");
+		}
 		return "(rontolisp:wasm-import 'ask :from \"host\" :params " + paramTypes + " :returns :int)\n"
-				+ "(defun probe () (ask" + " \"s\"".repeat(arity) + "))\n"
-				+ "(rontolisp:wasm-export 'probe :params '() :returns :int)\n";
+				+ "(defun probe () (ask" + args + "))\n" + "(rontolisp:wasm-export 'probe :params '() :returns :int)\n";
 	}
 
 	// i32.const 7; i32.add; i32.const -8; i32.and; i32.store align=2 offset=0 -- the

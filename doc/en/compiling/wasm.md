@@ -98,18 +98,28 @@ handful of functions:
 echo "(defun fact (n) (if (<= n 1) 1 (* n (fact (- n 1)))))
 (rontolisp:wasm-export 'fact :params '(:int) :returns :int)" > fact.lisp
 rontolisp fact.lisp --no-wasi -o fact.wasm
-wasmtime run --invoke fact fact.wasm 5      # => 120, from a ~2.5 KB module
+wasmtime run --invoke fact fact.wasm 5      # => 120, from a ~1.8 KB module
 ```
 
 Pass `--optimize=off` and the module instead embeds the **entire** runtime
 (printer, rational, string, reader and `eval` helpers, the WASI import slots, …)
 regardless of what the program actually uses, because function indices are then
-held fixed: the same `fact` module is ~155 KB rather than ~2.5 KB.
+held fixed: the same `fact` module is ~155 KB rather than ~1.8 KB.
 The shaking is behavior-preserving: it walks the call graph from
 the actual `call` instructions, so anything reachable (including code an
 embedded `eval`/`load` dispatches to) is kept. It applies on **every** output
 shape, `--component` included. The
 same levels also dead-code-eliminate the [JVM output](jvm.md).
+
+Reachability is only the first cut. The optimizer then decides every runtime
+type test the module can answer for itself: a wasm-GC value can only be what
+the module's own constructors built, so in `fact` -- whose numbers enter as an
+`:int` and never become a float or a ratio -- the generic arithmetic's float and
+rational arms are proved dead and dropped, the helpers that only those arms
+called go with them, and a call that merely forwards its arguments to another
+function is redirected past the hop. What stays is what the program can reach:
+`fact` keeps the exact-integer promotion past 64 bits, because its product can
+overflow and the answer must not wrap.
 
 The dead functions take their baggage with them: the WASI imports only they used,
 the type definitions nothing left names, and the static string data no surviving

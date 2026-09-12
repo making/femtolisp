@@ -253,7 +253,7 @@ final class WasmBodyFolder {
 	 * while a self-referential group is keyed by its own first index -- within it, byte
 	 * equality cannot prove canonical equality, so only the index itself matches.
 	 */
-	private static String[] typeEquivalenceKeys(byte[] payload) {
+	static String[] typeEquivalenceKeys(byte[] payload) {
 		List<WasmSections.TypeEntry> entries = WasmSections.parseTypeSection(payload);
 		int totalTypes = 0;
 		for (WasmSections.TypeEntry e : entries) {

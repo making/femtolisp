@@ -45,10 +45,12 @@ final class WasmComparisonCompiler {
 
 	/**
 	 * Compiles a CONDITION-position test as a raw i32 truth value (0 = false, non-0 =
-	 * true) when it is a binary numeric comparison the fusion compiler takes -- the
-	 * consumer ({@code while}/{@code if}) then tests the i32 directly, skipping the boxed
+	 * true) when it is a binary numeric comparison -- fused when the fusion compiler
+	 * takes it, through the generic {@code _rat_cmp_bits} mask test otherwise -- so the
+	 * consumer ({@code while}/{@code if}) tests the i32 directly, skipping the boxed
 	 * t/nil round trip (a {@code _t_sym} call per true evaluation). Returns {@code false}
-	 * having emitted nothing for every other shape.
+	 * having emitted nothing for every other shape (a literal-double or complex operand
+	 * keeps its own compilation).
 	 */
 	static boolean tryCompileConditionI32(LispVal test, WasmLispCompiler.Ctx ctx) {
 		return tryCompileConditionI32(test, ctx, false);
@@ -94,7 +96,18 @@ final class WasmComparisonCompiler {
 			return false;
 		}
 		if (!WasmIntFusionCompiler.tryCompileCompare(cons, ctx, i64OpcodeFor(i32Opcode), maskFor(i32Opcode), false)) {
-			return false;
+			// The generic comparison, still RAW: the mask test's i32 is the truth value,
+			// and boxing it into t/nil only for the consumer to test the box again would
+			// cost a _t_sym call per true answer -- and would root the symbol machinery
+			// (_t_sym, _str_build) in a module that otherwise never makes a string.
+			// Not a speed-for-size trade, so it holds at every optimize level.
+			WasmExprCompiler.compileExpr(args.get(1), ctx);
+			WasmExprCompiler.compileExpr(args.get(2), ctx);
+			ctx.writer.write(am.ik.wasm.Instruction.CALL);
+			ctx.writer.writeUnsignedLeb128(WasmLispCompiler.FUNC_RAT_CMP_BITS);
+			ctx.writer.write(am.ik.wasm.Instruction.I32_CONST);
+			ctx.writer.writeSignedLeb128(maskFor(i32Opcode));
+			ctx.writer.write(am.ik.wasm.Instruction.I32_AND);
 		}
 		if (negated) {
 			ctx.writer.write(am.ik.wasm.Instruction.I32_EQZ);

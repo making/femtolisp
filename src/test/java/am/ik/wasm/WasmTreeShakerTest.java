@@ -1,5 +1,6 @@
 package am.ik.wasm;
 
+import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -47,6 +48,49 @@ class WasmTreeShakerTest {
 		// `_start`.
 		assertThat(after.exportedFunctionNames()).contains("fact", "_initialize");
 		after.assertWellFormed();
+	}
+
+	@Test
+	void aRangeProbedElsewhereStaysWhileItsOwnBytesAreStillCited() {
+		// A deduplicated string can have two kinds of reader: a table whose words point
+		// at it (invisible to the constant scan, so the range is probed on the table's
+		// base word) and a body of its own. The five-argument form cuts on the probe
+		// alone -- right for a table ROW, which nothing else can address; the
+		// six-argument
+		// form with ownCitationKeeps is for the bytes themselves, which a body's own
+		// i32.const must keep even after the table's reader died. Found on the type-test
+		// fold retiring the printer's closure arm: _fun_name's table died, and with it
+		// the bytes of VECTOR -- the function name -- which type-of still built as a
+		// symbol, printed as NULs (.kb/wasm-ref-type-fold.md).
+		ByteArrayOutputStream body = new ByteArrayOutputStream();
+		WasmWriter w = new WasmWriter(body);
+		w.write(0); // no locals
+		w.write(Instruction.I32_CONST);
+		w.writeSignedLeb128(100); // cites the range's own first byte, never the probe
+		w.write(Instruction.DROP);
+		w.write(Instruction.END);
+		ByteArrayOutputStream out = new ByteArrayOutputStream();
+		new WasmWriter(out).write("\0asm")
+			.writeLittleEndian4(1)
+			.writeTypeSection(types -> types.addFunc(new Type[] {}, new Type[] {}))
+			.writeFunction(functions -> functions.addFunction(0))
+			.writeMemory(memories -> memories.addMemory(1))
+			.writeExport(exports -> exports.addExport("f", ExternalKind.FUNCTION, 0))
+			.writeCode(code -> code.addFunction(body.toByteArray()))
+			.writeDataSection(data -> data.addActiveData(0, 100,
+					"ABCDEFGHIJKL".getBytes(java.nio.charset.StandardCharsets.ISO_8859_1)));
+		byte[] module = out.toByteArray();
+
+		byte[] rowLike = WasmTreeShaker.shake(module, List.of(),
+				List.of(new WasmTreeShaker.DroppableDataRange(0, 0, 4, 8, 12)));
+		byte[] nameLike = WasmTreeShaker.shake(module, List.of(),
+				List.of(new WasmTreeShaker.DroppableDataRange(0, 0, 4, 8, 12, true)));
+
+		assertThat(new String(dataSectionPayload(rowLike), java.nio.charset.StandardCharsets.ISO_8859_1))
+			.as("the probe is uncited, so the row-like form cuts")
+			.doesNotContain("ABCD")
+			.contains("EFGHIJKL");
+		assertThat(nameLike).as("the body's own citation keeps the name-like form").isSameAs(module);
 	}
 
 	@Test
@@ -567,11 +611,14 @@ class WasmTreeShakerTest {
 		// the ~755-byte Schubfach float table.
 		assertThat(dataSectionSize(interning)).isLessThan(2048);
 		byte[] data = dataSectionPayload(interning);
-		for (String dead : new String[] { ":FROM-END", "\"ASDF\"", "keyword" }) {
+		// #<FUTURE> is the printer's arm for a type this program never constructs: the
+		// type-test fold retires the arm (.kb/wasm-ref-type-fold.md), and the literal
+		// only that arm addressed falls with it, like the wrapper literals.
+		for (String dead : new String[] { ":FROM-END", "\"ASDF\"", "keyword", "#<FUTURE>" }) {
 			assertThat(contains(data, dead)).as("dead wrapper literal %s survived the interning program", dead)
 				.isFalse();
 		}
-		for (String live : new String[] { "\"FOOX\"", "Rubout", "#<FUTURE>" }) {
+		for (String live : new String[] { "\"FOOX\"", "Rubout", "NIL(" }) {
 			assertThat(contains(data, live)).as("the interning program lost %s", live).isTrue();
 		}
 		assertThat(WasmTreeShaker.shake(interning)).isEqualTo(interning);

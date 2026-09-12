@@ -310,15 +310,15 @@ final class WasmExportCompiler {
 	 * The extra typed locals the wrapper body needs beyond its parameter slots and the
 	 * {@code (ref null eq)} temps {@code Ctx.allocTemp} hands out — they occupy the slots
 	 * right after the parameters, so the boxing/unboxing code can address them by a base
-	 * known before emission. Only a narrow integer result needs one (an {@code i32} to
-	 * hold the truncated value while its range is checked); every other boundary type
-	 * keeps the declaration exactly as it was, so an export that uses none stays
-	 * byte-identical.
+	 * known before emission. Only an integer result of at most 32 bits needs one (an
+	 * {@code i64} to hold the exact value while its range is checked,
+	 * {@link #emitNarrowIntResult}); every other boundary type keeps the declaration
+	 * exactly as it was, so an export that uses none stays byte-identical.
 	 * @param decl the parsed export directive
 	 * @return the scratch local types, in slot order
 	 */
 	static List<Type> scratchTypes(Decl decl) {
-		return needsNarrowGuard(decl.returnType()) ? List.of(Type.I32) : List.of();
+		return narrowIntResult(decl.returnType()) ? List.of(Type.I64) : List.of();
 	}
 
 	/**
@@ -737,30 +737,17 @@ final class WasmExportCompiler {
 		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.FUNC_INT_NEW);
 	}
 
-	// Whether an integer result needs an explicit range check after the trapping trunc:
-	// i32.trunc_s/u_f64 already rejects everything outside the full 32-bit range, so only
-	// the sub-32-bit types have a range of their own left to enforce.
-	private static boolean needsNarrowGuard(BoundaryType type) {
-		return type.isInteger() && type.bits() < 32;
+	// Whether an integer result crosses through the exact i64 lane of
+	// emitNarrowIntResult: every integer type up to 32 bits (the 64-bit pair has its own
+	// lane, emitWideIntResult).
+	private static boolean narrowIntResult(BoundaryType type) {
+		return type.isInteger() && type.bits() <= 32;
 	}
 
 	private static void emitUnboxResult(WasmLispCompiler.Ctx ctx, BoundaryType type, int scratchSlot,
 			int bytesCopyFuncIndex) {
 		switch (type) {
-			// Every integer result normalizes through the backend's own number-to-f64
-			// conversion (an i31, a ratio or a float all cross), then converts with a
-			// TRAPPING trunc: a value the declared type cannot state stops the call
-			// instead
-			// of arriving silently wrapped. i32.trunc_u_f64 also rejects a negative,
-			// which
-			// is what a negative returned from an unsigned export must do.
-			case S8, S16, S32, U8, U16, U32 -> {
-				WasmEmitHelper.castFloatGetF64(ctx);
-				ctx.writer.write(type.signed() ? Instruction.I32_TRUNC_S_F64 : Instruction.I32_TRUNC_U_F64);
-				if (needsNarrowGuard(type)) {
-					emitNarrowGuard(ctx, type, scratchSlot);
-				}
-			}
+			case S8, S16, S32, U8, U16, U32 -> emitNarrowIntResult(ctx, type, scratchSlot);
 			case FLOAT -> {
 				ctx.writer.write(Instruction.GC_PREFIX, Instruction.REF_CAST);
 				ctx.writer.writeHeapType(WasmLispCompiler.TYPE_FLOAT);
@@ -827,21 +814,70 @@ final class WasmExportCompiler {
 		}
 	}
 
-	// Traps unless the truncated i32 on the stack lies inside a sub-32-bit type's range,
-	// and leaves it there. The unsigned types need no lower check: the i32.trunc_u_f64
-	// that
-	// produced the value already trapped on a negative.
-	private static void emitNarrowGuard(WasmLispCompiler.Ctx ctx, BoundaryType type, int scratchSlot) {
-		BoundaryType.Range range = java.util.Objects.requireNonNull(type.range());
+	// An integer result of at most 32 bits. An exact integer at any tier (i31,
+	// TYPE_BIGNUM, TYPE_BIGINT) crosses through _int_val -- exactly, with the declared
+	// range enforced on the i64 -- and a float or ratio still normalizes through the
+	// backend's number-to-f64 conversion and a TRAPPING trunc, so a value the declared
+	// type cannot state stops the call instead of arriving wrapped (i32.trunc_u_f64 also
+	// rejects a negative). The two lanes are one `if` on the value's representation,
+	// which is what lets the type-test fold prove the f64 lane dead in a module whose
+	// exports only ever answer exact integers: nothing then references _as_f64 and the
+	// float-to-decimal helpers it roots (.kb/wasm-ref-type-fold.md). A TYPE_BIGINT is
+	// beyond every 32-bit range, and _int_val's trap on it is the same refusal the
+	// trunc would have been.
+	private static void emitNarrowIntResult(WasmLispCompiler.Ctx ctx, BoundaryType type, int i64Slot) {
+		int slot = ctx.allocTemp();
 		ctx.writer.write(Instruction.SET_LOCAL);
-		ctx.writer.writeUnsignedLeb128(scratchSlot);
-		if (type.signed()) {
-			emitTrapUnless(ctx, scratchSlot, Instruction.I32_LT_S, range.min().intValueExact());
+		ctx.writer.writeUnsignedLeb128(slot);
+		for (int heap : new int[] { Type.I31.code(), WasmLispCompiler.TYPE_BIGNUM, WasmLispCompiler.TYPE_BIGINT }) {
+			ctx.writer.write(Instruction.GET_LOCAL);
+			ctx.writer.writeUnsignedLeb128(slot);
+			ctx.writer.write(Instruction.GC_PREFIX, Instruction.REF_TEST);
+			ctx.writer.writeHeapType(heap);
+			if (heap != Type.I31.code()) {
+				ctx.writer.write(Instruction.I32_OR);
+			}
 		}
-		emitTrapUnless(ctx, scratchSlot, type.signed() ? Instruction.I32_GT_S : Instruction.I32_GT_U,
-				range.max().intValueExact());
+		ctx.writer.write(Instruction.IF);
+		ctx.writer.write(Type.I64);
 		ctx.writer.write(Instruction.GET_LOCAL);
-		ctx.writer.writeUnsignedLeb128(scratchSlot);
+		ctx.writer.writeUnsignedLeb128(slot);
+		ctx.writer.write(Instruction.CALL);
+		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.FUNC_INT_VAL);
+		ctx.writer.write(Instruction.ELSE);
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(slot);
+		WasmEmitHelper.castFloatGetF64(ctx);
+		ctx.writer.write(type.signed() ? Instruction.I32_TRUNC_S_F64 : Instruction.I32_TRUNC_U_F64);
+		ctx.writer.write(type.signed() ? Instruction.I64_EXTEND_S_I32 : Instruction.I64_EXTEND_U_I32);
+		ctx.writer.write(Instruction.END);
+		ctx.writer.write(Instruction.SET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(i64Slot);
+		// In range exactly when narrowing to the declared width and widening back is the
+		// identity: `v != canon(v)` traps, one compare for every width.
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(i64Slot);
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(i64Slot);
+		switch (type) {
+			case S8 -> ctx.writer.write(Instruction.I64_EXTEND8_S);
+			case S16 -> ctx.writer.write(Instruction.I64_EXTEND16_S);
+			case S32 -> ctx.writer.write(Instruction.I32_WRAP_I64, Instruction.I64_EXTEND_S_I32);
+			case U32 -> ctx.writer.write(Instruction.I32_WRAP_I64, Instruction.I64_EXTEND_U_I32);
+			case U8, U16 -> {
+				ctx.writer.write(Instruction.I64_CONST);
+				ctx.writer.writeSignedLeb128((1L << type.bits()) - 1);
+				ctx.writer.write(Instruction.I64_AND);
+			}
+			default -> throw new IllegalArgumentException("not a narrow integer type: " + type);
+		}
+		ctx.writer.write(Instruction.I64_NE);
+		ctx.writer.write(Instruction.IF, WasmLispCompiler.BLOCKTYPE_EMPTY);
+		ctx.writer.write(Instruction.UNREACHABLE);
+		ctx.writer.write(Instruction.END);
+		ctx.writer.write(Instruction.GET_LOCAL);
+		ctx.writer.writeUnsignedLeb128(i64Slot);
+		ctx.writer.write(Instruction.I32_WRAP_I64);
 	}
 
 	// A 64-bit integer result. The exact-integer representations (i31 and TYPE_BIGNUM)
@@ -887,21 +923,6 @@ final class WasmExportCompiler {
 		ctx.writer.writeUnsignedLeb128(slot);
 		WasmEmitHelper.castFloatGetF64(ctx);
 		ctx.writer.write(signed ? Instruction.I64_TRUNC_S_F64 : Instruction.I64_TRUNC_U_F64);
-		ctx.writer.write(Instruction.END);
-	}
-
-	// `if (local[slot] <op> bound) unreachable` -- the boundary's way of refusing a value
-	// it cannot state. A trap is what the host already sees for an error inside an
-	// exported
-	// function (the catch_all landing pad above), so the failure shape is unchanged.
-	private static void emitTrapUnless(WasmLispCompiler.Ctx ctx, int slot, int comparison, int bound) {
-		ctx.writer.write(Instruction.GET_LOCAL);
-		ctx.writer.writeUnsignedLeb128(slot);
-		ctx.writer.write(Instruction.I32_CONST);
-		ctx.writer.writeSignedLeb128(bound);
-		ctx.writer.write(comparison);
-		ctx.writer.write(Instruction.IF, WasmLispCompiler.BLOCKTYPE_EMPTY);
-		ctx.writer.write(Instruction.UNREACHABLE);
 		ctx.writer.write(Instruction.END);
 	}
 

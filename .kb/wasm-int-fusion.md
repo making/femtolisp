@@ -2,7 +2,9 @@
 
 **Invariant: fusing an integer expression tree must never change a result, an observable side
 effect, or an error shape -- the fast path is an optimization with a total fallback, not a
-semantic variant.**
+semantic variant.** The fallback is emitted whole; what the module SHIPS of it is decided
+afterwards by the type-test fold (`.kb/wasm-ref-type-fold.md`), which prunes the fallback's arms no
+leaf can reach -- the proof the emitter cannot make is made on the finished bytes instead.
 
 The wasm-GC backend (Preview 1 AND `--component`; `--no-gc` is i64-native and unaffected)
 compiles a nested tree over `+ - * mod rem logand logior logxor lognot ash` (plus `1+`/`1-`,
@@ -53,7 +55,9 @@ through `_int_new`.
   (overflow / zero divisor aborts the fold).
 - **Fused comparisons**: binary `= < > <= >=` via `tryCompileCompare` (hooked in
   `WasmComparisonCompiler`, `_rat_cmp_bits`-with-mask fallback); the `boxResult = false` variant
-  lets `WasmWhileCompiler`/`WasmIfCompiler` test the raw i32 via `tryCompileConditionI32`.
+  lets `WasmWhileCompiler`/`WasmIfCompiler` test the raw i32 via `tryCompileConditionI32` -- which
+  emits the generic `_rat_cmp_bits & mask` RAW too when fusion declines or is off, at every level
+  (`.kb/wasm-ref-type-fold.md`): a condition never boxes to `t`/`nil`.
 - **Raw stores**: `%aset` values compile raw through `tryCompileRaw` + `_iv_set`;
   `tryCompileRaw`/`compileRawStore` accept a bare ArefLeaf/ConstLeaf root, so
   `(setf (aref dst i) (aref src j))` loops move bytes without boxing.

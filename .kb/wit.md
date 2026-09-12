@@ -122,9 +122,12 @@ normalized at parse time**
 **The rule: the boundary carries the value exactly, or the wrapper traps** — derived from two
 intervals (`BoundaryType.range()` vs the backend's house-integer range), not enumerated per type.
 wasm-GC boxes inbound wide integers through `WasmExportCompiler.emitBoxWideInt` and returns them
-through `emitWideIntResult` (exact via `_int_val` past 2^53 where f64 would round), with an `i32`
-scratch local for the sub-32-bit outbound range check (`WasmExportCompiler.scratchTypes`,
-reserved right after the parameter slots); `--no-gc` uses `i64.extend_i32_s/_u` inbound and
+through `emitWideIntResult` (exact via `_int_val` past 2^53 where f64 would round) and
+`emitNarrowIntResult` (every type up to 32 bits: an exact lane through `_int_val` and an f64 lane
+for a float/ratio result, into one `i64` scratch local -- `WasmExportCompiler.scratchTypes`,
+reserved right after the parameter slots -- then `v != canon(v)` traps; the two lanes are one
+`if` so the type-test fold can drop the f64 lane, `.kb/wasm-ref-type-fold.md`); `--no-gc` uses
+`i64.extend_i32_s/_u` inbound and
 `NoGcWasmCompiler.emitBoundaryRangeGuard` + `i32.wrap_i64` outbound. `u64` traps below 0 on both.
 `:s64` needs neither check nor narrowing on `--no-gc`, which is why its pass-through wrapper
 elision (`isPassThroughExport`) survives.

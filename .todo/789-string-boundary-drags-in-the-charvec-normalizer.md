@@ -64,6 +64,11 @@ two call sites named below):
 Both spiked modules still run correctly under a Node host (`_initialize`, `InitApp`,
 `RunComputation(20)` = 6765).
 
+`790` landed 2026-09-12 as a byte-level type-flow fold rather than the spike's i31-only
+arithmetic (`.kb/wasm-ref-type-fold.md`): the program above is **1,820 bytes** at
+`--optimize=size` (2,060 at the default level), still correct on the same Node host; what the
+spike removed beyond that is the limb promotion an overflowing `+` needs.
+
 The `wasm-opt` column is a PROBE, not a proposed build step -- it was run to size the
 opportunity before the spikes, and it mostly finds the same dead code this item and `790`
 remove for reasons. Note the last row: once both land, an external optimizer has 221 bytes

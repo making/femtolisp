@@ -3681,13 +3681,93 @@ class WasmLispCompilerIntegrationTest {
 				// like the full one.
 				"(defgeneric gsz (x)) (defmethod gsz ((x integer)) (* x 2))"
 						+ " (defmethod gsz ((x string)) 999) (defmethod gsz (x) 'other)"
-						+ " (print (gsz 21)) (print (gsz 'sym))");
+						+ " (print (gsz 21)) (print (gsz 'sym))",
+				// The type-test fold (am.ik.wasm.WasmRefTypeFolder) decides the generic
+				// arithmetic's float/ratio/bignum arms from what the program can
+				// construct; a wrongly-folded arm answers WRONG, not with a trap. Every
+				// tier and every representation the arms dispatch on, mixed through one
+				// defun, so no arm is provably dead.
+				"(defun f (x) (if (< x 10) (* x 2.5) (/ x 3)))" + " (print (list (f 4) (f 30) (f 1/2) (f 1073741824)))"
+						+ " (print (list (< 1/3 0.5) (= 2 2.0) (<= 3 7/2) (> (expt 2 62) 1.5)))",
+				"(let ((x 0.5) (n 0)) (loop while (< x 100) do (setq x (* x 3) n (+ n 1))) (print (list x n)))"
+						+ " (let ((a 1073741823)) (print (list (+ a 1) (* a a) (- (* a a a a)) (- (+ a 1) 1))))",
+				"(print (handler-case (+ 1 \"a\") (error (e) 'type-error-caught)))"
+						+ " (print (handler-case (< \"a\" 1) (error (e) 'type-error-caught-too)))",
+				// A comparison in condition position stays raw at every level; NaN and
+				// the unordered answer must still fail every operator.
+				"(let ((nan (/ 0.0 0.0)) (h 1/2)) (print (list (if (< nan 1) 'lt 'not-lt) (if (> nan 1) 'gt 'not-gt)"
+						+ " (if (= nan nan) 'eq 'not-eq) (if (<= h 0.5) 'le 'not-le) (if (>= 3 h) 'ge 'not-ge))))");
 		for (String program : programs) {
 			List<LispVal> parsed = LispReader.readAllFromString(program);
 			String plain = runOptimizeLevel(parsed, OptimizeLevel.NONE);
-			String optimized = runOptimizeLevel(parsed, OptimizeLevel.DEFAULT);
-			assertThat(optimized).as("--optimize changed the output of: %s", program).isEqualTo(plain);
+			for (OptimizeLevel level : List.of(OptimizeLevel.DEFAULT, OptimizeLevel.SIZE)) {
+				String optimized = runOptimizeLevel(parsed, level);
+				assertThat(optimized).as("--optimize=%s changed the output of: %s", level.spelling(), program)
+					.isEqualTo(plain);
+			}
 		}
+	}
+
+	@Test
+	void theNarrowIntegerBoundaryCrossesEveryTierExactlyAtEveryLevel() throws Exception {
+		// An integer result up to 32 bits crosses through _int_val (exact at any tier)
+		// with the declared range enforced on the i64, and a float or ratio still
+		// truncates through f64 -- the two lanes WasmExportCompiler.emitNarrowIntResult
+		// emits, and the type-test fold proves the f64 lane dead in an integer-only
+		// module. The same answers at every level are what make that fold honest: a
+		// value the type cannot state traps, an in-range TYPE_BIGNUM crosses, and a
+		// float truncates, whether or not its lane was folded.
+		String program = """
+				(defun scale (n) (* n 1000000))
+				(defun neg (n) (- n))
+				(defun half (n) (/ n 2.0))
+				(defun third (n) (/ n 3))
+				(defun pow2 (n) (expt 2 n))
+				(defun less (n) (- n 100))
+				(rontolisp:wasm-export 'scale :params '(:s32) :returns :s32)
+				(rontolisp:wasm-export 'neg :params '(:s32) :returns :u32)
+				(rontolisp:wasm-export 'half :params '(:s32) :returns :s32)
+				(rontolisp:wasm-export 'third :params '(:s32) :returns :s16)
+				(rontolisp:wasm-export 'pow2 :params '(:s32) :returns :u32)
+				(rontolisp:wasm-export 'less :params '(:u8) :returns :u8)
+				""";
+		for (OptimizeLevel level : List.of(OptimizeLevel.NONE, OptimizeLevel.DEFAULT, OptimizeLevel.SIZE)) {
+			String as = "at " + level.spelling();
+			assertThat(compileAndInvokeAt(level, program, "scale", "2000")).as(as).isEqualTo("2000000000");
+			assertThat(compileAndInvokeAt(level, program, "scale", "-2147")).as(as).isEqualTo("-2147000000");
+			assertThat(compileAndInvokeAt(level, program, "neg", "-5")).as(as).isEqualTo("5");
+			assertThat(compileAndInvokeAt(level, program, "half", "7")).as(as).isEqualTo("3");
+			assertThat(compileAndInvokeAt(level, program, "half", "-7")).as(as).isEqualTo("-3");
+			assertThat(compileAndInvokeAt(level, program, "third", "-7")).as(as).isEqualTo("-2");
+			assertThat(compileAndInvokeAt(level, program, "pow2", "30")).as(as).isEqualTo("1073741824");
+			assertThat(compileAndInvokeAt(level, program, "less", "150")).as(as).isEqualTo("50");
+			for (String[] refused : new String[][] { { "scale", "3000" }, { "neg", "5" }, { "pow2", "32" },
+					{ "pow2", "70" }, { "less", "50" }, { "third", "200000" } }) {
+				assertThat(compileAndInvokeAtRaw(level, program, refused[0], refused[1]).getExitCode())
+					.as("%s(%s) %s must trap", refused[0], refused[1], as)
+					.isNotZero();
+			}
+		}
+	}
+
+	private static String compileAndInvokeAt(OptimizeLevel level, String lispCode, String function, String... args)
+			throws Exception {
+		ExecResult result = compileAndInvokeAtRaw(level, lispCode, function, args);
+		assertThat(result.getExitCode())
+			.as("exit code for invoke %s at %s\nstderr: %s", function, level.spelling(), result.getStderr())
+			.isZero();
+		return result.getStdout().trim();
+	}
+
+	private static ExecResult compileAndInvokeAtRaw(OptimizeLevel level, String lispCode, String function,
+			String... args) throws Exception {
+		List<LispVal> program = LispReader.readAllFromString(lispCode);
+		byte[] wasmBytes = new WasmLispCompiler(false, false, false, level).compile(program);
+		wasmtime.copyFileToContainer(Transferable.of(wasmBytes), path("test.wasm"));
+		List<String> command = new java.util.ArrayList<>(
+				List.of("wasmtime", "run", "--invoke", function, "-W", "gc", "-W", "exceptions=y", path("test.wasm")));
+		command.addAll(List.of(args));
+		return wasmtime.execInContainer(command.toArray(new String[0]));
 	}
 
 	private static String runOptimizeLevel(List<LispVal> program, OptimizeLevel optimize) throws Exception {
@@ -14837,12 +14917,14 @@ class WasmLispCompilerIntegrationTest {
 		assertThat(guarded).isEqualTo(bare);
 		// A genuinely computed designator has to be resolved at run time, so the same
 		// program keeps the runtime. What that is worth is read off the SHAKEN modules,
-		// where nothing else is left to hide it: 21,800 bytes against 529.
+		// where nothing else is left to hide it: 21,800 bytes against 529 before the
+		// type-test fold, 3,586 against 601 after it retired the eval runtime's arms
+		// for the values this program never builds (.kb/wasm-ref-type-fold.md).
 		byte[] computed = new WasmLispCompiler(false, false, false, OptimizeLevel.SIZE)
 			.compile(LispReader.readAllFromString("(defconstant +bpk+ 5) (print (boundp (intern \"+BPK+\")))"));
 		byte[] literal = new WasmLispCompiler(false, false, false, OptimizeLevel.SIZE)
 			.compile(LispReader.readAllFromString("(defconstant +bpk+ 5) (print t)"));
-		assertThat(computed.length).isGreaterThan(literal.length * 10);
+		assertThat(computed.length).isGreaterThan(literal.length * 4);
 	}
 
 	@Test

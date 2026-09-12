@@ -43,6 +43,16 @@ only INTEGER arithmetic fuses. **The two wasm trades are ONE level, not two swit
 / unboxed locals on" is DOMINATED on both axes. `-Drontolisp.debug.norawlocals=true` still switches
 the locals alone.
 
+## Before the wasm shaker: the type-test fold and the forwarder redirect
+`am.ik.wasm.WasmRefTypeFolder.fold` then `WasmCallForwarding.redirect` run in
+`WasmLispCompiler.shakeCore` ahead of `WasmTreeShaker.shake` at every level but `off`: a
+whole-module type-flow analysis folds every `ref.test`/`ref.cast`/`ref.is_null` the module's own
+constructors decide, prunes the arms that die, and redirects calls through the forwarding stubs
+that leaves -- the generic arithmetic's float and rational arms in an integer-only program, the
+printer's arms for types the program never builds (`.kb/wasm-ref-type-fold.md`: the licence, the
+lattice, the numbers). Both rewrite bodies in place and renumber nothing, so the claims below
+still speak in pre-shake indices.
+
 ## Before the shakers: a `typecase` clause no call can select
 Both shakers are name reachability (wasm over `call` immediates, JVM over method references), so
 neither can see a clause dead because of what the CALLER passed. `compiler/DeadTypeBranchPruner`
@@ -164,7 +174,13 @@ had**.
 - **The runtime intern table is handled structurally.** Each candidate's 8-byte `(offset, length)`
   row in `buildInternBlob` is offered as a droppable range OF ITS OWN, probed on the STRING's
   interval -- the five-argument `DroppableDataRange`, whose extra interval is a caller claim: the
-  only reader of the cut bytes must tolerate them reading as zeros. Row and bytes fall together;
+  only reader of the cut bytes must tolerate them reading as zeros. **The function-name table
+  (`_fun_name`) is the inverse shape and needs the six-argument form**: the NAME's bytes are probed
+  on the table's base word, but a deduplicated name is also the symbol a live body builds
+  (`VECTOR`, `-`), so `ownCitationKeeps` keeps it while any body cites it -- and
+  `StringTable.addFunName` offers the claim only for a name no OTHER blob pinned. Cutting on the
+  probe alone printed `type-of`'s `VECTOR` as NULs the day the type-test fold retired the
+  printer's closure arm (`WasmTreeShakerTest.aRangeProbedElsewhereStaysWhileItsOwnBytesAreStillCited`). Row and bytes fall together;
   `_intern` skips any row whose offset word is 0 (without the skip a zero-length probe matches the
   first hole, and `'||` holds a live zero-length entry to diverge onto); rows are sorted by string
   offset before the blob is built; a candidate first interned AFTER the snapshot has no row --

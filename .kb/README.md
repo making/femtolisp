@@ -165,6 +165,7 @@ deliberate boundaries the audit must not undo: user-facing operator catalogues l
 - [wasm-bignum.md](wasm-bignum.md) -- exact integers in three tiers (i31, `TYPE_BIGNUM`, `TYPE_BIGINT`)
 - [wasm-complex.md](wasm-complex.md) -- the tagged `TYPE_COMPLEX` struct (the `TYPE_FARRAY` twin that forced the tag), the `_c*` runtime group, and the `containsComplex` steering
 - [wasm-int-fusion.md](wasm-int-fusion.md) -- integer expression-tree fusion keeping raw i64
+- [wasm-ref-type-fold.md](wasm-ref-type-fold.md) -- a closed module's `ref.test`/`ref.cast` are decided by its own constructors: the byte-level type-flow fold before the shaker, the call-forwarding redirect, the exact integer export lane, the raw condition compare
 - [wasm-counted-loops.md](wasm-counted-loops.md) -- a loop induction variable as a bare `i64` counter
 - [wasm-unboxed-locals.md](wasm-unboxed-locals.md) -- dual-representation `let` locals
 - [wasm-callable-arity.md](wasm-callable-arity.md) -- the 10-parameter callable limit as an index origin

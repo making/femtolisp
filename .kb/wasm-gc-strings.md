@@ -106,6 +106,10 @@ boundary, so the gate closes only for a program whose every operator is on
 cons cell, the two `wasm-` directives -- plus its own defuns. An operator that list has never
 heard of OPENS it. `-Drontolisp.debug.charvecgate=true` names the operator holding it open.
 
+The allowlist stays alongside the type-test fold (`.kb/wasm-ref-type-fold.md`): the normalization
+is a CALL whose callee tests a marker, not a `ref.test` on a type of its own, so the fold cannot
+retire it -- what the fold does retire is the printer arms for the types a program never builds.
+
 Three things make the allowlist safe rather than lucky:
 - **The only strings such a program holds are LITERALS, and a literal is never a character
   vector** (`.kb/string-write-runtime.md`). That is the proof, not the list's length.

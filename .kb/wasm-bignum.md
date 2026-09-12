@@ -77,6 +77,9 @@ shift past via `FX_TYPE_LAST`.
 
 **Every module carries the limb block** -- any arithmetic can overflow into it at runtime, so it
 cannot be gated statically; ~+3.8% on hello-world, `--optimize` tree-shakes the unreachable ones.
+The type-test fold (`.kb/wasm-ref-type-fold.md`) then retires the TIERS a program's values never
+reach -- the float and ratio arms of `_rat_*`, `_int_val`'s type-error landing -- but never the
+limb promotion behind an operation that can overflow: `fib` keeps ~540 B of it, correctly.
 
 ## Tests
 `Md5E2eTest` (all four), `WasmLispCompilerIntegrationTest.exactIntegersBeyondI31PromoteToBoxedI64`,

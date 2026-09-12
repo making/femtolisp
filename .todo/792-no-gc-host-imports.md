@@ -68,10 +68,11 @@ the subset would need.
 
 Two backends now infer types over the call graph: `NoGcWasmCompiler.inferTypes` (exact,
 static, drives the representation) and the wasm-GC fusion classifier (per-expression, with
-a total fallback). `790`'s mechanism 2 wants the first one's lattice on the second one's
-backend. If `790` lands as written, the two should be ONE fixpoint with a richer lattice,
-parameterized by what each backend can represent -- and that decision is easier to make
-before this item adds a third caller of the no-gc one, not after.
+a total fallback). `790` did NOT land as written: its call-site typing is the byte-level
+`am.ik.wasm.WasmRefTypeFolder` over the finished wasm-GC module (`.kb/wasm-ref-type-fold.md`),
+not an AST lattice, so there is no second AST-level inference to unify with `inferTypes` --
+this item can add its caller of the no-gc one freely. (The byte-level pass cannot serve
+`--no-gc`: that backend has no reference types to fold.)
 
 ## Touch points
 

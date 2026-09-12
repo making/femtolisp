@@ -1502,15 +1502,18 @@ class WasmLispCompilerTest {
 		// binds the predicate to a macro temp, so the funcall its expansion builds
 		// dispatches a variable however statically the user spelled it -- the compiler
 		// still proves the temp only ever holds functions, so no registry row is pulled
-		// in. Each module spells PRED exactly ONCE, by different machinery: the readable
-		// one by the fun-name row of the materialized #'pred value (a printer would
-		// answer with that name; .kb/core-representation.md), the computed one by the
-		// registry row that resolves the quoted designator -- and only that one, since
-		// the value it resolves to exists only at run time and so earns no fun-name row.
+		// in. The computed module spells PRED exactly ONCE, by the registry row that
+		// resolves the quoted designator -- and only that one, since the value it
+		// resolves to exists only at run time and so earns no fun-name row. The readable
+		// one spells it NOWHERE: the materialized #'pred value earns a fun-name row (a
+		// printer would answer with that name; .kb/core-representation.md), but the only
+		// reader of that table is the printer's closure arm, and the type-test fold
+		// proves no closure ever reaches the printer here -- so the arm, the table and
+		// the name it alone read all go (.kb/wasm-ref-type-fold.md).
 		String defs = "(defun pred (x) (evenp x)) ";
 		byte[] readable = compile(defs + "(let ((f #'pred)) (print (mapcar f '(1 2))) (print (every f '(1 2))))");
 		byte[] computed = compile(defs + "(let ((f (car (list 'pred)))) (print (mapcar f '(1 2))))");
-		assertThat(occurrences(readable, "PRED")).isEqualTo(1);
+		assertThat(occurrences(readable, "PRED")).isZero();
 		assertThat(occurrences(computed, "PRED")).isEqualTo(1);
 	}
 

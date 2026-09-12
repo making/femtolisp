@@ -121,13 +121,24 @@ public final class WasmTreeShaker {
 	 * re-emits the segment as one active segment per surviving run, each at the absolute
 	 * address it already had, so no surviving reference moves.
 	 *
+	 * <p>
+	 * {@code ownCitationKeeps} is for bytes with TWO kinds of reader: the probed
+	 * structure (a table whose words point at them, invisible to the scan) and, possibly,
+	 * bodies of their own. Such a range is cut only when the probed interval AND its own
+	 * bytes are both uncited -- the table's reader died and nothing else addresses the
+	 * bytes. A deduplicated string is the case: a function name in a name table that is
+	 * also the symbol a live body builds.
+	 *
 	 * @param segmentIndex index of the segment within the data section
 	 * @param start offset of the range within that segment's bytes
 	 * @param end end offset (exclusive) of the range within that segment's bytes
 	 * @param probeStart offset within the segment's bytes whose citations decide the fate
 	 * @param probeEnd end offset (exclusive) of the decided interval
+	 * @param ownCitationKeeps whether a citation of the range's own bytes keeps it as
+	 * well
 	 */
-	public record DroppableDataRange(int segmentIndex, int start, int end, int probeStart, int probeEnd) {
+	public record DroppableDataRange(int segmentIndex, int start, int end, int probeStart, int probeEnd,
+			boolean ownCitationKeeps) {
 
 		/**
 		 * The self-probed form: the range is cut exactly when its own bytes are uncited.
@@ -136,7 +147,22 @@ public final class WasmTreeShaker {
 		 * @param end end offset (exclusive) of the range within that segment's bytes
 		 */
 		public DroppableDataRange(int segmentIndex, int start, int end) {
-			this(segmentIndex, start, end, start, end);
+			this(segmentIndex, start, end, start, end, true);
+		}
+
+		/**
+		 * The probed-elsewhere form: the range is cut exactly when the probed interval is
+		 * uncited, whatever cites the range itself (a record whose only reader is the
+		 * structure the probe stands for).
+		 * @param segmentIndex index of the segment within the data section
+		 * @param start offset of the range within that segment's bytes
+		 * @param end end offset (exclusive) of the range within that segment's bytes
+		 * @param probeStart offset within the segment's bytes whose citations decide the
+		 * fate
+		 * @param probeEnd end offset (exclusive) of the decided interval
+		 */
+		public DroppableDataRange(int segmentIndex, int start, int end, int probeStart, int probeEnd) {
+			this(segmentIndex, start, end, probeStart, probeEnd, false);
 		}
 	}
 
@@ -689,8 +715,11 @@ public final class WasmTreeShaker {
 			if (r.end() <= r.start() || r.probeEnd() <= r.probeStart() || deadSegments.contains(r.segmentIndex())) {
 				continue;
 			}
-			int address = segments.get(r.segmentIndex()).offset() + r.probeStart();
-			if (!containsInRange(sorted, address, address + (r.probeEnd() - r.probeStart()) - 1)) {
+			int base = segments.get(r.segmentIndex()).offset();
+			int address = base + r.probeStart();
+			boolean probeCited = containsInRange(sorted, address, address + (r.probeEnd() - r.probeStart()) - 1);
+			boolean ownCited = r.ownCitationKeeps() && containsInRange(sorted, base + r.start(), base + r.end() - 1);
+			if (!probeCited && !ownCited) {
 				dead.add(r);
 			}
 		}

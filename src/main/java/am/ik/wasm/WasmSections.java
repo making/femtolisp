@@ -11,9 +11,10 @@ import org.jspecify.annotations.Nullable;
  * ({@link #parseSections}/{@link #assemble}), per-section parsers, the instruction walk
  * that records every function and type index immediate ({@link #scanBody}), the
  * function-reference rewriters shared by the whole-module passes, and the LEB128
- * primitives under all of it. {@link WasmTreeShaker} (reachability) and
- * {@code WasmBodyFolder} (duplicate-body folding) are both built on this class and on
- * nothing else of each other's.
+ * primitives under all of it. {@link WasmTreeShaker} (reachability),
+ * {@code WasmBodyFolder} (duplicate-body folding), {@code WasmCallForwarding} and,
+ * through {@code WasmCodeModel}, {@code WasmRefTypeFolder} are all built on this class
+ * and on nothing else of each other's.
  * <p>
  * The instruction encoding understood here is the finite subset the rontolisp backends
  * emit, enumerated in {@link #scanInstr}; an unrecognized opcode makes a scan throw

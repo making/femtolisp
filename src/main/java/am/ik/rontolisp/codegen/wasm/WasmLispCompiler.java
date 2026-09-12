@@ -4881,25 +4881,24 @@ public final class WasmLispCompiler implements LispCompiler {
 		// its registered name. Rows come out in
 		// ascending funcId order (the defun index IS the funcId), which is what the
 		// search relies on. The blob is shakeable on its BASE -- its one reader is
-		// _fun_name's own i32.const -- and each interned name joins the droppable ranges
-		// PROBED ON THAT SAME WORD (see shakeableRanges): the search reaches the names
-		// only through words inside the blob, a citation the constant scan cannot
-		// follow, so blob and names live and fall together with _fun_name
-		// (.kb/optimize-dead-code-elimination.md). A hello-shaped program whose internal
-		// #'identity/#'eql values are dead-code-eliminated keeps NEITHER. The placement
+		// _fun_name's own i32.const -- and each name the table alone reads invisibly
+		// joins the droppable ranges PROBED ON THAT SAME WORD (see addFunName and
+		// shakeableRanges): the search reaches the names only through words inside the
+		// blob, a citation the constant scan cannot follow, so blob and names live and
+		// fall together with _fun_name (.kb/optimize-dead-code-elimination.md). A
+		// hello-shaped program whose internal #'identity/#'eql values are
+		// dead-code-eliminated keeps NEITHER. The placement
 		// is unaligned (appendShakeableBlobUnalignedProbedOnBase): an alignment pad here
 		// would charge a quoted u16/u8 vector's next element for the pad it shifts,
 		// breaking the per-element cost pin
 		// (WasmLispCompilerTest#aLiteralLookupTableCostsItsOwnBytesAndNotThreeTimesThem).
 		ByteArrayOutputStream funNameRows = new ByteArrayOutputStream();
-		List<StringTable.StringEntry> funNameEntries = new ArrayList<>();
 		Set<Integer> funNameIds = runtimeFunctionBox ? dispatchableFuncIds : valueFuncIds;
 		for (int i = 0; i < defuns.size(); i++) {
 			if (!funNameIds.contains(i)) {
 				continue;
 			}
-			StringTable.StringEntry funName = stringTable.addString(defuns.get(i).name);
-			funNameEntries.add(funName);
+			StringTable.StringEntry funName = stringTable.addFunName(defuns.get(i).name);
 			writeLittleEndian32(funNameRows, i); // funcId == defun index
 			writeLittleEndian32(funNameRows, funName.offset());
 			writeLittleEndian32(funNameRows, funName.length());
@@ -7239,8 +7238,7 @@ public final class WasmLispCompiler implements LispCompiler {
 		// exactly that reason).
 		int stringDataSegIndex = upperFoldSegIndex - 1;
 		List<am.ik.wasm.WasmTreeShaker.DroppableDataRange> stringRanges = stringData.length == 0 ? List.of()
-				: stringTable.shakeableRanges(stringDataSegIndex, dataBase, internBase, internRows, funNameBase,
-						funNameEntries);
+				: stringTable.shakeableRanges(stringDataSegIndex, dataBase, internBase, internRows, funNameBase);
 		@Nullable Map<Integer, String> funcSizeNames = debugFuncSizes()
 				? funcSizeNames(functions, lambdaDecls, dispatchPageFuncBase, dispatchPageBodies.size()) : null;
 		if (this.component) {
@@ -7390,6 +7388,47 @@ public final class WasmLispCompiler implements LispCompiler {
 			List<am.ik.wasm.WasmTreeShaker.OwnedDataSegment> caseFoldSegments,
 			List<am.ik.wasm.WasmTreeShaker.DroppableDataRange> stringRanges, @Nullable Map<Integer, String> funcNames,
 			int importShift) {
+		// The type-test fold first, then the call redirection through the forwarders it
+		// leaves: both rewrite bodies in place and renumber nothing, so the segment and
+		// range claims above still speak in the module's indices, and the reachability
+		// shake then drops what the folded branches and the bypassed hops stopped
+		// calling (.kb/wasm-ref-type-fold.md).
+		String coreDump = System.getProperty("rontolisp.wasm.debug-core");
+		if (coreDump != null) {
+			// -Drontolisp.wasm.debug-core=<path>: the core module as the shake path
+			// receives
+			// it (host imports injected, nothing folded or dropped yet), for driving the
+			// passes below by hand.
+			try {
+				java.nio.file.Files.write(java.nio.file.Path.of(coreDump), coreModule);
+				StringBuilder claims = new StringBuilder();
+				for (am.ik.wasm.WasmTreeShaker.OwnedDataSegment owned : caseFoldSegments) {
+					claims.append("segment ")
+						.append(owned.segmentIndex())
+						.append(' ')
+						.append(Arrays.toString(owned.ownerFuncIndices()))
+						.append('\n');
+				}
+				for (am.ik.wasm.WasmTreeShaker.DroppableDataRange range : stringRanges) {
+					claims.append("range ")
+						.append(range.segmentIndex())
+						.append(' ')
+						.append(range.start())
+						.append(' ')
+						.append(range.end())
+						.append(' ')
+						.append(range.probeStart())
+						.append(' ')
+						.append(range.probeEnd())
+						.append('\n');
+				}
+				java.nio.file.Files.writeString(java.nio.file.Path.of(coreDump + ".claims.txt"), claims.toString());
+			}
+			catch (java.io.IOException ex) {
+				throw new java.io.UncheckedIOException(ex);
+			}
+		}
+		coreModule = am.ik.wasm.WasmCallForwarding.redirect(am.ik.wasm.WasmRefTypeFolder.fold(coreModule));
 		if (funcNames == null) {
 			return am.ik.wasm.WasmTreeShaker.shake(coreModule, caseFoldSegments, stringRanges);
 		}
@@ -10087,6 +10126,15 @@ public final class WasmLispCompiler implements LispCompiler {
 		private final Set<String> shakeable = new HashSet<>();
 
 		/**
+		 * The function-name table's entries whose only reader outside a body is that
+		 * table ({@link #addFunName}): offered to the shaker probed on the table's base
+		 * word, kept while any body still cites their bytes. A later closed-window intern
+		 * -- another blob reading the same name -- retracts the entry here as it does
+		 * from {@link #shakeable}, pinning the bytes for good.
+		 */
+		private final Set<StringEntry> funNameClaimable = new HashSet<>();
+
+		/**
 		 * {@code {absolute offset, length}} of every {@link #appendShakeableBlob} blob,
 		 * in append (i.e. address) order so the emitted range list is deterministic.
 		 */
@@ -10316,11 +10364,41 @@ public final class WasmLispCompiler implements LispCompiler {
 			return entry;
 		}
 
+		/**
+		 * Interns a function name the funcId-to-name table cites. The name's bytes stay a
+		 * shake candidate when their only readers so far are bodies (or none): the table
+		 * is then the one reader the constant scan cannot see, and the range is offered
+		 * probed on the table's base word, kept as well by any body citation
+		 * ({@code DroppableDataRange.ownCitationKeeps}). A name some other blob already
+		 * pinned stays pinned -- the table adds nothing the shaker could decide on.
+		 * @param s the function name
+		 * @return its entry
+		 */
+		StringEntry addFunName(String s) {
+			boolean bodiesOnly = !this.cache.containsKey(s) || this.shakeable.contains(s);
+			boolean saved = this.attributing;
+			this.attributing = false;
+			StringEntry entry;
+			try {
+				entry = addString(s);
+			}
+			finally {
+				this.attributing = saved;
+			}
+			if (bodiesOnly) {
+				this.funNameClaimable.add(entry);
+			}
+			return entry;
+		}
+
 		StringEntry addString(String s) {
+			StringEntry existing = this.cache.get(s);
 			if (!this.attributing) {
 				this.shakeable.remove(s);
+				if (existing != null) {
+					this.funNameClaimable.remove(existing);
+				}
 			}
-			StringEntry existing = this.cache.get(s);
 			if (existing != null) {
 				return existing;
 			}
@@ -10352,17 +10430,17 @@ public final class WasmLispCompiler implements LispCompiler {
 		 * the program does not intern
 		 * @param internRows the intern table's rows in blob order (empty when absent)
 		 * @param funNameBase the funcId -> name blob's absolute base address, or -1 when
-		 * the program has no nameable function value
-		 * @param funNameEntries the names the fun-name blob cites, in row order (empty
-		 * when absent) -- each offered as a range PROBED ON THE BLOB'S FIRST WORD, since
-		 * _fun_name is their only reader and reaches them through words inside the blob,
-		 * a citation the constant scan cannot follow; name, blob and _fun_name therefore
-		 * live and fall together
+		 * the program has no nameable function value -- each name the blob alone reads
+		 * invisibly ({@link #addFunName}) is offered as a range PROBED ON THE BLOB'S
+		 * FIRST WORD, since _fun_name reaches it through words inside the blob, a
+		 * citation the constant scan cannot follow, and kept as well while a body still
+		 * cites the name itself (a deduplicated symbol): name, blob and _fun_name fall
+		 * together, never a name something else still reads
 		 * @return the candidate ranges, each string range followed by its row range (the
 		 * shaker orders cuts itself; this order is fixed so the module is deterministic)
 		 */
 		List<am.ik.wasm.WasmTreeShaker.DroppableDataRange> shakeableRanges(int segmentIndex, int dataBase,
-				int internBase, List<StringEntry> internRows, int funNameBase, List<StringEntry> funNameEntries) {
+				int internBase, List<StringEntry> internRows, int funNameBase) {
 			List<StringEntry> entries = new ArrayList<>(this.shakeable.size());
 			for (String s : this.shakeable) {
 				entries.add(this.cache.get(s));
@@ -10393,10 +10471,12 @@ public final class WasmLispCompiler implements LispCompiler {
 			}
 			if (funNameBase >= 0) {
 				int blobStart = funNameBase - dataBase;
-				for (StringEntry e : funNameEntries) {
+				List<StringEntry> names = new ArrayList<>(this.funNameClaimable);
+				names.sort(java.util.Comparator.comparingInt(StringEntry::offset));
+				for (StringEntry e : names) {
 					int start = e.offset() - dataBase;
 					ranges.add(new am.ik.wasm.WasmTreeShaker.DroppableDataRange(segmentIndex, start, start + e.length(),
-							blobStart, blobStart + 4));
+							blobStart, blobStart + 4, true));
 				}
 			}
 			return ranges;
