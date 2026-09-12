@@ -1,6 +1,6 @@
 # A wrong-arity apply is not signaled on the compiled backends
 
-Difficulty: Medium (blocked on `.todo/192`)
+Difficulty: Medium
 
 The 2026-09-12 wrong-argument-count work made a count through a function VALUE a
 catchable `program-error` on both compiled backends -- but only where it is a DISPATCH
@@ -26,18 +26,20 @@ physical direct call that walks the list itself (`JvmApplyCompiler`).
 The check was written and measured, then removed. What it finds first is not a
 user bug but **`.todo/192`**: cl-ppcre's scanner self-shadows
 `(*reg-starts* *reg-starts*)` and a FAILING scan exits across the `advance-fn`
-lambda, which the compile paths' special-binding restore does not cover. The
-leaked one-element array then makes a later register-free scan report a
-register that is not there, and `regex-replace-all ... :simple-calls t` passes
+lambda, which the compile paths' special-binding restore did not cover. The
+leaked one-element array then made a later register-free scan report a
+register that is not there, and `regex-replace-all ... :simple-calls t` passed
 that phantom register as a SECOND argument to a one-parameter replacement
-function. With the check in place `ClPpcreE2eTest.compilesAndRunsOnJvm` goes
-red -- correctly, on a real corruption that today is silent.
+function. With the check in place `ClPpcreE2eTest.compilesAndRunsOnJvm` went
+red -- correctly, on a real corruption that was silent.
 
-So: **`.todo/192` first.** Reordering the cl-ppcre exercise so its one
-register-exhausting case is last would hide the corruption again and is not the
+**Unblocked 2026-09-12**: `.todo/192` landed -- a special `let` is now an
+unwind-protect region on both compile paths, restoring on every exit channel
+(`.kb/dynamic-special-variables.md`), and `ClPpcreE2eTest` pins the exact
+failing-register-scan sequence. Reordering the cl-ppcre exercise was never the
 answer.
 
-## How to do it, once 192 lands
+## How to do it
 
 1. Per spread CASE, a count guard. The shape (required count doubled, plus one
    for a `&rest` tail) is a compile-time constant per case; the count is the
@@ -63,4 +65,4 @@ answer.
    `JvmLispCompilerTest.compileAndRunWrongArityThroughAFunctionValueSignalsProgramError`.
 
 Related: `.kb/error-handling.md` ("A wrong argument COUNT through a function
-value"), `.todo/192`.
+value"), `.kb/dynamic-special-variables.md` (the every-exit restore).

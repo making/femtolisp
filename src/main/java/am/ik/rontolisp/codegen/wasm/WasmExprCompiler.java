@@ -1858,6 +1858,7 @@ final class WasmExprCompiler {
 					.compileExpr(LispMacroExpander.expandSignalMacro(cons, ctx.closRegistry, ctx.restartMode), ctx);
 				case LispNames.SIGNAL_COND_INTERNAL -> WasmSignalCondCompiler.compile(cons, ctx);
 				case LispNames.HC_DEPTH_DEC_INTERNAL -> WasmHandlerCaseCompiler.compileDepthDec(ctx);
+				case LispNames.DYN_RESTORE_INTERNAL -> WasmLetCompiler.compileDynRestore(cons, ctx);
 				case LispNames.AND -> WasmExprCompiler.compileExpr(LispMacroExpander.expandAnd(cons), ctx);
 				case LispNames.OR -> WasmExprCompiler.compileExpr(LispMacroExpander.expandOr(cons), ctx);
 				case LispNames.WHEN -> WasmExprCompiler.compileExpr(LispMacroExpander.expandWhen(cons), ctx);

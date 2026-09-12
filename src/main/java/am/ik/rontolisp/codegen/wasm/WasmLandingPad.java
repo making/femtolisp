@@ -69,6 +69,44 @@ final class WasmLandingPad {
 		return count;
 	}
 
+	/** Every local declared so far -- what {@link #keepLocalsAlive} pushes. */
+	static int[] allSlots(WasmLispCompiler.Ctx ctx) {
+		int[] slots = new int[ctx.nextLocal];
+		for (int slot = 0; slot < slots.length; slot++) {
+			slots[slot] = slot;
+		}
+		return slots;
+	}
+
+	/**
+	 * {@link #keepLocalsAlive} over an explicit slot list: the locals a landing pad
+	 * READS. A region whose pad reads nothing but its own save slots (a special
+	 * {@code let}'s binding restores, which then rethrow -- no user code runs in or after
+	 * the pad) keeps only those, and the invariant holds all the same: no local the pad
+	 * reads reaches it through the catch block.
+	 * @param ctx the compilation context
+	 * @param slots the locals to keep, in push order
+	 */
+	static void keepSlotsAlive(WasmLispCompiler.Ctx ctx, int[] slots) {
+		for (int slot : slots) {
+			ctx.writer.write(Instruction.GET_LOCAL);
+			ctx.writer.writeUnsignedLeb128(slot);
+		}
+	}
+
+	/**
+	 * Pops the values {@link #keepSlotsAlive} pushed back into their locals, in reverse
+	 * order.
+	 * @param ctx the compilation context
+	 * @param slots the locals pushed
+	 */
+	static void refreshSlots(WasmLispCompiler.Ctx ctx, int[] slots) {
+		for (int i = slots.length - 1; i >= 0; i--) {
+			ctx.writer.write(Instruction.SET_LOCAL);
+			ctx.writer.writeUnsignedLeb128(slots[i]);
+		}
+	}
+
 	/**
 	 * Pops the values {@link #keepLocalsAlive} pushed back into their locals, in reverse
 	 * order. The caller has already moved the landing block's own result (the payload)

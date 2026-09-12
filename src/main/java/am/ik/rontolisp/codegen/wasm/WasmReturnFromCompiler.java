@@ -71,22 +71,14 @@ final class WasmReturnFromCompiler {
 			ctx.writer.writeHeapType(Type.EQ.code());
 		}
 		// Inline the cleanups of every unwind scope entered inside the target block,
-		// innermost first -- the exit leaves their protected regions. The value stays
-		// beneath on the operand stack (each cleanup's value is dropped).
+		// innermost first -- the exit leaves their protected regions (an unwind-protect's
+		// cleanups, a special let's binding restores). The value stays beneath on the
+		// operand stack (each cleanup's value is dropped).
 		for (WasmLispCompiler.UnwindScope scope : ctx.unwindScopes) {
 			if (scope.blockDepth() < targetDepth) {
 				break;
 			}
 			WasmUnwindProtectCompiler.compileCleanups(scope.cleanupForms(), ctx);
-		}
-		// Restore every special-variable dynamic binding this exit escapes, innermost
-		// first -- so a named exit from a scan closure does not leak the bound value
-		// into the global.
-		for (int[] bind : ctx.specialBindScopes) {
-			if (bind[2] < targetDepth) {
-				break;
-			}
-			WasmDynVars.emitRestore(ctx, bind);
 		}
 		ctx.writer.write(Instruction.BR, ctx.wasmCtrlDepth - target.depth());
 	}

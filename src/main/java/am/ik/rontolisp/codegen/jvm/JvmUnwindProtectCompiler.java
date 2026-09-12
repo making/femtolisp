@@ -30,6 +30,13 @@ import am.ik.rontolisp.LispVal;
  * exception-table entries exclude (a throw from an inlined cleanup must not re-enter the
  * scope's own handler and run the cleanup twice; it still lands in the handlers of outer
  * scopes, which is the CL unwinding order).
+ *
+ * <p>
+ * The region is also how a special {@code let} restores its dynamic bindings on every
+ * exit ({@link #compileRegion}, called by {@link JvmLetCompiler} with
+ * {@code %dyn-restore} cleanups): the restore rides the same handler, the same
+ * {@code return}/{@code go} inlining and the same holes, so a binding and a cleanup
+ * nested either way around unwind in CL's innermost-first order.
  */
 final class JvmUnwindProtectCompiler {
 
@@ -42,41 +49,134 @@ final class JvmUnwindProtectCompiler {
 			throw new IllegalArgumentException(LispNames.UNWIND_PROTECT + " expects a protected form");
 		}
 		LispVal protectedForm = parts.get(1);
-		List<LispVal> cleanups = parts.subList(2, parts.size());
-		int savedNextLocal = ctx.nextLocal;
-		int resultSlot = ctx.allocTemp();
-		int excSlot = ctx.allocTemp();
-		JvmLispCompiler.UnwindScope scope = new JvmLispCompiler.UnwindScope(cleanups, ctx.blockTargets.size());
-		ctx.unwindScopes.push(scope);
-		int start = ctx.code.size();
-		JvmExprCompiler.compileExpr(protectedForm, ctx, className);
-		int end = ctx.code.size();
-		ctx.unwindScopes.pop();
-		ctx.emit(Opcode.ASTORE);
-		ctx.emit(resultSlot);
-		// Normal exit: run the cleanups, jump over the handler.
-		compileCleanups(cleanups, ctx, className);
-		int gotoPos = ctx.code.size();
-		ctx.emit(Opcode.GOTO);
-		ctx.emitU2(0);
-		// Error unwind: store the throwable (the handler's operand stack holds only it),
-		// run the cleanups, rethrow. A cleanup that itself throws replaces the pending
-		// unwind (CL semantics: the newer exit wins). This path never merges back into
-		// the normal one -- it ends in a throw -- so operands live across the protected
-		// region survive on the normal path and need no spill.
-		int handler = ctx.code.size();
-		ctx.stack.enterHandler();
-		ctx.emit(Opcode.ASTORE);
-		ctx.emit(excSlot);
-		compileCleanups(cleanups, ctx, className);
-		ctx.emit(Opcode.ALOAD);
-		ctx.emit(excSlot);
-		ctx.emit(Opcode.ATHROW);
-		JvmEmitHelper.patchBranch(ctx, gotoPos, ctx.code.size());
-		ctx.emit(Opcode.ALOAD);
-		ctx.emit(resultSlot);
-		addExceptionEntries(ctx, scope, start, end, handler);
-		ctx.nextLocal = savedNextLocal;
+		compileRegion(() -> JvmExprCompiler.compileExpr(protectedForm, ctx, className), parts.subList(2, parts.size()),
+				ctx, className, true);
+	}
+
+	/**
+	 * Compiles a protected region: {@code body} emits the protected code, and the cleanup
+	 * forms run on every exit from it -- the layout described on the class. The same
+	 * region serves a special {@code let} ({@link JvmLetCompiler}), whose cleanups are
+	 * the {@code %dyn-restore} forms restoring its dynamic bindings, so one mechanism
+	 * covers every exit channel for both.
+	 * @param body emits the protected code, leaving one value on the operand stack when
+	 * {@code hasValue}, nothing otherwise
+	 * @param cleanups the cleanup forms, compiled for effect on each exit path
+	 * @param ctx the compilation context
+	 * @param className the class being generated
+	 * @param hasValue whether the protected code produces the region's value
+	 */
+	static void compileRegion(Runnable body, List<LispVal> cleanups, JvmLispCompiler.Ctx ctx, String className,
+			boolean hasValue) {
+		Region region = Region.open(cleanups, ctx, className, hasValue);
+		body.run();
+		region.close();
+	}
+
+	/**
+	 * A protected region under construction: {@link #open} allocates the slots, pushes
+	 * the scope and marks the start; the caller emits the protected code (possibly as
+	 * items on the tail spine, {@link JvmBodyOutliner}); {@link #close} emits the normal
+	 * exit, the handler and the exception-table entries. The two halves exist so a
+	 * special {@code let}'s body can keep joining the spine: the closing half runs in the
+	 * method that opened the region, after the last body item.
+	 */
+	static final class Region {
+
+		private final List<LispVal> cleanups;
+
+		private final JvmLispCompiler.Ctx ctx;
+
+		private final String className;
+
+		private final boolean hasValue;
+
+		private final int savedNextLocal;
+
+		private final int resultSlot;
+
+		private final int excSlot;
+
+		private final JvmLispCompiler.UnwindScope scope;
+
+		private final int start;
+
+		private Region(List<LispVal> cleanups, JvmLispCompiler.Ctx ctx, String className, boolean hasValue) {
+			this.cleanups = cleanups;
+			this.ctx = ctx;
+			this.className = className;
+			this.hasValue = hasValue;
+			this.savedNextLocal = ctx.nextLocal;
+			// A special let's restores are stack-neutral (one getstatic / aload /
+			// ThreadLocal.set triple per binding), so the body's value stays on the
+			// operand stack under them and the result slot is spent only on user
+			// cleanups, whose forms may push anything.
+			this.resultSlot = hasValue && !dynRestoresOnly(cleanups) ? ctx.allocTemp() : -1;
+			this.excSlot = ctx.allocTemp();
+			this.scope = new JvmLispCompiler.UnwindScope(cleanups, ctx.blockTargets.size());
+			ctx.unwindScopes.push(this.scope);
+			this.start = ctx.code.size();
+		}
+
+		static Region open(List<LispVal> cleanups, JvmLispCompiler.Ctx ctx, String className, boolean hasValue) {
+			return new Region(cleanups, ctx, className, hasValue);
+		}
+
+		void close() {
+			JvmLispCompiler.Ctx ctx = this.ctx;
+			int end = ctx.code.size();
+			ctx.unwindScopes.pop();
+			if (this.resultSlot >= 0) {
+				ctx.emit(Opcode.ASTORE);
+				ctx.emit(this.resultSlot);
+			}
+			// Normal exit: run the cleanups, jump over the handler.
+			compileCleanups(this.cleanups, ctx, this.className);
+			int gotoPos = ctx.code.size();
+			ctx.emit(Opcode.GOTO);
+			ctx.emitU2(0);
+			// Error unwind: store the throwable (the handler's operand stack holds only
+			// it), run the cleanups, rethrow. A cleanup that itself throws replaces the
+			// pending unwind (CL semantics: the newer exit wins). This path never merges
+			// back into the normal one -- it ends in a throw -- so operands live across
+			// the protected region survive on the normal path and need no spill.
+			int handler = ctx.code.size();
+			ctx.stack.enterHandler();
+			ctx.emit(Opcode.ASTORE);
+			ctx.emit(this.excSlot);
+			compileCleanups(this.cleanups, ctx, this.className);
+			ctx.emit(Opcode.ALOAD);
+			ctx.emit(this.excSlot);
+			ctx.emit(Opcode.ATHROW);
+			JvmEmitHelper.patchBranch(ctx, gotoPos, ctx.code.size());
+			if (this.resultSlot >= 0) {
+				ctx.emit(Opcode.ALOAD);
+				ctx.emit(this.resultSlot);
+			}
+			addExceptionEntries(ctx, this.scope, this.start, end, handler);
+			ctx.nextLocal = this.savedNextLocal;
+		}
+
+	}
+
+	/**
+	 * Whether every cleanup is a special {@code let}'s {@code %dyn-restore} -- the one
+	 * cleanup kind emitted stack-neutrally, so the region's value can stay on the operand
+	 * stack while they run.
+	 * @param cleanups the cleanup forms
+	 * @return whether all are binding restores
+	 */
+	static boolean dynRestoresOnly(List<LispVal> cleanups) {
+		if (cleanups.isEmpty()) {
+			return false;
+		}
+		for (LispVal form : cleanups) {
+			if (!(form instanceof LispCons cons) || !(cons.car() instanceof LispSymbol head)
+					|| !LispNames.DYN_RESTORE_INTERNAL.equals(head.name())) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/**
@@ -125,17 +225,20 @@ final class JvmUnwindProtectCompiler {
 
 	/**
 	 * Whether the cleanup sequence is the compiler's OWN bookkeeping rather than a user's
-	 * cleanup forms -- the {@code (%hc-depth-dec)} a {@code handler-case} scope carries,
-	 * which is an i32 counter adjustment and can never reach the {@code %mv-spill}
-	 * channel. Such a scope skips the save/restore above, so a program's handler-case
-	 * escape paths stay byte-identical to a build compiled before it existed.
+	 * cleanup forms -- the {@code (%hc-depth-dec)} a {@code handler-case} scope carries
+	 * (an i32 counter adjustment) or the {@code (%dyn-restore ...)}s of a special
+	 * {@code let}'s scope (a ThreadLocal write), neither of which can reach the
+	 * {@code %mv-spill} channel. Such a scope skips the save/restore above, so a
+	 * program's handler-case escape paths stay byte-identical to a build compiled before
+	 * it existed, and a special {@code let} pays nothing for the channel.
 	 * @param cleanups the cleanup forms
 	 * @return whether every form is compiler-internal
 	 */
-	private static boolean internalOnly(List<LispVal> cleanups) {
+	static boolean internalOnly(List<LispVal> cleanups) {
 		for (LispVal form : cleanups) {
 			if (!(form instanceof LispCons cons) || !(cons.car() instanceof LispSymbol head)
-					|| !LispNames.HC_DEPTH_DEC_INTERNAL.equals(head.name())) {
+					|| !(LispNames.HC_DEPTH_DEC_INTERNAL.equals(head.name())
+							|| LispNames.DYN_RESTORE_INTERNAL.equals(head.name()))) {
 				return false;
 			}
 		}

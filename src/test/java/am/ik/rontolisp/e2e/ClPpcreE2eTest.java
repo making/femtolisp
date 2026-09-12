@@ -69,13 +69,16 @@ class ClPpcreE2eTest extends AsdfLibraryE2eSupport {
 			(print (cl-ppcre:register-groups-bind (area num)
 			           ("(\\\\d+)-(\\\\d+)" "tel 03-1234 end" :sharedp t)
 			         (list area num)))
+			(print (multiple-value-list (cl-ppcre:scan "[a-z]+" "one 2 three")))
+			(print (multiple-value-list (cl-ppcre:scan "(,)" "xyz")))
+			(print (multiple-value-list (cl-ppcre:scan "[a-z]+" "one 2 three")))
 			""";
 
 	private static final List<String> EXPECTED = List.of("(1 5 #(3) #(4))", "(NIL NIL)", "(\"123\" #())",
 			"(\"a\" \"b\" \"c\")", "(\"foo\" \"bar\" \"baz\")", "\"frob bar\"", "\"bonono\"",
 			"(\"one\" \"three\" \"five\")", "(\"03-1234\" #(\"03\" \"1234\"))", "\"HELLO\"", "(\"1\" \"22\" \"333\")",
 			"(\"03\" \"1234\")", "\"a\\\\.b\\\\*c\"", "3", "(1 3 3 5)", "\"baaa\"", "(\"a\" \",\" \"b\")",
-			"\"ONE 2 THREE\"", "\"123\"", "(\"03\" \"1234\")");
+			"\"ONE 2 THREE\"", "\"123\"", "(\"03\" \"1234\")", "(0 3 #() #())", "(NIL NIL)", "(0 3 #() #())");
 
 	@Override
 	protected String systemDir() {

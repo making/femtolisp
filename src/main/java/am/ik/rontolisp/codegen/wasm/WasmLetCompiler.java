@@ -21,14 +21,17 @@ import am.ik.wasm.Instruction;
  * Compiles the {@code let} special form.
  *
  * <p>
- * A binding whose name is a special (dynamically bound) variable is not given a lexical
- * local: instead the special's module-level wasm global is saved into a temp local, set
- * to the init value, and restored to its previous value when the body exits normally -- a
- * dynamic binding, whose new value is visible (via {@code global.get}) to any function
- * called during the body. Restore fires on normal completion; an error is a trap that
- * aborts the module (restore moot). A {@code return} that unwinds (a {@code br}) across
- * the {@code let} boundary does not restore the global (a known compile-path limitation;
- * the interpreter restores on every exit).
+ * A binding whose name is a special (dynamically bound) variable saves the special's
+ * module-level wasm global into a temp local, sets it to the init value, and restores the
+ * previous value on EVERY exit from the body: the body is a protected region of the
+ * {@code unwind-protect} machinery ({@link WasmUnwindProtectCompiler#compileRegion})
+ * whose cleanups are {@code %dyn-restore} forms, so a {@code $lisp-cond} unwind, a
+ * cross-lambda exit, a trampolined plain {@code return} and a
+ * {@code return-from}/{@code go} escape all restore, in CL's innermost-first order
+ * against any cleanup nested around or inside the binding -- the interpreter's
+ * {@code finally}. The new value is visible (via {@code global.get}) to any function
+ * called during the body. Outside EH mode an error is a trap that aborts the module, so
+ * the region catches nothing there and only the {@code return} trampoline remains.
  */
 final class WasmLetCompiler {
 
@@ -201,7 +204,6 @@ final class WasmLetCompiler {
 						dynamicRestores = new ArrayList<>();
 					}
 					dynamicRestores.add(new int[] { restoreKey, saveSlot });
-					ctx.specialBindScopes.push(new int[] { restoreKey, saveSlot, ctx.blockMarkers.size() });
 					ctx.writer.write(Instruction.GET_LOCAL);
 					ctx.writer.writeUnsignedLeb128(dupSlot);
 					if (capturedInLet.contains(name)) {
@@ -430,6 +432,37 @@ final class WasmLetCompiler {
 				ctx.writer.write(Instruction.DROP);
 			}
 		}
+		else if (dynamicRestores != null && parts.size() > 2) {
+			// A body under dynamic bindings is a PROTECTED REGION whose cleanups restore
+			// each special to its saved value, innermost first: the unwind-protect
+			// machinery then restores on every exit channel -- normal completion, a
+			// $lisp-cond unwind (caught in this function or across a callee's), a
+			// cross-lambda exit on the block-exit tag, a trampolined plain return and a
+			// return-from/go escape, which inline the escaped scopes' cleanups in CL's
+			// innermost-first order (.kb/dynamic-special-variables.md). Catching only
+			// in EH mode: outside it an error is a trap and nothing can cross the
+			// region, so only the return trampoline remains. The pads read nothing but
+			// the save slots, so those are the locals they refresh. The tail form
+			// always produces the region's value; a forEffect let drops it after.
+			List<int[]> restores = dynamicRestores;
+			int[] saveSlots = new int[restores.size()];
+			for (int i = 0; i < restores.size(); i++) {
+				saveSlots[i] = restores.get(i)[1];
+			}
+			WasmUnwindProtectCompiler.compileRegion(() -> {
+				for (int i = 2; i < parts.size(); i++) {
+					if (i < parts.size() - 1) {
+						WasmExprCompiler.compileForEffect(parts.get(i), ctx);
+					}
+					else {
+						WasmExprCompiler.compileExpr(parts.get(i), ctx);
+					}
+				}
+			}, restoreForms(restores), ctx, ctx.ehMode, saveSlots);
+			if (forEffect) {
+				ctx.writer.write(Instruction.DROP);
+			}
+		}
 		else {
 			// Non-tail statements compile for effect: a statement-position setq of an
 			// unboxed local (or a packed-array setf) then materializes no value. In a
@@ -442,15 +475,12 @@ final class WasmLetCompiler {
 					WasmExprCompiler.compileExpr(parts.get(i), ctx);
 				}
 			}
-		}
-
-		// Restore each dynamically bound special to its saved value. Runs with the body's
-		// result on top of the stack; each restore is stack-neutral (local.get;
-		// global.set).
-		if (dynamicRestores != null) {
-			for (int i = dynamicRestores.size() - 1; i >= 0; i--) {
-				WasmDynVars.emitRestore(ctx, dynamicRestores.get(i));
-				ctx.specialBindScopes.pop();
+			// A body-less let has no region (nothing can exit it abnormally): its
+			// restores run straight after the bindings, innermost first.
+			if (dynamicRestores != null) {
+				for (int i = dynamicRestores.size() - 1; i >= 0; i--) {
+					WasmDynVars.emitRestore(ctx, dynamicRestores.get(i));
+				}
 			}
 		}
 
@@ -461,6 +491,44 @@ final class WasmLetCompiler {
 		ctx.declaredArrays = savedDeclaredArrays;
 		ctx.arrayLocals = savedArrayLocals;
 		ctx.nextI64Local = savedNextI64Local;
+	}
+
+	/**
+	 * The {@code (%dyn-restore key saveSlot)} cleanup forms of a body under dynamic
+	 * bindings, innermost first -- the order the bindings must be undone in.
+	 * @param dynamicRestores {@code {restoreKey, saveSlot}} per binding, in binding order
+	 * @return the cleanup forms
+	 */
+	private static List<LispVal> restoreForms(List<int[]> dynamicRestores) {
+		List<LispVal> forms = new ArrayList<>();
+		for (int i = dynamicRestores.size() - 1; i >= 0; i--) {
+			int[] restore = dynamicRestores.get(i);
+			forms.add(new LispCons(new LispSymbol(LispNames.DYN_RESTORE_INTERNAL), new LispCons(
+					new am.ik.rontolisp.LispInteger(restore[0]),
+					new LispCons(new am.ik.rontolisp.LispInteger(restore[1]), am.ik.rontolisp.LispNil.INSTANCE))));
+		}
+		return forms;
+	}
+
+	/**
+	 * Compiles the internal {@code (%dyn-restore key saveSlot)} form
+	 * ({@link LispNames#DYN_RESTORE_INTERNAL}): restores one special's binding from the
+	 * local the binding site saved the previous value in, and yields nil. Built by
+	 * {@link #restoreForms} only, as the cleanups of a special {@code let}'s protected
+	 * region; {@link WasmUnwindProtectCompiler#compileCleanups} calls
+	 * {@link #emitRestoreForEffect} directly and skips the nil.
+	 */
+	static void compileDynRestore(LispCons cons, WasmLispCompiler.Ctx ctx) {
+		emitRestoreForEffect(cons, ctx);
+		ctx.writer.write(Instruction.REF_NULL);
+		ctx.writer.writeHeapType(am.ik.wasm.Type.EQ.code());
+	}
+
+	/** The {@code %dyn-restore} form compiled for effect: the restore, no value. */
+	static void emitRestoreForEffect(LispCons cons, WasmLispCompiler.Ctx ctx) {
+		List<LispVal> parts = cons.toList();
+		WasmDynVars.emitRestore(ctx, new int[] { (int) ((am.ik.rontolisp.LispInteger) parts.get(1)).value(),
+				(int) ((am.ik.rontolisp.LispInteger) parts.get(2)).value() });
 	}
 
 	/**

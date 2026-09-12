@@ -49,8 +49,12 @@ signals replaces the pending unwind (CL: newer exit wins).
   `expandWithInputFromString` / the three usocket `with-*` take a `boolean unwindProtect` (default
   true); WASM call sites pass `false`, so interpreter/JVM close on EVERY exit, WASM on normal exit
   only.
-- Known limit: the compile-path special-`let` restore on a `return` across the binding
-  ([dynamic-special-variables.md](dynamic-special-variables.md)).
+- **A special `let` IS a region of this machinery**: `Jvm`/`WasmLetCompiler` compile the body
+  through `JvmUnwindProtectCompiler.Region` / `WasmUnwindProtectCompiler.compileRegion` with the
+  internal `%dyn-restore` forms as cleanups, so the dynamic-binding restore rides every channel
+  above -- and a binding and a cleanup nested either way unwind innermost-first
+  ([dynamic-special-variables.md](dynamic-special-variables.md)). `internalOnly` exempts those
+  cleanups from the `%mv-spill` save like `%hc-depth-dec`.
 
 ## Phase 2 -- condition objects
 A condition is a CLOS-subset instance ([instance-syntax.md](instance-syntax.md)):
@@ -378,12 +382,12 @@ closures), all pinned cross-backend. `--no-gc` keeps the lite lowering.
   `ensureRestartRuntimeLoaded()` at interpret time).
 - **Two dynamic stacks, both TOP-LEVEL GLOBALS** (`%HANDLER-CLUSTERS%`, `%RESTART-CLUSTERS%`,
   injected as `defvar`s; plus `%HANDLERS-RAN%`, the completed-walk mark), mutated with plain `setq`
-  and restored through an `unwind-protect` cleanup over a LEXICALLY saved value. **Deliberately NOT
-  special-`let` rebindings**: the compile paths skip the special-binding restore on the error-throw,
-  `catch`/`throw` and cross-lambda `return-from` channels
-  ([dynamic-special-variables.md](dynamic-special-variables.md)) while `unwind-protect` cleanups run
-  on EVERY channel on EVERY backend, so a special binding would leak a handler cluster on exactly the
-  path the feature exists for. **If you ever move these to `let`, the restore holes come back.**
+  and restored through an `unwind-protect` cleanup over a LEXICALLY saved value. Plain `setq` +
+  cleanup rather than special-`let` rebindings, chosen when the compile paths still skipped the
+  special-binding restore on the error-throw, `catch`/`throw` and cross-lambda `return-from`
+  channels. Those holes are closed -- a special `let` is now itself an unwind-protect region
+  ([dynamic-special-variables.md](dynamic-special-variables.md)) -- so a `let` would work too; the
+  `setq` shape stays because it is pinned cross-backend and a rewrite buys nothing.
 - **The restart transfer rides `catch`/`throw`** with a FRESH cons as the tag (`(list '%restart)`),
   so tag identity is `eq` and cannot collide with a user tag -- which buys crossing function
   boundaries, running intervening cleanups, and passing through `handler-case` regions uncaught.
@@ -698,13 +702,15 @@ passed interpreted and returned a WRONG VALUE compiled. Pinned by ci-spec
   handler landing pad only; outside it the arm is the `unreachable` it was, byte for byte. The
   pieces are interned on FIRST USE: eagerly interning them costs a module whose dispatchers all turn
   out to be dead an extra data-segment header.
-- **`apply` is deliberately NOT covered.** The spread dispatcher carries a case for EVERY callable
-  and reads the parameters out of a list, so a wrong count there is no dispatch miss and the check
-  would have to sit in every case. What such a check finds FIRST is not a user bug but `.todo/192`:
-  a failing cl-ppcre scan leaks `*reg-starts*` past the special binding that shadowed it, and the
-  phantom register becomes a second argument to a one-parameter `:simple-calls` replacement
-  function. So `(apply #'f '(1 2))` still answers `1` on both compiled backends where the
-  interpreter signals; ci-spec pins the gap rather than hiding it.
+- **`apply` is NOT yet covered** (`.todo/785`). The spread dispatcher carries a case for EVERY
+  callable and reads the parameters out of a list, so a wrong count there is no dispatch miss and
+  the check would have to sit in every case. When it was first written, what it found FIRST was not
+  a user bug but a compile-path leak: a failing cl-ppcre scan left `*reg-starts*` bound past the
+  special `let` that shadowed it, and the phantom register became a second argument to a
+  one-parameter `:simple-calls` replacement function. That leak is closed (2026-09-12, the
+  every-exit restore in [dynamic-special-variables.md](dynamic-special-variables.md)), so the
+  `apply` half is unblocked; until it lands `(apply #'f '(1 2))` still answers `1` on both compiled
+  backends where the interpreter signals, and ci-spec pins the gap rather than hiding it.
 - **A BUILT-IN designator diverges in TEXT, not in class**: `(funcall #'car)` is a `program-error`
   everywhere, but the interpreter names the operator (`CAR expects 1 arguments, got 0`) while the
   compiled backends go through the `BuiltinFunctionWrappers` lambda and say `Function expects 1
@@ -728,8 +734,7 @@ The interactive debugger (`break`, `*debugger-hook*`, rendering a restart's `:re
 `:interactive` function), condition-restart association, a `store-value` restart for
 `check-type`/`assert`/`ccase`/`ctypecase` (`expandCcase` -> `expandEcase`, `expandCtypecase` ->
 `expandEtypecase`), `--no-gc` catching (the GC path's `$lisp-cond` tag has no MVP equivalent, which
-is why `--no-gc` rejects the forms outright rather than degrading), and the
-special-`let`-restore-on-return compile-path limit. Postmodern is the real restart customer
+is why `--no-gc` rejects the forms outright rather than degrading). Postmodern is the real restart customer
 (`prepare.lisp:54-66`, `transaction.lisp:63-70`); verbatim cl-postgres needs no restart system at
 all, so **`restart-case` alone unblocks nothing real**.
 

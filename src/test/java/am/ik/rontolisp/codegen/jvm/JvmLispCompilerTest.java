@@ -16338,6 +16338,63 @@ class JvmLispCompilerTest {
 	}
 
 	@Test
+	void specialLetRestoresOnEveryExit() throws Exception {
+		// Interpreter parity (LispEvaluatorTest.specialLetRestoresOnEveryExit): a special
+		// let's binding is restored on EVERY exit channel, not only normal completion
+		// and a same-function return -- an error caught outside the let (in this frame
+		// and across a callee's frame), a catch/throw, a go across the binding, a plain
+		// return crossing an unwind-protect region in either nesting order (the cleanup
+		// sees the binding when it is inside the let and the restored value when it is
+		// outside), and a return-from crossing a lambda boundary -- cl-ppcre's scanner
+		// shape, whose leaked register array corrupted every later zero-register scan
+		// (.kb/dynamic-special-variables.md).
+		assertThat(compileAndRun("""
+				(defvar *sx* :top)
+				(defun sx-inner () (let ((*sx* :deep)) (error "deep")))
+				(print (handler-case (let ((*sx* :err)) (error "boom")) (error () *sx*)))
+				(print (handler-case (sx-inner) (error () *sx*)))
+				(print (list (catch 'sx-tag (let ((*sx* :thrown)) (throw 'sx-tag *sx*))) *sx*))
+				(defun sx-go ()
+				  (let ((r nil))
+				    (tagbody
+				       (let ((*sx* :go)) (setq r *sx*) (go out))
+				     out)
+				    (list r *sx*)))
+				(print (sx-go))
+				(defun sx-ret ()
+				  (let ((seen nil))
+				    (dolist (i '(1 2))
+				      (let ((*sx* i))
+				        (unwind-protect (return) (push *sx* seen))))
+				    (dolist (i '(1 2))
+				      (unwind-protect (let ((*sx* i)) (return)) (push *sx* seen)))
+				    (list seen *sx*)))
+				(print (sx-ret))
+				(defvar *sx-box* (make-array 0))
+				(defun sx-mk (n)
+				  (lambda (s)
+				    (block scan
+				      (let ((*sx-box* *sx-box*))
+				        (when (plusp n) (setq *sx-box* (make-array n :initial-element nil)))
+				        (funcall (lambda () (when (string= s "miss") (return-from scan nil))))
+				        (values 1 *sx-box*)))))
+				(defparameter *sx-c1* (sx-mk 1))
+				(defparameter *sx-c2* (sx-mk 0))
+				(print (multiple-value-list (funcall *sx-c1* "hit")))
+				(print (multiple-value-list (funcall *sx-c1* "miss")))
+				(print (multiple-value-list (funcall *sx-c2* "hit")))
+				""")).isEqualTo("""
+				:TOP
+				:TOP
+				(:THROWN :TOP)
+				(:GO :TOP)
+				((:TOP 1) :TOP)
+				(1 #(NIL))
+				(NIL)
+				(1 #())""");
+	}
+
+	@Test
 	void defparameterAndDeclaimSpecialAreDynamic() throws Exception {
 		assertThat(compileAndRun("""
 				(defparameter *p* 5)

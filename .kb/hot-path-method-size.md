@@ -39,8 +39,10 @@ enclosing method's value. (ironclad `update-sha512-block`: 17,003 -> 6,146 + 6,0
   travels as its `Object[1]` cell; an unboxed local (`.kb/jvm-int-fusion.md`) crosses boxed
   (`_ubRead`).
 - Gates (scopes naming a position in THIS frame): non-empty operand stack, `blockTargets`,
-  `unwindScopes`, `tagbodyScopes`, `spillScopes`, or a live set past `MAX_CONTINUATION_PARAMS`
-  (**200**, under the JVM's 255 argument slots).
+  `unwindScopes` -- except a special `let`'s restore-only region, the one scope a spine body sits
+  inside: its exception range covers the continuation CALL and no continuation can leave it
+  lexically (`.kb/dynamic-special-variables.md`) -- `tagbodyScopes`, `spillScopes`, or a live set
+  past `MAX_CONTINUATION_PARAMS` (**200**, under the JVM's 255 argument slots).
 - **Nothing is spliced or reordered**, so a body under budget is byte-identical to the nested-loop
   emission this replaced. No split point inside **a branch**: a tail `cond` chain is ONE item.
 

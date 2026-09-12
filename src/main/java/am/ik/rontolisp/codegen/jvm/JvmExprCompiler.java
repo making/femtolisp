@@ -65,6 +65,13 @@ final class JvmExprCompiler {
 		if (compileStatementSetq(expr, ctx, className)) {
 			return;
 		}
+		// A special let's binding restore is always a statement (the cleanup of its
+		// protected region): the restore alone, no nil to pop.
+		if (expr instanceof LispCons cons && cons.car() instanceof LispSymbol head
+				&& LispNames.DYN_RESTORE_INTERNAL.equals(head.name())) {
+			JvmLetCompiler.emitRestoreForEffect(cons, ctx);
+			return;
+		}
 		// A let whose value is discarded compiles its WHOLE body for effect, so a final
 		// body form that is a raw-local assignment stores and stops -- the shape every
 		// loop body ends with once its accumulators live in raw slots
@@ -1561,6 +1568,7 @@ final class JvmExprCompiler {
 				case LispNames.IGNORE_ERRORS ->
 					JvmExprCompiler.compileExpr(LispMacroExpander.expandIgnoreErrors(cons), ctx, className);
 				case LispNames.HC_DEPTH_DEC_INTERNAL -> JvmHandlerCaseCompiler.compileDepthDec(ctx, className);
+				case LispNames.DYN_RESTORE_INTERNAL -> JvmLetCompiler.compileDynRestore(cons, ctx);
 				case LispNames.HB_GUARD_INTERNAL -> JvmHandlerCaseCompiler.compileGuard(cons, ctx, className);
 				case LispNames.PROGRAM_ERROR_INTERNAL -> {
 					CompileWarnings.warnStaticProgramError(cons);

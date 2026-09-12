@@ -2642,6 +2642,20 @@ public final class LispNames {
 	 */
 	public static final String HC_DEPTH_DEC_INTERNAL = "%HC-DEPTH-DEC";
 
+	/**
+	 * Internal two-argument form {@code (%dyn-restore KEY SAVE-SLOT)} that restores one
+	 * special variable's dynamic binding from the local the binding site saved the
+	 * previous binding in, and yields nil. Compile paths only, and built by the backends
+	 * themselves: a special {@code let} compiles its body as a protected region whose
+	 * cleanups are these restores, so every exit channel the {@code unwind-protect}
+	 * machinery covers -- normal completion, an error unwind, a cross-lambda exit, a
+	 * {@code return}/{@code return-from}/{@code go} escape -- restores the binding
+	 * ({@code .kb/dynamic-special-variables.md}). {@code KEY} is the JVM {@code _d$}
+	 * ThreadLocal field's constant-pool index or the wasm global (or {@code --reentrant}
+	 * task slot) index.
+	 */
+	public static final String DYN_RESTORE_INTERNAL = "%DYN-RESTORE";
+
 	/** The {@code and} macro. */
 	public static final String AND = "AND";
 

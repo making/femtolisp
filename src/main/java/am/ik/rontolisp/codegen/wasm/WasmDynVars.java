@@ -18,11 +18,10 @@ import am.ik.wasm.Type;
  * A slot holds {@code null} (no binding in this task -- reads fall through to the
  * special's ordinary module global, the default) or a {@code TYPE_CELL} whose field is
  * the innermost binding. A binding pushes a fresh cell and saves the previous slot value
- * in a wrapper-local ({@code specialBindScopes}), exactly the save/restore discipline the
- * shallow path uses over the global -- so the exit-restore machinery
- * ({@code WasmReturnCompiler}/{@code WasmReturnFromCompiler}) needs only a second restore
- * spelling, and the documented unwind limitations carry over unchanged, neither widened
- * nor narrowed.
+ * in a wrapper-local, exactly the save/restore discipline the shallow path uses over the
+ * global -- so the exit-restore machinery (the {@code %dyn-restore} cleanups of the
+ * binding's protected region, {@code WasmLetCompiler}) needs only a second restore
+ * spelling ({@link #emitRestore}) and covers the same exit channels either way.
  *
  * <p>
  * Only the specials {@code SpecialVarCollector.collectDynamicallyBound} names get a slot;
@@ -216,13 +215,12 @@ final class WasmDynVars {
 
 	/**
 	 * Emits ONE binding restore -- the reentrant counterpart of
-	 * {@code local.get save; global.set g}, shared by the let epilogue and the
-	 * {@code return}/{@code return-from} exit paths. {@code bind} is a
-	 * {@code specialBindScopes} entry: in a reentrant module {@code bind[0]} is the DYN
-	 * SLOT, elsewhere the global index; {@code bind[1]} is the save local either way.
-	 * Stack-neutral.
+	 * {@code local.get save; global.set g}, the body of every {@code %dyn-restore}
+	 * cleanup a special {@code let}'s region emits on its exit paths. {@code bind} is the
+	 * restore pair: in a reentrant module {@code bind[0]} is the DYN SLOT, elsewhere the
+	 * global index; {@code bind[1]} is the save local either way. Stack-neutral.
 	 * @param ctx the compilation context
-	 * @param bind the {@code specialBindScopes} entry
+	 * @param bind the {@code {restoreKey, saveSlot}} pair
 	 */
 	static void emitRestore(WasmLispCompiler.Ctx ctx, int[] bind) {
 		if (ctx.reentrant && ctx.reentrantTaskGlobalIndex >= 0) {

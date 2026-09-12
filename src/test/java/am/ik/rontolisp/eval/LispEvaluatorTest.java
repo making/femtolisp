@@ -18086,6 +18086,58 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void specialLetRestoresOnEveryExit() {
+		// The reference answer the compiled backends' twins
+		// (JvmLispCompilerTest / WasmLispCompilerIntegrationTest
+		// .specialLetRestoresOnEveryExit) are measured against: evalLet's finally
+		// restores on every exit channel (.kb/dynamic-special-variables.md).
+		assertThat(capture("""
+				(defvar *sx* :top)
+				(defun sx-inner () (let ((*sx* :deep)) (error "deep")))
+				(print (handler-case (let ((*sx* :err)) (error "boom")) (error () *sx*)))
+				(print (handler-case (sx-inner) (error () *sx*)))
+				(print (list (catch 'sx-tag (let ((*sx* :thrown)) (throw 'sx-tag *sx*))) *sx*))
+				(defun sx-go ()
+				  (let ((r nil))
+				    (tagbody
+				       (let ((*sx* :go)) (setq r *sx*) (go out))
+				     out)
+				    (list r *sx*)))
+				(print (sx-go))
+				(defun sx-ret ()
+				  (let ((seen nil))
+				    (dolist (i '(1 2))
+				      (let ((*sx* i))
+				        (unwind-protect (return) (push *sx* seen))))
+				    (dolist (i '(1 2))
+				      (unwind-protect (let ((*sx* i)) (return)) (push *sx* seen)))
+				    (list seen *sx*)))
+				(print (sx-ret))
+				(defvar *sx-box* (make-array 0))
+				(defun sx-mk (n)
+				  (lambda (s)
+				    (block scan
+				      (let ((*sx-box* *sx-box*))
+				        (when (plusp n) (setq *sx-box* (make-array n :initial-element nil)))
+				        (funcall (lambda () (when (string= s "miss") (return-from scan nil))))
+				        (values 1 *sx-box*)))))
+				(defparameter *sx-c1* (sx-mk 1))
+				(defparameter *sx-c2* (sx-mk 0))
+				(print (multiple-value-list (funcall *sx-c1* "hit")))
+				(print (multiple-value-list (funcall *sx-c1* "miss")))
+				(print (multiple-value-list (funcall *sx-c2* "hit")))
+				""").trim()).isEqualTo("""
+				:TOP
+				:TOP
+				(:THROWN :TOP)
+				(:GO :TOP)
+				((:TOP 1) :TOP)
+				(1 #(NIL))
+				(NIL)
+				(1 #())""");
+	}
+
+	@Test
 	void specialVariablesAreThreadScoped() throws Exception {
 		// The flagship acceptance case: one shared evaluator (like the HTTP handler,
 		// which

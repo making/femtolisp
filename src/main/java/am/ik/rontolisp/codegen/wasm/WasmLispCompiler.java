@@ -7907,17 +7907,19 @@ public final class WasmLispCompiler implements LispCompiler {
 	}
 
 	/**
-	 * An active unwind scope (EH mode): the protected region of an {@code unwind-protect}
-	 * (cleanup forms) or a {@code handler-case} (the {@code %hc-depth-dec} form).
-	 * {@code blockDepth} is the block-stack size when the scope was entered -- an exit
-	 * escapes the scope when {@code blockDepth >=} the target block's 1-based depth at
-	 * the exit site (the scope was entered inside the exit's target block).
-	 * {@code trampolineDepth} is the {@code wasmCtrlDepth} marker of the scope's
-	 * exit-trampoline block, lexically outside its try_table (so a throw from a cleanup
-	 * cannot re-enter the scope's own handler); -1 when the scope has no trampoline (no
-	 * enclosing plain-{@code return} boundary, so no {@code return} can escape it). A
-	 * named {@code return-from} does not use the trampolines: it inlines the escaped
-	 * cleanups at the exit site like {@code go} (see {@link WasmReturnFromCompiler}).
+	 * An active unwind scope: the protected region of an {@code unwind-protect} (cleanup
+	 * forms), a {@code handler-case} (the {@code %hc-depth-dec} form) or a special
+	 * {@code let} (the {@code %dyn-restore} forms of its dynamic bindings, the one scope
+	 * kind that exists outside EH mode too, {@code WasmLetCompiler}). {@code blockDepth}
+	 * is the block-stack size when the scope was entered -- an exit escapes the scope
+	 * when {@code blockDepth >=} the target block's 1-based depth at the exit site (the
+	 * scope was entered inside the exit's target block). {@code trampolineDepth} is the
+	 * {@code wasmCtrlDepth} marker of the scope's exit-trampoline block, lexically
+	 * outside its try_table (so a throw from a cleanup cannot re-enter the scope's own
+	 * handler); -1 when the scope has no trampoline (no enclosing plain-{@code return}
+	 * boundary, so no {@code return} can escape it). A named {@code return-from} does not
+	 * use the trampolines: it inlines the escaped cleanups at the exit site like
+	 * {@code go} (see {@link WasmReturnFromCompiler}).
 	 *
 	 * @param cleanupForms the cleanup forms to run when a {@code return} exits the scope
 	 * @param blockDepth the block-stack size at scope entry
@@ -8709,14 +8711,6 @@ public final class WasmLispCompiler implements LispCompiler {
 		 * lexically.
 		 */
 		final Deque<BlockMarker> blockMarkers = new ArrayDeque<>();
-
-		/**
-		 * Active special-variable dynamic bindings, innermost on top:
-		 * {@code {globalIndex, saveSlot, blockDepth}} per binding (see WasmLetCompiler).
-		 * A {@code return}/{@code return-from} exiting a block entered before the binding
-		 * restores the saved value on its way out.
-		 */
-		final Deque<int[]> specialBindScopes = new ArrayDeque<>();
 
 		/**
 		 * Stack of active {@code tagbody} label scopes, innermost on top. A {@code go}

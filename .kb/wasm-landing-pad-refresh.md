@@ -8,7 +8,11 @@ as the pad's first act (`WasmLandingPad.refreshLocals`). A variable the protecte
 assigns is boxed (`WasmLandingPad.regionAssignedVars`, folded into every binder's boxed
 set beside the closure-capture answer). Regions: `WasmUnwindProtectCompiler`,
 `WasmHandlerCaseCompiler.compile` and `compileGuard` (`%hb-guard`),
-`WasmNlxCompiler.emitCatch` (`catch`, `%nlx-catch`). Pinned by
+`WasmNlxCompiler.emitCatch` (`catch`, `%nlx-catch`), and a special `let`'s binding-restore region
+(`WasmLetCompiler` through `WasmUnwindProtectCompiler.compileRegion`), whose pad refreshes ONLY its
+save slots (`WasmLandingPad.keepSlotsAlive`/`refreshSlots`): it reads nothing else, rethrows, and
+no user code runs in or after it, so the invariant is kept at a fraction of the push
+(`.kb/dynamic-special-variables.md`). Pinned by
 `WasmLispCompilerIntegrationTest.landingPadsReadFreshReferencesAfterACollectionDuringTheUnwind`
 (Preview 1 and component) and ci-spec `landing-pads-read-fresh-references-after-a-collection`
 (all four backends). Compiler-internal pads whose body is a single call (the async entry

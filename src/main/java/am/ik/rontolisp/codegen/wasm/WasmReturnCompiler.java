@@ -18,8 +18,9 @@ import org.jspecify.annotations.Nullable;
  * target block, derived from {@link WasmLispCompiler.Ctx#wasmCtrlDepth}.
  *
  * <p>
- * EH mode: when the branch would escape an {@code unwind-protect} / {@code handler-case}
- * protected region (the innermost unwind scope was entered inside the target block), it
+ * When the branch would escape a protected region -- an {@code unwind-protect} /
+ * {@code handler-case}, or a special {@code let} whose cleanups restore its dynamic
+ * bindings (the innermost unwind scope was entered inside the target block) -- it
  * branches to that scope's exit trampoline instead, which runs the scope's cleanups and
  * cascades outward toward the block (see {@code WasmUnwindProtectCompiler}). {@code
  * return} is only legal at empty operand stack, so the value-carrying {@code br} is
@@ -47,20 +48,12 @@ final class WasmReturnCompiler {
 		}
 		WasmLispCompiler.UnwindScope escaped = ctx.unwindScopes.peek();
 		if (escaped != null && escaped.blockDepth() >= targetDepth) {
-			// The exit crosses the innermost protected region: run its cleanups through
-			// the trampoline; the trampolines cascade to the block, innermost first.
-			// (Special-binding restores are skipped on this path -- the documented
-			// unwind limitation.)
+			// The exit crosses the innermost protected region (an unwind-protect, a
+			// handler-case, or a special let's binding restores): run its cleanups
+			// through the trampoline; the trampolines cascade to the block, innermost
+			// first.
 			ctx.writer.write(Instruction.BR, ctx.wasmCtrlDepth - escaped.trampolineDepth());
 			return;
-		}
-		// Restore every special-variable dynamic binding this exit escapes, innermost
-		// first (see WasmReturnFromCompiler).
-		for (int[] bind : ctx.specialBindScopes) {
-			if (bind[2] < targetDepth) {
-				break;
-			}
-			WasmDynVars.emitRestore(ctx, bind);
 		}
 		ctx.writer.write(Instruction.BR, ctx.wasmCtrlDepth - marker.depth());
 	}

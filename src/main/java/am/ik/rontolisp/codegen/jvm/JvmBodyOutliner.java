@@ -185,10 +185,20 @@ final class JvmBodyOutliner {
 			return false;
 		}
 		// The continuation is a fresh frame: nothing that names a position in THIS one
-		// may still be open across the call.
-		if (!ctx.stack.snapshot().isEmpty() || !ctx.blockTargets.isEmpty() || !ctx.unwindScopes.isEmpty()
-				|| !ctx.tagbodyScopes.isEmpty() || !ctx.spillScopes.isEmpty()) {
+		// may still be open across the call. A special let's binding-restore region is
+		// the one scope a spine body sits inside (an unwind-protect's protected form
+		// never joins the spine): its exception range covers the continuation CALL, so
+		// a throw inside the continuation still lands in this frame's handler, and with
+		// no block or tagbody open nothing in the continuation can escape the region
+		// lexically -- the region's cleanups are never inlined there.
+		if (!ctx.stack.snapshot().isEmpty() || !ctx.blockTargets.isEmpty() || !ctx.tagbodyScopes.isEmpty()
+				|| !ctx.spillScopes.isEmpty()) {
 			return false;
+		}
+		for (JvmLispCompiler.UnwindScope scope : ctx.unwindScopes) {
+			if (!JvmUnwindProtectCompiler.internalOnly(scope.cleanupForms)) {
+				return false;
+			}
 		}
 		return liveNames(ctx).size() + (ctx.closureEnvSlot >= 0 ? 1 : 0) <= MAX_CONTINUATION_PARAMS;
 	}

@@ -522,10 +522,11 @@ shared `%no-applicable-method` defun and the variadic dispatchers' ALIGNED apply
 the whole engine back silently.
 
 **A correctness hole these probes surfaced, distinct from size:** a `return-from` crossing a lambda
-boundary skips the special-binding restore, which corrupts cl-ppcre's own scanners (a zero-register
-scan after a failing register-regex loop returns stale `*reg-starts*`; interpreter correct, JVM +
-both wasm-GC wrong). Until it is fixed, the interpreter is the only backend that runs the real
-engine's scan SEQUENCES per the standard.
+boundary skipped the special-binding restore, which corrupted cl-ppcre's own scanners (a
+zero-register scan after a failing register-regex loop returned stale `*reg-starts*`; interpreter
+correct, JVM + both wasm-GC wrong). Closed 2026-09-12: a special `let` is now an unwind-protect
+region on both compile paths (`.kb/dynamic-special-variables.md`), at +4.1% on cl-ppcre's `.class`
+and +1.0% on its wasm module.
 
 ## JVM
 `am.ik.jvm.JvmClassShaker` runs at the end of `JvmLispCompiler.compile`: parses the finished class,

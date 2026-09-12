@@ -5730,7 +5730,9 @@ public final class JvmLispCompiler implements LispCompiler {
 	}
 
 	/**
-	 * An active {@code unwind-protect} protected region during compilation.
+	 * An active protected region during compilation -- an {@code unwind-protect}, a
+	 * {@code handler-case}'s depth bookkeeping, or a special {@code let} whose cleanups
+	 * are the {@code %dyn-restore}s of its dynamic bindings ({@code JvmLetCompiler}).
 	 * {@code cleanupForms} are re-compiled inline at every {@code return} escape site (a
 	 * cleanup runs once per exit path); {@code blockDepth} is the {@code %block} stack
 	 * depth at entry, so {@code JvmReturnCompiler} can tell whether a {@code return}
@@ -6538,17 +6540,6 @@ public final class JvmLispCompiler implements LispCompiler {
 		 * Only a catching form compiled with operands live pushes one.
 		 */
 		final Deque<SpillScope> spillScopes = new ArrayDeque<>();
-
-		/**
-		 * Active special-variable dynamic bindings, innermost on top:
-		 * {@code {tlFieldIndex, saveSlot, blockDepth}} per binding (see JvmLetCompiler;
-		 * the save slot holds the thread's previous binding CELL, possibly null). A
-		 * {@code return}/{@code return-from} that exits a block entered before the
-		 * binding ({@code blockDepth >=} the target's depth) restores the saved cell on
-		 * its way out, so a named exit from a scan closure does not leak the bound value
-		 * into this thread's dynamic store (cl-ppcre's *reg-starts*).
-		 */
-		final Deque<int[]> specialBindScopes = new ArrayDeque<>();
 
 		/**
 		 * This method's {@code Code} attribute exception table, in dispatch order.

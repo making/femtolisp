@@ -53,9 +53,20 @@ a cl symbol (registering it would perturb pinned introspection counts). Earmuffs
 - Read rule is DYNAMIC-FIRST (`JvmExprCompiler.compileSpecialRead`) so a callee's rebinding is
   visible; inside a closure the CAPTURE wins. `setq` of a dual-bound name writes BOTH
   (`JvmSetqCompiler.emitGlobalStore`); with no active binding it lands in `_g$*`.
-- Each binding is pushed on `Ctx.specialBindScopes` (`{tlField, saveSlot, blockDepth}`) so a
-  `return`/`return-from` out of an enclosing block also restores (`JvmReturnCompiler.emitExit`)
-  -- without it cl-ppcre's scan closure leaked `*reg-starts*`.
+- **The body is a PROTECTED REGION of the unwind-protect machinery**
+  (`JvmUnwindProtectCompiler.Region`, opened by `JvmLetCompiler`) whose cleanups are the
+  internal `(%dyn-restore tlField saveSlot)` forms (`LispNames.DYN_RESTORE_INTERNAL`), innermost
+  first. So the restore rides every exit channel that machinery covers: normal completion, the
+  catch-any handler (an error caught in this frame or across a callee's, a cross-lambda
+  `%nlx-throw`, `catch`/`throw`), and the `return`/`return-from`/`go` inlining of escaped scopes'
+  cleanups -- interleaved with user cleanups in CL's innermost-first order, since a binding IS an
+  unwind scope. One mechanism, no separate exit-restore list (the former `Ctx.specialBindScopes`
+  covered the direct-branch exits only and leaked `*reg-starts*` on the rest). The restores are
+  stack-neutral, so the value stays on the operand stack under them (no result slot). A
+  body-less `let` has no region. A special `let` on the tail spine keeps joining it:
+  `JvmBodyOutliner.readyToSplit` ignores a scope whose cleanups are all compiler-internal, because
+  the region's exception range covers the continuation CALL and nothing in a continuation can
+  leave the region lexically.
 - Non-special globals stay lexical under `let`
   (`JvmLispCompilerTest.lexicalGlobalLetStaysLexical`).
 - A spawned thread does NOT inherit the spawner's bindings; `rontolisp:make-thread`'s bindings
@@ -78,9 +89,15 @@ the wasm backends are concurrency-safe in general.
   the suspending host call. The JVM hybrid's rules carry over exactly. Every non-reentrant
   module is byte-identical.
 - Base shape otherwise mirrors the JVM's over module globals (`(mut (ref null eq))`):
-  `Ctx.specialVars`, dual-bind, dual `setq` (`WasmSetqCompiler`), `Ctx.specialBindScopes` exit
-  restores (`WasmReturnCompiler` direct-br path, `WasmReturnFromCompiler`); same for
-  `--component`. `--no-gc` `NoGcWasmCompiler` rejects `defvar`/`declaim` at top level outright.
+  `Ctx.specialVars`, dual-bind, dual `setq` (`WasmSetqCompiler`), and the same protected region
+  (`WasmUnwindProtectCompiler.compileRegion` with `%dyn-restore` cleanups, one `UnwindScope`
+  kind that exists outside EH mode too): in EH mode a `try_table` landing pad that restores and
+  rethrows the payload on its tag, whose refresh keeps only the SAVE slots
+  (`wasm-landing-pad-refresh.md`); in every mode the plain-`return` trampoline cascade, and the
+  `return-from`/`go` inlining of escaped scopes. Outside EH mode with no enclosing
+  plain-`return` boundary the emission is bare -- body then restores, byte-identical to before.
+  Same for `--component`. `--no-gc` `NoGcWasmCompiler` rejects `defvar`/`declaim` at top level
+  outright.
 
 ## progv on the compile paths
 
@@ -112,14 +129,19 @@ native `evalProgv`).
 
 ## Compile-path limitations (interpreter unaffected)
 
-1. Exit restores are covered for `return`/`return-from` compiled as a DIRECT branch inside the
-   binding function. Remaining holes: a WASM plain `return` also crossing an
-   `unwind-protect`/`handler-case` region (the trampoline cascade does not know the save slots);
-   `go` across a special `let`; an ERROR caught by a `handler-case` outside the `let`
-   (`(handler-case (let ((*x* 2)) (error "boom")) (error (e) *x*))` answers 2 on the JVM and
-   leaves 2 bound); and a `return-from` crossing a LAMBDA boundary, on the JVM and both wasm-GC
-   backends, which corrupts cl-ppcre's scanner. Fixing the last needs a save STACK, not
-   catch-site slot restores: the slots live in the thrower's dead frames.
+1. Exit restores are covered on EVERY channel on all four backends since 2026-09-12 -- an error
+   caught outside the `let` (same frame or across a callee's), `catch`/`throw`, `go`, a plain
+   `return` through the wasm trampoline cascade in either nesting order against an
+   `unwind-protect`, and a `return-from` crossing a lambda boundary (cl-ppcre's scanner shape:
+   a failing register scan used to leak `*reg-starts*` into every later zero-register scan).
+   Pinned by `specialLetRestoresOnEveryExit` on `LispEvaluatorTest` / `JvmLispCompilerTest` /
+   `WasmLispCompilerIntegrationTest` (P1 + component), ci-spec
+   `special-let-restores-on-every-exit`, and `ClPpcreE2eTest`'s failing-one-register scan
+   between two zero-register scans. What is NOT an exit: a wasm-GC RAW trap (`(car 5)`, a failed
+   cast) ends the module, restore moot. The mechanism is thrower-side (each binding frame
+   restores its own on the way out), which is why no catch-site save stack was needed: the
+   `.todo/192` sketch's objection -- the slots live in the thrower's dead frames -- holds only
+   for a CATCHER doing the restore.
 2. `symbol-value`/`boundp`/`eval` see the global default, not a dynamic binding, on the compile
    path -- EXCEPT `symbol-value` in a progv-using program. They read the `_genv`/`GLOBAL_ENV`
    mirror, which the shallow save/restore does not update. Direct reads/`setq` are correct and
@@ -143,14 +165,34 @@ native `evalProgv`).
   `Environment.isBound` must count a pending thunk, and `Environment.set` must DISCARD one, or
   a replayed `(setf *html-mode* :html5)` is later overwritten by the original `defvar` default.
 
+## Cost of the every-exit restore (2026-09-12)
+
+Minimal programs, JVM `.class` / wasm Preview 1 bytes, before -> after (the `.class` is the
+bigger mover because each region adds an exception-table entry, a handler and two stack-map
+frames; wasm adds only the trampoline block, and in EH mode the pad):
+
+| program | JVM | wasm |
+|---|---|---|
+| `(print (+ 1 2))` | 3,948 -> 3,948 | 489 -> 489 |
+| `(defvar *x* 1) (print (let ((*x* 2)) *x*))` | 4,468 -> 4,522 | 11,175 -> 11,175 |
+| the same `let` inside a `dolist` | 4,815 -> 4,847 | 11,383 -> 11,397 |
+| the same `let` under a `handler-case` (EH mode) | 11,011 -> 11,074 | 13,732 -> 13,761 |
+| `(unwind-protect (+ 1 2) (print *x*))`, no special `let` | 4,105 -> 4,105 | 12,375 -> 12,375 |
+| cl-ppcre (`asdf:load-system` + three scans) | 725,206 -> 755,211 (+4.1%) | 693,247 -> 700,485 (+1.0%) |
+
+A program that binds no special is byte-identical; a wasm program binding one outside EH mode and
+outside any loop block is too. cl-ppcre is the outlier because `(declare (special ...))` is
+honored program-wide, so hundreds of its `let`s bind specials and each pays ~70 B on the JVM.
+
 ## Tests
 
-`LispEvaluatorTest` (`specialVar*`/`progv*`/`defparameter`/`declaim`/`proclaim`/thread-scoped),
-`JvmLispCompilerTest` + `WasmLispCompilerIntegrationTest` (`specialVar*` and `progv*` groups;
-JVM adds `specialVarBindingIsThreadScoped`,
-`specialVarSetqOutsideAnyBindingReachesTheGlobal`), `JvmThreadTest`
-`spawnedThreadDoesNotInheritTheSpawnersDynamicBindings`,
+`LispEvaluatorTest` (`specialVar*`/`progv*`/`defparameter`/`declaim`/`proclaim`/thread-scoped,
+`specialLetRestoresOnEveryExit`), `JvmLispCompilerTest` + `WasmLispCompilerIntegrationTest`
+(`specialVar*` and `progv*` groups, `specialLetRestoresOnEveryExit`; JVM adds
+`specialVarBindingIsThreadScoped`, `specialVarSetqOutsideAnyBindingReachesTheGlobal`),
+`JvmThreadTest` `spawnedThreadDoesNotInheritTheSpawnersDynamicBindings`,
 `NoGcWasmCompilerTest.rejectsSpecialVariableDeclaration`,
 `WasmReentrantE2eTest.overlappedCallsEachReadTheirOwnDynamicBinding`,
-`WasmReentrantCompilerTest`, `ClJsonE2eTest`, ci-spec `special-variable-dynamic-binding`,
-`progv-compiles-on-every-backend`.
+`WasmReentrantCompilerTest`, `ClJsonE2eTest`, `ClPpcreE2eTest`, ci-spec
+`special-variable-dynamic-binding`, `progv-compiles-on-every-backend`,
+`special-let-restores-on-every-exit`.

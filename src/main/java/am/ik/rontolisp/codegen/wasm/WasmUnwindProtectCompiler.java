@@ -8,6 +8,7 @@ import am.ik.rontolisp.LispSymbol;
 import am.ik.rontolisp.LispVal;
 import am.ik.wasm.Instruction;
 import am.ik.wasm.Type;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Compiles {@code (unwind-protect protected cleanup...)} on the wasm-GC backend (EH mode
@@ -36,8 +37,11 @@ import am.ik.wasm.Type;
  * handler: the structural equivalent of the JVM {@code holes} mechanism.
  *
  * <p>
- * Documented lite limit kept for JVM parity: a special-variable {@code let} binding is
- * NOT restored when an unwind crosses it ({@code .kb/dynamic-special-variables.md}).
+ * The region is also how a special {@code let} restores its dynamic bindings on every
+ * exit ({@link #compileRegion}, called by {@link WasmLetCompiler} with
+ * {@code %dyn-restore} cleanups): the restore rides the same landing pads and the same
+ * trampoline cascade, so a binding and a cleanup nested either way around unwind in CL's
+ * innermost-first order ({@code .kb/dynamic-special-variables.md}).
  */
 final class WasmUnwindProtectCompiler {
 
@@ -61,16 +65,55 @@ final class WasmUnwindProtectCompiler {
 				}
 			}
 		}
-		int resultSlot = ctx.allocTemp();
-		// block $done (result (ref null eq)) -- the unwind-protect value.
-		ctx.writer.write(Instruction.BLOCK);
-		ctx.writer.writeRefType(true, Type.EQ.code());
-		ctx.wasmCtrlDepth++;
-		int doneDepth = ctx.wasmCtrlDepth;
+		// State-machine mode: the protected form is a spine child; a suspension inside
+		// it returns straight out (skipping the cleanups) and the resume re-enters this
+		// try_table from the top, re-arming them.
+		compileRegion(() -> WasmAsyncEmit.spine(protectedForm, ctx), cleanups, ctx, true, null);
+	}
+
+	/**
+	 * Compiles a protected region: {@code body} emits the protected code (leaving one
+	 * {@code (ref null eq)} on the stack), and the cleanup forms run on every exit from
+	 * it -- the layout described on the class. The same region serves a special
+	 * {@code let} ({@link WasmLetCompiler}), whose cleanups are the {@code %dyn-restore}
+	 * forms restoring its dynamic bindings, so one mechanism covers every exit channel
+	 * for both.
+	 * @param body emits the protected code
+	 * @param cleanups the cleanup forms, compiled for effect on each exit path
+	 * @param ctx the compilation context
+	 * @param catching whether the region catches (EH mode: the {@code try_table} and its
+	 * landing pads are emitted). Without it only the {@code return} trampoline remains --
+	 * outside EH mode an error is a trap and no throw can cross the region, and with no
+	 * enclosing plain-{@code return} boundary either, the body and its cleanups are
+	 * emitted bare
+	 * @param keptSlots the locals the landing pads refresh
+	 * ({@code .kb/wasm-landing-pad-refresh.md}), or null for every local declared so far
+	 * -- a region whose pads read nothing but their own save slots keeps only those
+	 */
+	static void compileRegion(Runnable body, List<LispVal> cleanups, WasmLispCompiler.Ctx ctx, boolean catching,
+			int @Nullable [] keptSlots) {
 		// block $tramp (result (ref null eq)) -- the return-exit trampoline, only when
 		// an enclosing plain-return boundary exists (otherwise no return can escape
 		// this scope; a named return-from inlines its escaped cleanups instead).
 		boolean needTrampoline = WasmReturnCompiler.findPlainTarget(ctx) != null;
+		if (!catching && !needTrampoline) {
+			// Nothing can leave the body but a lexical return-from/go, and those inline
+			// the escaped scopes' cleanups at the exit site.
+			ctx.unwindScopes.push(new WasmLispCompiler.UnwindScope(cleanups, ctx.blockMarkers.size(), -1));
+			body.run();
+			ctx.unwindScopes.pop();
+			compileCleanups(cleanups, ctx);
+			return;
+		}
+		// A special let's restores are stack-neutral (local.get; global.set per binding),
+		// so the body's value stays on the operand stack under them and the result slot
+		// is spent only on user cleanups, whose forms may push anything.
+		int resultSlot = dynRestoresOnly(cleanups) ? -1 : ctx.allocTemp();
+		// block $done (result (ref null eq)) -- the region's value.
+		ctx.writer.write(Instruction.BLOCK);
+		ctx.writer.writeRefType(true, Type.EQ.code());
+		ctx.wasmCtrlDepth++;
+		int doneDepth = ctx.wasmCtrlDepth;
 		int trampolineDepth = -1;
 		int continueDepth = -1;
 		if (needTrampoline) {
@@ -93,105 +136,116 @@ final class WasmUnwindProtectCompiler {
 		// i32 result says which tag to rethrow on -- the payload (an eqref) is what
 		// crosses, so no exnref needs stashing; rethrowing the payload on its own tag
 		// is what every catcher observes anyway.
-		boolean twoTags = ctx.blockExitTag;
+		boolean twoTags = catching && ctx.blockExitTag;
 		int rethrowDepth = -1;
 		int blockExitDepth = -1;
-		int keptForBlockExit = 0;
-		if (twoTags) {
-			ctx.writer.write(Instruction.BLOCK);
-			ctx.writer.write(Type.I32);
-			ctx.wasmCtrlDepth++;
-			rethrowDepth = ctx.wasmCtrlDepth;
-			keptForBlockExit = WasmLandingPad.keepLocalsAlive(ctx);
+		int[] kept = keptSlots != null ? keptSlots : WasmLandingPad.allSlots(ctx);
+		int payloadSlot = -1;
+		int landingDepth = -1;
+		if (catching) {
+			if (twoTags) {
+				ctx.writer.write(Instruction.BLOCK);
+				ctx.writer.write(Type.I32);
+				ctx.wasmCtrlDepth++;
+				rethrowDepth = ctx.wasmCtrlDepth;
+				WasmLandingPad.keepSlotsAlive(ctx, kept);
+				ctx.writer.write(Instruction.BLOCK);
+				ctx.writer.writeRefType(true, Type.EQ.code());
+				ctx.wasmCtrlDepth++;
+				blockExitDepth = ctx.wasmCtrlDepth;
+			}
+			WasmLandingPad.keepSlotsAlive(ctx, kept);
+			// Allocated AFTER the pushes: a slot among the kept ones would be popped
+			// back over the payload just stashed in it.
+			payloadSlot = ctx.allocTemp();
+			// block $u (result (ref null eq)) -- the $lisp-cond landing pad.
 			ctx.writer.write(Instruction.BLOCK);
 			ctx.writer.writeRefType(true, Type.EQ.code());
 			ctx.wasmCtrlDepth++;
-			blockExitDepth = ctx.wasmCtrlDepth;
-		}
-		int kept = WasmLandingPad.keepLocalsAlive(ctx);
-		// Allocated AFTER the pushes: a slot among the kept ones would be popped back
-		// over the payload just stashed in it.
-		int payloadSlot = ctx.allocTemp();
-		// block $u (result (ref null eq)) -- the $lisp-cond landing pad.
-		ctx.writer.write(Instruction.BLOCK);
-		ctx.writer.writeRefType(true, Type.EQ.code());
-		ctx.wasmCtrlDepth++;
-		int landingDepth = ctx.wasmCtrlDepth;
-		// try_table (result (ref null eq)) (catch $lisp-cond $u) [(catch $block-exit
-		// $bx)]. Catch labels are resolved without the try_table's own label, so label 0
-		// is block $u here and $bx (one level out) is label 1.
-		ctx.writer.write(Instruction.TRY_TABLE);
-		ctx.writer.writeRefType(true, Type.EQ.code());
-		ctx.writer.writeUnsignedLeb128(twoTags ? 2 : 1);
-		ctx.writer.write(Instruction.CATCH);
-		ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TAG_LISP_COND);
-		ctx.writer.writeUnsignedLeb128(ctx.wasmCtrlDepth - landingDepth);
-		if (twoTags) {
+			landingDepth = ctx.wasmCtrlDepth;
+			// try_table (result (ref null eq)) (catch $lisp-cond $u) [(catch $block-exit
+			// $bx)]. Catch labels are resolved without the try_table's own label, so
+			// label 0 is block $u here and $bx (one level out) is label 1.
+			ctx.writer.write(Instruction.TRY_TABLE);
+			ctx.writer.writeRefType(true, Type.EQ.code());
+			ctx.writer.writeUnsignedLeb128(twoTags ? 2 : 1);
 			ctx.writer.write(Instruction.CATCH);
-			ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TAG_BLOCK_EXIT);
-			ctx.writer.writeUnsignedLeb128(ctx.wasmCtrlDepth - blockExitDepth);
+			ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TAG_LISP_COND);
+			ctx.writer.writeUnsignedLeb128(ctx.wasmCtrlDepth - landingDepth);
+			if (twoTags) {
+				ctx.writer.write(Instruction.CATCH);
+				ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TAG_BLOCK_EXIT);
+				ctx.writer.writeUnsignedLeb128(ctx.wasmCtrlDepth - blockExitDepth);
+			}
+			ctx.wasmCtrlDepth++;
 		}
-		ctx.wasmCtrlDepth++;
 		ctx.unwindScopes.push(new WasmLispCompiler.UnwindScope(cleanups, ctx.blockMarkers.size(), trampolineDepth));
-		// State-machine mode: the protected form is a spine child; a suspension inside
-		// it returns straight out (skipping the cleanups) and the resume re-enters this
-		// try_table from the top, re-arming them.
-		WasmAsyncEmit.spine(protectedForm, ctx);
+		body.run();
 		ctx.unwindScopes.pop();
-		ctx.wasmCtrlDepth--;
-		ctx.writer.write(Instruction.END); // try_table
+		if (catching) {
+			ctx.wasmCtrlDepth--;
+			ctx.writer.write(Instruction.END); // try_table
+		}
 		// Normal exit: stash the value, run the cleanups, skip the landing pads (the br
 		// discards the kept locals).
-		ctx.writer.write(Instruction.SET_LOCAL);
-		ctx.writer.writeUnsignedLeb128(resultSlot);
+		if (resultSlot >= 0) {
+			ctx.writer.write(Instruction.SET_LOCAL);
+			ctx.writer.writeUnsignedLeb128(resultSlot);
+		}
 		compileCleanups(cleanups, ctx);
-		ctx.writer.write(Instruction.GET_LOCAL);
-		ctx.writer.writeUnsignedLeb128(resultSlot);
+		if (resultSlot >= 0) {
+			ctx.writer.write(Instruction.GET_LOCAL);
+			ctx.writer.writeUnsignedLeb128(resultSlot);
+		}
 		ctx.writer.write(Instruction.BR, ctx.wasmCtrlDepth - doneDepth);
-		ctx.wasmCtrlDepth--;
-		ctx.writer.write(Instruction.END); // block $u -- the payload is on the stack
-		// $lisp-cond landing: stash the payload, refresh the locals, then the cleanups
-		// and the rethrow. A throw from a cleanup propagates outward instead (it cannot
-		// re-enter this scope's try_table, which is already exited).
-		ctx.writer.write(Instruction.SET_LOCAL);
-		ctx.writer.writeUnsignedLeb128(payloadSlot);
-		WasmLandingPad.refreshLocals(ctx, kept);
-		if (twoTags) {
-			ctx.writer.write(Instruction.I32_CONST);
-			ctx.writer.writeSignedLeb128(0);
-			ctx.writer.write(Instruction.BR, ctx.wasmCtrlDepth - rethrowDepth);
+		if (catching) {
 			ctx.wasmCtrlDepth--;
-			ctx.writer.write(Instruction.END); // block $bx -- the payload is on the stack
+			ctx.writer.write(Instruction.END); // block $u -- the payload is on the stack
+			// $lisp-cond landing: stash the payload, refresh the locals, then the
+			// cleanups and the rethrow. A throw from a cleanup propagates outward
+			// instead (it cannot re-enter this scope's try_table, which is already
+			// exited).
 			ctx.writer.write(Instruction.SET_LOCAL);
 			ctx.writer.writeUnsignedLeb128(payloadSlot);
-			WasmLandingPad.refreshLocals(ctx, keptForBlockExit);
-			ctx.writer.write(Instruction.I32_CONST);
-			ctx.writer.writeSignedLeb128(1);
-			ctx.wasmCtrlDepth--;
-			ctx.writer.write(Instruction.END); // block $rethrow -- the tag kind is on the
-												// stack
-			compileCleanups(cleanups, ctx);
-			ctx.writer.write(Instruction.IF, WasmLispCompiler.BLOCKTYPE_EMPTY);
-			ctx.wasmCtrlDepth++;
-			ctx.writer.write(Instruction.GET_LOCAL);
-			ctx.writer.writeUnsignedLeb128(payloadSlot);
-			ctx.writer.write(Instruction.THROW);
-			ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TAG_BLOCK_EXIT);
-			ctx.writer.write(Instruction.ELSE);
-			ctx.writer.write(Instruction.GET_LOCAL);
-			ctx.writer.writeUnsignedLeb128(payloadSlot);
-			ctx.writer.write(Instruction.THROW);
-			ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TAG_LISP_COND);
-			ctx.wasmCtrlDepth--;
-			ctx.writer.write(Instruction.END); // if
-			ctx.writer.write(Instruction.UNREACHABLE);
-		}
-		else {
-			compileCleanups(cleanups, ctx);
-			ctx.writer.write(Instruction.GET_LOCAL);
-			ctx.writer.writeUnsignedLeb128(payloadSlot);
-			ctx.writer.write(Instruction.THROW);
-			ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TAG_LISP_COND);
+			WasmLandingPad.refreshSlots(ctx, kept);
+			if (twoTags) {
+				ctx.writer.write(Instruction.I32_CONST);
+				ctx.writer.writeSignedLeb128(0);
+				ctx.writer.write(Instruction.BR, ctx.wasmCtrlDepth - rethrowDepth);
+				ctx.wasmCtrlDepth--;
+				ctx.writer.write(Instruction.END); // block $bx -- the payload is on the
+													// stack
+				ctx.writer.write(Instruction.SET_LOCAL);
+				ctx.writer.writeUnsignedLeb128(payloadSlot);
+				WasmLandingPad.refreshSlots(ctx, kept);
+				ctx.writer.write(Instruction.I32_CONST);
+				ctx.writer.writeSignedLeb128(1);
+				ctx.wasmCtrlDepth--;
+				ctx.writer.write(Instruction.END); // block $rethrow -- the tag kind is on
+													// the stack
+				compileCleanups(cleanups, ctx);
+				ctx.writer.write(Instruction.IF, WasmLispCompiler.BLOCKTYPE_EMPTY);
+				ctx.wasmCtrlDepth++;
+				ctx.writer.write(Instruction.GET_LOCAL);
+				ctx.writer.writeUnsignedLeb128(payloadSlot);
+				ctx.writer.write(Instruction.THROW);
+				ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TAG_BLOCK_EXIT);
+				ctx.writer.write(Instruction.ELSE);
+				ctx.writer.write(Instruction.GET_LOCAL);
+				ctx.writer.writeUnsignedLeb128(payloadSlot);
+				ctx.writer.write(Instruction.THROW);
+				ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TAG_LISP_COND);
+				ctx.wasmCtrlDepth--;
+				ctx.writer.write(Instruction.END); // if
+				ctx.writer.write(Instruction.UNREACHABLE);
+			}
+			else {
+				compileCleanups(cleanups, ctx);
+				ctx.writer.write(Instruction.GET_LOCAL);
+				ctx.writer.writeUnsignedLeb128(payloadSlot);
+				ctx.writer.write(Instruction.THROW);
+				ctx.writer.writeUnsignedLeb128(WasmLispCompiler.TAG_LISP_COND);
+			}
 		}
 		if (needTrampoline) {
 			ctx.wasmCtrlDepth--;
@@ -260,6 +314,13 @@ final class WasmUnwindProtectCompiler {
 			ctx.writer.writeUnsignedLeb128(spillSlot);
 		}
 		for (LispVal form : cleanups) {
+			// A special let's binding restore is always a statement: the restore alone,
+			// no nil to drop.
+			if (form instanceof LispCons cons && cons.car() instanceof LispSymbol head
+					&& LispNames.DYN_RESTORE_INTERNAL.equals(head.name())) {
+				WasmLetCompiler.emitRestoreForEffect(cons, ctx);
+				continue;
+			}
 			WasmExprCompiler.compileExpr(form, ctx);
 			ctx.writer.write(Instruction.DROP);
 		}
@@ -272,18 +333,41 @@ final class WasmUnwindProtectCompiler {
 	}
 
 	/**
+	 * Whether every cleanup is a special {@code let}'s {@code %dyn-restore} -- the one
+	 * cleanup kind emitted stack-neutrally, so the region's value can stay on the operand
+	 * stack while they run.
+	 * @param cleanups the cleanup forms
+	 * @return whether all are binding restores
+	 */
+	private static boolean dynRestoresOnly(List<LispVal> cleanups) {
+		if (cleanups.isEmpty()) {
+			return false;
+		}
+		for (LispVal form : cleanups) {
+			if (!(form instanceof LispCons cons) || !(cons.car() instanceof LispSymbol head)
+					|| !LispNames.DYN_RESTORE_INTERNAL.equals(head.name())) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/**
 	 * Whether the cleanup sequence is the compiler's OWN bookkeeping rather than a user's
-	 * cleanup forms -- the {@code (%hc-depth-dec)} a {@code handler-case} scope carries,
-	 * which is an i32 counter adjustment and can never reach the {@code %mv-spill}
-	 * channel. Such a scope skips the save/restore above, so a program's handler-case
-	 * escape paths stay byte-identical to a build compiled before it existed.
+	 * cleanup forms -- the {@code (%hc-depth-dec)} a {@code handler-case} scope carries
+	 * (an i32 counter adjustment) or the {@code (%dyn-restore ...)}s of a special
+	 * {@code let}'s scope (a global or task-slot write), neither of which can reach the
+	 * {@code %mv-spill} channel. Such a scope skips the save/restore above, so a
+	 * program's handler-case escape paths stay byte-identical to a build compiled before
+	 * it existed, and a special {@code let} pays nothing for the channel.
 	 * @param cleanups the cleanup forms
 	 * @return whether every form is compiler-internal
 	 */
 	private static boolean internalOnly(List<LispVal> cleanups) {
 		for (LispVal form : cleanups) {
 			if (!(form instanceof LispCons cons) || !(cons.car() instanceof LispSymbol head)
-					|| !LispNames.HC_DEPTH_DEC_INTERNAL.equals(head.name())) {
+					|| !(LispNames.HC_DEPTH_DEC_INTERNAL.equals(head.name())
+							|| LispNames.DYN_RESTORE_INTERNAL.equals(head.name()))) {
 				return false;
 			}
 		}

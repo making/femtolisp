@@ -9,6 +9,9 @@ import java.util.Objects;
 import java.util.Set;
 
 import am.ik.rontolisp.LispCons;
+import am.ik.rontolisp.LispInteger;
+import am.ik.rontolisp.LispNames;
+import am.ik.rontolisp.LispNil;
 import am.ik.rontolisp.macro.LispMacroExpander;
 import am.ik.rontolisp.LispSymbol;
 import am.ik.rontolisp.LispVal;
@@ -26,13 +29,15 @@ import org.jspecify.annotations.Nullable;
  * THREAD-SCOPED dynamic binding over the special's {@code _d$} ThreadLocal (interpreter
  * parity: two http-handler request threads binding the same special must not clobber each
  * other): {@code _dbind} installs a fresh cell holding the init value and answers the
- * previous cell, saved in a temp and put back with {@code ThreadLocal.set} when the body
- * exits normally. The new value is visible (via the dynamic-first {@code _dget} read) to
- * any function called during the body on THIS thread; other threads keep reading the
- * {@code _g$} global default. A {@code return}/{@code return-from} that unwinds across
- * the {@code let} boundary restores through {@link JvmLispCompiler.Ctx#specialBindScopes}
- * (a plain WASM {@code return} through a trampoline and {@code go} across the binding
- * remain the known compile-path holes; the interpreter restores on every exit).
+ * previous cell, saved in a temp and put back with {@code ThreadLocal.set} on EVERY exit
+ * from the body: the body is a protected region of the {@code unwind-protect} machinery
+ * ({@link JvmUnwindProtectCompiler.Region}) whose cleanups are {@code %dyn-restore}
+ * forms, so an error unwind, a cross-lambda exit and a
+ * {@code return}/{@code return-from}/ {@code go} escape all restore, in CL's
+ * innermost-first order against any cleanup nested around or inside the binding -- the
+ * interpreter's {@code finally}. The new value is visible (via the dynamic-first
+ * {@code _dget} read) to any function called during the body on THIS thread; other
+ * threads keep reading the {@code _g$} global default.
  */
 final class JvmLetCompiler {
 
@@ -143,7 +148,6 @@ final class JvmLetCompiler {
 						dynamicRestores = new ArrayList<>();
 					}
 					dynamicRestores.add(new int[] { tlField.index(), saveSlot });
-					ctx.specialBindScopes.push(new int[] { tlField.index(), saveSlot, ctx.blockTargets.size() });
 					if (capturedInLet.contains(name)) {
 						int tmpSlot = ctx.allocTemp();
 						ctx.emit(Opcode.ASTORE);
@@ -282,23 +286,25 @@ final class JvmLetCompiler {
 			}
 		}
 		ctx.declaredDoubles = bodyDeclaredDoubles;
+		// A body under dynamic bindings is a PROTECTED REGION whose cleanups restore
+		// each special to its saved previous cell (possibly null = no binding on this
+		// thread), innermost first: the unwind-protect machinery then restores on every
+		// exit channel -- normal completion, an error unwind (caught in this frame or
+		// across a callee's), a cross-lambda exit, and a return/return-from/go escape,
+		// which inlines the escaped scopes' cleanups in CL's innermost-first order
+		// (.kb/dynamic-special-variables.md). A body-less let has no region: nothing
+		// can exit it abnormally, and its restores run straight after the bindings.
+		boolean hasBody = parts.size() > 2;
+		JvmUnwindProtectCompiler.Region region = dynamicRestores == null || !hasBody ? null
+				: JvmUnwindProtectCompiler.Region.open(restoreForms(dynamicRestores), ctx, className, !forEffect);
 		final List<int[]> restores = dynamicRestores;
-		// Restore each dynamically bound special to its saved previous cell (possibly
-		// null = no binding on this thread). This runs with the body's result on top of
-		// the stack; each restore is stack-neutral (getstatic tl; aload cell;
-		// ThreadLocal.set) so the result is preserved.
 		Runnable afterBody = () -> {
-			if (restores != null) {
-				int tlSetIndex = Objects.requireNonNull(ctx.dynVars).tlSet().index();
+			if (region != null) {
+				region.close();
+			}
+			else if (restores != null) {
 				for (int i = restores.size() - 1; i >= 0; i--) {
-					int[] restore = restores.get(i);
-					ctx.emit(Opcode.GETSTATIC);
-					ctx.emitU2(restore[0]);
-					ctx.emit(Opcode.ALOAD);
-					ctx.emit(restore[1]);
-					ctx.emit(Opcode.INVOKEVIRTUAL);
-					ctx.emitU2(tlSetIndex);
-					ctx.specialBindScopes.pop();
+					emitRestore(restores.get(i)[0], restores.get(i)[1], ctx);
 				}
 			}
 			ctx.locals = savedLocals;
@@ -337,6 +343,60 @@ final class JvmLetCompiler {
 			}
 		}
 		afterBody.run();
+	}
+
+	/**
+	 * The {@code (%dyn-restore tlFieldIndex saveSlot)} cleanup forms of a body under
+	 * dynamic bindings, innermost first -- the order the bindings must be undone in.
+	 * @param dynamicRestores {@code {tlFieldIndex, saveSlot}} per binding, in binding
+	 * order
+	 * @return the cleanup forms
+	 */
+	private static List<LispVal> restoreForms(List<int[]> dynamicRestores) {
+		List<LispVal> forms = new ArrayList<>();
+		for (int i = dynamicRestores.size() - 1; i >= 0; i--) {
+			int[] restore = dynamicRestores.get(i);
+			forms.add(new LispCons(new LispSymbol(LispNames.DYN_RESTORE_INTERNAL), new LispCons(
+					new LispInteger(restore[0]), new LispCons(new LispInteger(restore[1]), LispNil.INSTANCE))));
+		}
+		return forms;
+	}
+
+	/**
+	 * Compiles the internal {@code (%dyn-restore tlFieldIndex saveSlot)} form
+	 * ({@link LispNames#DYN_RESTORE_INTERNAL}): restores the thread's binding of one
+	 * special to the previous cell saved at the binding site, and yields nil. Built by
+	 * {@link #restoreForms} only, as the cleanups of a special {@code let}'s protected
+	 * region, so it reaches the expression compiler on every exit path the region emits
+	 * (normal, handler, the copies inlined at a {@code return}/{@code go}). Statement
+	 * position ({@link JvmExprCompiler#compileForEffect}) calls {@link #emitRestore}
+	 * directly and skips the nil.
+	 */
+	static void compileDynRestore(LispCons cons, JvmLispCompiler.Ctx ctx) {
+		emitRestoreForEffect(cons, ctx);
+		ctx.emit(Opcode.ACONST_NULL);
+	}
+
+	/** The {@code %dyn-restore} form compiled for effect: the restore, no value. */
+	static void emitRestoreForEffect(LispCons cons, JvmLispCompiler.Ctx ctx) {
+		List<LispVal> parts = cons.toList();
+		emitRestore((int) ((LispInteger) parts.get(1)).value(), (int) ((LispInteger) parts.get(2)).value(), ctx);
+	}
+
+	/**
+	 * Emits one binding restore: {@code getstatic tl; aload cell; ThreadLocal.set} --
+	 * stack-neutral, so it may run over a value the surrounding code keeps on the stack.
+	 * @param tlFieldIndex the special's {@code _d$} ThreadLocal field constant
+	 * @param saveSlot the local holding the previous cell (possibly null)
+	 * @param ctx the compilation context
+	 */
+	private static void emitRestore(int tlFieldIndex, int saveSlot, JvmLispCompiler.Ctx ctx) {
+		ctx.emit(Opcode.GETSTATIC);
+		ctx.emitU2(tlFieldIndex);
+		ctx.emit(Opcode.ALOAD);
+		ctx.emit(saveSlot);
+		ctx.emit(Opcode.INVOKEVIRTUAL);
+		ctx.emitU2(Objects.requireNonNull(ctx.dynVars).tlSet().index());
 	}
 
 	/**

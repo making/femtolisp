@@ -19,13 +19,15 @@ import org.jspecify.annotations.Nullable;
  * {@link JvmReturnFromCompiler}.
  *
  * <p>
- * When the jump escapes one or more {@code unwind-protect} protected regions (the scope
- * was entered inside the target block), their cleanup forms are compiled inline before
- * the {@code goto}, innermost first -- the CL unwinding order. The inlined sequence is
- * recorded as a hole in each escaped scope from that scope's own cleanup onward: once a
- * scope's cleanup has started, a throw from the remaining sequence must no longer
- * re-enter that scope's handler (its cleanup already ran), while a throw from an inner
- * scope's cleanup still lands in the outer scopes' handlers.
+ * When the jump escapes one or more protected regions (the scope was entered inside the
+ * target block) -- an {@code unwind-protect}, or a special {@code let} whose cleanups
+ * restore its dynamic bindings ({@link JvmLetCompiler}) -- their cleanup forms are
+ * compiled inline before the {@code goto}, innermost first -- the CL unwinding order,
+ * bindings and cleanups interleaved as nested. The inlined sequence is recorded as a hole
+ * in each escaped scope from that scope's own cleanup onward: once a scope's cleanup has
+ * started, a throw from the remaining sequence must no longer re-enter that scope's
+ * handler (its cleanup already ran), while a throw from an inner scope's cleanup still
+ * lands in the outer scopes' handlers.
  */
 final class JvmReturnCompiler {
 
@@ -74,21 +76,6 @@ final class JvmReturnCompiler {
 		ctx.emit(Opcode.ASTORE);
 		ctx.emit(target.rvSlot());
 		compileEscapedCleanups(ctx, className, targetDepth);
-		// Restore every special-variable dynamic binding this exit escapes (the
-		// bindings established inside the target block), innermost first -- so a named
-		// exit from a scan closure does not leak the bound value into this thread's
-		// dynamic store (getstatic tl; aload saved cell; ThreadLocal.set).
-		for (int[] scope : ctx.specialBindScopes) {
-			if (scope[2] < targetDepth) {
-				break;
-			}
-			ctx.emit(Opcode.GETSTATIC);
-			ctx.emitU2(scope[0]);
-			ctx.emit(Opcode.ALOAD);
-			ctx.emit(scope[1]);
-			ctx.emit(Opcode.INVOKEVIRTUAL);
-			ctx.emitU2(java.util.Objects.requireNonNull(ctx.dynVars).tlSet().index());
-		}
 		emitStackUnwind(ctx, target, targetDepth);
 		int gotoPos = ctx.code.size();
 		ctx.emit(Opcode.GOTO);
