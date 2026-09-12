@@ -80,6 +80,13 @@ microsecond per character -- a `BufferedReader.read()` plus a boxed store is 121
 gap there was 1.9x, not 23x, and most of what remained after the fix is the accumulate. The
 same block arm still paid for itself 3x on that leg.
 
+**The remaining accumulate does not shrink further at the Lisp level**: `.todo/786` tried
+replacing the `with-output-to-string` accumulate with a `make-string` buffer that doubles,
+to cut three character-touches to two, and measured it SLOWER on every backend it could
+test -- `make-string`'s mandatory `:initial-element` fill costs more than the touch it was
+meant to save. Numbers and why: `.kb/string-accumulate-cost.md`, "The 'sized-once'
+alternative is not a win".
+
 ## Tests
 ci-spec `read-sequence-over-a-file-decodes-a-block-of-characters-at-a-time` (all four
 backends: the non-BMP character sits ON the block boundary of every one of them);

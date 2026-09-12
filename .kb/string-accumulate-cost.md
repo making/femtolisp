@@ -66,7 +66,10 @@ is a fresh list either way and the outer `(append ... nil)` the left fold needed
   every backend** and no `concatenate` fix can help it: each call copies the accumulator.
   That is a shape to avoid in library Lisp, and the reason `read-file-string` no longer
   uses it. `with-output-to-string`, or `make-string` sized once and filled with `replace`,
-  are the two answers.
+  are the two answers to AVOIDING QUADRATIC -- both linear. They are not equally fast in
+  absolute terms, though: `make-string` pays to fill its whole capacity every call, which
+  makes a buffer that grows by doubling slower than `with-output-to-string` in practice
+  ("The 'sized-once' alternative is not a win" below).
 
 ## The accumulate was never the whole cost of reading a file
 It was not even most of it. What remained after this file's fix was the CHARACTER
@@ -91,6 +94,51 @@ is "they may now, and it would be a wash".
 Of `read-file-string`'s remaining 366 ms on the interpreter, about 260 ms is the
 `with-output-to-string` accumulate THIS file is about -- it is linear, but it is now the
 larger half of reading a file into a string on every backend.
+
+## The "sized-once" alternative is not a win: `make-string` FILLS the whole capacity
+`.todo/786` asked whether the accumulate's remaining ~260 ms could be cut from three
+character-touches (store into the read buffer, copy into the stream, render into the
+result) to two, by replacing `with-output-to-string` with one `make-string` buffer that
+DOUBLES on demand (`read-sequence buf in :start len`, answered as `(subseq buf 0 len)`).
+Measured 2026-09-12 (JDK 25, wasmtime 47, Linux x64), both alternatives against the SAME
+2,668,890-character file, steady state (5 reads in one process, mean of the last two):
+
+| shape | interpreter | JVM class | wasm preview 1 |
+|---|---|---|---|
+| `with-output-to-string`, 4,096-char chunk (current) | 72 ms | 217 ms | 246 ms |
+| doubling `make-string` + `replace` + `subseq` | 106 ms (+47%) | 340 ms (+57%, GC-noisy) | 336 ms (+37%) |
+
+**The doubling buffer LOSES on every backend measured**, not by a small margin. The reason
+is `make-string`: `expandMakeString` lowers it to `(make-array n :element-type 'character
+:initial-element #\Space)` (`.kb/adjustable-arrays.md`), so every `make-string` call pays
+for FILLING its whole capacity, not just what the caller goes on to write. A doubling
+buffer therefore fills its buffer TWICE across its lifetime (once as spaces at allocation,
+once with `replace` copying the real data over the first half) plus the growth copy itself
+-- three to four touches, not two, and the growth capacities sum to roughly 2x the final
+size on top of that. Isolated: a bare loop that doubles a `make-string` buffer ten times to
+4,194,304 characters (no I/O at all) costs 56 ms steady-state on the interpreter alone --
+comparable to the ENTIRE baseline `read-file-string` (72 ms) for the same file. `replace`
+and `subseq` are not the problem (they copy only real data); the unconditional
+`:initial-element` fill is.
+
+A second alternative -- keep `with-output-to-string` but grow the READ chunk from 4,096 to
+65,536 characters, cutting the call count from 652 to 41 -- helps the interpreter on THIS
+file (72 -> 52 ms, -28%) and is noise-level on the JVM and wasm (within run-to-run
+variance). But `make-string`'s fill cost is paid on EVERY call regardless of the file's
+real size, so a bigger fixed chunk is a tax on the common case instead: 1,000 reads of a
+5-byte file, steady state, interpreter: 137 ms at a 4,096-char chunk, **511 ms (3.7x) at a
+65,536-char chunk**. Sizing the chunk from the file is not portable either -- `file-length`
+answers nil on both WASM backends (the comment already on `read-file-string`).
+
+**Conclusion: `uiop:read-file-string` keeps its current shape.** Neither alternative is a
+net improvement once the common (small-file) case is weighed against the one large file
+the doubling shape was designed for. A real win needs a buffer allocation that skips the
+CL `:initial-element` fill obligation -- an uninitialized-storage primitive `make-string`
+cannot honestly be, since the language sizes the default fill from the array's own default
+element (`.kb/adjustable-arrays.md`, "An array slot nobody wrote..."). Exposing one to
+library Lisp (and auditing every `make-string` caller that currently relies on the fill,
+e.g. anything reading uninitialized tail slots) is a separate, larger project than this
+item's scope.
 
 ## Pinning
 - ci-spec `string-accumulate-is-not-quadratic` (all four backends): 4,096 pieces of 64
