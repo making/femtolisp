@@ -6699,6 +6699,75 @@ class JvmLispCompilerTest {
 	}
 
 	@Test
+	void compileAndRunConsSetAndTreeOperators() throws Exception {
+		// The cons set / tree family: the n-prefixed spellings are aliases for the
+		// non-destructive siblings (CLHS makes the destructive promise a licence),
+		// nbutlast is the one that really cuts the argument's spine, and the first-class
+		// calls at the end ride the keyword-forwarding wrapper rather than a second
+		// implementation (.kb/cons-set-and-tree-operators.md).
+		String source = """
+				(print (nunion (list 1 2 3) (list 2 3 4)))
+				(print (nintersection (list 1 2 3) (list 2 3 4) :test #'eql))
+				(print (nset-difference (list 1 2 3) (list 2) :key #'identity))
+				(print (nset-exclusive-or (list 1 2 3) (list 2 3 4)))
+				(print (subst 9 'a '(a (b a)) :test-not (lambda (x y) (not (eql x y)))))
+				(print (subst-if 0 #'numberp '(1 (2 x) 3)))
+				(print (subst-if-not 0 #'listp '(1 (2))))
+				(print (nsubst 'x 'a (list 'a (list 'b 'a))))
+				(print (nsubst-if 0 #'numberp (list 1 (list 2 'x))))
+				(print (nsublis (list (cons 'a 1)) (list 'a (list 'b 'a))))
+				(print (sublis (list (cons "a" 1)) (list "a" 'b) :test #'equal))
+				(print (member-if-not #'numberp '(1 2 a b)))
+				            (print (member-if #'oddp '(1 2 3) :key #'1+))
+				(print (assoc-if-not #'numberp '((1 . a) (b . c))))
+				(print (rassoc-if #'oddp '((a . 1) (b . 2)) :key #'1+))
+				(print (butlast '(1 2 3 4) 2))
+				(print (butlast '(1 2 3 4) 99))
+				(let ((cst-l (list 1 2 3 4))) (print (nbutlast cst-l 2)) (print cst-l))
+				(print (list-length '(a b c)))
+				(print (tailp 'e '(a b . e)))
+				(print (multiple-value-list (get-properties '(a 1 b 2) '(b))))
+				(print (apply #'set-difference (list (list 1 2 3) (list 2) :test #'eql)))
+				(print (funcall #'subsetp '(1 2) '(1 2 3) :test #'eql))
+				(print (funcall #'intersection '((1 a)) '((1 b)) :key #'car))
+				(print (funcall #'adjoin 1 '(1 2) :key #'identity))
+				(print (funcall #'member-if #'oddp '(1 2 3) :key #'1+))
+				(print (funcall #'butlast '(1 2 3 4) 2))
+				(print (apply #'nunion (list (list 1 2) (list 2 3))))
+				""";
+		assertThat(compileAndRun(source)).isEqualTo("""
+				(4 1 2 3)
+				(3 2)
+				(3 1)
+				(1 4)
+				(9 (B 9))
+				(0 (0 X) 0)
+				(0 (0))
+				(X (B X))
+				(0 (0 X))
+				(1 (B 1))
+				(1 B)
+				(A B)
+				(2 3)
+				(B . C)
+				(B . 2)
+				(1 2)
+				NIL
+				(1 2)
+				(1 2)
+				3
+				T
+				(B 2 (B 2))
+				(3 1)
+				T
+				((1 A))
+				(1 2)
+				(2 3)
+				(1 2)
+				(3 1 2)""");
+	}
+
+	@Test
 	void compileAndRunRemoveDuplicatesBoundingKeywords() throws Exception {
 		// remove-duplicates takes the same 17.2.1 set, but its window bounds which
 		// elements are CONSIDERED: one outside :start/:end is kept verbatim rather than

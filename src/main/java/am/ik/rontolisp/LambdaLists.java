@@ -577,8 +577,11 @@ public final class LambdaLists {
 	/**
 	 * A {@code do} loop over the keyword tail signalling on the first indicator that is
 	 * not a declared keyword, unless the caller passed {@code :allow-other-keys} with a
-	 * true value. The signal is a {@code program-error} (CLHS 3.5.1.4), through the
-	 * internal {@code %program-error} primitive every backend lowers.
+	 * true value -- and on a tail of ODD length, which no {@code :allow-other-keys} makes
+	 * legal (CLHS 3.5.1.6: the last indicator has no value to pair with, so the call is
+	 * malformed whatever the indicators are). Both signals are a {@code program-error}
+	 * (CLHS 3.5.1.4), through the internal {@code %program-error} primitive every backend
+	 * lowers.
 	 */
 	private static LispVal unknownKeyCheck(LispSymbol source, List<KeyParam> keys) {
 		LispSymbol cur = new LispSymbol(CUR_VAR);
@@ -607,8 +610,17 @@ public final class LambdaLists {
 		LispVal signal = list(new LispSymbol(LispNames.PROGRAM_ERROR_INTERNAL),
 				list(new LispSymbol(LispNames.STRING_CONCAT), new LispString("Unknown keyword argument: "),
 						call(LispNames.PRIN1_TO_STRING, call(LispNames.CAR, cur))));
-		LispVal body = list(new LispSymbol(LispNames.IF), ok, LispNil.INSTANCE,
-				list(new LispSymbol(LispNames.IF), callerOverride, LispNil.INSTANCE, signal));
+		LispVal oddSignal = list(new LispSymbol(LispNames.PROGRAM_ERROR_INTERNAL),
+				list(new LispSymbol(LispNames.STRING_CONCAT), new LispString("Odd number of keyword arguments: "),
+						call(LispNames.PRIN1_TO_STRING, call(LispNames.CAR, cur))));
+		// The unknown-indicator complaint comes FIRST: a trailing POSITIONAL argument is
+		// both an unknown indicator and an odd tail, and naming it is the more useful of
+		// the two readings ((linalg:sum m 0) -- the numpy-style libraries' own trap).
+		// The odd-length complaint is what is left: a DECLARED keyword with no value.
+		LispVal odd = list(new LispSymbol(LispNames.IF), call(LispNames.ATOM, call(LispNames.CDR, cur)), oddSignal,
+				LispNil.INSTANCE);
+		LispVal accepted = list(new LispSymbol(LispNames.OR), ok, callerOverride);
+		LispVal body = list(new LispSymbol(LispNames.IF), accepted, odd, signal);
 		return list(new LispSymbol(LispNames.DO), bindings, endClause, body);
 	}
 

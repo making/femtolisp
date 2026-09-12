@@ -189,17 +189,23 @@ page.
 | `find` | `(find 2 '(1 2 3))` | `2` (first element `eql` to the item, or nil; optional `:test`/`:key` keywords) |
 | `find-if` | `(find-if #'evenp '(1 3 6 7))` | `6` (first element satisfying the predicate, or nil) |
 | `find-if-not` | `(find-if-not #'evenp '(2 4 5 6))` | `5` (first element failing the predicate, or nil) |
-| `member-if` | `(member-if #'oddp '(2 4 5 6))` | `(5 6)` (tail starting at the first element satisfying the predicate, or nil) |
+| `member-if` | `(member-if #'oddp '(2 4 5 6))` | `(5 6)` (tail starting at the first element satisfying the predicate, or nil; optional `:key`) |
+| `member-if-not` | `(member-if-not #'numberp '(1 2 a b))` | `(a b)` (tail starting at the first element FAILING the predicate, or nil; optional `:key`) |
 | `position` | `(position 3 '(1 2 3))` | `2` (0-based index of the first element `eql` to the item, or nil; optional `:test`/`:key` keywords) |
 | `position-if` | `(position-if #'evenp '(1 3 6 7))` | `2` (0-based index of the first element satisfying the predicate, or nil) |
 | `count` | `(count 2 '(1 2 3 2 2))` | `3` (number of elements `eql` to the item; optional `:test`/`:key` keywords) |
 | `count-if` | `(count-if #'evenp '(1 2 3 4))` | `2` (number of elements satisfying the predicate) |
 | `count-if-not` | `(count-if-not #'evenp '(1 2 3 4 5))` | `3` (number of elements FAILING the predicate; `:key`/`:start`/`:end`/`:from-end`) |
 | `assoc` | `(assoc 'b '((a . 1) (b . 2)))` | `(b . 2)` (first pair whose car matches the key, or nil; `eql` compare by default, optional `:test`/`:key` keywords, e.g. `(assoc "b" '(("a" . 1) ("b" . 2)) :test #'equal)`) |
-| `assoc-if` | `(assoc-if #'oddp '((2 a) (3 b)))` | `(3 b)` (first pair whose car satisfies the predicate, or nil) |
+| `assoc-if` | `(assoc-if #'oddp '((2 a) (3 b)))` | `(3 b)` (first pair whose car satisfies the predicate, or nil; optional `:key`) |
+| `assoc-if-not` | `(assoc-if-not #'numberp '((1 . a) (b . c)))` | `(b . c)` (first pair whose car FAILS the predicate, or nil; optional `:key`) |
 | `getf` | `(getf '(:a 1 :b 2) :b)` | `2` (value following the indicator in a property list, or nil; the partner of `remf`. Two arguments only: no `&optional default`) |
+| `get-properties` | `(get-properties '(a 1 b 2) '(b))` | `b`, `2`, `(b 2)` -- three values: the first indicator of the list that is present, its value, and the tail of the plist starting there (all nil on a miss) |
 | `last` | `(last '(1 2 3))`, `(last '(1 2 3) 2)` | `(3)`, `(2 3)` (last cons cell, or the last `n` conses; nil for an empty list) |
-| `butlast` | `(butlast '(1 2 3))` | `(1 2)` (copy without the last element; nil for an empty or single-element list) |
+| `butlast` | `(butlast '(1 2 3))`, `(butlast '(1 2 3 4) 2)` | `(1 2)`, `(1 2)` (copy without the last `n` conses, one by default; nil when the count reaches the length) |
+| `nbutlast` | `(nbutlast (list 1 2 3 4) 2)` | `(1 2)` (destructive `butlast`: cuts the argument's own spine with an `rplacd` and returns it) |
+| `list-length` | `(list-length '(a b c))` | `3` (length of a proper list, nil for a CIRCULAR one, `type-error` for a dotted or non-list argument) |
+| `tailp` | `(tailp 'e '(a b . e))` | `t` (whether the object is one of the list's tails -- `eq` against each cons, `eql` against the terminating atom) |
 | `remove` | `(remove 2 '(1 2 3 2))` | `(1 3)` (new list without items `eql` to the given one; optional `:test`/`:key` keywords) |
 | `remove-if` | `(remove-if #'evenp '(1 2 3 4))` | `(1 3)` (new list without items satisfying the predicate) |
 | `remove-if-not` | `(remove-if-not #'evenp '(1 2 3 4))` | `(2 4)` (new list keeping only items satisfying the predicate) |
@@ -208,7 +214,10 @@ page.
 | `delete` | `(delete 2 '(1 2 3 2))` | `(1 3)` (destructive `remove`: splices out matching cells in place; optional `:test`/`:key` keywords; use the return value since the head may change) |
 | `delete-if` | `(delete-if #'evenp '(1 2 3 4))` | `(1 3)` (destructive `remove-if`) |
 | `delete-if-not` | `(delete-if-not #'evenp '(1 2 3 4))` | `(2 4)` (destructive `remove-if-not`) |
-| `subst` | `(subst 'x 'a '(a (b a) c))` | `(x (b x) c)` (non-destructive tree substitution; optional `:test`/`:key` keywords) |
+| `subst` | `(subst 'x 'a '(a (b a) c))` | `(x (b x) c)` (non-destructive tree substitution; optional `:test`/`:test-not`/`:key` keywords) |
+| `subst-if` | `(subst-if 0 #'numberp '(1 (2 x) 3))` | `(0 (0 x) 0)` (`subst` matching by PREDICATE instead of by item; optional `:key`) |
+| `subst-if-not` | `(subst-if-not 0 #'listp '(1 (2)))` | `(0 (0))` (the complement of `subst-if`) |
+| `nsubst` / `nsubst-if` / `nsubst-if-not` | `(nsubst 'x 'a (list 'a 'b))` | `(x b)` (the destructive spellings; CLHS lets them answer the non-destructive result, and these do -- unchanged subtrees are shared either way) |
 | `search` | `(search "bc" "abcd")` | `1` (position of one sequence inside another, or nil; `:start1`/`:end1`/`:start2`/`:end2`/`:test`/`:key`/`:from-end`) |
 | `mismatch` | `(mismatch "apple" "apricot")` | `2` -- the index into the first sequence where the two differ, or nil; same keywords as `search` |
 | `tree-equal` | `(tree-equal '(1 (2 3)) '(1 (2 3)))` | `t` (same tree shape with leaves matching under `:test` (default `eql`) or `:test-not`) |
@@ -223,6 +232,7 @@ page.
 | `copy-list` | `(copy-list '(1 2 3))` | `(1 2 3)` (shallow copy of a list) |
 | `copy-tree` | `(copy-tree '(1 (2 3)))` | `(1 (2 3))` (deep copy of a cons tree) |
 | `sublis` | `(sublis '((a . 1)) '(a b))` | `(1 B)` (fresh tree with every subtree matching an alist key replaced; `:key`/`:test`/`:test-not`) |
+| `nsublis` | `(nsublis '((a . 1)) '(a b))` | `(1 B)` (the destructive spelling of `sublis`; see `nsubst`) |
 | `nreverse` | `(nreverse '(1 2 3))` | `(3 2 1)` (destructively reverse a list by rewiring each `cdr`; use the return value) |
 | `make-list` | `(make-list 3 :initial-element 0)` | `(0 0 0)` (list of n cells sharing the one element value; `nil` by default) |
 | `union` | `(union '(1 2 3) '(2 3 4))` | `(4 1 2 3)` (set union, `eql` compare by default, optional `:test`/`:key` keywords; result order unspecified) |
@@ -231,12 +241,14 @@ page.
 | `set-exclusive-or` | `(set-exclusive-or '(1 2 3) '(2 3 4))` | `(1 4)` (symmetric difference: the elements of either list with no match in the other; optional `:test`/`:test-not`/`:key` keywords; result order unspecified) |
 | `adjoin` | `(adjoin 1 '(2 3))` | `(1 2 3)` (prepend the item unless already a member; `eql` compare by default, optional `:test`/`:key` keywords) |
 | `subsetp` | `(subsetp '(1 2) '(1 2 3))` | `T` (true when every element of the first list is a member of the second; `eql` compare by default, optional `:test`/`:key` keywords) |
+| `nunion` / `nintersection` / `nset-difference` / `nset-exclusive-or` | `(nunion (list 1 2) (list 2 3))` | `(3 1 2)` (the destructive spellings of the four set operations; CLHS lets them answer the non-destructive result, and these do -- the arguments are never modified) |
 | `list*` | `(list* 1 2 '(3 4))`, `(list* 1 2 3)` | `(1 2 3 4)`, `(1 2 . 3)` (cons the leading arguments onto the last one as the tail) |
 | `acons` | `(acons 'a 1 nil)` | `((a . 1))` (prepend a `(key . value)` pair to an alist) |
 | `endp` | `(endp nil)`, `(endp '(1))` | `t`, `nil` (end-of-list test; a synonym for `null`, the improper-list error is relaxed) |
 | `elt` | `(elt '(a b c) 1)` | `b` (0-based element access; lists only, no string indexing) |
 | `rassoc` | `(rassoc 2 '((a . 1) (b . 2)))` | `(b . 2)` (first pair whose cdr matches the value, or nil; `eql` compare by default, optional `:test`/`:key` keywords) |
-| `rassoc-if` | `(rassoc-if #'oddp '((a . 2) (b . 3)))` | `(b . 3)` (first pair whose cdr satisfies the predicate, or nil) |
+| `rassoc-if` | `(rassoc-if #'oddp '((a . 2) (b . 3)))` | `(b . 3)` (first pair whose cdr satisfies the predicate, or nil; optional `:key`) |
+| `rassoc-if-not` | `(rassoc-if-not #'numberp '((a . 1) (b . c)))` | `(b . c)` (first pair whose cdr FAILS the predicate, or nil; optional `:key`) |
 | `pairlis` | `(pairlis '(a b) '(1 2))` | `((a . 1) (b . 2))` (pair up a list of keys and a list of values into an alist; an optional third argument is appended as the tail) |
 | `copy-alist` | `(copy-alist '((a . 1)))` | `((a . 1))` (copy an alist's spine and its pair cells; the keys and values themselves are shared) |
 | `revappend` | `(revappend '(1 2 3) '(4 5))` | `(3 2 1 4 5)` (reverse the first list and append the second) |

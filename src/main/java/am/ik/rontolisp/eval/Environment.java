@@ -3677,18 +3677,24 @@ public final class Environment implements Scope {
 			return cur;
 		}));
 		env.defineFunction(LispNames.BUTLAST, new LispFunction(LispNames.BUTLAST, args -> {
-			requireArgCount(LispNames.BUTLAST, args, 1);
-			List<LispVal> kept = new java.util.ArrayList<>();
+			requireArgCountBetween(LispNames.BUTLAST, args, 1, 2);
+			// (butlast list [n]): a copy of the list without its last n CONSES (n
+			// defaults to 1, and a dotted list's terminator is not one of them). The
+			// conses are counted first rather than trailed by a second cursor, so a
+			// count past the end -- ANSI passes most-positive-fixnum + 1 -- decides by
+			// subtraction instead of by walking.
+			List<LispVal> elements = new java.util.ArrayList<>();
 			LispVal cur = args.get(0);
-			// Accumulate every element except the last; an empty or single-element list
-			// yields nil.
-			while (cur instanceof LispCons cell && cell.cdr() instanceof LispCons) {
-				kept.add(cell.car());
+			while (cur instanceof LispCons cell) {
+				elements.add(cell.car());
 				cur = cell.cdr();
 			}
+			java.math.BigInteger count = args.size() > 1 ? butlastCount(args.get(1)) : java.math.BigInteger.ONE;
+			java.math.BigInteger keep = java.math.BigInteger.valueOf(elements.size()).subtract(count);
 			LispVal result = LispNil.INSTANCE;
-			for (int i = kept.size() - 1; i >= 0; i--) {
-				result = new LispCons(kept.get(i), result);
+			int kept = keep.signum() <= 0 ? 0 : keep.min(java.math.BigInteger.valueOf(elements.size())).intValueExact();
+			for (int i = kept - 1; i >= 0; i--) {
+				result = new LispCons(elements.get(i), result);
 			}
 			return result;
 		}));
@@ -3929,104 +3935,23 @@ public final class Environment implements Scope {
 			}
 			return result;
 		}));
-		env.defineFunction(LispNames.UNION, new LispFunction(LispNames.UNION, args -> {
-			requireArgCount(LispNames.UNION, args, 2);
-			// Start from the first list, then prepend each element of the second not
-			// already
-			// present (eql compare). Order matches the compilers' macro expansion: new
-			// elements of the second list appear at the front. CL leaves order
-			// unspecified.
-			List<LispVal> seen = toJavaList(args.get(0));
-			LispVal result = args.get(0);
-			LispVal cur = args.get(1);
-			while (cur instanceof LispCons cell) {
-				if (!listContains(seen, cell.car())) {
-					result = new LispCons(cell.car(), result);
-					seen.add(cell.car());
-				}
-				cur = cell.cdr();
-			}
-			return result;
-		}));
-		env.defineFunction(LispNames.INTERSECTION, new LispFunction(LispNames.INTERSECTION, args -> {
-			requireArgCount(LispNames.INTERSECTION, args, 2);
-			// Collect each element of the first list that is a member of the second,
-			// prepending so the result order matches the compilers' macro expansion.
-			List<LispVal> second = toJavaList(args.get(1));
-			LispVal result = LispNil.INSTANCE;
-			LispVal cur = args.get(0);
-			while (cur instanceof LispCons cell) {
-				if (listContains(second, cell.car())) {
-					result = new LispCons(cell.car(), result);
-				}
-				cur = cell.cdr();
-			}
-			return result;
-		}));
-		env.defineFunction(LispNames.SET_DIFFERENCE, new LispFunction(LispNames.SET_DIFFERENCE, args -> {
-			requireArgCount(LispNames.SET_DIFFERENCE, args, 2);
-			// Collect each element of the first list not present in the second,
-			// prepending
-			// so the result order matches the compilers' macro expansion.
-			List<LispVal> second = toJavaList(args.get(1));
-			LispVal result = LispNil.INSTANCE;
-			LispVal cur = args.get(0);
-			while (cur instanceof LispCons cell) {
-				if (!listContains(second, cell.car())) {
-					result = new LispCons(cell.car(), result);
-				}
-				cur = cell.cdr();
-			}
-			return result;
-		}));
-		env.defineFunction(LispNames.ADJOIN, new LispFunction(LispNames.ADJOIN, args -> {
-			requireArgCount(LispNames.ADJOIN, args, 2);
-			LispVal item = args.get(0);
-			LispVal lst = args.get(1);
-			LispVal cur = lst;
-			while (cur instanceof LispCons cell) {
-				if (isEq(item, cell.car())) {
-					return lst;
-				}
-				cur = cell.cdr();
-			}
-			return new LispCons(item, lst);
-		}));
-		env.defineFunction(LispNames.SUBSETP, new LispFunction(LispNames.SUBSETP, args -> {
-			requireArgCount(LispNames.SUBSETP, args, 2);
-			// Fallback for first-class use (#'subsetp): eql compare only, like the
-			// UNION/INTERSECTION/SET-DIFFERENCE/ADJOIN fallbacks above -- the
-			// :test/:test-not/:key keywords are handled by the macro expansion in call
-			// position (LispMacroExpander.expandSubsetp).
-			List<LispVal> second = toJavaList(args.get(1));
-			LispVal cur = args.get(0);
-			while (cur instanceof LispCons cell) {
-				if (!listContains(second, cell.car())) {
-					return LispNil.INSTANCE;
-				}
-				cur = cell.cdr();
-			}
-			return LispTrue.INSTANCE;
-		}));
+		// union / intersection / set-difference / adjoin / subsetp are NOT registered
+		// here: their first-class values live in LispEvaluator beside the position and
+		// sequence-scan families, because the :test / :test-not / :key designators have
+		// to be APPLIED through the evaluator -- an eql-only fallback here answered
+		// "expects 2 arguments" to every (apply #'set-difference x y :test f).
 	}
 
-	private static List<LispVal> toJavaList(LispVal list) {
-		List<LispVal> elements = new java.util.ArrayList<>();
-		LispVal cur = list;
-		while (cur instanceof LispCons cell) {
-			elements.add(cell.car());
-			cur = cell.cdr();
-		}
-		return elements;
-	}
-
-	private static boolean listContains(List<LispVal> list, LispVal item) {
-		for (LispVal element : list) {
-			if (isEq(item, element)) {
-				return true;
-			}
-		}
-		return false;
+	// butlast's optional count, widened to BigInteger: it is compared against a list
+	// length and is allowed to exceed the fixnum range (most-positive-fixnum + 1 is one
+	// of the counts CL has to answer nil for).
+	private static java.math.BigInteger butlastCount(LispVal value) {
+		return switch (value) {
+			case LispInteger integer -> java.math.BigInteger.valueOf(integer.value());
+			case LispBigInteger big -> big.value();
+			default ->
+				throw new LispEvalException(LispNames.BUTLAST + " expects an integer count, got: " + value.print());
+		};
 	}
 
 	private static void registerStringOps(Environment env) {

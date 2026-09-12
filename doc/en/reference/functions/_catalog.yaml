@@ -210,6 +210,7 @@ categories:
       - { slug: copy-list, name: "copy-list" }
       - { slug: copy-tree, name: "copy-tree" }
       - { slug: sublis, name: "sublis" }
+      - { slug: nsublis, name: "nsublis" }
   - title: "List Operations"
     index_page: reference/functions/cl.md
     functions:
@@ -218,6 +219,9 @@ categories:
       - { slug: nreverse, name: "nreverse" }
       - { slug: last, name: "last" }
       - { slug: butlast, name: "butlast" }
+      - { slug: nbutlast, name: "nbutlast" }
+      - { slug: list-length, name: "list-length" }
+      - { slug: tailp, name: "tailp" }
       - { slug: elt, name: "elt" }
       - { slug: endp, name: "endp" }
       - { slug: revappend, name: "revappend" }
@@ -232,6 +236,7 @@ categories:
     functions:
       - { slug: member, name: "member" }
       - { slug: member-if, name: "member-if" }
+      - { slug: member-if-not, name: "member-if-not" }
       - { slug: find, name: "find" }
       - { slug: find-if, name: "find-if" }
       - { slug: find-if-not, name: "find-if-not" }
@@ -243,11 +248,14 @@ categories:
       - { slug: count-if-not, name: "count-if-not" }
       - { slug: assoc, name: "assoc" }
       - { slug: assoc-if, name: "assoc-if" }
+      - { slug: assoc-if-not, name: "assoc-if-not" }
       - { slug: rassoc, name: "rassoc" }
       - { slug: rassoc-if, name: "rassoc-if" }
+      - { slug: rassoc-if-not, name: "rassoc-if-not" }
       - { slug: pairlis, name: "pairlis" }
       - { slug: copy-alist, name: "copy-alist" }
       - { slug: getf, name: "getf" }
+      - { slug: get-properties, name: "get-properties" }
   - title: "List Filtering & Modification"
     index_page: reference/functions/cl.md
     functions:
@@ -260,6 +268,11 @@ categories:
       - { slug: delete-if, name: "delete-if" }
       - { slug: delete-if-not, name: "delete-if-not" }
       - { slug: subst, name: "subst" }
+      - { slug: subst-if, name: "subst-if" }
+      - { slug: subst-if-not, name: "subst-if-not" }
+      - { slug: nsubst, name: "nsubst" }
+      - { slug: nsubst-if, name: "nsubst-if" }
+      - { slug: nsubst-if-not, name: "nsubst-if-not" }
       - { slug: search, name: "search" }
       - { slug: mismatch, name: "mismatch" }
       - { slug: tree-equal, name: "tree-equal" }
@@ -278,6 +291,10 @@ categories:
       - { slug: set-exclusive-or, name: "set-exclusive-or" }
       - { slug: adjoin, name: "adjoin" }
       - { slug: subsetp, name: "subsetp" }
+      - { slug: nunion, name: "nunion" }
+      - { slug: nintersection, name: "nintersection" }
+      - { slug: nset-difference, name: "nset-difference" }
+      - { slug: nset-exclusive-or, name: "nset-exclusive-or" }
   - title: "Destructive Cell Operations"
     index_page: reference/functions/cl.md
     functions:

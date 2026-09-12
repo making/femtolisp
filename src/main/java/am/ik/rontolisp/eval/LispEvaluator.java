@@ -2748,12 +2748,32 @@ public final class LispEvaluator {
 		this.globalEnv.defineFunction(LispNames.NSUBSTITUTE,
 				new LispFunction(LispNames.NSUBSTITUTE, args -> sequenceScanValues(LispNames.NSUBSTITUTE, args,
 						SeqScanMode.ITEM, SeqScanAction.SUBSTITUTE, true)));
+		// The five set operations are registered HERE, not in Environment, for the same
+		// reason the position and sequence-scan families are: the :test / :test-not /
+		// :key designators are applied through the evaluator. setOperationValues is the
+		// runtime twin of expandUnion / expandIntersection / expandSetDifference /
+		// expandAdjoin / expandSubsetp -- same membership rule, same result order -- so
+		// (apply #'set-difference x y :test f) and (set-difference x y :test f) agree.
+		this.globalEnv.defineFunction(LispNames.UNION,
+				new LispFunction(LispNames.UNION, args -> setOperationValues(LispNames.UNION, SetOp.UNION, args)));
+		this.globalEnv.defineFunction(LispNames.INTERSECTION, new LispFunction(LispNames.INTERSECTION,
+				args -> setOperationValues(LispNames.INTERSECTION, SetOp.INTERSECTION, args)));
+		this.globalEnv.defineFunction(LispNames.SET_DIFFERENCE, new LispFunction(LispNames.SET_DIFFERENCE,
+				args -> setOperationValues(LispNames.SET_DIFFERENCE, SetOp.DIFFERENCE, args)));
+		this.globalEnv.defineFunction(LispNames.ADJOIN,
+				new LispFunction(LispNames.ADJOIN, args -> setOperationValues(LispNames.ADJOIN, SetOp.ADJOIN, args)));
+		this.globalEnv.defineFunction(LispNames.SUBSETP, new LispFunction(LispNames.SUBSETP,
+				args -> setOperationValues(LispNames.SUBSETP, SetOp.SUBSETP, args)));
+		// The -if spellings take :key (and only :key -- the predicate IS the test), so
+		// the arity is "at least 2" and the tail is validated by the same rule the
+		// expansion applies to a call form.
 		this.globalEnv.defineFunction(LispNames.MEMBER_IF, new LispFunction(LispNames.MEMBER_IF, args -> {
-			if (args.size() != 2) {
+			if (args.size() < 2) {
 				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
-						LispNames.MEMBER_IF + " expects 2 arguments, got " + args.size());
+						LispNames.MEMBER_IF + " expects at least 2 arguments, got " + args.size());
 			}
-			return memberIfValues(args.get(0), args.get(1));
+			requireKeyKeyword(LispNames.MEMBER_IF, args, 2);
+			return memberIfValues(args.get(0), args.get(1), presentKeyword(args, 2, LispNames.KEY_KEYWORD));
 		}));
 		this.globalEnv.defineFunction(LispNames.MEMBER, new LispFunction(LispNames.MEMBER, args -> {
 			if (args.size() < 2) {
@@ -2780,18 +2800,20 @@ public final class LispEvaluator {
 			return LispNil.INSTANCE;
 		}));
 		this.globalEnv.defineFunction(LispNames.ASSOC_IF, new LispFunction(LispNames.ASSOC_IF, args -> {
-			if (args.size() != 2) {
+			if (args.size() < 2) {
 				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
-						LispNames.ASSOC_IF + " expects 2 arguments, got " + args.size());
+						LispNames.ASSOC_IF + " expects at least 2 arguments, got " + args.size());
 			}
-			return assocIfValues(args.get(0), args.get(1));
+			requireKeyKeyword(LispNames.ASSOC_IF, args, 2);
+			return assocIfValues(args.get(0), args.get(1), presentKeyword(args, 2, LispNames.KEY_KEYWORD));
 		}));
 		this.globalEnv.defineFunction(LispNames.RASSOC_IF, new LispFunction(LispNames.RASSOC_IF, args -> {
-			if (args.size() != 2) {
+			if (args.size() < 2) {
 				throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
-						LispNames.RASSOC_IF + " expects 2 arguments, got " + args.size());
+						LispNames.RASSOC_IF + " expects at least 2 arguments, got " + args.size());
 			}
-			return rassocIfValues(args.get(0), args.get(1));
+			requireKeyKeyword(LispNames.RASSOC_IF, args, 2);
+			return rassocIfValues(args.get(0), args.get(1), presentKeyword(args, 2, LispNames.KEY_KEYWORD));
 		}));
 		this.globalEnv.defineFunction(LispNames.ASSOC, new LispFunction(LispNames.ASSOC, args -> {
 			if (args.size() < 2) {
@@ -10116,9 +10138,9 @@ public final class LispEvaluator {
 	// Return the tail of the list starting at the first element satisfying the predicate
 	// (Common Lisp member-if), or nil. Like find-if but yields the cons rather than the
 	// element.
-	private LispVal memberIfValues(LispVal predicate, LispVal list) {
+	private LispVal memberIfValues(LispVal predicate, LispVal list, @Nullable LispVal keyFn) {
 		while (list instanceof LispCons cell) {
-			if (isTruthy(apply(predicate, List.of(cell.car()), this.globalEnv))) {
+			if (isTruthy(apply(predicate, List.of(keyed(keyFn, cell.car())), this.globalEnv))) {
 				return cell;
 			}
 			list = cell.cdr();
@@ -10126,12 +10148,97 @@ public final class LispEvaluator {
 		return LispNil.INSTANCE;
 	}
 
+	// The :key designator applied to one element, or the element itself when the
+	// designator is absent (or nil, which presentKeyword already reads as absent).
+	private LispVal keyed(@Nullable LispVal keyFn, LispVal element) {
+		return keyFn == null ? element : apply(keyFn, List.of(element), this.globalEnv);
+	}
+
+	/** The set operation a first-class {@link #setOperationValues} call names. */
+	private enum SetOp {
+
+		/** {@code union}: list-1 plus each element of list-2 not already present. */
+		UNION,
+		/** {@code intersection}: the elements of list-1 present in list-2. */
+		INTERSECTION,
+		/** {@code set-difference}: the elements of list-1 absent from list-2. */
+		DIFFERENCE,
+		/** {@code subsetp}: whether every element of list-1 is present in list-2. */
+		SUBSETP,
+		/** {@code adjoin}: list-2 with the item prepended unless it is present. */
+		ADJOIN
+
+	}
+
+	/**
+	 * The runtime twin of the set-operation expansions: one scan for all five, so a
+	 * first-class {@code #'union} takes the same
+	 * {@code :test}/{@code :test-not}/{@code :key} set as the call form and answers in
+	 * the same order.
+	 */
+	private LispVal setOperationValues(String name, SetOp op, List<LispVal> args) {
+		if (args.size() < 2) {
+			throw LispEvalException.ofClass(ClosRegistry.PROGRAM_ERROR_CLASS_NAME,
+					name + " expects at least 2 arguments, got " + args.size());
+		}
+		requireTestKeyKeywords(name, args, 2);
+		RuntimeTest test = runtimeTest(args, 2);
+		LispVal keyFn = presentKeyword(args, 2, LispNames.KEY_KEYWORD);
+		LispVal first = args.get(0);
+		LispVal second = args.get(1);
+		if (op == SetOp.ADJOIN) {
+			// CL keys BOTH sides of the comparison but conses the item UNKEYED.
+			return setMember(test, keyFn, keyed(keyFn, first), second) ? second : new LispCons(first, second);
+		}
+		if (op == SetOp.UNION) {
+			// The accumulator starts as list-1 and membership is looked for in it as it
+			// grows, exactly as expandUnion's do loop does.
+			LispVal accumulator = first;
+			LispVal cursor = second;
+			while (cursor instanceof LispCons cell) {
+				if (!setMember(test, keyFn, keyed(keyFn, cell.car()), accumulator)) {
+					accumulator = new LispCons(cell.car(), accumulator);
+				}
+				cursor = cell.cdr();
+			}
+			return accumulator;
+		}
+		LispVal accumulator = LispNil.INSTANCE;
+		LispVal cursor = first;
+		while (cursor instanceof LispCons cell) {
+			boolean present = setMember(test, keyFn, keyed(keyFn, cell.car()), second);
+			if (op == SetOp.SUBSETP) {
+				if (!present) {
+					return LispNil.INSTANCE;
+				}
+			}
+			else if (present == (op == SetOp.INTERSECTION)) {
+				accumulator = new LispCons(cell.car(), accumulator);
+			}
+			cursor = cell.cdr();
+		}
+		return op == SetOp.SUBSETP ? LispTrue.INSTANCE : accumulator;
+	}
+
+	// The membership test the five share: the ALREADY-KEYED probe against each element
+	// of the list, keyed the same way -- the inner (member ... :test :key) call every
+	// set expansion emits.
+	private boolean setMember(RuntimeTest test, @Nullable LispVal keyFn, LispVal probe, LispVal list) {
+		while (list instanceof LispCons cell) {
+			if (testMatches(test, probe, keyed(keyFn, cell.car()))) {
+				return true;
+			}
+			list = cell.cdr();
+		}
+		return false;
+	}
+
 	// Return the first pair whose car satisfies the predicate (Common Lisp assoc-if), or
 	// nil. Like assoc but tests with the predicate rather than eql.
-	private LispVal assocIfValues(LispVal predicate, LispVal alist) {
+	private LispVal assocIfValues(LispVal predicate, LispVal alist, @Nullable LispVal keyFn) {
 		while (alist instanceof LispCons cell) {
 			if (cell.car() instanceof LispCons pair
-					&& isTruthy(apply(predicate, List.of(pair.car()), this.globalEnv))) {
+					&& isTruthy(apply(predicate, List.of(keyed(keyFn, pair.car())), this.globalEnv))) {
 				return pair;
 			}
 			alist = cell.cdr();
@@ -10141,10 +10248,10 @@ public final class LispEvaluator {
 
 	// Return the first pair whose cdr satisfies the predicate (Common Lisp rassoc-if), or
 	// nil. The mirror of assocIfValues.
-	private LispVal rassocIfValues(LispVal predicate, LispVal alist) {
+	private LispVal rassocIfValues(LispVal predicate, LispVal alist, @Nullable LispVal keyFn) {
 		while (alist instanceof LispCons cell) {
 			if (cell.car() instanceof LispCons pair
-					&& isTruthy(apply(predicate, List.of(pair.cdr()), this.globalEnv))) {
+					&& isTruthy(apply(predicate, List.of(keyed(keyFn, pair.cdr())), this.globalEnv))) {
 				return pair;
 			}
 			alist = cell.cdr();

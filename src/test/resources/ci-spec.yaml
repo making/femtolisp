@@ -652,6 +652,108 @@ cases:
       (A B X)
       1
       (1 3 4)
+  # The cons set / tree family (.kb/cons-set-and-tree-operators.md). Three rules meet
+  # here: every n-prefixed spelling but nbutlast answers the NON-destructive result
+  # (CLHS makes the destructive promise a licence, so each is an alias and nothing is
+  # walked twice); the -if-not spellings are the -if operator over the negated
+  # predicate, forwarding :key; and the whole family takes its designators through ONE
+  # shape per surface -- the call-position expansion, and the runtime twin / wrapper
+  # behind the first-class calls at the end, which used to answer "expects 2
+  # arguments" to every (apply #'set-difference x y :test f).
+  - name: cons-set-and-tree-operators
+    source: |
+      (print (nunion (list 1 2 3) (list 2 3 4)))
+      (print (nintersection (list 1 2 3) (list 2 3 4) :test #'eql))
+      (print (nset-difference (list 1 2 3) (list 2) :key #'identity))
+      (print (nset-exclusive-or (list 1 2 3) (list 2 3 4)))
+      (print (nunion (list "a") (list "A") :test-not (lambda (x y) (not (string-equal x y)))))
+      (print (subst 9 'a '(a (b a)) :test-not (lambda (x y) (not (eql x y)))))
+      (print (subst-if 0 #'numberp '(1 (2 x) 3)))
+      (print (subst-if-not 0 #'listp '(1 (2))))
+      (print (nsubst 'x 'a (list 'a (list 'b 'a))))
+      (print (nsubst-if 0 #'numberp (list 1 (list 2 'x))))
+      (print (nsubst-if-not 0 #'listp (list 1 (list 2))))
+      (print (nsublis (list (cons 'a 1)) (list 'a (list 'b 'a))))
+      (print (sublis (list (cons "a" 1)) (list "a" 'b) :test #'equal))
+      (print (member-if-not #'numberp '(1 2 a b)))
+      (print (member-if-not #'evenp '(1 3 4 5) :key #'1+))
+      (print (member-if #'oddp '(1 2 3) :key #'1+))
+      (print (assoc-if-not #'numberp '((1 . a) (b . c))))
+      (print (assoc-if #'oddp '((1 . a) (2 . b)) :key #'1+))
+      (print (rassoc-if-not #'numberp '((a . 1) (b . c))))
+      (print (rassoc-if #'oddp '((a . 1) (b . 2)) :key #'1+))
+      (print (butlast '(1 2 3 4) 2))
+      (print (butlast '(1 2 3 4) 0))
+      (print (butlast '(1 2 3 4) 99))
+      (let ((ci-cst-l (list 1 2 3 4)))
+        (print (nbutlast ci-cst-l 2))
+        (print ci-cst-l))
+      (print (nbutlast (list 1 2) 5))
+      (print (list-length '(a b c)))
+      (print (list-length nil))
+      (print (handler-case (list-length '(a . b)) (type-error (ci-cst-e) 'type-error)))
+      (print (let ((ci-cst-x (list 1 2 3))) (tailp (cddr ci-cst-x) ci-cst-x)))
+      (print (tailp 'e '(a b . e)))
+      (print (multiple-value-list (get-properties '(a 1 b 2) '(b))))
+      (print (multiple-value-list (get-properties '(a 1) '(z))))
+      (print (apply #'set-difference (list (list 1 2 3) (list 2) :test #'eql)))
+      (print (apply #'union (list (list 1 2) (list 2 3) :key #'identity)))
+      (print (funcall #'subsetp '(1 2) '(1 2 3) :test #'eql))
+      (print (funcall #'intersection '(1 2) '(2 3) :test-not (lambda (x y) (not (eql x y)))))
+      (print (funcall #'adjoin 1 '(1 2) :key #'identity))
+      (print (apply #'member-if (list #'oddp '(1 2 3) :key #'1+)))
+      (print (apply #'assoc-if (list #'oddp '((1 . a) (2 . b)) :key #'1+)))
+      (print (apply #'rassoc-if-not (list #'numberp '((a . 1) (b . c)))))
+      (print (apply #'nunion (list (list 1 2) (list 2 3))))
+      (print (funcall #'butlast '(1 2 3 4) 2))
+      (print (funcall #'list-length '(a b)))
+      (print (handler-case (subst 9 'a '(a) :bad t) (program-error (ci-cst-e) 'program-error)))
+    expected: |
+      (4 1 2 3)
+      (3 2)
+      (3 1)
+      (1 4)
+      ("a")
+      (9 (B 9))
+      (0 (0 X) 0)
+      (0 (0))
+      (X (B X))
+      (0 (0 X))
+      (0 (0))
+      (1 (B 1))
+      (1 B)
+      (A B)
+      (4 5)
+      (2 3)
+      (B . C)
+      (2 . B)
+      (B . C)
+      (B . 2)
+      (1 2)
+      (1 2 3 4)
+      NIL
+      (1 2)
+      (1 2)
+      NIL
+      3
+      0
+      TYPE-ERROR
+      T
+      T
+      (B 2 (B 2))
+      (NIL NIL NIL)
+      (3 1)
+      (3 1 2)
+      T
+      (2)
+      (1 2)
+      (2 3)
+      (2 . B)
+      (B . C)
+      (3 1 2)
+      (1 2)
+      2
+      PROGRAM-ERROR
   # A COMPUTED :test/:test-not/:key designator is evaluated ONCE, before the scan, in
   # the order the call spells its arguments -- CLHS 3.1.2.1.2.3, which ANSI pins with a
   # side-effecting form per keyword (count.order.1, remove.order.1). A literal

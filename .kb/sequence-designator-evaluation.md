@@ -48,7 +48,9 @@ that used to tell it so -- ANSI passes a computed nil for `:key` (`subsetp.order
 ## Who is covered
 
 The scans that carry the `:test`/`:test-not`/`:key` set: `expandMember`, `expandAssoc`,
-`expandRassoc`, `buildPositionScan` (the `position`/`find` six),
+`expandRassoc`, the three `-if` spellings (`expandMemberIf`/`expandAssocIf`/
+`expandRassocIf`, which take `:key` ALONE -- the predicate is the test),
+`buildPositionScan` (the `position`/`find` six),
 `expandCount`/`expandCountIf`, the `remove`/`delete`/`substitute`/`nsubstitute` fifteen
 (over `SeqScanScaffold` -- `.kb/sequence-bounding-keywords.md`),
 `expandRemoveDuplicates`, and the set operations
@@ -86,10 +88,12 @@ before failing after.** The `*.ORDER.*` tests of `count`, `remove`, `delete`,
 `adjoin`, `union`, `intersection`, `set-difference` and `subsetp` all answer ANSI's
 counters exactly now.
 
-What the order tests still fail on, each a different gap:
+What the order tests still failed on, each a different gap -- all three now closed:
 
-- `member-if.order.2`, `assoc-if*.order.*`, `rassoc-if*.order.*`: the `-if` spellings of
-  `member`/`assoc`/`rassoc` take no `:key` at all (`.todo/776`).
+A gap stood in that list until 2026-09-12: `member-if.order.2`, `assoc-if*.order.*` and
+`rassoc-if*.order.*` want a `:key`, which the `-if` spellings of `member`/`assoc`/`rassoc`
+did not take at all -- nor did their `-if-not` complements exist. All six take it now, on
+both surfaces (`.kb/cons-set-and-tree-operators.md`).
 
 A second gap stood in that list until 2026-09-11: `remove.order.2` / `delete.order.2` /
 `adjoin.order.2` pass `(complement #'eq)` as a two-argument `:test-not`, and `complement`

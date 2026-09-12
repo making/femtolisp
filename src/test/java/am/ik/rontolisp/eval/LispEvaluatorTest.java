@@ -4889,6 +4889,103 @@ class LispEvaluatorTest {
 	}
 
 	@Test
+	void evalConsSetAndTreeOperators() {
+		// The n-prefixed spellings answer the NON-destructive result, which CLHS makes a
+		// licence rather than an obligation, so each is an alias and the argument comes
+		// back untouched (.kb/cons-set-and-tree-operators.md).
+		assertThat(evalMulti("(let ((l (list 1 2 3))) (list (nunion l (list 2 3 4)) l))").print())
+			.isEqualTo("((4 1 2 3) (1 2 3))");
+		assertThat(eval("(nintersection (list 1 2 3) (list 2 3 4))").print()).isEqualTo("(3 2)");
+		assertThat(eval("(nset-difference (list 1 2 3) (list 2))").print()).isEqualTo("(3 1)");
+		assertThat(eval("(nset-exclusive-or (list 1 2 3) (list 2 3 4))").print()).isEqualTo("(1 4)");
+		assertThat(evalMulti("(let ((tr (list 'a (list 'b 'a)))) (list (nsubst 'x 'a tr) tr))").print())
+			.isEqualTo("((X (B X)) (A (B A)))");
+		assertThat(eval("(nsublis (list (cons 'a 1)) (list 'a (list 'b 'a)))").print()).isEqualTo("(1 (B 1))");
+		// The four keyword designators reach the aliased operator, :test-not included.
+		assertThat(eval("(nunion (list \"a\") (list \"A\") :test #'string-equal)").print()).isEqualTo("(\"a\")");
+		assertThat(eval("(nintersection '((1 a)) '((1 b)) :key #'car)").print()).isEqualTo("((1 A))");
+		assertThat(eval("(nset-difference '(1 2 3) '(2) :test-not (lambda (a b) (not (eql a b))))").print())
+			.isEqualTo("(3 1)");
+		// subst and its -if / -if-not spellings ride ONE walk, so structure sharing is
+		// the same for all of them: a tree with no match comes back eq.
+		assertThat(eval("(subst-if 0 #'numberp '(1 (2 x) 3))").print()).isEqualTo("(0 (0 X) 0)");
+		assertThat(eval("(subst-if-not 0 #'listp '(1 (2)))").print()).isEqualTo("(0 (0))");
+		// The :key sees every NODE the walk visits -- the spine conses and the
+		// terminating nil included -- so a total selector is what CL asks of it.
+		assertThat(eval("(subst-if 0 #'evenp '((1 2)) :key (lambda (x) (if (integerp x) x 1)))").print())
+			.isEqualTo("((1 0))");
+		assertThat(eval("(nsubst-if 0 #'numberp (list 1 (list 2 'x)))").print()).isEqualTo("(0 (0 X))");
+		assertThat(eval("(nsubst-if-not 0 #'listp (list 1 (list 2)))").print()).isEqualTo("(0 (0))");
+		assertThat(evalMulti("(let ((tr '(m n))) (eq tr (subst-if 0 #'numberp tr)))").print()).isEqualTo("T");
+		// subst gained :test-not, and sublis's keywords are spelled :key/:test/:test-not
+		// -- they used to be :%sb-key/:%sb-test/:%sb-test-not, the prelude's parameter
+		// names leaking out as the keyword names.
+		assertThat(eval("(subst 9 'a '(a (b a)) :test-not (lambda (x y) (not (eql x y))))").print())
+			.isEqualTo("(9 (B 9))");
+		assertThat(eval("(sublis '((\"a\" . 1)) '(\"a\" b) :test #'equal)").print()).isEqualTo("(1 B)");
+		assertThat(eval("(sublis '((1 . x)) '((1 a)) :key #'car)").print()).isEqualTo("(X)");
+		// The -if-not spellings are the -if operator over the negated predicate, and all
+		// six take :key.
+		assertThat(eval("(member-if-not #'numberp '(1 2 a b))").print()).isEqualTo("(A B)");
+		assertThat(eval("(member-if-not #'evenp '(1 3 4 5) :key #'1+)").print()).isEqualTo("(4 5)");
+		assertThat(eval("(member-if #'oddp '(1 2 3) :key #'1+)").print()).isEqualTo("(2 3)");
+		assertThat(eval("(assoc-if-not #'numberp '((1 . a) (b . c)))").print()).isEqualTo("(B . C)");
+		assertThat(eval("(assoc-if #'oddp '((1 . a) (2 . b)) :key #'1+)").print()).isEqualTo("(2 . B)");
+		assertThat(eval("(rassoc-if-not #'numberp '((a . 1) (b . c)))").print()).isEqualTo("(B . C)");
+		assertThat(eval("(rassoc-if #'oddp '((a . 1) (b . 2)) :key #'1+)").print()).isEqualTo("(B . 2)");
+		// butlast takes the optional count; nbutlast is the one n-prefixed operator here
+		// that really mutates -- ANSI's nbutlast.1 wants the answer eq to the argument.
+		assertThat(eval("(butlast '(1 2 3 4) 2)").print()).isEqualTo("(1 2)");
+		assertThat(eval("(butlast '(1 2 3 4) 0)").print()).isEqualTo("(1 2 3 4)");
+		assertThat(eval("(butlast '(1 2 3 4) 99)").print()).isEqualTo("NIL");
+		assertThat(eval("(butlast '(a b . c) 1)").print()).isEqualTo("(A)");
+		assertThat(evalMulti("(let ((l (list 1 2 3 4))) (list (eq l (nbutlast l 2)) l))").print())
+			.isEqualTo("(T (1 2))");
+		assertThat(eval("(nbutlast (list 1 2) 5)").print()).isEqualTo("NIL");
+		// list-length answers nil for a CIRCULAR list, which is the whole reason it is
+		// not length, and a type-error for a dotted or non-list argument.
+		assertThat(eval("(list-length '(a b c))").print()).isEqualTo("3");
+		assertThat(eval("(list-length nil)").print()).isEqualTo("0");
+		assertThat(evalMulti(
+				"(let* ((x (cons nil nil)) (y (list* 1 2 3 x)))" + " (setf (cdr x) y) (list-length (list* 'a 'b y)))")
+			.print()).isEqualTo("NIL");
+		assertThatThrownBy(() -> eval("(list-length '(a . b))")).hasMessageContaining("LIST");
+		assertThatThrownBy(() -> eval("(list-length 'a)")).hasMessageContaining("LIST");
+		// tailp is eq against the spine and eql against the dotted terminator.
+		assertThat(evalMulti("(let ((l (list 1 2 3))) (tailp (cddr l) l))").print()).isEqualTo("T");
+		assertThat(eval("(tailp nil '(1 2))").print()).isEqualTo("T");
+		assertThat(eval("(tailp 'e '(a b . e))").print()).isEqualTo("T");
+		assertThat(eval("(tailp 'z '(a b . e))").print()).isEqualTo("NIL");
+		// get-properties answers three values, all nil on a miss.
+		assertThat(eval("(multiple-value-list (get-properties '(a 1 b 2) '(b)))").print()).isEqualTo("(B 2 (B 2))");
+		assertThat(eval("(multiple-value-list (get-properties '(a 1) '(z)))").print()).isEqualTo("(NIL NIL NIL)");
+		// FIRST CLASS: the set family's runtime twin takes the same keyword set as the
+		// call position. Each of these answered "expects 2 arguments, got 4" before.
+		assertThat(eval("(apply #'set-difference (list '(1 2 3) '(2) :test #'eql))").print()).isEqualTo("(3 1)");
+		assertThat(eval("(funcall #'union '(1 2) '(2 3) :key #'identity)").print()).isEqualTo("(3 1 2)");
+		assertThat(eval("(funcall #'subsetp '(1 2) '(1 2 3) :test #'eql)").print()).isEqualTo("T");
+		assertThat(eval("(funcall #'intersection '((1 a)) '((1 b)) :key #'car)").print()).isEqualTo("((1 A))");
+		assertThat(eval("(funcall #'adjoin 1 '(1 2) :key #'identity)").print()).isEqualTo("(1 2)");
+		assertThat(eval("(funcall #'member-if #'oddp '(1 2 3) :key #'1+)").print()).isEqualTo("(2 3)");
+		assertThat(eval("(funcall #'assoc-if #'oddp '((1 . a) (2 . b)) :key #'1+)").print()).isEqualTo("(2 . B)");
+		assertThat(eval("(funcall #'rassoc-if-not #'numberp '((a . 1) (b . c)))").print()).isEqualTo("(B . C)");
+		assertThat(eval("(funcall #'butlast '(1 2 3 4) 2)").print()).isEqualTo("(1 2)");
+		// The keyword tail is validated by the same rule the expansion applies, so an
+		// unknown keyword is a program-error and :allow-other-keys suppresses it.
+		assertThatThrownBy(() -> eval("(funcall #'subsetp '(1) '(1) :bad t)"))
+			.hasMessageContaining("SUBSETP expects keyword arguments");
+		assertThat(eval("(funcall #'subsetp '(1) '(1) :bad t :allow-other-keys t)").print()).isEqualTo("T");
+		// The -if spellings take :key ALONE: the predicate IS the test.
+		assertThatThrownBy(() -> eval("(member-if #'oddp '(1) :test #'eql)"))
+			.hasMessageContaining("MEMBER-IF expects keyword arguments :KEY");
+		// A DECLARED keyword with no value is an odd tail, which no :allow-other-keys
+		// makes legal (CLHS 3.5.1.6) -- while a trailing positional keeps the more
+		// useful unknown-indicator reading.
+		assertThatThrownBy(() -> eval("(sublis nil 'a :test)")).hasMessageContaining("Odd number of keyword arguments");
+		assertThatThrownBy(() -> eval("(sublis nil 'a 0)")).hasMessageContaining("Unknown keyword argument: 0");
+	}
+
+	@Test
 	void evalRemoveDuplicatesTakesTheBoundingKeywords() {
 		// CLHS 17.2.1's window bounds which elements are CONSIDERED here: one outside
 		// :start/:end is kept VERBATIM and never compared, which is not what the same

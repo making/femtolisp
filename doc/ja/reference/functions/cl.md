@@ -189,17 +189,23 @@
 | `find` | `(find 2 '(1 2 3))` | `2`(要素と `eql` になる最初の要素、またはnil。省略可能な `:test`/`:key` キーワードを取ります) |
 | `find-if` | `(find-if #'evenp '(1 3 6 7))` | `6`(述語を満たす最初の要素、またはnil) |
 | `find-if-not` | `(find-if-not #'evenp '(2 4 5 6))` | `5`(述語を満たさない最初の要素、またはnil) |
-| `member-if` | `(member-if #'oddp '(2 4 5 6))` | `(5 6)`(述語を満たす最初の要素から始まる末尾、またはnil) |
+| `member-if` | `(member-if #'oddp '(2 4 5 6))` | `(5 6)`(述語を満たす最初の要素から始まる末尾、またはnil。省略可能な `:key`) |
+| `member-if-not` | `(member-if-not #'numberp '(1 2 a b))` | `(a b)`(述語を満たさない最初の要素から始まる末尾、またはnil。省略可能な `:key`) |
 | `position` | `(position 3 '(1 2 3))` | `2`(要素と `eql` になる最初の要素の0始まりインデックス、またはnil。省略可能な `:test`/`:key` キーワードを取ります) |
 | `position-if` | `(position-if #'evenp '(1 3 6 7))` | `2`(述語を満たす最初の要素の0始まりインデックス、またはnil) |
 | `count` | `(count 2 '(1 2 3 2 2))` | `3`(要素と `eql` になる要素の数。省略可能な `:test`/`:key` キーワードを取ります) |
 | `count-if` | `(count-if #'evenp '(1 2 3 4))` | `2`(述語を満たす要素の数) |
 | `count-if-not` | `(count-if-not #'evenp '(1 2 3 4 5))` | `3`(述語を満たさない要素の数。`:key`/`:start`/`:end`/`:from-end`) |
 | `assoc` | `(assoc 'b '((a . 1) (b . 2)))` | `(b . 2)`(carがキーに一致する最初のペア、またはnil。既定では `eql` で比較し、省略可能な `:test`/`:key` キーワードを取ります。例: `(assoc "b" '(("a" . 1) ("b" . 2)) :test #'equal)`) |
-| `assoc-if` | `(assoc-if #'oddp '((2 a) (3 b)))` | `(3 b)`(carが述語を満たす最初のペア、またはnil) |
+| `assoc-if` | `(assoc-if #'oddp '((2 a) (3 b)))` | `(3 b)`(carが述語を満たす最初のペア、またはnil。省略可能な `:key`) |
+| `assoc-if-not` | `(assoc-if-not #'numberp '((1 . a) (b . c)))` | `(b . c)`(carが述語を満たさない最初のペア、またはnil。省略可能な `:key`) |
 | `getf` | `(getf '(:a 1 :b 2) :b)` | `2`(プロパティリスト中で指標に続く値、またはnil。`remf` の相棒。引数は2つのみで `&optional default` はありません) |
+| `get-properties` | `(get-properties '(a 1 b 2) '(b))` | `b`, `2`, `(b 2)` -- 3つの値: 最初に見つかった指標、その値、そこから始まるプロパティリストの末尾(見つからなければすべてnil) |
 | `last` | `(last '(1 2 3))`, `(last '(1 2 3) 2)` | `(3)`、`(2 3)`(最後のconsセル、または最後の `n` 個のcons。空リストではnil) |
-| `butlast` | `(butlast '(1 2 3))` | `(1 2)`(最後の要素を除いたコピー。空または単一要素のリストではnil) |
+| `butlast` | `(butlast '(1 2 3))`, `(butlast '(1 2 3 4) 2)` | `(1 2)`, `(1 2)`(末尾 `n` 個(既定は1)のconsを除いたコピー。個数が長さに達するとnil) |
+| `nbutlast` | `(nbutlast (list 1 2 3 4) 2)` | `(1 2)`(破壊的な `butlast`。引数自身のスパインを `rplacd` で切ってそれを返します) |
+| `list-length` | `(list-length '(a b c))` | `3`(真リストの長さ。循環リストではnil、ドットリストやリスト以外では `type-error`) |
+| `tailp` | `(tailp 'e '(a b . e))` | `t`(オブジェクトがリストの末尾のいずれかかどうか。各consとは `eq`、終端のアトムとは `eql` で比較) |
 | `remove` | `(remove 2 '(1 2 3 2))` | `(1 3)`(指定した要素と `eql` になる要素を除いた新しいリスト。省略可能な `:test`/`:key` キーワードを取ります) |
 | `remove-if` | `(remove-if #'evenp '(1 2 3 4))` | `(1 3)`(述語を満たす要素を除いた新しいリスト) |
 | `remove-if-not` | `(remove-if-not #'evenp '(1 2 3 4))` | `(2 4)`(述語を満たす要素のみを残した新しいリスト) |
@@ -208,7 +214,10 @@
 | `delete` | `(delete 2 '(1 2 3 2))` | `(1 3)`(破壊的な `remove`。マッチするセルをその場で切り出します。省略可能な `:test`/`:key` キーワードを取ります。先頭が変わる場合があるので戻り値を使ってください) |
 | `delete-if` | `(delete-if #'evenp '(1 2 3 4))` | `(1 3)`(破壊的な `remove-if`) |
 | `delete-if-not` | `(delete-if-not #'evenp '(1 2 3 4))` | `(2 4)`(破壊的な `remove-if-not`) |
-| `subst` | `(subst 'x 'a '(a (b a) c))` | `(x (b x) c)`(非破壊的な木の置換。省略可能な `:test`/`:key` キーワードを取ります) |
+| `subst` | `(subst 'x 'a '(a (b a) c))` | `(x (b x) c)`(非破壊的な木の置換。省略可能な `:test`/`:test-not`/`:key` キーワードを取ります) |
+| `subst-if` | `(subst-if 0 #'numberp '(1 (2 x) 3))` | `(0 (0 x) 0)`(項目ではなく述語でマッチする `subst`。省略可能な `:key`) |
+| `subst-if-not` | `(subst-if-not 0 #'listp '(1 (2)))` | `(0 (0))`(`subst-if` の補集合版) |
+| `nsubst` / `nsubst-if` / `nsubst-if-not` | `(nsubst 'x 'a (list 'a 'b))` | `(x b)`(破壊的な綴り。CLHSは非破壊的な結果を返すことを認めており、これらはそうします。いずれにせよ変更されない部分木は共有されます) |
 | `search` | `(search "bc" "abcd")` | `1`（あるシーケンスが別のシーケンス内に現れる位置、なければ nil。`:start1`/`:end1`/`:start2`/`:end2`/`:test`/`:key`/`:from-end`） |
 | `mismatch` | `(mismatch "apple" "apricot")` | `2` -- 2 つのシーケンスが最初に異なる位置 (第 1 引数上のインデックス)、一致すれば nil。キーワードは `search` と同じ |
 | `tree-equal` | `(tree-equal '(1 (2 3)) '(1 (2 3)))` | `t`(木の形が同じで、葉が `:test`(既定 `eql`)または `:test-not` で一致すること) |
@@ -223,6 +232,7 @@
 | `copy-list` | `(copy-list '(1 2 3))` | `(1 2 3)`(リストの浅いコピー) |
 | `copy-tree` | `(copy-tree '(1 (2 3)))` | `(1 (2 3))`(コンスツリーの深いコピー) |
 | `sublis` | `(sublis '((a . 1)) '(a b))` | `(1 B)`(連想リストのキーに一致する部分木を置き換えた新しい木。`:key`/`:test`/`:test-not`) |
+| `nsublis` | `(nsublis '((a . 1)) '(a b))` | `(1 B)`(`sublis` の破壊的な綴り。`nsubst` を参照) |
 | `nreverse` | `(nreverse '(1 2 3))` | `(3 2 1)`(各 `cdr` を繋ぎ替えてリストを破壊的に反転します。戻り値を使ってください) |
 | `make-list` | `(make-list 3 :initial-element 0)` | `(0 0 0)`(1 つの要素値を共有する n 個のセルのリスト。既定は `nil`) |
 | `union` | `(union '(1 2 3) '(2 3 4))` | `(4 1 2 3)`(集合の和。既定では `eql` 比較で、省略可能な `:test`/`:key` キーワードを取ります。結果順序は未規定) |
@@ -231,12 +241,14 @@
 | `set-exclusive-or` | `(set-exclusive-or '(1 2 3) '(2 3 4))` | `(1 4)`(対称差。どちらか一方にしかない要素。省略可能な `:test`/`:test-not`/`:key` キーワードを取ります。結果順序は未規定) |
 | `adjoin` | `(adjoin 1 '(2 3))` | `(1 2 3)`(すでにメンバーでない限り要素を先頭に追加します。既定では `eql` 比較で、省略可能な `:test`/`:key` キーワードを取ります) |
 | `subsetp` | `(subsetp '(1 2) '(1 2 3))` | `T`(第1リストのすべての要素が第2リストのメンバーであれば真。既定では `eql` 比較で、省略可能な `:test`/`:key` キーワードを取ります) |
+| `nunion` / `nintersection` / `nset-difference` / `nset-exclusive-or` | `(nunion (list 1 2) (list 2 3))` | `(3 1 2)`(4つの集合演算の破壊的な綴り。CLHSは非破壊的な結果を返すことを認めており、これらはそうします。引数は変更されません) |
 | `list*` | `(list* 1 2 '(3 4))`, `(list* 1 2 3)` | `(1 2 3 4)`, `(1 2 . 3)`(先頭の引数を最後の引数の末尾にconsします) |
 | `acons` | `(acons 'a 1 nil)` | `((a . 1))`(`(key . value)` ペアを連想リストの先頭に追加します) |
 | `endp` | `(endp nil)`, `(endp '(1))` | `t`, `nil`(リスト終端テスト。`null` の同義語で、不正リストのエラーは緩和されています) |
 | `elt` | `(elt '(a b c) 1)` | `b`(0始まりの要素アクセス。リストのみで文字列インデックスはありません) |
 | `rassoc` | `(rassoc 2 '((a . 1) (b . 2)))` | `(b . 2)`(cdrが値に一致する最初のペア、またはnil。既定では `eql` で比較し、省略可能な `:test`/`:key` キーワードを取ります) |
-| `rassoc-if` | `(rassoc-if #'oddp '((a . 2) (b . 3)))` | `(b . 3)`(cdrが述語を満たす最初のペア、またはnil) |
+| `rassoc-if` | `(rassoc-if #'oddp '((a . 2) (b . 3)))` | `(b . 3)`(cdrが述語を満たす最初のペア、またはnil。省略可能な `:key`) |
+| `rassoc-if-not` | `(rassoc-if-not #'numberp '((a . 1) (b . c)))` | `(b . c)`(cdrが述語を満たさない最初のペア、またはnil。省略可能な `:key`) |
 | `pairlis` | `(pairlis '(a b) '(1 2))` | `((a . 1) (b . 2))`(キーのリストと値のリストを組にして連想リストを作ります。省略可能な第3引数は末尾に連結されます) |
 | `copy-alist` | `(copy-alist '((a . 1)))` | `((a . 1))`(連想リストの背骨と各ペアセルをコピーします。キーと値自体は共有されます) |
 | `revappend` | `(revappend '(1 2 3) '(4 5))` | `(3 2 1 4 5)`(第1リストを反転して第2リストを追加します) |

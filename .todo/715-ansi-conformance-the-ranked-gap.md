@@ -75,7 +75,7 @@ why the report keeps the lost-form column beside the rate.
 | family | tests | owner |
 |---|---:|---|
 | `substitute`/`remove`/`count` reject `:count`/`:start`/`:end`/`:from-end` -- the report's top two rows | 578 | `.todo/736` |
-| the cons set / tree family (`nunion`, `nset-*`, `nsubst*`, `assoc-if-not`, `nbutlast`, `list-length`, `tailp`, `get-properties`, ...) | 458 | **`.todo/740`** (new) |
+| ~~the cons set / tree family (`nunion`, `nset-*`, `nsubst*`, `assoc-if-not`, `nbutlast`, `list-length`, `tailp`, `get-properties`, ...)~~ -- DONE 2026-09-12, worth **+514**, MORE than the 458 this row priced (see "Worked so far") | 458 | `.todo/740` |
 | bit-array ops plus `bit-vector-p` / `simple-bit-vector-p` / `array-in-bounds-p` / `upgraded-array-element-type` | ~400 | `.todo/043`, `.todo/180` |
 | the runtime package API (`make-package` 217, `delete-package`, `packagep`, `do-all-symbols`, `find-all-symbols`, `apropos*`) | 370 | **`.todo/741`** (new) |
 | stream constructors and `open`'s `:if-exists` / `:direction` / `:element-type` | 224 | `.todo/387` |
@@ -175,6 +175,22 @@ runtime package API (`.todo/741`) and complex numbers. The corpus uses only
   ranking from `results/logs/`, discount a row whose tests assert something else
   as well. Mechanics and the remaining 8 lines (`broadcast-stream` 7,
   `standard-generic-function` 1): `.kb/clos.md`.
+
+- **2026-09-12, `.todo/740` + `.todo/776`** -- the seventeen missing cons set /
+  tree operators (`nunion`, `nintersection`, `nset-difference`,
+  `nset-exclusive-or`, `nsubst`/`-if`/`-if-not`, `nsublis`, `subst-if`,
+  `subst-if-not`, `member-if-not`, `assoc-if-not`, `rassoc-if-not`, `nbutlast`,
+  `list-length`, `tailp`, `get-properties`), plus `:key` on the six
+  `-if`/`-if-not` alist scans. `cons` **1,108 -> 1,622 / 1,879** (59.0% ->
+  86.3%), errors 626 -> 77; **514 tests fixed, zero regressed**;
+  `sequences` 2,933 -> 2,937. **The row above priced it at 458 and was LOW**:
+  the census could only count names that were UNDEFINED, and six operators
+  recorded as "already present and correct" (`subsetp`, `set-difference`,
+  `sublis`, `union`, `intersection`, `butlast`) were losing another ~90 tests to
+  a first-class surface that took no keywords and to `butlast`'s missing count.
+  **An ERROR-line census is an upper bound on the NAMED gap, not on the chapter**
+  -- it cannot rank what is present and wrong. Mechanics:
+  `.kb/cons-set-and-tree-operators.md`.
 
 ## Reading caveat
 

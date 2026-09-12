@@ -952,6 +952,36 @@ public final class BuiltinFunctionWrappers {
 		return new WrapperDef(name, lambdaList, List.of(listToCons(callParts)));
 	}
 
+	/**
+	 * Variadic wrapper for the DESIGNATOR-only scans: {@code member}/{@code assoc}/
+	 * {@code rassoc}, the five set operations, and -- with {@code item} false -- the
+	 * {@code -if} spellings, which take {@code :key} alone because the predicate IS the
+	 * test. Same shape as {@link #sequenceScanFamily} minus CLHS 17.2.1's bounding set:
+	 * the runtime keywords are re-extracted with {@code getf} and fed back into the
+	 * CALL-POSITION expansion, so the expansion stays the only implementation and a
+	 * {@code (apply #'set-difference x y :test f)} decides the way the call form does. A
+	 * {@code :test-not} is normalized to a complemented {@code :test} the
+	 * {@code twoArgumentComplement} way, so no {@code apply} reaches the injected body
+	 * ({@code .kb/sequence-designator-evaluation.md}).
+	 * @param name the operator
+	 * @param item whether the operator compares an ITEM (so takes :test / :test-not)
+	 */
+	private static WrapperDef designatorFamily(String name, boolean item) {
+		List<LispVal> callParts = new ArrayList<>();
+		callParts.add(new LispSymbol(name));
+		callParts.add(new LispSymbol("a"));
+		callParts.add(new LispSymbol("b"));
+		if (item) {
+			callParts.add(new LispSymbol(LispNames.TEST_KEYWORD));
+			callParts.add(listToCons(List.of(new LispSymbol(LispNames.IF), getfKw(LispNames.TEST_NOT_KEYWORD),
+					LispMacroExpander.twoArgumentComplement(getfKw(LispNames.TEST_NOT_KEYWORD)),
+					getfKwOr(LispNames.TEST_KEYWORD, sharpQuote(LispNames.EQL)))));
+		}
+		callParts.add(new LispSymbol(LispNames.KEY_KEYWORD));
+		callParts.add(getfKw(LispNames.KEY_KEYWORD));
+		return new WrapperDef(name, List.of("a", "b", LispNames.LAMBDA_REST, "kw"), List.of(listToCons(callParts)));
+	}
+
 	// Variadic wrapper for the position family: the runtime keywords are re-extracted
 	// with getf and fed back into the call-position expansion, so first-class use
 	// through apply supports the full :test/:test-not/:key/:start/:end/:from-end set
@@ -1441,18 +1471,21 @@ public final class BuiltinFunctionWrappers {
 			unary(LispNames.TENTH), binary(LispNames.NTH),
 			// Sequence operations (compiled via macro expansion in call position)
 			unary(LispNames.LENGTH), unary(LispNames.REVERSE), unaryOptionalSecond(LispNames.LAST),
-			unary(LispNames.BUTLAST), binary(LispNames.MEMBER), binary(LispNames.MEMBER_IF), binary(LispNames.FIND),
-			binary(LispNames.FIND_IF), binary(LispNames.FIND_IF_NOT), positionFamily(LispNames.POSITION, true),
+			unaryOptionalSecond(LispNames.BUTLAST), designatorFamily(LispNames.MEMBER, true),
+			designatorFamily(LispNames.MEMBER_IF, false), binary(LispNames.FIND), binary(LispNames.FIND_IF),
+			binary(LispNames.FIND_IF_NOT), positionFamily(LispNames.POSITION, true),
 			positionFamily(LispNames.POSITION_IF, false), positionFamily(LispNames.POSITION_IF_NOT, false),
 			sequenceScanFamily(LispNames.COUNT, true, false, 1),
-			sequenceScanFamily(LispNames.COUNT_IF, false, false, 1), binary(LispNames.ASSOC),
-			binary(LispNames.ASSOC_IF), binary(LispNames.RASSOC), binary(LispNames.RASSOC_IF), ternary(LispNames.ACONS),
-			binary(LispNames.PAIRLIS), unary(LispNames.COPY_ALIST), binaryOptionalThird(LispNames.GETF),
+			sequenceScanFamily(LispNames.COUNT_IF, false, false, 1), designatorFamily(LispNames.ASSOC, true),
+			designatorFamily(LispNames.ASSOC_IF, false), designatorFamily(LispNames.RASSOC, true),
+			designatorFamily(LispNames.RASSOC_IF, false), ternary(LispNames.ACONS), binary(LispNames.PAIRLIS),
+			unary(LispNames.COPY_ALIST), binaryOptionalThird(LispNames.GETF),
 			sequenceScanFamily(LispNames.REMOVE_DUPLICATES, true, false, 0),
 			sequenceScanFamily(LispNames.DELETE_DUPLICATES, true, false, 0), variadicNconc(), unary(LispNames.IDENTITY),
-			unary(LispNames.COPY_LIST), unary(LispNames.NREVERSE), unary(LispNames.MAKE_LIST), binary(LispNames.UNION),
-			binary(LispNames.INTERSECTION), binary(LispNames.SET_DIFFERENCE), binary(LispNames.ADJOIN),
-			binary(LispNames.SUBSETP),
+			unary(LispNames.COPY_LIST), unary(LispNames.NREVERSE), unary(LispNames.MAKE_LIST),
+			designatorFamily(LispNames.UNION, true), designatorFamily(LispNames.INTERSECTION, true),
+			designatorFamily(LispNames.SET_DIFFERENCE, true), designatorFamily(LispNames.ADJOIN, true),
+			designatorFamily(LispNames.SUBSETP, true),
 			// every/some carry ANY number of sequences, the same as in call position,
 			// and notany/notevery are their complements over the same walk.
 			everySomeWrapper(LispNames.EVERY, true), everySomeWrapper(LispNames.SOME, false),

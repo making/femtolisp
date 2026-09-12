@@ -4791,6 +4791,12 @@ public final class LispMacroExpander {
 				LispNames.KEY_KEYWORD);
 	}
 
+	// The -if spellings of member/assoc/rassoc take :key ALONE: the predicate IS the
+	// test, so :test / :test-not are as wrong here as :start would be.
+	private static @Nullable LispVal keyKeywordTailError(LispCons call, String name, List<LispVal> parts, int start) {
+		return keywordTailError(call, name, parts, start, LispNames.KEY_KEYWORD);
+	}
+
 	// The same for a remove/substitute-family call, which adds CLHS 17.2.1's bounding
 	// and counting set to the designators (see SeqScanBounds).
 	private static @Nullable LispVal boundedTestKeyKeywordTailError(LispCons call, String name, List<LispVal> parts,
@@ -6303,18 +6309,28 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandMemberIf(LispCons cons) {
 		List<LispVal> parts = cons.toList();
+		LispVal keywordError = keyKeywordTailError(cons, LispNames.MEMBER_IF, parts, 3);
+		if (keywordError != null) {
+			return keywordError;
+		}
+		KeywordTail tail = KeywordTail.of(parts, 3, "__memberif");
+		parts = tail.parts();
+		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol pred = new LispSymbol("__memberif_pred");
 		LispSymbol cur = new LispSymbol("__memberif_cur");
 		// (do ((__memberif_pred pred) (__memberif_cur lst (cdr __memberif_cur)))
 		// ((atom __memberif_cur) nil)
 		// (if (funcall __memberif_pred (car __memberif_cur)) (return __memberif_cur)
 		// nil))
+		// With :key fn, the tested value becomes (funcall fn (car __memberif_cur)).
 		LispVal bindings = listToCons(List.of(listToCons(List.of(pred, parts.get(1))),
 				listToCons(List.of(cur, parts.get(2), callOf(LispNames.CDR, cur)))));
 		LispVal endClause = listToCons(List.of(callOf(LispNames.ATOM, cur), LispNil.INSTANCE));
-		LispVal test = listToCons(List.of(new LispSymbol(LispNames.FUNCALL), pred, callOf(LispNames.CAR, cur)));
+		LispVal test = listToCons(
+				List.of(new LispSymbol(LispNames.FUNCALL), pred, keyedForm(keyForm, callOf(LispNames.CAR, cur))));
 		LispVal body = makeIf(test, makeReturn(cur), LispNil.INSTANCE);
-		return expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body)));
+		return tail
+			.wrap(expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body))));
 	}
 
 	/**
@@ -6326,6 +6342,13 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandAssocIf(LispCons cons) {
 		List<LispVal> parts = cons.toList();
+		LispVal keywordError = keyKeywordTailError(cons, LispNames.ASSOC_IF, parts, 3);
+		if (keywordError != null) {
+			return keywordError;
+		}
+		KeywordTail tail = KeywordTail.of(parts, 3, "__associf");
+		parts = tail.parts();
+		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol pred = new LispSymbol("__associf_pred");
 		LispSymbol cur = new LispSymbol("__associf_cur");
 		LispVal pair = callOf(LispNames.CAR, cur);
@@ -6337,11 +6360,12 @@ public final class LispMacroExpander {
 		LispVal bindings = listToCons(List.of(listToCons(List.of(pred, parts.get(1))),
 				listToCons(List.of(cur, parts.get(2), callOf(LispNames.CDR, cur)))));
 		LispVal endClause = listToCons(List.of(callOf(LispNames.ATOM, cur), LispNil.INSTANCE));
-		LispVal match = listToCons(
-				List.of(new LispSymbol(LispNames.AND), listToCons(List.of(new LispSymbol(LispNames.CONSP), pair)),
-						listToCons(List.of(new LispSymbol(LispNames.FUNCALL), pred, callOf(LispNames.CAR, pair)))));
+		LispVal match = listToCons(List.of(new LispSymbol(LispNames.AND),
+				listToCons(List.of(new LispSymbol(LispNames.CONSP), pair)), listToCons(List
+					.of(new LispSymbol(LispNames.FUNCALL), pred, keyedForm(keyForm, callOf(LispNames.CAR, pair))))));
 		LispVal body = makeIf(match, makeReturn(pair), LispNil.INSTANCE);
-		return expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body)));
+		return tail
+			.wrap(expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body))));
 	}
 
 	/**
@@ -6445,9 +6469,16 @@ public final class LispMacroExpander {
 	 */
 	public static LispVal expandRassocIf(LispCons cons) {
 		List<LispVal> parts = cons.toList();
-		if (parts.size() != 3) {
+		if (parts.size() < 3) {
 			throw new IllegalArgumentException(LispNames.RASSOC_IF + " expects a predicate and an alist");
 		}
+		LispVal keywordError = keyKeywordTailError(cons, LispNames.RASSOC_IF, parts, 3);
+		if (keywordError != null) {
+			return keywordError;
+		}
+		KeywordTail tail = KeywordTail.of(parts, 3, "__rassocif");
+		parts = tail.parts();
+		LispVal keyForm = keywordValue(parts, 3, LispNames.KEY_KEYWORD);
 		LispSymbol pred = new LispSymbol("__rassocif_pred");
 		LispSymbol cur = new LispSymbol("__rassocif_cur");
 		LispVal pair = callOf(LispNames.CAR, cur);
@@ -6459,11 +6490,12 @@ public final class LispMacroExpander {
 		LispVal bindings = listToCons(List.of(listToCons(List.of(pred, parts.get(1))),
 				listToCons(List.of(cur, parts.get(2), callOf(LispNames.CDR, cur)))));
 		LispVal endClause = listToCons(List.of(callOf(LispNames.ATOM, cur), LispNil.INSTANCE));
-		LispVal match = listToCons(
-				List.of(new LispSymbol(LispNames.AND), listToCons(List.of(new LispSymbol(LispNames.CONSP), pair)),
-						listToCons(List.of(new LispSymbol(LispNames.FUNCALL), pred, callOf(LispNames.CDR, pair)))));
+		LispVal match = listToCons(List.of(new LispSymbol(LispNames.AND),
+				listToCons(List.of(new LispSymbol(LispNames.CONSP), pair)), listToCons(List
+					.of(new LispSymbol(LispNames.FUNCALL), pred, keyedForm(keyForm, callOf(LispNames.CDR, pair))))));
 		LispVal body = makeIf(match, makeReturn(pair), LispNil.INSTANCE);
-		return expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body)));
+		return tail
+			.wrap(expandDo((LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), bindings, endClause, body))));
 	}
 
 	/**
@@ -6651,14 +6683,72 @@ public final class LispMacroExpander {
 	}
 
 	/**
+	 * Expands {@code (butlast lst n)} -- the counted spelling -- into a length pass
+	 * followed by a copy of the first {@code length - n} conses.
+	 *
+	 * <p>
+	 * The count cannot bound the walk from the OTHER end without a second cursor running
+	 * {@code n} cells ahead, and {@code n} is allowed to be enormous: ANSI's
+	 * {@code butlast.7} passes {@code most-positive-fixnum + 1}, which such a cursor
+	 * would chase one cell at a time. Counting the conses first makes an out-of-range
+	 * count a subtraction rather than a walk, and the same pass is what a dotted list
+	 * needs anyway ({@code (butlast '(a b . c) 1)} counts TWO conses, not three
+	 * elements).
+	 *
+	 * <p>
+	 * The uncounted spelling keeps its own one-pass loop below, byte-identical to what it
+	 * always emitted -- the piecewise rule {@code .kb/sequence-bounding-keywords.md}
+	 * states for the scan family holds here too: a call that spells no count pays for
+	 * none.
+	 */
+	private static LispVal expandButlastCounted(List<LispVal> parts) {
+		LispSymbol list = new LispSymbol("__butlast_l");
+		LispSymbol count = new LispSymbol("__butlast_n");
+		LispSymbol len = new LispSymbol("__butlast_len");
+		LispSymbol probe = new LispSymbol("__butlast_p");
+		LispSymbol keep = new LispSymbol("__butlast_keep");
+		LispSymbol acc = new LispSymbol("__butlast_acc");
+		LispSymbol cur = new LispSymbol("__butlast_cur");
+		// (do ((__butlast_len 0 (+ __butlast_len 1)) (__butlast_p l (cdr __butlast_p)))
+		// ((atom __butlast_p) (- __butlast_len n)))
+		LispVal lengthBindings = listToCons(
+				List.of(listToCons(List.of(len, new LispInteger(0), fmtCall(LispNames.ADD, len, new LispInteger(1)))),
+						listToCons(List.of(probe, list, callOf(LispNames.CDR, probe)))));
+		LispVal lengthEnd = listToCons(List.of(callOf(LispNames.ATOM, probe), fmtCall(LispNames.SUB, len, count)));
+		LispVal kept = expandDo((LispCons) listToCons(
+				List.of(new LispSymbol(LispNames.DO), lengthBindings, lengthEnd, LispNil.INSTANCE)));
+		// (do ((__butlast_acc nil) (__butlast_keep k (- __butlast_keep 1))
+		// (__butlast_cur l (cdr __butlast_cur)))
+		// ((<= __butlast_keep 0) (nreverse __butlast_acc))
+		// (setq __butlast_acc (cons (car __butlast_cur) __butlast_acc)))
+		LispVal copyBindings = listToCons(List.of(listToCons(List.of(acc, LispNil.INSTANCE)),
+				listToCons(List.of(keep, kept, fmtCall(LispNames.SUB, keep, new LispInteger(1)))),
+				listToCons(List.of(cur, list, callOf(LispNames.CDR, cur)))));
+		LispVal copyEnd = listToCons(List.of(fmtCall(LispNames.LE, keep, new LispInteger(0)), nreverseListForm(acc)));
+		LispVal copyBody = listToCons(List.of(new LispSymbol(LispNames.SETQ), acc,
+				listToCons(List.of(new LispSymbol(LispNames.CONS), callOf(LispNames.CAR, cur), acc))));
+		LispVal copy = expandDo(
+				(LispCons) listToCons(List.of(new LispSymbol(LispNames.DO), copyBindings, copyEnd, copyBody)));
+		// Both operands bind OUTSIDE, in call order: the list is walked twice and the
+		// count is read once per element of the copy loop.
+		LispVal bindings = listToCons(
+				List.of(listToCons(List.of(list, parts.get(1))), listToCons(List.of(count, parts.get(2)))));
+		return listToCons(List.of(new LispSymbol(LispNames.LET), bindings, copy));
+	}
+
+	/**
 	 * Expands (butlast lst) into a do scan that accumulates (in reverse) every element
 	 * except the last, then reverses the accumulator back to source order. An empty or
-	 * single-element list yields nil.
+	 * single-element list yields nil. With the optional COUNT the shape is
+	 * {@link #expandButlastCounted}'s instead.
 	 * @param cons the butlast expression
 	 * @return the expanded expression
 	 */
 	public static LispVal expandButlast(LispCons cons) {
 		List<LispVal> parts = cons.toList();
+		if (parts.size() > 2) {
+			return expandButlastCounted(parts);
+		}
 		LispSymbol acc = new LispSymbol("__butlast_acc");
 		LispSymbol cur = new LispSymbol("__butlast_cur");
 		// (do ((__butlast_acc nil) (__butlast_cur lst (cdr __butlast_cur)))

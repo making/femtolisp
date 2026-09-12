@@ -181,13 +181,13 @@ public final class LispPreludeLibrary {
 		// on the cdr, which checked the next node there), and -- as before -- every cons
 		// is copied.
 		SOURCES.put(LispNames.SUBLIS, """
-				(defun sublis (%sb-alist %sb-tree &key %sb-key %sb-test %sb-test-not)
+				(defun sublis (%sb-alist %sb-tree &key key test test-not)
 				  (labels ((%sb-entry (%sb-x)
-				             (let ((%sb-probe (if %sb-key (funcall %sb-key %sb-x) %sb-x)))
-				               (cond (%sb-test-not
-				                       (assoc %sb-probe %sb-alist :test-not %sb-test-not))
-				                     (%sb-test
-				                       (assoc %sb-probe %sb-alist :test %sb-test))
+				             (let ((%sb-probe (if key (funcall key %sb-x) %sb-x)))
+				               (cond (test-not
+				                       (assoc %sb-probe %sb-alist :test-not test-not))
+				                     (test
+				                       (assoc %sb-probe %sb-alist :test test))
 				                     (t (assoc %sb-probe %sb-alist)))))
 				           (%sb-walk (%sb-x)
 				             (if (consp %sb-x)
@@ -205,6 +205,10 @@ public final class LispPreludeLibrary {
 				                 (let ((%sb-e (%sb-entry %sb-x)))
 				                   (if %sb-e (cdr %sb-e) %sb-x)))))
 				    (%sb-walk %sb-tree)))
+				""");
+		SOURCES.put(LispNames.NSUBLIS, """
+				(defun nsublis (alist tree &key key test test-not)
+				  (sublis alist tree :key key :test test :test-not test-not))
 				""");
 		// The counter is a defvar for the same reason the %symbol-plists store is one:
 		// defvar assigns only when unbound, so the spliced copy never resets a count.
@@ -2041,33 +2045,81 @@ public final class LispPreludeLibrary {
 		// differed (or at the end when the tail itself differs) and shares the original
 		// rest, so an unchanged subtree -- including the spine suffix below the deepest
 		// change -- comes back as-is and a tree with no match is returned identically.
+		SOURCES.put(LispNames.SUBST_WALK, """
+				(defun %subst-walk (%sw-new %sw-match %sw-tree)
+				  (if (consp %sw-tree)
+				      (let* ((%sw-head (cons nil nil)) (%sw-tail %sw-head) (%sw-p %sw-tree)
+				             (%sw-changed nil) (%sw-link nil) (%sw-attach nil))
+				        (while (and (consp %sw-p) (not (funcall %sw-match %sw-p)))
+				          (let ((%sw-a (%subst-walk %sw-new %sw-match (car %sw-p))))
+				            (let ((%sw-cell (cons %sw-a nil)))
+				              (setf (cdr %sw-tail) %sw-cell)
+				              (setq %sw-tail %sw-cell))
+				            (unless (eq %sw-a (car %sw-p))
+				              (setq %sw-changed t)
+				              (setq %sw-link %sw-tail)
+				              (setq %sw-attach (cdr %sw-p))))
+				          (setq %sw-p (cdr %sw-p)))
+				        (let ((%sw-d (if (consp %sw-p) %sw-new (%subst-walk %sw-new %sw-match %sw-p))))
+				          (unless (eq %sw-d %sw-p)
+				            (setq %sw-changed t)
+				            (setq %sw-link %sw-tail)
+				            (setq %sw-attach %sw-d))
+				          (if %sw-changed
+				              (progn (setf (cdr %sw-link) %sw-attach) (cdr %sw-head))
+				              %sw-tree)))
+				      (if (funcall %sw-match %sw-tree) %sw-new %sw-tree)))
+				""");
 		SOURCES.put(LispNames.SUBST, """
-				(defun subst (new old tree &key (test #'eql) key)
-				  (labels ((match (x) (funcall test old (if key (funcall key x) x)))
-				           (walk (x)
-				             (if (consp x)
-				                 (let* ((head (cons nil nil)) (tail head) (p x)
-				                       (changed nil) (link nil) (attach nil))
-				                   (while (and (consp p) (not (match p)))
-				                     (let ((a (walk (car p))))
-				                       (let ((cell (cons a nil)))
-				                         (setf (cdr tail) cell)
-				                         (setq tail cell))
-				                       (unless (eq a (car p))
-				                         (setq changed t)
-				                         (setq link tail)
-				                         (setq attach (cdr p))))
-				                     (setq p (cdr p)))
-				                   (let ((d (if (consp p) new (walk p))))
-				                     (unless (eq d p)
-				                       (setq changed t)
-				                       (setq link tail)
-				                       (setq attach d))
-				                     (if changed
-				                         (progn (setf (cdr link) attach) (cdr head))
-				                         x)))
-				                 (if (match x) new x))))
-				    (walk tree)))
+				(defun subst (new old tree &key test test-not key)
+				  (%subst-walk new
+				               (if test-not
+				                   (lambda (%sb2-x)
+				                     (not (funcall test-not old (if key (funcall key %sb2-x) %sb2-x))))
+				                   (lambda (%sb2-x)
+				                     (if (funcall (or test #'eql) old
+				                                  (if key (funcall key %sb2-x) %sb2-x))
+				                         t
+				                         nil)))
+				               tree))
+				""");
+		// The -if / -if-not spellings differ from subst only in the MATCH function they
+		// hand the shared walk: the predicate over the (optionally keyed) subtree, taken
+		// straight or negated. Nothing about the copying, the structure sharing or the
+		// dotted-tail handling is restated.
+		SOURCES.put(LispNames.SUBST_IF, """
+				(defun subst-if (new predicate tree &key key)
+				  (%subst-walk new
+				               (lambda (%si-x)
+				                 (if (funcall predicate (if key (funcall key %si-x) %si-x)) t nil))
+				               tree))
+				""");
+		SOURCES.put(LispNames.SUBST_IF_NOT, """
+				(defun subst-if-not (new predicate tree &key key)
+				  (%subst-walk new
+				               (lambda (%sn-x)
+				                 (if (funcall predicate (if key (funcall key %sn-x) %sn-x)) nil t))
+				               tree))
+				""");
+		// CLHS lets every n-prefixed operator of this chapter answer the non-destructive
+		// result -- the destructive promise is a licence, not an obligation -- and the
+		// walks above already SHARE every unchanged subtree, so an alias is not a stub:
+		// it
+		// is the same answer with the same sharing, reached without a second walk to
+		// maintain. ANSI agrees by construction: its own tests call these through
+		// nunion-with-copy / nset-difference-with-check, which copy first precisely
+		// because an implementation may or may not mutate.
+		SOURCES.put(LispNames.NSUBST, """
+				(defun nsubst (new old tree &key test test-not key)
+				  (subst new old tree :test test :test-not test-not :key key))
+				""");
+		SOURCES.put(LispNames.NSUBST_IF, """
+				(defun nsubst-if (new predicate tree &key key)
+				  (subst-if new predicate tree :key key))
+				""");
+		SOURCES.put(LispNames.NSUBST_IF_NOT, """
+				(defun nsubst-if-not (new predicate tree &key key)
+				  (subst-if-not new predicate tree :key key))
 				""");
 		// mismatch: the index INTO SEQUENCE1 of the first differing element, or nil
 		// when the bounded subsequences match. Lite: :from-end is accepted and the
@@ -2241,10 +2293,10 @@ public final class LispPreludeLibrary {
 				        (kb (if key (funcall key b) b)))
 				    (if test-not
 				        (not (funcall test-not ka kb))
-				        (if (funcall test ka kb) t nil))))
+				        (if (funcall (or test #'eql) ka kb) t nil))))
 				""");
 		SOURCES.put(LispNames.SET_EXCLUSIVE_OR, """
-				(defun set-exclusive-or (list-1 list-2 &key (test #'eql) test-not key)
+				(defun set-exclusive-or (list-1 list-2 &key test test-not key)
 				  (let ((out nil))
 				    (dolist (a list-1)
 				      (let ((found nil))
@@ -2257,6 +2309,122 @@ public final class LispPreludeLibrary {
 				          (when (%set-xor-match a b test test-not key) (setq found t)))
 				        (unless found (setq out (cons b out)))))
 				    (nreverse out)))
+				""");
+		// The four n-prefixed set operations, aliases for the reason %subst-walk's
+		// comment gives. union / intersection / set-difference are EXPANSIONS, so the
+		// forwarded keyword values ride LispMacroExpander.KeywordTail's defaulting -- a
+		// nil :test binds as eql, a nil :key as identity -- and only the :test-not arm
+		// needs spelling out, since a :test spelled beside it would win.
+		SOURCES.put(LispNames.NUNION, """
+				(defun nunion (list-1 list-2 &key test test-not key)
+				  (if test-not
+				      (union list-1 list-2 :test-not test-not :key key)
+				      (union list-1 list-2 :test test :key key)))
+				""");
+		SOURCES.put(LispNames.NINTERSECTION, """
+				(defun nintersection (list-1 list-2 &key test test-not key)
+				  (if test-not
+				      (intersection list-1 list-2 :test-not test-not :key key)
+				      (intersection list-1 list-2 :test test :key key)))
+				""");
+		SOURCES.put(LispNames.NSET_DIFFERENCE, """
+				(defun nset-difference (list-1 list-2 &key test test-not key)
+				  (if test-not
+				      (set-difference list-1 list-2 :test-not test-not :key key)
+				      (set-difference list-1 list-2 :test test :key key)))
+				""");
+		SOURCES.put(LispNames.NSET_EXCLUSIVE_OR, """
+				(defun nset-exclusive-or (list-1 list-2 &key test test-not key)
+				  (set-exclusive-or list-1 list-2 :test test :test-not test-not :key key))
+				""");
+		// The -if-not spellings of the alist/list scans: the -if operator over the
+		// negated
+		// predicate, forwarding :key. Written here rather than as three more expansions
+		// for the reason count-if-not is -- the negation is the whole difference, and a
+		// defun spells it once for all four backends. The duplicate :key ANSI passes
+		// (member-if-not.order.2) needs no rule of its own: an ordinary call evaluates
+		// every argument form in order and the lambda list takes the first.
+		SOURCES.put(LispNames.MEMBER_IF_NOT, """
+				(defun member-if-not (predicate list &key key)
+				  (member-if (lambda (%mn-x) (not (funcall predicate %mn-x))) list :key key))
+				""");
+		SOURCES.put(LispNames.ASSOC_IF_NOT, """
+				(defun assoc-if-not (predicate alist &key key)
+				  (assoc-if (lambda (%an-x) (not (funcall predicate %an-x))) alist :key key))
+				""");
+		SOURCES.put(LispNames.RASSOC_IF_NOT, """
+				(defun rassoc-if-not (predicate alist &key key)
+				  (rassoc-if (lambda (%rn-x) (not (funcall predicate %rn-x))) alist :key key))
+				""");
+		// nbutlast is the one n-prefixed operator here that must really mutate: ANSI's
+		// nbutlast.1 asserts the answer is eq to the argument AND that the argument's own
+		// cells kept their identity. Length is counted first so a count past the end (or
+		// a bignum one -- nbutlast.7 passes most-positive-fixnum + 1) decides without
+		// walking, and the cut is a single rplacd on the last cell that survives.
+		SOURCES.put(LispNames.NBUTLAST, """
+				(defun nbutlast (%nb-list &optional (%nb-n 1))
+				  (let ((%nb-len 0) (%nb-p %nb-list))
+				    (while (consp %nb-p)
+				      (setq %nb-len (+ %nb-len 1))
+				      (setq %nb-p (cdr %nb-p)))
+				    (if (>= %nb-n %nb-len)
+				        nil
+				        (let ((%nb-c %nb-list) (%nb-i (- (- %nb-len %nb-n) 1)))
+				          (while (> %nb-i 0)
+				            (setq %nb-c (cdr %nb-c))
+				            (setq %nb-i (- %nb-i 1)))
+				          (rplacd %nb-c nil)
+				          %nb-list))))
+				""");
+		// list-length is length's circular-safe sibling: the tortoise/hare walk is what
+		// lets it answer nil for a circular list in bounded time instead of hanging, and
+		// the two consp guards are what make a dotted or non-list argument a type-error
+		// rather than a silent count.
+		SOURCES.put(LispNames.LIST_LENGTH, """
+				(defun list-length (%ll-list)
+				  (let ((%ll-n 0) (%ll-fast %ll-list) (%ll-slow %ll-list)
+				        (%ll-done nil) (%ll-result nil))
+				    (while (not %ll-done)
+				      (cond ((null %ll-fast)
+				             (setq %ll-result %ll-n)
+				             (setq %ll-done t))
+				            ((not (consp %ll-fast))
+				             (error 'type-error :datum %ll-list :expected-type 'list))
+				            ((null (cdr %ll-fast))
+				             (setq %ll-result (+ %ll-n 1))
+				             (setq %ll-done t))
+				            ((not (consp (cdr %ll-fast)))
+				             (error 'type-error :datum %ll-list :expected-type 'list))
+				            (t (setq %ll-fast (cdr (cdr %ll-fast)))
+				               (setq %ll-slow (cdr %ll-slow))
+				               (setq %ll-n (+ %ll-n 2))
+				               (when (eq %ll-fast %ll-slow)
+				                 (setq %ll-result nil)
+				                 (setq %ll-done t)))))
+				    %ll-result))
+				""");
+		// tailp: eq against every cons of the spine, eql against the DOTTED terminator --
+		// which is X3J13's TAILP-NIL:T reading, and what makes (tailp 'e '(a b . e)) true
+		// and (tailp "abcde" (list* 'a 'b (copy-seq "abcde"))) false.
+		SOURCES.put(LispNames.TAILP, """
+				(defun tailp (%tp-object %tp-list)
+				  (do ((%tp-p %tp-list (cdr %tp-p)))
+				      ((atom %tp-p) (if (eql %tp-p %tp-object) t nil))
+				    (when (eq %tp-p %tp-object) (return t))))
+				""");
+		// get-properties answers THREE values -- the indicator found, its value, and the
+		// tail of the plist starting at it -- so a caller can tell a stored nil from an
+		// absent property, which is the whole reason it exists beside getf. A dotted
+		// plist walks into (cdr <atom>) and signals there, exactly as CL requires.
+		SOURCES.put(LispNames.GET_PROPERTIES, """
+				(defun get-properties (%gp-plist %gp-indicators)
+				  (do ((%gp-p %gp-plist (cdr (cdr %gp-p))))
+				      ((atom %gp-p)
+				       (if (null %gp-p)
+				           (values nil nil nil)
+				           (error 'type-error :datum %gp-plist :expected-type 'list)))
+				    (when (member (car %gp-p) %gp-indicators :test #'eq)
+				      (return (values (car %gp-p) (car (cdr %gp-p)) %gp-p)))))
 				""");
 		// merge: the classic two-cursor walk, STABLE -- a tie takes from sequence-1,
 		// which is what "(funcall predicate <sequence-2 element> <sequence-1 element>)"

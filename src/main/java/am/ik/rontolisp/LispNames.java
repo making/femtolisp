@@ -521,6 +521,13 @@ public final class LispNames {
 	public static final String SUBLIS = "SUBLIS";
 
 	/**
+	 * The {@code nsublis} function (a prelude defun): {@link #SUBLIS} under its other
+	 * name; see {@link #NSUBST} for why the destructive spelling may answer the
+	 * non-destructive result.
+	 */
+	public static final String NSUBLIS = "NSUBLIS";
+
+	/**
 	 * The {@code gentemp} standard function (deprecated by CLHS, still used by iterate):
 	 * interns a fresh symbol named {@code prefix} plus a counter that no symbol of that
 	 * name already claims. Unlike {@link #GENSYM} the answer is INTERNED, which is the
@@ -560,6 +567,14 @@ public final class LispNames {
 	 * the first element for which the predicate is true, or nil).
 	 */
 	public static final String MEMBER_IF = "MEMBER-IF";
+
+	/**
+	 * The {@code member-if-not} function (a prelude defun): the tail of the list starting
+	 * at the first element the predicate REJECTS, or nil. {@code member-if} over the
+	 * negated predicate, with the same {@code :key}; deprecated by CLHS, still billed by
+	 * the ANSI suite.
+	 */
+	public static final String MEMBER_IF_NOT = "MEMBER-IF-NOT";
 
 	/**
 	 * The {@code position} built-in function (return the 0-based index of the first
@@ -624,6 +639,13 @@ public final class LispNames {
 	 */
 	public static final String ASSOC_IF = "ASSOC-IF";
 
+	/**
+	 * The {@code assoc-if-not} function (a prelude defun): the first pair of an alist
+	 * whose car the predicate REJECTS, or nil -- {@link #ASSOC_IF} over the negated
+	 * predicate, with the same {@code :key}.
+	 */
+	public static final String ASSOC_IF_NOT = "ASSOC-IF-NOT";
+
 	/** The {@code last} built-in function. */
 	public static final String LAST = "LAST";
 
@@ -632,6 +654,37 @@ public final class LispNames {
 	 * element).
 	 */
 	public static final String BUTLAST = "BUTLAST";
+
+	/**
+	 * The {@code nbutlast} function (a prelude defun): the DESTRUCTIVE {@code butlast} --
+	 * the argument's own spine is cut with an {@code rplacd} and returned, so the answer
+	 * is {@code eq} to the argument whenever anything is left of it (nil otherwise, since
+	 * there is no cell to cut).
+	 */
+	public static final String NBUTLAST = "NBUTLAST";
+
+	/**
+	 * The {@code list-length} standard function (a prelude defun): the length of a proper
+	 * list, or nil for a CIRCULAR one -- which is the whole reason it is not
+	 * {@code length}. A dotted list or a non-list signals a {@code type-error}. The
+	 * tortoise/hare walk is what makes the circular answer possible in bounded time.
+	 */
+	public static final String LIST_LENGTH = "LIST-LENGTH";
+
+	/**
+	 * The {@code tailp} standard function (a prelude defun): whether {@code object} is
+	 * one of the tails of {@code list} -- {@code eq} against every cons of the spine and
+	 * {@code eql} against the dotted terminator, so {@code (tailp 'e '(a b . e))} is true
+	 * (X3J13's TAILP-NIL:T reading).
+	 */
+	public static final String TAILP = "TAILP";
+
+	/**
+	 * The {@code get-properties} standard function (a prelude defun): the first indicator
+	 * of {@code indicator-list} found in the property list, its value, and the TAIL of
+	 * the plist starting at that indicator -- three values, nil/nil/nil on a miss.
+	 */
+	public static final String GET_PROPERTIES = "GET-PROPERTIES";
 
 	/**
 	 * The {@code getf} built-in function (return the value following the indicator in a
@@ -1069,6 +1122,48 @@ public final class LispNames {
 	public static final String SUBST = "SUBST";
 
 	/**
+	 * The {@code %subst-walk} internal helper (a prelude defun): the ONE tree walk the
+	 * whole {@code subst} family rides. It takes the match as a FUNCTION of the subtree,
+	 * so {@code subst} passes the {@code :test}/{@code :key} comparison and the
+	 * {@code -if}/{@code -if-not} spellings pass the predicate; structure sharing (an
+	 * unchanged subtree comes back {@code eq}) is decided once, here.
+	 */
+	public static final String SUBST_WALK = "%SUBST-WALK";
+
+	/**
+	 * The {@code subst-if} function (a prelude defun): {@link #SUBST} with the match made
+	 * by a PREDICATE over the (optionally {@code :key}ed) subtree rather than by
+	 * {@code :test} against an item.
+	 */
+	public static final String SUBST_IF = "SUBST-IF";
+
+	/**
+	 * The {@code subst-if-not} function (a prelude defun): {@link #SUBST_IF} over the
+	 * negated predicate.
+	 */
+	public static final String SUBST_IF_NOT = "SUBST-IF-NOT";
+
+	/**
+	 * The {@code nsubst} function (a prelude defun): {@link #SUBST} under its other name.
+	 * CLHS permits the destructive spellings of the {@code subst} family to answer the
+	 * non-destructive result -- the promise is a licence, not an obligation -- and the
+	 * shared walk already shares every unchanged subtree.
+	 */
+	public static final String NSUBST = "NSUBST";
+
+	/**
+	 * The {@code nsubst-if} function (a prelude defun): {@link #SUBST_IF} under its other
+	 * name; see {@link #NSUBST}.
+	 */
+	public static final String NSUBST_IF = "NSUBST-IF";
+
+	/**
+	 * The {@code nsubst-if-not} function (a prelude defun): {@link #SUBST_IF_NOT} under
+	 * its other name; see {@link #NSUBST}.
+	 */
+	public static final String NSUBST_IF_NOT = "NSUBST-IF-NOT";
+
+	/**
 	 * The {@code copy-tree} function (a prelude defun): a deep copy of a cons tree (every
 	 * cons is fresh; non-cons leaves are shared).
 	 */
@@ -1186,6 +1281,31 @@ public final class LispNames {
 	public static final String SET_EXCLUSIVE_OR = "SET-EXCLUSIVE-OR";
 
 	/**
+	 * The {@code nunion} function (a prelude defun): {@link #UNION} under its other name;
+	 * see {@link #NSUBST} for why the destructive spelling may answer the non-destructive
+	 * result.
+	 */
+	public static final String NUNION = "NUNION";
+
+	/**
+	 * The {@code nintersection} function (a prelude defun): {@link #INTERSECTION} under
+	 * its other name; see {@link #NSUBST}.
+	 */
+	public static final String NINTERSECTION = "NINTERSECTION";
+
+	/**
+	 * The {@code nset-difference} function (a prelude defun): {@link #SET_DIFFERENCE}
+	 * under its other name; see {@link #NSUBST}.
+	 */
+	public static final String NSET_DIFFERENCE = "NSET-DIFFERENCE";
+
+	/**
+	 * The {@code nset-exclusive-or} function (a prelude defun): {@link #SET_EXCLUSIVE_OR}
+	 * under its other name; see {@link #NSUBST}.
+	 */
+	public static final String NSET_EXCLUSIVE_OR = "NSET-EXCLUSIVE-OR";
+
+	/**
 	 * The {@code adjoin} built-in function (prepends an item to a list unless it is
 	 * already a member, compared with {@code eql}).
 	 */
@@ -1235,6 +1355,13 @@ public final class LispNames {
 	 * {@link #ASSOC_IF}.
 	 */
 	public static final String RASSOC_IF = "RASSOC-IF";
+
+	/**
+	 * The {@code rassoc-if-not} function (a prelude defun): the first pair of an alist
+	 * whose CDR the predicate REJECTS, or nil -- {@link #RASSOC_IF} over the negated
+	 * predicate, with the same {@code :key}.
+	 */
+	public static final String RASSOC_IF_NOT = "RASSOC-IF-NOT";
 
 	/**
 	 * The {@code pairlis} built-in function (pair up a list of keys and a list of values

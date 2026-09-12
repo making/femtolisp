@@ -812,6 +812,24 @@ class LispMacroExpanderTest {
 				"(POSITION (FUNCALL #'CAR (CAR |__rd_cur|)) |__seq_lst| :START (+ |__rd_i| 1) :END |__rd_hi| :TEST-NOT #'EQ :KEY #'CAR)");
 	}
 
+	@Test
+	void aCountedButlastEmitsTheLengthPassAndTheUncountedOneDoesNot() {
+		// butlast's optional count cannot bound the walk from the far end without a
+		// second cursor running n cells ahead, and n is allowed to be enormous (ANSI
+		// passes most-positive-fixnum + 1), so the counted spelling counts the conses
+		// first and subtracts. The UNCOUNTED spelling keeps its own one-pass loop --
+		// the piecewise rule of .kb/sequence-bounding-keywords.md, here too: a call that
+		// spells no count pays for none.
+		String plain = butlastExpansionOf("(butlast lst)");
+		assertThat(plain).doesNotContain("|__butlast_len|").doesNotContain("|__butlast_keep|");
+		String counted = butlastExpansionOf("(butlast lst 2)");
+		assertThat(counted).contains("|__butlast_len|").contains("|__butlast_keep|").contains("|__butlast_n|");
+	}
+
+	private static String butlastExpansionOf(String call) {
+		return LispMacroExpander.expandButlast((LispCons) LispReader.readAllFromString(call).get(0)).print();
+	}
+
 	private static String removeExpansionOf(String call) {
 		return LispMacroExpander.expandRemove((LispCons) LispReader.readAllFromString(call).get(0)).print();
 	}
