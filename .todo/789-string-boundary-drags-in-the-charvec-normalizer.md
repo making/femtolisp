@@ -1,6 +1,9 @@
 # The `:string` boundary drags 1,961 bytes of charvec normalization into every module
 
-**Status:** open. Measured 2026-09-12.
+**Status:** open. Measured 2026-09-12; re-measured the same day after
+`788` landed (`6914db792`), which added 60 bytes to this program's two-`:string`
+import wrapper and left every other section byte-identical. The numbers below are the
+post-788 ones.
 
 Difficulty: Medium
 
@@ -29,10 +32,10 @@ two `:string`s, a fixnum recursion, two exports. Nothing else.
 (rontolisp:wasm-export 'run-computation :as "RunComputation" :params '(:s32) :returns :s32)
 ```
 
-`rontolisp bench.lisp -o bench.wasm --no-wasi --optimize=size` = **4,563 bytes**, of which
-the program's own code is **209** (`fib` 54, `init-app` 32, the two import wrappers 94, the
-two export wrappers 21, `_initialize` 7). Sections: code 3,959 / 40 functions, types 210,
-data 120, globals 79, exports 92, imports 32, functions 41, memory 3.
+`rontolisp bench.lisp -o bench.wasm --no-wasi --optimize=size` = **4,623 bytes**, of which
+the program's own code is **269** (`fib` 54, `init-app` 32, the two import wrappers 154, the
+two export wrappers 21, `_initialize` 7). Sections: code 4,019 / 40 functions, types 210,
+data 117, globals 79, exports 92, imports 32, functions 41, memory 3.
 
 Cut the program down to isolate each half (same flags):
 
@@ -41,9 +44,9 @@ Cut the program down to isolate each half (same flags):
 | one `(defun noop () nil)` + one export | 321 | -- |
 | + one `:string` host import and a literal | 2,578 | 2,257 |
 | + `fib` only (no strings at all) | 2,281 | 1,960 |
-| both (the program above) | 4,563 | 4,242 |
+| both (the program above) | 4,623 | 4,302 |
 
-So the module is 4.6% program and 95.4% runtime, and the runtime splits almost exactly in
+So the module is 5.8% program and 94.2% runtime, and the runtime splits almost exactly in
 two: the string boundary and the arithmetic. This item is the string half; `790` is the
 other.
 
@@ -52,16 +55,16 @@ two call sites named below):
 
 | Build | Bytes | `wasm-opt -Oz` | gzip |
 | --- | ---: | ---: | ---: |
-| today | 4,563 | 2,508 | -- |
-| this item's spike (drop the `_str_to_mem` preamble) | 2,661 | -- | -- |
-| plus `790`'s spike (i31-only `+`/`-`/compare, i31 export return) | 1,030 | 816 | 685 |
+| today | 4,623 | 2,561 | -- |
+| this item's spike (drop the `_str_to_mem` preamble) | 2,721 | -- | -- |
+| plus `790`'s spike (i31-only `+`/`-`/compare, i31 export return) | 1,090 | 869 | 728 |
 
 Both spiked modules still run correctly under a Node host (`_initialize`, `InitApp`,
 `RunComputation(20)` = 6765).
 
 The `wasm-opt` column is a PROBE, not a proposed build step -- it was run to size the
 opportunity before the spikes, and it mostly finds the same dead code this item and `790`
-remove for reasons. Note the last row: once both land, an external optimizer has 214 bytes
+remove for reasons. Note the last row: once both land, an external optimizer has 221 bytes
 left to find. What that residue is, and why it is small enough to write by hand, is
 [`791`](791-module-level-slack-globals-types-data-hooks.md).
 

@@ -1,4 +1,4 @@
-# The shaker leaves globals, types and data behind, and 214 bytes of tidying after them
+# The shaker leaves globals, types and data behind, and 221 bytes of tidying after them
 
 **Status:** open. Measured 2026-09-12.
 
@@ -11,28 +11,28 @@ there.
 ## The finding
 
 **This item is entirely in-tree work. An external optimizer was run ONCE, as a probe, to
-find out how much is here before deciding whether it was worth writing -- the answer is 214
+find out how much is here before deciding whether it was worth writing -- the answer is 221
 bytes, and nothing about the plan below depends on that tool.** The core libraries take no
 external dependency and this pass would not be the first one.
 
 | Module | rontolisp | what an external `-Oz` still finds |
 | --- | ---: | ---: |
-| the measurement program, today | 4,563 | -2,055 |
-| the same with `789` + `790` spiked in | 1,030 | **-214** |
+| the measurement program, today | 4,623 | -2,062 |
+| the same with `789` + `790` spiked in | 1,090 | **-221** |
 
 Read the two rows together: on today's module an optimizer looks impressive (40 functions
 to 20, 15 globals to 1) because it is deleting the SAME dead runtime that `789` and `790`
-delete at the source. Once those land it has 214 bytes left -- and that residue is this
+delete at the source. Once those land it has 221 bytes left -- and that residue is this
 item, because most of it is not clever.
 
-Where the 214 sits (the 1,030-byte module, as emitted vs. the probe):
+Where the 221 sits (the 1,090-byte module, as emitted vs. the probe):
 
 | Section | as emitted | probe | Worth | Note |
 | --- | ---: | ---: | ---: | --- |
 | globals | 79 / 15 | 6 / 1 | 73 | **14 dead globals survive the shaker** |
-| code | 567 / 17 fn | 460 / 9 fn | 107 | inline one-call-site bodies, drop unused locals |
+| code | 627 / 17 fn | 513 / 9 fn | 114 | inline one-call-site bodies, drop unused locals |
 | types | 116 / 17 | 96 / 12 | 20 | rec groups outlive their last user |
-| data | 92 / 6 | 86 | 6 | a segment nothing addresses |
+| data | 94 / 6 | 88 | 6 | a segment nothing addresses |
 | exports | 92 / 6 | 92 | 0 | the probe cannot know; item 2 below is 65 more |
 
 Three of the five rows are deletions the shaker simply does not attempt, not optimizations.
@@ -59,7 +59,7 @@ the hook's contract (call it before `_initialize`) is unchanged, it just stops a
 modules that have nothing to seed.
 
 **3. A cleanup pass in `am.ik.wasm`, written here.**
-The ~107 bytes left in the code section are ordinary post-emit tidying: inline a body with
+The ~114 bytes left in the code section are ordinary post-emit tidying: inline a body with
 one call site, merge identical bodies (the AST path already folds duplicates -- see
 `.kb/optimize-dead-code-elimination.md` -- but nothing does it after emission), drop unused
 locals, fold `local.set`/`local.get` pairs. Each is a local rewrite over a function body
