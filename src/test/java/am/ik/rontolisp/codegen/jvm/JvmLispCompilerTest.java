@@ -5401,6 +5401,66 @@ class JvmLispCompilerTest {
 	}
 
 	@Test
+	void readSequenceOverACharacterBufferDecodesABlockAtATime() throws Exception {
+		// The _readSeqChars helper (.kb/character-sequence-io.md): the character arm of
+		// read-sequence moves a block of UTF-16 units per read and must answer exactly
+		// what the per-character loop answered -- one code point per slot whatever its
+		// encoded width, a surrogate pair split by the end of the block completed rather
+		// than lost, :start/:end honoured, and the stream left exactly where the last
+		// character ended. The 8,191 leading characters put the non-BMP one ON the
+		// 8,192-unit block boundary, which is the case the block read can get wrong.
+		String file = tempDir.resolve("cs.txt").toString().replace("\\", "\\\\");
+		assertThat(compileAndRun("""
+				(with-open-file (out "%s" :direction :output :if-exists :supersede)
+				  (write-string (make-string 8191 :initial-element #\\x) out)
+				  (write-string (concatenate 'string (string (code-char 128512)) "a"
+				                             (string (code-char 12354)) "b")
+				                out))
+				(with-open-file (in "%s")
+				  (let ((buf (make-string 8196 :initial-element #\\.)))
+				    (print (read-sequence buf in))
+				    (print (list (char-code (char buf 8190)) (char-code (char buf 8191))
+				                 (char buf 8192) (char-code (char buf 8193)) (char buf 8194)
+				                 (char buf 8195)))))
+				(with-open-file (in "%s")
+				  (let ((head (make-string 3 :initial-element #\\.))
+				        (tail (make-string 5 :initial-element #\\.)))
+				    (print (read-sequence head in))
+				    (print (read-sequence tail in :start 1 :end 4))
+				    (print (list head tail))))
+				""".formatted(file, file, file)))
+			.isEqualTo("8195\n(120 128512 #\\a 12354 #\\b #\\.)\n3\n4\n(\"xxx\" \".xxx.\")");
+	}
+
+	// Reading a file INTO A STRING may not cost one host read per character: the
+	// character arm of read-sequence used to store one code point per read-char, which
+	// made uiop:read-file-string twice the cost of reading the same file as bytes
+	// (.kb/character-sequence-io.md). Both halves move the same 1,048,576 characters off
+	// the same file; only the element type differs.
+	@Test
+	void compileReadSequenceIntoAStringCostsAboutWhatTheSameFileCostsAsBytes() throws Exception {
+		String file = tempDir.resolve("cost.txt").toString().replace("\\", "\\\\");
+		String[] lines = compileAndRun("""
+				(with-open-file (out "%s" :direction :output :if-exists :supersede)
+				  (write-string (make-string 1048576 :initial-element #\\y) out))
+				(defvar *t0* (get-internal-real-time))
+				(with-open-file (in "%s" :element-type '(unsigned-byte 8))
+				  (read-sequence (make-array 1048576 :element-type '(unsigned-byte 8)) in))
+				(defvar *t1* (get-internal-real-time))
+				(with-open-file (in "%s")
+				  (read-sequence (make-string 1048576) in))
+				(print (- *t1* *t0*))
+				(print (- (get-internal-real-time) *t1*))
+				""".formatted(file, file, file)).split("\n");
+		long bytes = Long.parseLong(lines[0].trim());
+		long chars = Long.parseLong(lines[1].trim());
+		assertThat(chars)
+			.as("1,048,576 characters read into a string (%d ms) against the same file read "
+					+ "into a byte vector (%d ms)", chars, bytes)
+			.isLessThanOrEqualTo(500 + 6 * bytes);
+	}
+
+	@Test
 	void openNonLiteralElementTypeThrows() {
 		String file = tempDir.resolve("nl.dat").toString().replace("\\", "\\\\");
 		assertThatThrownBy(() -> compileAndRun("(open \"" + file + "\" :input (list 'unsigned-byte 8))"))

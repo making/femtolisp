@@ -11,6 +11,9 @@ stored nor counted. The general-array and character-vector contracts are UNTOUCH
 Little-endian and raw so a Lisp buffer can be a numpy / C / llama2.c file with no per-element
 decode. No `:byte-order` knob; a big-endian file (MNIST idx) keeps its `read-byte` decoder.
 
+The CHARACTER buffer has a bulk arm of its own, in the same declining shape one `or` further
+along: `.kb/character-sequence-io.md`.
+
 ## The seam: one expansion, one declining primitive per backend
 - `LispMacroExpander.expandReadSequence` / `expandWriteSequence` (shared by all three) call
   `(%read-sequence-packed seq stream start end)` / `%write-sequence-packed` inside an `or`: the

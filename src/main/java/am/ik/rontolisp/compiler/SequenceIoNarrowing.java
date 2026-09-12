@@ -48,6 +48,9 @@ import am.ik.rontolisp.macro.LispMacroExpander;
  * to {@link DeadTypeBranchPruner}), never in {@code CompileFrontend}: the narrowed
  * expansion still attempts {@code %read-sequence-packed} / {@code %write-sequence-packed}
  * first, and the gates that emit that runtime key on the unexpanded operator spelling.
+ * The character bulk arm ({@code %read-sequence-chars},
+ * {@code .kb/character-sequence-io.md}) is what the narrowed expansion DROPS: no
+ * character buffer can reach a proven site.
  */
 public final class SequenceIoNarrowing {
 

@@ -9524,11 +9524,19 @@ public final class LispMacroExpander {
 	 * the loop below runs exactly as before -- so the string / general-vector contract is
 	 * untouched.
 	 *
+	 * <p>
+	 * A CHARACTER buffer has the same shape of bulk arm, {@code %read-sequence-chars}: a
+	 * block of storage units decoded into the buffer's code points in one host read
+	 * instead of one {@code read-char} per character
+	 * ({@code .kb/character-sequence-io.md}). It declines the same way, and it is omitted
+	 * entirely from the byte-only expansion, where no character buffer can arrive.
+	 *
 	 * <pre>
 	 * (read-sequence seq stream) ->
 	 * (let ((__rseq_seq seq) (__rseq_st stream))
 	 *   (let ((__rseq_i 0) (__rseq_end nil))     ; nil = the whole buffer
 	 *     (or (%read-sequence-packed __rseq_seq __rseq_st __rseq_i __rseq_end)
+	 *         (%read-sequence-chars __rseq_seq __rseq_st __rseq_i __rseq_end)
 	 *         (let ((__rseq_end (if __rseq_end __rseq_end (length __rseq_seq)))
 	 *               (__rseq_b nil) (__rseq_eof nil) (__rseq_ch (stringp __rseq_seq)))
 	 *           (while (if __rseq_eof nil (&lt; __rseq_i __rseq_end))
@@ -9591,8 +9599,14 @@ public final class LispMacroExpander {
 		LispVal packed = listToCons(List.of(new LispSymbol(LispNames.READ_SEQUENCE_PACKED), seq, st, i, end));
 		LispVal innerBindings = listToCons(
 				List.of(listToCons(List.of(i, args.start())), listToCons(List.of(end, args.end()))));
-		LispVal innerLet = listToCons(List.of(new LispSymbol(LispNames.LET), innerBindings,
-				listToCons(List.of(new LispSymbol(LispNames.OR), packed, loopLet))));
+		List<LispVal> arms = new java.util.ArrayList<>(List.of(new LispSymbol(LispNames.OR), packed));
+		if (!byteOnly) {
+			// The character buffer's bulk arm. A byte-only site cannot be handed one, so
+			// it does not carry the call (nor, on the compile paths, the helper).
+			arms.add(listToCons(List.of(new LispSymbol(LispNames.READ_SEQUENCE_CHARS), seq, st, i, end)));
+		}
+		arms.add(loopLet);
+		LispVal innerLet = listToCons(List.of(new LispSymbol(LispNames.LET), innerBindings, listToCons(arms)));
 		LispVal outerBindings = listToCons(
 				List.of(listToCons(List.of(seq, args.seq())), listToCons(List.of(st, args.stream()))));
 		return listToCons(List.of(new LispSymbol(LispNames.LET), outerBindings, innerLet));

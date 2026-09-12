@@ -5689,6 +5689,44 @@ public final class Environment implements Scope {
 				throw new UncheckedIOException(ex);
 			}
 		}));
+		// The bulk CHARACTER-I/O primitive behind read-sequence over a character buffer
+		// (.kb/character-sequence-io.md): a block of code points decoded into the buffer
+		// in one host read instead of one read-char per character. Handled: a
+		// BufferedReader table entry (a file or a string input stream) and the
+		// standard-stream designators; a Gray instance, a socket, a served request body,
+		// a binary stream and any non-character buffer answer nil and the expansion's
+		// per-character loop runs. The pushback cell is deliberately NOT consulted, which
+		// is what the loop this replaces does (see read-line's cell above).
+		env.defineFunction(LispNames.READ_SEQUENCE_CHARS, new LispFunction(LispNames.READ_SEQUENCE_CHARS, args -> {
+			requireArgCount(LispNames.READ_SEQUENCE_CHARS, args, 4);
+			if (!(args.get(0) instanceof LispString buf) || buf.sourceLiteral()) {
+				return LispNil.INSTANCE;
+			}
+			LispVal src = resolveInputSrc.apply(args.get(1));
+			Reader reader;
+			if (src == null || src instanceof LispNil || src instanceof LispTrue) {
+				out.flush();
+				reader = stdinReader;
+			}
+			else if (src instanceof LispInteger handle && streams.get(handle.value()) instanceof BufferedReader entry) {
+				reader = entry;
+			}
+			else {
+				return LispNil.INSTANCE;
+			}
+			int start = PackedBuffer.bound(LispNames.READ_SEQUENCE, args.get(2), 0);
+			int end = PackedBuffer.bound(LispNames.READ_SEQUENCE, args.get(3), buf.length());
+			if (start < 0 || end > buf.length() || start > end) {
+				// Out of the buffer: decline, so the loop signals exactly as it did.
+				return LispNil.INSTANCE;
+			}
+			try {
+				return new LispInteger(readCodePoints(reader, buf, start, end));
+			}
+			catch (IOException ex) {
+				throw new UncheckedIOException(ex);
+			}
+		}));
 		env.defineFunction(LispNames.WRITE_SEQUENCE_PACKED, new LispFunction(LispNames.WRITE_SEQUENCE_PACKED, args -> {
 			requireArgCount(LispNames.WRITE_SEQUENCE_PACKED, args, 4);
 			PackedBuffer buf = PackedBuffer.of(args.get(0));
@@ -8207,6 +8245,60 @@ public final class Environment implements Scope {
 
 	/** How deep a chain of synonym streams may nest before it is called a cycle. */
 	private static final int SYNONYM_DEPTH_LIMIT = 64;
+
+	/**
+	 * Fills code points {@code [start, end)} of a character buffer off a reader, block by
+	 * block, and answers the position the fill stopped at.
+	 *
+	 * <p>
+	 * Each block asks for exactly as many UTF-16 units as there are code points still
+	 * wanted, which can never overshoot the buffer: a code point is one unit or two, so N
+	 * units hold at most N of them. A surrogate pair SPLIT by the end of a block is
+	 * completed by one more read behind a mark, exactly as {@code read-char} completes
+	 * one -- a high half followed by anything else is its own character and the unit
+	 * after it is put back.
+	 * @param reader the character source
+	 * @param buf the destination character buffer
+	 * @param start the first code-point index to fill
+	 * @param end the index after the last one
+	 * @return the index of the first element not updated (end, or less at end of file)
+	 * @throws IOException if the reader does
+	 */
+	private static int readCodePoints(Reader reader, LispString buf, int start, int end) throws IOException {
+		char[] block = new char[Math.min(end - start, 8192)];
+		int at = start;
+		while (at < end) {
+			int n = reader.read(block, 0, Math.min(block.length, end - at));
+			if (n < 0) {
+				break;
+			}
+			int k = 0;
+			while (k < n && at < end) {
+				char c = block[k++];
+				if (!Character.isHighSurrogate(c)) {
+					buf.setCharAt(at++, c);
+					continue;
+				}
+				int low;
+				if (k < n) {
+					low = block[k];
+					if (Character.isLowSurrogate((char) low)) {
+						k++;
+					}
+				}
+				else {
+					reader.mark(1);
+					low = reader.read();
+					if (low >= 0 && !Character.isLowSurrogate((char) low)) {
+						reader.reset();
+					}
+				}
+				buf.setCharAt(at++,
+						low >= 0 && Character.isLowSurrogate((char) low) ? Character.toCodePoint(c, (char) low) : c);
+			}
+		}
+		return at;
+	}
 
 	private static void requireArgCount(String name, List<LispVal> args, int expected) {
 		if (args.size() != expected) {

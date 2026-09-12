@@ -69,21 +69,28 @@ is a fresh list either way and the outer `(append ... nil)` the left fold needed
   are the two answers.
 
 ## The accumulate was never the whole cost of reading a file
-`uiop:read-file-string` is still 2x (JVM) to 23x (interpreter, wasm) SLOWER than reading
-the same file as bytes and decoding once, on the same 2,668,890-character file:
+It was not even most of it. What remained after this file's fix was the CHARACTER
+`read-sequence`, which decoded and stored one code point per host read -- about 1.2 us per
+character on the interpreter and wasm -- and that is fixed too
+(`.kb/character-sequence-io.md`, `.todo/721`). On the same 2,668,890-character file,
+before that second fix -> after (2026-09-12):
 
 | | interpreter | JVM class | wasm-GC |
 |---|---|---|---|
-| `read-file-bytes` + `rontolisp:octets-to-string` | 249 ms | 267 ms | 144 ms |
-| `uiop:read-file-string` | 3,694 ms | 539 ms | 3,351 ms |
+| `read-file-bytes` + `rontolisp:octets-to-string` | 249 -> 307 ms | 267 -> 321 ms | 144 -> 150 ms |
+| `uiop:read-file-string` | 3,694 -> **366** ms | 539 -> **322** ms | 3,351 -> **349** ms |
 
-What remains is the CHARACTER `read-sequence`, which decodes and stores one code point at
-a time -- about 1.2 us per character on the interpreter. So **`examples/llm/llm.lisp` and
-`examples/llm/checkpoint-tokenizer.lisp` KEEP their byte-reader detour**: `.todo/704` asked
-whether they could drop it for `uiop:read-file-string` now, and the numbers say no. That
-detour also hands the JVM an immutable `java.lang.String`, which is the representation
-`rontolisp:json-parse` is fast over (`.kb/string-index-cost.md`). The remaining gap is
-`read-sequence`'s own cost, tracked as `.todo/721`.
+**`uiop:read-file-string` is now at parity with reading the file as bytes and decoding
+once**, so the byte-reader detour in `examples/llm/llm.lisp` and
+`examples/llm/checkpoint-tokenizer.lisp` is no longer a cost REQUIREMENT -- it is kept for
+what it also buys: one decode of one contiguous byte array, and an immutable
+`java.lang.String` on the JVM, which is the representation `rontolisp:json-parse` is fast
+over (`.kb/string-index-cost.md`). `.todo/704` asked whether they could drop it; the answer
+is "they may now, and it would be a wash".
+
+Of `read-file-string`'s remaining 366 ms on the interpreter, about 260 ms is the
+`with-output-to-string` accumulate THIS file is about -- it is linear, but it is now the
+larger half of reading a file into a string on every backend.
 
 ## Pinning
 - ci-spec `string-accumulate-is-not-quadratic` (all four backends): 4,096 pieces of 64
@@ -92,14 +99,17 @@ detour also hands the JVM an immutable `java.lang.String`, which is the represen
   `with-output-to-string` accumulator -> `STREAM-FLAT`; then `uiop:read-file-string`
   over a 4,500-character file it writes itself, for correctness across the 4,096-character
   read boundary.
-  **Why the ratio is not over FILES**, which is what the invariant exists for: on the
-  interpreter `read-sequence` costs about 1.2 us per character, so the accumulate does not
-  dominate below roughly 1.2M characters, and a file big enough to separate the two
-  implementations there costs tens of seconds per backend leg. Measured at 786,432
-  characters, one file against 16 files of 48 KB: the old code's ratio is 12.5x on the JVM
-  but only 1.53x on the interpreter and 3.8x on wasm -- undetectable under any bound that
-  is not itself a flake. The two mechanisms `read-file-string` is MADE of are timed
-  instead, at a size every backend finishes in milliseconds.
+  **Why the ratio is not over FILES**, which is what the invariant exists for: when this
+  was written `read-sequence` cost about 1.2 us per character on the interpreter, so the
+  accumulate did not dominate below roughly 1.2M characters and a file big enough to
+  separate the two implementations cost tens of seconds per backend leg. Measured at
+  786,432 characters, one file against 16 files of 48 KB: the old code's ratio was 12.5x on
+  the JVM but only 1.53x on the interpreter and 3.8x on wasm -- undetectable under any
+  bound that is not itself a flake. The two mechanisms `read-file-string` is MADE of are
+  timed instead, at a size every backend finishes in milliseconds. **That premise moved on
+  2026-09-12**: the character read is 23-39 ns per character now
+  (`.kb/character-sequence-io.md`), so a file-sized ratio would separate cleanly today --
+  re-open this if the in-memory pins ever prove too indirect.
 - `JvmLispCompilerTest#compileANaryConcatenateCostsTheTotalLengthAndNotTheSumOfThePrefixes`
   (6,933 ms under the fold, 39 ms sized once) and
   `WasmLispCompilerIntegrationTest#aNaryConcatenateCostsTheTotalLengthAndNotTheSumOfThePrefixes`

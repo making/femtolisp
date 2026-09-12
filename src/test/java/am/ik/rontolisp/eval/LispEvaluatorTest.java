@@ -1781,6 +1781,34 @@ class LispEvaluatorTest {
 			.isLessThanOrEqualTo(500 + 6 * shortString);
 	}
 
+	// Reading a file INTO A STRING may not cost a microsecond per character: the
+	// character arm of read-sequence used to decode and store one code point per host
+	// read, which made uiop:read-file-string 13x the cost of reading the same file as
+	// bytes (.kb/character-sequence-io.md). Both halves below move the same 1,048,576
+	// characters off the same file; only the element type differs.
+	@Test
+	void evalReadSequenceIntoAStringCostsAboutWhatTheSameFileCostsAsBytes(@TempDir Path tempDir) {
+		String file = tempDir.resolve("cost.txt").toString().replace("\\", "\\\\");
+		String output = evalMulti("""
+				(with-open-file (out "%s" :direction :output :if-exists :supersede)
+				  (write-string (make-string 1048576 :initial-element #\\y) out))
+				(let ((t0 (get-internal-real-time)))
+				  (with-open-file (in "%s" :element-type '(unsigned-byte 8))
+				    (read-sequence (make-array 1048576 :element-type '(unsigned-byte 8)) in))
+				  (let ((t1 (get-internal-real-time)))
+				    (with-open-file (in "%s")
+				      (read-sequence (make-string 1048576) in))
+				    (list (- t1 t0) (- (get-internal-real-time) t1))))
+				""".formatted(file, file, file)).print();
+		String[] halves = output.replace("(", "").replace(")", "").trim().split("\\s+");
+		long bytes = Long.parseLong(halves[0]);
+		long chars = Long.parseLong(halves[1]);
+		assertThat(chars)
+			.as("1,048,576 characters read into a string (%d ms) against the same file read "
+					+ "into a byte vector (%d ms)", chars, bytes)
+			.isLessThanOrEqualTo(500 + 6 * bytes);
+	}
+
 	@Test
 	void evalSubseqList() {
 		assertThat(eval("(subseq '(1 2 3 4 5) 1 3)").print()).isEqualTo("(2 3)");
@@ -10040,6 +10068,43 @@ class LispEvaluatorTest {
 		}
 		assertThat(captured.toString(StandardCharsets.UTF_8).trim()).isEqualTo(
 				"(3 4 3 2)\n#f(1.5 -2.25 3.0e10)\n#d((0.5 -0.0) (0.1 42.0))\n#(1 65535 258)\n#(65536 4294967295)\n#(0 0 192 63)\n3\n#f(9.0 1.5 -2.25 9.0 9.0 9.0)\n4\n#(0 0 192 63)");
+	}
+
+	@Test
+	void readSequenceOverACharacterBufferDecodesABlockAtATime(@TempDir Path tempDir) {
+		// The CHARACTER arm of read-sequence moves a block of storage units per call
+		// (.kb/character-sequence-io.md) and must answer exactly what the per-character
+		// loop answered: one code point per slot whatever its encoded width, a sequence
+		// split by the end of a block carried across it, :start/:end honoured, and the
+		// stream left exactly where the last character ended. The 8,191 leading
+		// characters put the non-BMP one ON the 8,192-unit block boundary, which is the
+		// case a per-character read cannot get wrong and a block read can.
+		String file = tempDir.resolve("cs.txt").toString().replace("\\", "\\\\");
+		java.io.ByteArrayOutputStream captured = new java.io.ByteArrayOutputStream();
+		LispEvaluator evaluator = new LispEvaluator(new PrintStream(captured, true, StandardCharsets.UTF_8));
+		for (LispVal expr : LispReader.readAllFromString("""
+				(with-open-file (out "%s" :direction :output :if-exists :supersede)
+				  (write-string (make-string 8191 :initial-element #\\x) out)
+				  (write-string (concatenate 'string (string (code-char 128512)) "a"
+				                             (string (code-char 12354)) "b")
+				                out))
+				(with-open-file (in "%s")
+				  (let ((buf (make-string 8196 :initial-element #\\.)))
+				    (print (read-sequence buf in))
+				    (print (list (char-code (char buf 8190)) (char-code (char buf 8191))
+				                 (char buf 8192) (char-code (char buf 8193)) (char buf 8194)
+				                 (char buf 8195)))))
+				(with-open-file (in "%s")
+				  (let ((head (make-string 3 :initial-element #\\.))
+				        (tail (make-string 5 :initial-element #\\.)))
+				    (print (read-sequence head in))
+				    (print (read-sequence tail in :start 1 :end 4))
+				    (print (list head tail))))
+				""".formatted(file, file, file))) {
+			evaluator.eval(expr);
+		}
+		assertThat(captured.toString(StandardCharsets.UTF_8).trim())
+			.isEqualTo("8195\n(120 128512 #\\a 12354 #\\b #\\.)\n3\n4\n(\"xxx\" \".xxx.\")");
 	}
 
 	@Test

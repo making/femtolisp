@@ -5345,6 +5345,16 @@ public final class LispNames {
 	public static final String WRITE_SEQUENCE_PACKED = "%WRITE-SEQUENCE-PACKED";
 
 	/**
+	 * The bulk CHARACTER-I/O primitive behind {@code read-sequence} over a character
+	 * buffer: {@code (%read-sequence-chars seq stream start end)} fills code points
+	 * {@code [start, end)} of a mutable character vector off a character stream and
+	 * answers the fill position. It answers NIL -- "declined" -- for a buffer or a stream
+	 * it does not handle, and the expansion then runs its per-character loop
+	 * ({@code .kb/character-sequence-io.md}).
+	 */
+	public static final String READ_SEQUENCE_CHARS = "%READ-SEQUENCE-CHARS";
+
+	/**
 	 * The internal {@code rontolisp::%str-byte-length} accessor of the
 	 * {@code --component} socket layer: the content BYTE count of a string (its
 	 * {@code $str_bytes} length minus the two surrounding quotes). A socket chunk's bytes

@@ -379,6 +379,16 @@ final class JvmAsm {
 
 	// --- byte arrays (the quantized matrix's block storage) ---------------------------
 
+	/** The {@code newarray char} instruction (atype 5 = {@code T_CHAR}). */
+	void newarrayChar() {
+		this.code.add(Opcode.NEWARRAY);
+		this.code.add(5);
+	}
+
+	void caload() {
+		this.code.add(Opcode.CALOAD);
+	}
+
 	void newarrayByte() {
 		this.code.add(Opcode.NEWARRAY);
 		this.code.add(8);

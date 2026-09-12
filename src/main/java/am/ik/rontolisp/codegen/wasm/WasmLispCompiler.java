@@ -1623,7 +1623,15 @@ public final class WasmLispCompiler implements LispCompiler {
 	// the last fixed helper so no index above shifts.
 	static final int FUNC_RENAME_FILE = FUNC_DELETE_FILE + 1;
 
-	static final int FX_FUNC_LAST = FUNC_RENAME_FILE;
+	// _read_seq_chars (seq, stream, start, end) -> value: the bulk CHARACTER transfer
+	// behind read-sequence over a character buffer (WasmCharIoRuntimeBuilder,
+	// .kb/character-sequence-io.md). Reuses the 4-parameter callable signature
+	// (TYPE_CALLABLE_BASE + 3), so no new type entry; appended after the last fixed
+	// helper so no index above shifts. A program with no read-sequence gets a
+	// declining stub body, which costs its call sites nothing because it has none.
+	static final int FUNC_READ_SEQ_CHARS = FUNC_RENAME_FILE + 1;
+
+	static final int FX_FUNC_LAST = FUNC_READ_SEQ_CHARS;
 
 	// The vec: SIMD block (_v_new/_v_get/_v_set + the twelve v128 kernels), emitted ONLY
 	// under --simd. Fixed indices relative to FX_FUNC_LAST, so every constant
@@ -2881,6 +2889,11 @@ public final class WasmLispCompiler implements LispCompiler {
 		// wasi:cli/environment instead -- .kb/time-environment-builtins.md).
 		boolean usesEnvArgvScratch = usesHostArgv
 				|| (!this.component && programUsesSymbol(program, LispNames.HOST_GETENV));
+		// The bulk character read behind read-sequence: emitted for real only where a
+		// read-sequence exists to call it. Over-emitting costs bytes and under-emitting
+		// costs speed, so neither direction can be wrong about behavior.
+		boolean usesCharSequenceIo = programUsesSymbol(program, LispNames.READ_SEQUENCE)
+				|| programUsesSymbol(program, LispNames.READ_SEQUENCE_RAW_INTERNAL);
 		boolean usesLoad = programUsesSymbol(program, LispNames.LOAD);
 		boolean usesRead = programUsesSymbol(program, LispNames.READ)
 				|| programUsesSymbol(program, LispNames.READ_FROM_STRING) || usesLoad;
@@ -6104,6 +6117,9 @@ public final class WasmLispCompiler implements LispCompiler {
 				fnDef.addFunction(TYPE_CALLABLE_BASE + 1); // _rename_file (from, to) -> T
 															// | nil
 				// (FUNC_RENAME_FILE)
+				fnDef.addFunction(TYPE_CALLABLE_BASE + 3); // _read_seq_chars (seq,
+															// stream, start, end) ->
+															// value (FUNC_READ_SEQ_CHARS)
 				// vec: SIMD block (--simd only): the three element helpers + twelve
 				// kernels
 				if (this.simd) {
@@ -6948,6 +6964,11 @@ public final class WasmLispCompiler implements LispCompiler {
 				code.addFunction(WasmIoRuntimeBuilder.buildDeleteFileBody(stringTable));
 				// file-rename body (FUNC_RENAME_FILE)
 				code.addFunction(WasmIoRuntimeBuilder.buildRenameFileBody(stringTable));
+				// bulk character read body (FUNC_READ_SEQ_CHARS); a declining stub
+				// unless the program reads a sequence at all, since nothing else calls
+				// it.
+				code.addFunction(usesCharSequenceIo ? WasmCharIoRuntimeBuilder.buildReadSeqCharsBody()
+						: WasmCharIoRuntimeBuilder.buildStub());
 				// vec: SIMD block bodies (--simd only), in FUNC_VEC_BASE index order.
 				if (this.simd) {
 					// Each helper is handed the function index of the scalar vec.lisp

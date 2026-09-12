@@ -1223,6 +1223,7 @@ final class WasmExprCompiler {
 					WasmExprCompiler.compileExpr(LispMacroExpander.expandWriteSequence(cons), ctx);
 				case LispNames.READ_SEQUENCE_PACKED, LispNames.WRITE_SEQUENCE_PACKED ->
 					WasmSequencePackedCompiler.compile(cons, ctx);
+				case LispNames.READ_SEQUENCE_CHARS -> WasmSequenceCharsCompiler.compile(cons, ctx);
 				case LispNames.MAKE_STRING ->
 					WasmExprCompiler.compileExpr(LispMacroExpander.expandMakeString(cons), ctx);
 				// A site whose DESTINATION is provably an array calls the shared

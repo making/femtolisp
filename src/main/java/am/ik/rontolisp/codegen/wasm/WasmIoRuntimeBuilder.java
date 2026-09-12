@@ -2168,7 +2168,7 @@ final class WasmIoRuntimeBuilder {
 	// Pushes the UTF-8 sequence length (1..4) implied by a lead byte, based on the
 	// same high-bit ranges as _str_char_at: [0..0x80)=1, [0x80..0xE0)=2,
 	// [0xE0..0xF0)=3, else 4.
-	private static void emitUtf8ByteCount(WasmWriter w, int b0Local) {
+	static void emitUtf8ByteCount(WasmWriter w, int b0Local) {
 		getLocal(w, b0Local);
 		i32(w, 0x80);
 		w.write(Instruction.I32_LT_U);
@@ -2199,7 +2199,7 @@ final class WasmIoRuntimeBuilder {
 	// Pushes the decoded Unicode code point given the sequence length in {@code
 	// neededLocal} and the 1..4 bytes in {@code b0Local}..{@code b3Local}. Follows the
 	// same 6-bit continuation decoding as _str_char_at.
-	private static void emitUtf8DecodeFromLocals(WasmWriter w, int neededLocal, int b0Local, int b1Local, int b2Local,
+	static void emitUtf8DecodeFromLocals(WasmWriter w, int neededLocal, int b0Local, int b1Local, int b2Local,
 			int b3Local) {
 		getLocal(w, neededLocal);
 		i32(w, 1);

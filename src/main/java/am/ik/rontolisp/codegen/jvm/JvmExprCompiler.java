@@ -909,6 +909,7 @@ final class JvmExprCompiler {
 					JvmExprCompiler.compileExpr(LispMacroExpander.expandWriteSequence(cons), ctx, className);
 				case LispNames.READ_SEQUENCE_PACKED, LispNames.WRITE_SEQUENCE_PACKED ->
 					JvmSequencePackedCompiler.compile(cons, ctx, className);
+				case LispNames.READ_SEQUENCE_CHARS -> JvmSequenceCharsCompiler.compile(cons, ctx, className);
 				case LispNames.MAKE_STRING ->
 					JvmExprCompiler.compileExpr(LispMacroExpander.expandMakeString(cons), ctx, className);
 				case LispNames.REPLACE -> JvmExprCompiler.compileExpr(LispMacroExpander.expandReplace(cons,

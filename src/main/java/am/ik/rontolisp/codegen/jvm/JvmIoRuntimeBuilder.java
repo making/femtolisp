@@ -167,6 +167,10 @@ final class JvmIoRuntimeBuilder {
 
 	static final String WRITE_SEQ_PACKED_DESC = READ_SEQ_PACKED_DESC;
 
+	static final String READ_SEQ_CHARS_METHOD = "_readSeqChars";
+
+	static final String READ_SEQ_CHARS_DESC = READ_SEQ_PACKED_DESC;
+
 	static final String WRITE_BYTE_METHOD = "_writeByte";
 
 	static final String WRITE_BYTE_DESC = "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;";
@@ -459,19 +463,26 @@ final class JvmIoRuntimeBuilder {
 	 */
 	@Nullable private final MethodrefConstant strvRef;
 
+	/**
+	 * The constant-pool entries of {@code _readSeqChars}, minted only for a program that
+	 * calls {@code read-sequence} at all, so every other artifact keeps its bytes.
+	 */
+	@Nullable private final CharSequenceIo charSequenceIo;
+
 	private JvmIoRuntimeBuilder(ConstantPool cp, ClassConstant thisClass, ClassConstant objectClass,
 			ClassConstant stringClass, ClassConstant longClass, MethodrefConstant longValueOf,
 			MethodrefConstant longValue, MethodrefConstant stringLength, MethodrefConstant stringSubstring,
 			MethodrefConstant stringConcat, FieldrefConstant systemOut, MethodrefConstant printlnStr,
 			MethodrefConstant readLineHelper, JvmSocketRuntimeBuilder.@Nullable SocketRuntime sockets,
 			boolean errorOutput, boolean listDirectory, FileMeta fileMeta, boolean packedSequenceIo,
-			boolean arrayRuntime, boolean quantizedBuffer) {
+			boolean charSequenceIo, boolean arrayRuntime, boolean quantizedBuffer) {
 		this.sockets = sockets;
 		this.quantizedBuffer = quantizedBuffer;
 		this.errorOutput = errorOutput;
 		this.listDirectory = listDirectory;
 		this.fileMeta = fileMeta;
 		this.packedSequenceIo = packedSequenceIo ? PackedSequenceIo.mint(cp, thisClass) : null;
+		this.charSequenceIo = charSequenceIo ? CharSequenceIo.mint(cp) : null;
 		this.strvRef = arrayRuntime ? cp.addMethodref(thisClass, cp
 			.addNameAndType(cp.addUtf8(JvmArrayRuntimeBuilder.STRV), cp.addUtf8(JvmArrayRuntimeBuilder.STRV_DESC)))
 				: null;
@@ -674,10 +685,33 @@ final class JvmIoRuntimeBuilder {
 			MethodrefConstant stringConcat, FieldrefConstant systemOut, MethodrefConstant printlnStr,
 			MethodrefConstant readLineHelper, JvmSocketRuntimeBuilder.@Nullable SocketRuntime sockets,
 			boolean errorOutput, boolean listDirectory, FileMeta fileMeta, boolean packedSequenceIo,
-			boolean arrayRuntime, boolean quantizedBuffer) {
+			boolean charSequenceIo, boolean arrayRuntime, boolean quantizedBuffer) {
 		return new JvmIoRuntimeBuilder(cp, thisClass, objectClass, stringClass, longClass, longValueOf, longValue,
 				stringLength, stringSubstring, stringConcat, systemOut, printlnStr, readLineHelper, sockets,
-				errorOutput, listDirectory, fileMeta, packedSequenceIo, arrayRuntime, quantizedBuffer);
+				errorOutput, listDirectory, fileMeta, packedSequenceIo, charSequenceIo, arrayRuntime, quantizedBuffer);
+	}
+
+	/**
+	 * The constant-pool entries of the bulk character-I/O helper {@code _readSeqChars}
+	 * ({@code .kb/character-sequence-io.md}): the character-vector representation (an
+	 * {@code ArrayList} whose slot 0 is the length-4 header and whose elements follow),
+	 * and the block read the transfer is made of.
+	 */
+	private record CharSequenceIo(ClassConstant arrayListClass, ClassConstant objectArrayClass,
+			MethodrefConstant listGet, MethodrefConstant listSet, MethodrefConstant readBlock) {
+
+		static CharSequenceIo mint(ConstantPool cp) {
+			ClassConstant arrayList = cp.addClass(cp.addUtf8("java/util/ArrayList"));
+			return new CharSequenceIo(arrayList, cp.addClass(cp.addUtf8("[Ljava/lang/Object;")),
+					cp.addMethodref(arrayList,
+							cp.addNameAndType(cp.addUtf8("get"), cp.addUtf8("(I)Ljava/lang/Object;"))),
+					cp.addMethodref(arrayList,
+							cp.addNameAndType(cp.addUtf8("set"),
+									cp.addUtf8("(ILjava/lang/Object;)Ljava/lang/Object;"))),
+					cp.addMethodref(cp.addClass(cp.addUtf8("java/io/BufferedReader")),
+							cp.addNameAndType(cp.addUtf8("read"), cp.addUtf8("([CII)I"))));
+		}
+
 	}
 
 	/**
@@ -846,6 +880,10 @@ final class JvmIoRuntimeBuilder {
 					buildSeqPacked(true)));
 			ms.add(new IoMethod(this.cp.addUtf8(WRITE_SEQ_PACKED_METHOD), this.cp.addUtf8(WRITE_SEQ_PACKED_DESC), 6, 14,
 					buildSeqPacked(false)));
+		}
+		if (this.charSequenceIo != null) {
+			ms.add(new IoMethod(this.cp.addUtf8(READ_SEQ_CHARS_METHOD), this.cp.addUtf8(READ_SEQ_CHARS_DESC), 7, 17,
+					buildReadSeqChars()));
 		}
 		ms.add(new IoMethod(this.cp.addUtf8(WRITE_STR_METHOD), this.cp.addUtf8(WRITE_STR_DESC), 4, 3, buildWriteStr()));
 		ms.add(new IoMethod(this.cp.addUtf8(WRITE_STRING_METHOD), this.cp.addUtf8(WRITE_STRING_DESC), 4,
@@ -2791,6 +2829,290 @@ final class JvmIoRuntimeBuilder {
 		code.add(Opcode.INVOKEVIRTUAL);
 		emitU2(code, this.longValue.index());
 		code.add(Opcode.L2I);
+	}
+
+	/**
+	 * {@code _readSeqChars(Object seq, Object handle, Object start, Object end) -> Object}:
+	 * the bulk CHARACTER transfer behind {@code read-sequence} over a character buffer
+	 * ({@code .kb/character-sequence-io.md}). The buffer is a mutable character vector --
+	 * an {@code ArrayList} whose slot 0 is the LENGTH-4 header and whose elements follow
+	 * from slot 1 ({@code .kb/adjustable-arrays.md}) -- and the stream a
+	 * {@code BufferedReader} table entry or the standard-stream designator; anything else
+	 * answers {@code null}, "declined", and the expansion's per-character loop takes
+	 * over.
+	 *
+	 * <p>
+	 * Each round asks the reader for exactly as many UTF-16 units as there are code
+	 * points still wanted, which can never overshoot: a code point is one unit or two, so
+	 * N units hold at most N of them. A surrogate pair SPLIT by the end of a block is
+	 * completed by one more read behind a {@code mark(1)}, and a high half followed by
+	 * anything else is its own character with the unit after it put back -- the answer
+	 * {@code _readChar} gives for the same input, element for element. {@code start} /
+	 * {@code end} are boxed {@code Long}s or {@code null} (0 / the buffer's length); a
+	 * range outside the buffer declines rather than throwing, so the loop signals exactly
+	 * as it did.
+	 */
+	private List<Integer> buildReadSeqChars() {
+		CharSequenceIo io = java.util.Objects.requireNonNull(this.charSequenceIo);
+		JvmAsm a = new JvmAsm();
+		// Slots: 0=seq, 1=handle, 2=start, 3=end, 4=list, 5=header, 6=len, 7=s, 8=e,
+		// 9=r (BufferedReader), 10=block (char[]), 11=at, 12=n, 13=k, 14=c, 15=low,
+		// 16=entry
+		final int SEQ = 0, HANDLE = 1, START = 2, END = 3, LIST = 4, HEADER = 5, LEN = 6, S = 7, E = 8, R = 9,
+				BLOCK = 10, AT = 11, N = 12, K = 13, C = 14, LOW = 15, ENTRY = 16;
+		final int BLOCK_UNITS = 8192;
+		int declined = a.label();
+		// --- the buffer: the length-4 header is the character-vector marker ----------
+		a.aload(SEQ);
+		a.instanceOf(io.arrayListClass());
+		a.branch(Opcode.IFEQ, declined);
+		a.aload(SEQ);
+		a.checkcast(io.arrayListClass());
+		a.astore(LIST);
+		a.aload(LIST);
+		a.iconst(0);
+		a.invokevirtual(io.listGet());
+		a.instanceOf(io.objectArrayClass());
+		a.branch(Opcode.IFEQ, declined);
+		a.aload(LIST);
+		a.iconst(0);
+		a.invokevirtual(io.listGet());
+		a.checkcast(io.objectArrayClass());
+		a.astore(HEADER);
+		a.aload(HEADER);
+		a.arraylength();
+		a.iconst(4);
+		a.branch(Opcode.IF_ICMPNE, declined);
+		// len = the fill pointer when there is one, else dimension 0 -- what (length seq)
+		// answers, which is the bound the loop this replaces reads.
+		int useDim = a.label();
+		int haveLen = a.label();
+		a.aload(HEADER);
+		a.iconst(1);
+		a.aaload();
+		a.branch(Opcode.IFNULL, useDim);
+		a.aload(HEADER);
+		a.iconst(1);
+		a.aaload();
+		a.checkcast(this.longClass);
+		a.invokevirtual(this.longValue);
+		a.l2i();
+		a.istore(LEN);
+		a.branch(Opcode.GOTO, haveLen);
+		a.bind(useDim);
+		a.aload(HEADER);
+		a.iconst(0);
+		a.aaload();
+		a.checkcast(io.objectArrayClass());
+		a.iconst(0);
+		a.aaload();
+		a.checkcast(this.longClass);
+		a.invokevirtual(this.longValue);
+		a.l2i();
+		a.istore(LEN);
+		a.bind(haveLen);
+		// --- the bounds -------------------------------------------------------------
+		emitBoundArg(a, START, S, () -> a.iconst(0));
+		emitBoundArg(a, END, E, () -> a.iload(LEN));
+		a.iload(S);
+		a.branch(Opcode.IFLT, declined);
+		a.iload(E);
+		a.iload(LEN);
+		a.branch(Opcode.IF_ICMPGT, declined);
+		a.iload(S);
+		a.iload(E);
+		a.branch(Opcode.IF_ICMPGT, declined);
+		// --- the stream: a text table entry, or standard input ----------------------
+		int stdin = a.label();
+		int haveReader = a.label();
+		a.aload(HANDLE);
+		a.instanceOf(this.longClass);
+		a.branch(Opcode.IFEQ, stdin);
+		a.getstatic(this.streamsField);
+		a.aload(HANDLE);
+		a.checkcast(this.longClass);
+		a.invokevirtual(this.longValue);
+		a.l2i();
+		a.aaload();
+		a.astore(ENTRY);
+		a.aload(ENTRY);
+		a.instanceOf(this.bufferedReaderClass);
+		a.branch(Opcode.IFEQ, declined);
+		a.aload(ENTRY);
+		a.checkcast(this.bufferedReaderClass);
+		a.astore(R);
+		a.branch(Opcode.GOTO, haveReader);
+		a.bind(stdin);
+		int haveStdin = a.label();
+		a.getstatic(this.stdinReaderField);
+		a.branch(Opcode.IFNONNULL, haveStdin);
+		a.anew(this.bufferedReaderClass);
+		a.dup();
+		a.anew(this.inputStreamReaderClass);
+		a.dup();
+		a.getstatic(this.systemIn);
+		a.invokespecial(this.inputStreamReaderInit);
+		a.invokespecial(this.bufferedReaderInit);
+		a.putstatic(this.stdinReaderField);
+		a.bind(haveStdin);
+		a.getstatic(this.stdinReaderField);
+		a.astore(R);
+		a.bind(haveReader);
+		// --- the transfer: block by block, at walks the code points from s to e ------
+		a.iload(E);
+		a.iload(S);
+		a.op(Opcode.ISUB);
+		a.istore(N);
+		int blockSized = a.label();
+		a.iload(N);
+		a.iconst(BLOCK_UNITS);
+		a.branch(Opcode.IF_ICMPLE, blockSized);
+		a.iconst(BLOCK_UNITS);
+		a.istore(N);
+		a.bind(blockSized);
+		a.iload(N);
+		a.newarrayChar();
+		a.astore(BLOCK);
+		a.iload(S);
+		a.istore(AT);
+		int round = a.label();
+		int done = a.label();
+		int unit = a.label();
+		a.bind(round);
+		a.iload(AT);
+		a.iload(E);
+		a.branch(Opcode.IF_ICMPGE, done);
+		// n = r.read(block, 0, min(block.length, e - at))
+		a.aload(BLOCK);
+		a.arraylength();
+		a.istore(N);
+		int wantSized = a.label();
+		a.iload(N);
+		a.iload(E);
+		a.iload(AT);
+		a.op(Opcode.ISUB);
+		a.branch(Opcode.IF_ICMPLE, wantSized);
+		a.iload(E);
+		a.iload(AT);
+		a.op(Opcode.ISUB);
+		a.istore(N);
+		a.bind(wantSized);
+		a.aload(R);
+		a.aload(BLOCK);
+		a.iconst(0);
+		a.iload(N);
+		a.invokevirtual(io.readBlock());
+		a.istore(N);
+		a.iload(N);
+		a.branch(Opcode.IFLT, done);
+		a.iconst(0);
+		a.istore(K);
+		a.bind(unit);
+		a.iload(K);
+		a.iload(N);
+		a.branch(Opcode.IF_ICMPGE, round);
+		a.iload(AT);
+		a.iload(E);
+		a.branch(Opcode.IF_ICMPGE, round);
+		a.aload(BLOCK);
+		a.iload(K);
+		a.caload();
+		a.istore(C);
+		a.iinc(K, 1);
+		int store = a.label();
+		a.iload(C);
+		a.op(Opcode.I2C);
+		a.invokestatic(this.characterIsHighSurrogate);
+		a.branch(Opcode.IFEQ, store);
+		int fromBlock = a.label();
+		a.iload(K);
+		a.iload(N);
+		a.branch(Opcode.IF_ICMPLT, fromBlock);
+		// the block ended on the high half: read one more behind a mark
+		a.aload(R);
+		a.iconst(1);
+		a.invokevirtual(this.bufferedReaderMark);
+		a.aload(R);
+		a.invokevirtual(this.bufferedReaderRead);
+		a.istore(LOW);
+		a.iload(LOW);
+		a.branch(Opcode.IFLT, store);
+		a.iload(LOW);
+		a.op(Opcode.I2C);
+		a.invokestatic(this.characterIsLowSurrogate);
+		int putBack = a.label();
+		a.branch(Opcode.IFEQ, putBack);
+		emitCombinePair(a, C, LOW);
+		a.branch(Opcode.GOTO, store);
+		a.bind(putBack);
+		a.aload(R);
+		a.invokevirtual(this.bufferedReaderReset);
+		a.branch(Opcode.GOTO, store);
+		// the low half is the next unit of the block, when it is one
+		a.bind(fromBlock);
+		a.aload(BLOCK);
+		a.iload(K);
+		a.caload();
+		a.istore(LOW);
+		a.iload(LOW);
+		a.op(Opcode.I2C);
+		a.invokestatic(this.characterIsLowSurrogate);
+		a.branch(Opcode.IFEQ, store);
+		a.iinc(K, 1);
+		emitCombinePair(a, C, LOW);
+		// list.set(1 + at, new int[]{c}) -- the runtime CHARACTER representation
+		a.bind(store);
+		a.aload(LIST);
+		a.iconst(1);
+		a.iload(AT);
+		a.op(Opcode.IADD);
+		a.iconst(1);
+		a.newarrayInt();
+		a.dup();
+		a.iconst(0);
+		a.iload(C);
+		a.iastore();
+		a.invokevirtual(io.listSet());
+		a.pop();
+		a.iinc(AT, 1);
+		a.branch(Opcode.GOTO, unit);
+		a.bind(done);
+		a.iload(AT);
+		a.i2l();
+		a.invokestatic(this.longValueOf);
+		a.areturn();
+		a.bind(declined);
+		a.aconstNull();
+		a.areturn();
+		return a.finish();
+	}
+
+	// c = Character.toCodePoint((char) c, (char) low)
+	private void emitCombinePair(JvmAsm a, int cSlot, int lowSlot) {
+		a.iload(cSlot);
+		a.op(Opcode.I2C);
+		a.iload(lowSlot);
+		a.op(Opcode.I2C);
+		a.invokestatic(this.characterToCodePoint);
+		a.istore(cSlot);
+	}
+
+	// target = arg is nil ? dflt : (int) ((Long) arg).longValue()
+	private void emitBoundArg(JvmAsm a, int argSlot, int targetSlot, Runnable dflt) {
+		int fromArg = a.label();
+		int have = a.label();
+		a.aload(argSlot);
+		a.branch(Opcode.IFNONNULL, fromArg);
+		dflt.run();
+		a.istore(targetSlot);
+		a.branch(Opcode.GOTO, have);
+		a.bind(fromArg);
+		a.aload(argSlot);
+		a.checkcast(this.longClass);
+		a.invokevirtual(this.longValue);
+		a.l2i();
+		a.istore(targetSlot);
+		a.bind(have);
 	}
 
 	/**

@@ -13371,6 +13371,41 @@ cases:
       (2 "ab")
       (3 "xyz")
 
+  - name: read-sequence-over-a-file-decodes-a-block-of-characters-at-a-time
+    source: |
+      ;; The character arm moves a BLOCK of storage units per host read and decodes
+      ;; it into the buffer's code points (.kb/character-sequence-io.md), and must
+      ;; answer exactly what the per-character loop answered: one code point per slot
+      ;; whatever its encoded width, a sequence SPLIT by the end of the block carried
+      ;; across it rather than lost, :start/:end honoured, and the stream left exactly
+      ;; where the last character ended. The 8,191 leading characters put the non-BMP
+      ;; one on the block boundary of every backend.
+      (with-open-file (out "cseq.txt" :direction :output :if-exists :supersede)
+        (write-string (make-string 8191 :initial-element #\x) out)
+        (write-string (concatenate 'string (string (code-char 128512)) "a"
+                                   (string (code-char 12354)) "b")
+                      out))
+      (with-open-file (in "cseq.txt")
+        (let ((buf (make-string 8196 :initial-element #\.)))
+          (print (read-sequence buf in))
+          (print (list (char-code (char buf 8190)) (char-code (char buf 8191))
+                       (char buf 8192) (char-code (char buf 8193)) (char buf 8194)
+                       (char buf 8195)))))
+      (with-open-file (in "cseq.txt")
+        (let ((head (make-string 3 :initial-element #\.))
+              (tail (make-string 5 :initial-element #\.)))
+          (print (read-sequence head in))
+          (print (read-sequence tail in :start 1 :end 4))
+          (print (list head tail))))
+      (print (length (uiop:read-file-string "cseq.txt")))
+    expected: |
+      8195
+      (120 128512 #\a 12354 #\b #\.)
+      3
+      4
+      ("xxx" ".xxx.")
+      8195
+
   - name: apply-using-wrapper-reached-by-funcall
     source: |
       ;; The map* / every / some wrappers forward a RUNTIME number of arguments

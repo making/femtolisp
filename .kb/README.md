@@ -97,6 +97,7 @@ deliberate boundaries the audit must not undo: user-facing operator catalogues l
 - [standard-output-redirect.md](standard-output-redirect.md) -- stream designators resolve through `*standard-output*`/`*standard-input*` at call time; `*error-output*`
 - [gray-streams.md](gray-streams.md) -- the Gray-stream protocol, the compile-path splice, the flexi-streams wrapper
 - [binary-sequence-io.md](binary-sequence-io.md) -- `read-sequence`/`write-sequence` over a packed buffer in one native transfer
+- [character-sequence-io.md](character-sequence-io.md) -- `read-sequence` into a string: a block of storage units per host read, never one read per character
 - [directory-listing.md](directory-listing.md) -- the one `%list-directory` primitive and the Lisp spellings above it
 - [load-inliner.md](load-inliner.md) -- compile-time `load` inlining, `require`/`provide`
 

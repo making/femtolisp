@@ -12721,6 +12721,68 @@ class WasmLispCompilerIntegrationTest {
 	}
 
 	@Test
+	void readSequenceOverACharacterBufferDecodesABlockAtATime() throws Exception {
+		// The _read_seq_chars runtime helper (.kb/character-sequence-io.md): the
+		// character arm of read-sequence moves a block of BYTES per fd_read and decodes
+		// them into the buffer's code points, and must answer exactly what the
+		// per-character loop answered -- one code point per slot whatever its encoded
+		// width, a UTF-8 sequence split by the end of the block completed rather than
+		// lost, :start/:end honoured, and the fd left exactly where the last character
+		// ended. Both the scalar and the --simd representation, and the --component
+		// adapter's fd_read.
+		String code = """
+				(with-open-file (out "cs.txt" :direction :output :if-exists :supersede)
+				  (write-string (make-string 8191 :initial-element #\\x) out)
+				  (write-string (concatenate 'string (string (code-char 128512)) "a"
+				                             (string (code-char 12354)) "b")
+				                out))
+				(with-open-file (in "cs.txt")
+				  (let ((buf (make-string 8196 :initial-element #\\.)))
+				    (print (read-sequence buf in))
+				    (print (list (char-code (char buf 8190)) (char-code (char buf 8191))
+				                 (char buf 8192) (char-code (char buf 8193)) (char buf 8194)
+				                 (char buf 8195)))))
+				(with-open-file (in "cs.txt")
+				  (let ((head (make-string 3 :initial-element #\\.))
+				        (tail (make-string 5 :initial-element #\\.)))
+				    (print (read-sequence head in))
+				    (print (read-sequence tail in :start 1 :end 4))
+				    (print (list head tail))))
+				""";
+		String expected = "8195\n(120 128512 #\\a 12354 #\\b #\\.)\n3\n4\n(\"xxx\" \".xxx.\")";
+		assertThat(compileAndRunWithDir(code)).isEqualTo(expected);
+		assertThat(compileAndRunWithDir(code, true, false)).isEqualTo(expected);
+		assertThat(compileAndRunWithDir(code, false, true)).isEqualTo(expected);
+	}
+
+	// Reading a file INTO A STRING may not cost one fd_read per character: the character
+	// arm of read-sequence used to read 1 to 4 bytes per code point through the WASI
+	// import, which made uiop:read-file-string 23x the cost of reading the same file as
+	// bytes (.kb/character-sequence-io.md). Both halves move the same 1,048,576
+	// characters off the same file; only the element type differs.
+	@Test
+	void readSequenceIntoAStringCostsAboutWhatTheSameFileCostsAsBytes() throws Exception {
+		String[] lines = compileAndRunWithDir("""
+				(with-open-file (out "cost.txt" :direction :output :if-exists :supersede)
+				  (write-string (make-string 1048576 :initial-element #\\y) out))
+				(defvar *t0* (get-internal-real-time))
+				(with-open-file (in "cost.txt" :element-type '(unsigned-byte 8))
+				  (read-sequence (make-array 1048576 :element-type '(unsigned-byte 8)) in))
+				(defvar *t1* (get-internal-real-time))
+				(with-open-file (in "cost.txt")
+				  (read-sequence (make-string 1048576) in))
+				(print (- *t1* *t0*))
+				(print (- (get-internal-real-time) *t1*))
+				""").split("\n");
+		long bytes = Long.parseLong(lines[0].trim());
+		long chars = Long.parseLong(lines[1].trim());
+		assertThat(chars)
+			.as("1,048,576 characters read into a string (%d ms) against the same file read "
+					+ "into a byte vector (%d ms)", chars, bytes)
+			.isLessThanOrEqualTo(500 + 6 * bytes);
+	}
+
+	@Test
 	void loadDefunAndUseViaEval() throws Exception {
 		// Definitions from the loaded file live in the eval runtime's global env.
 		// The embedded runtime reader is case-preserving while compiled references

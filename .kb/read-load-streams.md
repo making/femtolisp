@@ -251,11 +251,12 @@ mean `read-byte` on a text-opened stream "works" there while interpreter/JVM sig
   `aref`/`%aset`/`length` with fixed `__rseq_`/`__wseq_` temp names and literal-only `:start`/`:end`,
   so no per-backend codegen exists for the loop. A packed buffer is first offered to
   `%read-sequence-packed`/`%write-sequence-packed` (raw little-endian, any rank;
-  `.kb/binary-sequence-io.md`). **The BUFFER, not the stream, picks the element**: both dispatch on
+  `.kb/binary-sequence-io.md`), a character buffer one `or` further along to
+  `%read-sequence-chars` (a block of storage units per host read; `.kb/character-sequence-io.md`).
+  **The BUFFER, not the stream, picks the element**: both dispatch on
   `(stringp seq)`, so a character vector moves CHARACTERS and anything else moves bytes — a RUNTIME
   test because the buffer arrives in a variable, which is also why `make-array`'s `:element-type`
-  accepts a computed designator (`lowerRuntimeElementTypeMakeArray`). Unfinished: the character half
-  is `.todo/219`.
+  accepts a computed designator (`lowerRuntimeElementTypeMakeArray`).
 - **A provably byte-only buffer skips the dispatch** (`compiler/SequenceIoNarrowing`,
   `.todo/338`): a sequence with `ArgumentShapes` `VECTOR` shape -- a numeric-typed or untyped
   `make-array`, a `(vector ...)`, a `subseq`/`copy-seq` preserving one, directly or through a
