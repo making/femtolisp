@@ -46,7 +46,16 @@ import static org.assertj.core.api.Assertions.within;
  * {@code junit-platform.properties}. Everything a test writes therefore has to be private
  * to the running test: stage modules and guest-visible data files through
  * {@link #path(String)}, never at a fixed {@code /tmp/...} literal shared with another
- * method.
+ * method, and let the kernel choose every listening port rather than writing a number
+ * down -- {@link #awaitServePort(String, String)} where the port only has to reach a curl
+ * in the same script, {@link #overAReservedPort(PortBoundScript)} where it has to exist
+ * before the server does.
+ *
+ * <p>
+ * Both rules hold across PROCESSES, not just threads: {@code /tmp} and the port space
+ * belong to the machine, and this repo is normally built by several sessions at once, one
+ * worktree each. A constant either kind of name is built from is therefore shared with
+ * every other build running, which is how a green feature turns up red.
  *
  * <p>
  * wasmtime runs as a host process ({@link HostWasmtime}) rather than in the shared
@@ -122,6 +131,92 @@ class WasmLispCompilerIntegrationTest {
 	 */
 	private static String path(String name) {
 		return workDir() + "/" + name;
+	}
+
+	/**
+	 * The bash that reads back the port the kernel gave a {@code wasmtime serve} started
+	 * with {@code --addr 127.0.0.1:0}. It waits for the server's
+	 * {@code Serving HTTP on http://127.0.0.1:PORT/} line in {@code log} and leaves PORT
+	 * in the shell variable {@code var}, so the test never picks a number and never races
+	 * anything for one. Prefer this to {@link #freePort()} wherever the port only has to
+	 * reach a curl in the same script.
+	 * @param var the shell variable to bind the port to
+	 * @param log the file the server's output is redirected to
+	 * @return a bash fragment to concatenate into the script, after the server is started
+	 */
+	private static String awaitServePort(String var, String log) {
+		return " " + var + "=;" + " for i in $(seq 1 120); do " + var
+				+ "=$(sed -n 's|.*127\\.0\\.0\\.1:\\([0-9][0-9]*\\)/.*|\\1|p' " + log + "); [ -n \"$" + var
+				+ "\" ] && break; sleep 0.25; done;" + " [ -n \"$" + var
+				+ "\" ] || { echo 'wasmtime serve never reported its port; log:' 1>&2; cat " + log
+				+ " 1>&2; exit 1; };";
+	}
+
+	/**
+	 * A script that binds a port it was handed. Implemented by the cases that cannot use
+	 * {@link #awaitServePort(String, String)} because the number has to exist before the
+	 * server does.
+	 */
+	private interface PortBoundScript {
+
+		ExecResult run(int port) throws Exception;
+
+	}
+
+	/**
+	 * Runs a script over a {@link #freePort()}, re-running it on a fresh port if the port
+	 * was taken between the reservation and the bind.
+	 *
+	 * <p>
+	 * Only the cases that must know the number in advance come through here -- the guest
+	 * program is compiled with the address inside it, or the Java side has to probe the
+	 * port itself after the script exits. For those the gap between reserving a port and
+	 * binding it spans a whole compile, which is wide enough to lose: measured
+	 * 2026-09-12, three concurrent runs of this class's serve family lost it once across
+	 * 45 cases. Retrying closes what the reservation cannot.
+	 * @param script the script, given a port to bind
+	 * @return the last result, whether or not it retried
+	 * @throws Exception whatever the script threw
+	 */
+	private static ExecResult overAReservedPort(PortBoundScript script) throws Exception {
+		for (int attempt = 0; attempt < 3; attempt++) {
+			ExecResult result = script.run(freePort());
+			if (result.getExitCode() == 0
+					|| !(result.getStdout() + result.getStderr()).contains("Address already in use")) {
+				return result;
+			}
+		}
+		// The fourth attempt is the answer whatever it says: a test that cannot get a
+		// port four times running has something else wrong with it, and hiding that
+		// behind another retry would only make it slower to find.
+		return script.run(freePort());
+	}
+
+	/**
+	 * Returns a TCP port nothing was listening on when it was asked. A hardcoded port
+	 * number is a shared constant exactly like a hardcoded scratch path: unique inside
+	 * this class, and bound by every other JVM on the machine running the same case. Two
+	 * concurrent builds -- the normal state of this repo, one worktree per session --
+	 * then race for it, and the loser dies with {@code Address already in use} on a test
+	 * that has nothing wrong with it.
+	 *
+	 * <p>
+	 * This is the WEAKER of the two devices here and is only for the cases that need the
+	 * number before the server exists: the port is taken by binding an ephemeral one and
+	 * closing it again, so it can be claimed by someone else before the real bind, and
+	 * for those cases a whole compile sits in that window. Reach for it only through
+	 * {@link #overAReservedPort(PortBoundScript)}, which retries what it loses. Where the
+	 * port only has to reach a curl in the same script, use
+	 * {@link #awaitServePort(String, String)} instead and nothing is ever guessed.
+	 * @return a port number no socket held at the moment of the call
+	 */
+	private static int freePort() {
+		try (java.net.ServerSocket probe = new java.net.ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress())) {
+			return probe.getLocalPort();
+		}
+		catch (IOException e) {
+			throw new UncheckedIOException("cannot reserve a free port", e);
+		}
 	}
 
 	// Emptied rather than just created: unlike the container, which was new every run,
@@ -5315,14 +5410,16 @@ class WasmLispCompilerIntegrationTest {
 		byte[] plain = compileServeComponent(program, null);
 		byte[] optimized = compileServeComponent(program, null, OptimizeLevel.DEFAULT);
 		assertThat(optimized.length).as("--optimize should shrink the serve component").isLessThan(plain.length);
-		wasmtime.copyFileToContainer(Transferable.of(optimized), "/tmp/serve-opt.wasm");
-		ExecResult result = wasmtime.execInContainer("bash", "-c",
-				"wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:8093 /tmp/serve-opt.wasm"
-						+ " >/tmp/serve-opt.log 2>&1 & pid=$!; trap 'kill $pid 2>/dev/null' EXIT;"
-						+ " sleep 0.3; kill -0 $pid 2>/dev/null || { echo 'wasmtime serve exited immediately; log:' 1>&2;"
-						+ " cat /tmp/serve-opt.log 1>&2; exit 1; };"
-						+ " for i in $(seq 1 60); do out=$(curl -s http://127.0.0.1:8093/hello) && [ -n \"$out\" ]"
-						+ " && { echo \"$out\"; exit 0; }; sleep 0.25; done; cat /tmp/serve-opt.log; exit 1");
+		wasmtime.copyFileToContainer(Transferable.of(optimized), path("serve-opt.wasm"));
+		ExecResult result = wasmtime
+			.execInContainer("bash", "-c", "wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:0 "
+					+ path("serve-opt.wasm") + " >" + path("serve-opt.log")
+					+ " 2>&1 & pid=$!; trap 'kill $pid 2>/dev/null' EXIT;"
+					+ " sleep 0.3; kill -0 $pid 2>/dev/null || { echo 'wasmtime serve exited immediately; log:' 1>&2;"
+					+ " cat " + path("serve-opt.log") + " 1>&2; exit 1; };"
+					+ awaitServePort("port", path("serve-opt.log"))
+					+ " for i in $(seq 1 60); do out=$(curl -s http://127.0.0.1:$port/hello) && [ -n \"$out\" ]"
+					+ " && { echo \"$out\"; exit 0; }; sleep 0.25; done; cat " + path("serve-opt.log") + "; exit 1");
 		assertThat(result.getExitCode()).as("optimized wasmtime serve round trip; log: %s", result.getStderr())
 			.isZero();
 		assertThat(result.getStdout().trim()).isEqualTo("GET /hello");
@@ -5346,14 +5443,15 @@ class WasmLispCompilerIntegrationTest {
 				        (list (symbol-name (getf env :request-method)) " " (getf env :path-info))))
 				(rontolisp:http-handler 'handle)
 				""", null);
-		wasmtime.copyFileToContainer(Transferable.of(componentBytes), "/tmp/serve.wasm");
-		ExecResult result = wasmtime.execInContainer("bash", "-c",
-				"wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:8088 /tmp/serve.wasm"
-						+ " >/tmp/serve.log 2>&1 & pid=$!; trap 'kill $pid 2>/dev/null' EXIT;"
-						+ " sleep 0.3; kill -0 $pid 2>/dev/null || { echo 'wasmtime serve exited immediately; log:' 1>&2;"
-						+ " cat /tmp/serve.log 1>&2; exit 1; };"
-						+ " for i in $(seq 1 60); do out=$(curl -s http://127.0.0.1:8088/hello) && [ -n \"$out\" ]"
-						+ " && { echo \"$out\"; exit 0; }; sleep 0.25; done; cat /tmp/serve.log; exit 1");
+		wasmtime.copyFileToContainer(Transferable.of(componentBytes), path("serve.wasm"));
+		ExecResult result = wasmtime
+			.execInContainer("bash", "-c", "wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:0 "
+					+ path("serve.wasm") + " >" + path("serve.log")
+					+ " 2>&1 & pid=$!; trap 'kill $pid 2>/dev/null' EXIT;"
+					+ " sleep 0.3; kill -0 $pid 2>/dev/null || { echo 'wasmtime serve exited immediately; log:' 1>&2;"
+					+ " cat " + path("serve.log") + " 1>&2; exit 1; };" + awaitServePort("port", path("serve.log"))
+					+ " for i in $(seq 1 60); do out=$(curl -s http://127.0.0.1:$port/hello) && [ -n \"$out\" ]"
+					+ " && { echo \"$out\"; exit 0; }; sleep 0.25; done; cat " + path("serve.log") + "; exit 1");
 		assertThat(result.getExitCode()).as("wasmtime serve round trip; log: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim()).isEqualTo("GET /hello");
 	}
@@ -5372,16 +5470,18 @@ class WasmLispCompilerIntegrationTest {
 				    (list 200 nil (list s))))
 				(rontolisp:http-handler 'handle)
 				""", null);
-		wasmtime.copyFileToContainer(Transferable.of(componentBytes), "/tmp/serve-big.wasm");
-		ExecResult result = wasmtime.execInContainer("bash", "-c",
-				"wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:8081 /tmp/serve-big.wasm >/tmp/serve-big.log 2>&1 &"
-						+ " pid=$!; trap 'kill $pid 2>/dev/null' EXIT;"
-						+ " sleep 0.3; kill -0 $pid 2>/dev/null || { echo 'wasmtime serve exited immediately; log:' 1>&2;"
-						+ " cat /tmp/serve-big.log 1>&2; exit 1; };"
-						+ " for i in $(seq 1 60); do code=$(curl -s -m 20 -o /tmp/big.out -w '%{http_code}'"
-						+ " http://127.0.0.1:8081/big) && [ \"$code\" != 000 ]"
-						+ " && { echo \"$code $(wc -c < /tmp/big.out)\"; exit 0; }; sleep 0.25; done;"
-						+ " cat /tmp/serve-big.log; exit 1");
+		wasmtime.copyFileToContainer(Transferable.of(componentBytes), path("serve-big.wasm"));
+		ExecResult result = wasmtime
+			.execInContainer("bash", "-c", "wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:0 "
+					+ path("serve-big.wasm") + " >" + path("serve-big.log") + " 2>&1 &"
+					+ " pid=$!; trap 'kill $pid 2>/dev/null' EXIT;"
+					+ " sleep 0.3; kill -0 $pid 2>/dev/null || { echo 'wasmtime serve exited immediately; log:' 1>&2;"
+					+ " cat " + path("serve-big.log") + " 1>&2; exit 1; };"
+					+ awaitServePort("port", path("serve-big.log"))
+					+ " for i in $(seq 1 60); do code=$(curl -s -m 20 -o " + path("big.out") + " -w '%{http_code}'"
+					+ " http://127.0.0.1:$port/big) && [ \"$code\" != 000 ]" + " && { echo \"$code $(wc -c < "
+					+ path("big.out") + ")\"; exit 0; }; sleep 0.25; done;" + " cat " + path("serve-big.log")
+					+ "; exit 1");
 		assertThat(result.getExitCode()).as("wasmtime serve large response; log: %s", result.getStderr()).isZero();
 		// wc -c right-pads its count on some coreutils builds, so the two fields are
 		// compared with the run of spaces between them collapsed.
@@ -5404,16 +5504,18 @@ class WasmLispCompilerIntegrationTest {
 				    (list 200 (list :content-type "application/octet-stream") v)))
 				(rontolisp:http-handler 'handle)
 				""", null);
-		wasmtime.copyFileToContainer(Transferable.of(componentBytes), "/tmp/serve-octets.wasm");
-		ExecResult result = wasmtime.execInContainer("bash", "-c",
-				"wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:8094 /tmp/serve-octets.wasm"
-						+ " >/tmp/serve-octets.log 2>&1 & pid=$!; trap 'kill $pid 2>/dev/null' EXIT;"
-						+ " sleep 0.3; kill -0 $pid 2>/dev/null || { echo 'wasmtime serve exited immediately; log:' 1>&2;"
-						+ " cat /tmp/serve-octets.log 1>&2; exit 1; };"
-						+ " for i in $(seq 1 60); do code=$(curl -s -m 20 -o /tmp/octets.out -w '%{http_code}'"
-						+ " http://127.0.0.1:8094/) && [ \"$code\" != 000 ]"
-						+ " && { od -An -tx1 /tmp/octets.out | tr -d ' \\n'; echo; exit 0; }; sleep 0.25; done;"
-						+ " cat /tmp/serve-octets.log; exit 1");
+		wasmtime.copyFileToContainer(Transferable.of(componentBytes), path("serve-octets.wasm"));
+		ExecResult result = wasmtime
+			.execInContainer("bash", "-c", "wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:0 "
+					+ path("serve-octets.wasm") + " >" + path("serve-octets.log")
+					+ " 2>&1 & pid=$!; trap 'kill $pid 2>/dev/null' EXIT;"
+					+ " sleep 0.3; kill -0 $pid 2>/dev/null || { echo 'wasmtime serve exited immediately; log:' 1>&2;"
+					+ " cat " + path("serve-octets.log") + " 1>&2; exit 1; };"
+					+ awaitServePort("port", path("serve-octets.log"))
+					+ " for i in $(seq 1 60); do code=$(curl -s -m 20 -o " + path("octets.out") + " -w '%{http_code}'"
+					+ " http://127.0.0.1:$port/) && [ \"$code\" != 000 ]" + " && { od -An -tx1 " + path("octets.out")
+					+ " | tr -d ' \\n'; echo; exit 0; }; sleep 0.25; done;" + " cat " + path("serve-octets.log")
+					+ "; exit 1");
 		assertThat(result.getExitCode()).as("wasmtime serve octet body; log: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim()).isEqualTo("fffe41");
 	}
@@ -5434,14 +5536,16 @@ class WasmLispCompilerIntegrationTest {
 				                (if (numberp (get-universal-time)) "t-num" "t-bad")))))
 				(rontolisp:http-handler 'handle)
 				""", null);
-		wasmtime.copyFileToContainer(Transferable.of(componentBytes), "/tmp/serve-rand.wasm");
-		ExecResult result = wasmtime.execInContainer("bash", "-c",
-				"wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:8082 /tmp/serve-rand.wasm >/tmp/serve-rand.log 2>&1 &"
-						+ " pid=$!; trap 'kill $pid 2>/dev/null' EXIT;"
-						+ " sleep 0.3; kill -0 $pid 2>/dev/null || { echo 'wasmtime serve exited immediately; log:' 1>&2;"
-						+ " cat /tmp/serve-rand.log 1>&2; exit 1; };"
-						+ " for i in $(seq 1 60); do out=$(curl -s http://127.0.0.1:8082/) && [ -n \"$out\" ]"
-						+ " && { echo \"$out\"; exit 0; }; sleep 0.25; done; cat /tmp/serve-rand.log; exit 1");
+		wasmtime.copyFileToContainer(Transferable.of(componentBytes), path("serve-rand.wasm"));
+		ExecResult result = wasmtime
+			.execInContainer("bash", "-c", "wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:0 "
+					+ path("serve-rand.wasm") + " >" + path("serve-rand.log") + " 2>&1 &"
+					+ " pid=$!; trap 'kill $pid 2>/dev/null' EXIT;"
+					+ " sleep 0.3; kill -0 $pid 2>/dev/null || { echo 'wasmtime serve exited immediately; log:' 1>&2;"
+					+ " cat " + path("serve-rand.log") + " 1>&2; exit 1; };"
+					+ awaitServePort("port", path("serve-rand.log"))
+					+ " for i in $(seq 1 60); do out=$(curl -s http://127.0.0.1:$port/) && [ -n \"$out\" ]"
+					+ " && { echo \"$out\"; exit 0; }; sleep 0.25; done; cat " + path("serve-rand.log") + "; exit 1");
 		assertThat(result.getExitCode()).as("wasmtime serve random/clock round trip; log: %s", result.getStderr())
 			.isZero();
 		assertThat(result.getStdout().trim()).isEqualTo("r-in t-num");
@@ -5460,39 +5564,46 @@ class WasmLispCompilerIntegrationTest {
 		// fetch rides the host-provided wasi:http client the service world imports.
 		// The
 		// backend is itself a plain rontolisp serve component, so the test stays offline.
-		byte[] backendBytes = compileServeComponent("""
-				(defun handle (env)
-				  (list 200 nil (list "backend " (getf env :path-info))))
-				(rontolisp:http-handler 'handle)
-				""", null);
-		byte[] proxyBytes = compileServeComponent("""
-				(rontolisp:async-defun handle (env)
-				  (let* ((resp (rontolisp:await (rontolisp:fetch "http://127.0.0.1:8083/up")))
-				         (body (rontolisp:await (rontolisp:read-all (getf resp :body)))))
-				    (list 200 nil
-				          (list "proxied " body " " (princ-to-string (getf resp :status))))))
-				(rontolisp:http-handler 'handle)
-				""", null);
-		wasmtime.copyFileToContainer(Transferable.of(backendBytes), "/tmp/serve-backend.wasm");
-		wasmtime.copyFileToContainer(Transferable.of(proxyBytes), "/tmp/serve-proxy.wasm");
-		// Wait for the BACKEND before querying the proxy: if the proxy answers first,
-		// its fetch fails and it serves the non-empty body "proxied nil nil", which
-		// would end the poll loop with the wrong output (a startup race, not a bug).
-		ExecResult result = wasmtime.execInContainer("bash", "-c",
-				"wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:8083 /tmp/serve-backend.wasm >/tmp/serve-backend.log 2>&1 &"
-						+ " pid1=$!;"
-						+ " wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:8084 /tmp/serve-proxy.wasm >/tmp/serve-proxy.log 2>&1 &"
-						+ " pid2=$!; trap 'kill $pid1 $pid2 2>/dev/null' EXIT;" + " sleep 0.3;"
-						+ " kill -0 $pid1 2>/dev/null || { echo 'backend wasmtime serve exited immediately; log:' 1>&2;"
-						+ " cat /tmp/serve-backend.log 1>&2; exit 1; };"
-						+ " kill -0 $pid2 2>/dev/null || { echo 'proxy wasmtime serve exited immediately; log:' 1>&2;"
-						+ " cat /tmp/serve-proxy.log 1>&2; exit 1; };"
-						+ " for i in $(seq 1 60); do curl -sf http://127.0.0.1:8083/up >/dev/null && break; sleep 0.25; done;"
-						+ " curl -sf http://127.0.0.1:8083/up >/dev/null"
-						+ " || { echo 'backend never came up' 1>&2; cat /tmp/serve-backend.log 1>&2; exit 1; };"
-						+ " for i in $(seq 1 60); do out=$(curl -s http://127.0.0.1:8084/) && [ -n \"$out\" ]"
-						+ " && { echo \"$out\"; exit 0; }; sleep 0.25; done;"
-						+ " cat /tmp/serve-backend.log /tmp/serve-proxy.log 1>&2; exit 1");
+		// The BACKEND's port has to exist before the proxy is compiled -- its address is
+		// inside the proxy program -- so it is reserved and retried; the proxy's own is
+		// the kernel's to pick.
+		ExecResult result = overAReservedPort(backendPort -> {
+			byte[] backendBytes = compileServeComponent("""
+					(defun handle (env)
+					  (list 200 nil (list "backend " (getf env :path-info))))
+					(rontolisp:http-handler 'handle)
+					""", null);
+			byte[] proxyBytes = compileServeComponent("""
+					(rontolisp:async-defun handle (env)
+					  (let* ((resp (rontolisp:await (rontolisp:fetch "http://127.0.0.1:%d/up")))
+					         (body (rontolisp:await (rontolisp:read-all (getf resp :body)))))
+					    (list 200 nil
+					          (list "proxied " body " " (princ-to-string (getf resp :status))))))
+					(rontolisp:http-handler 'handle)
+					""".formatted(backendPort), null);
+			wasmtime.copyFileToContainer(Transferable.of(backendBytes), path("serve-backend.wasm"));
+			wasmtime.copyFileToContainer(Transferable.of(proxyBytes), path("serve-proxy.wasm"));
+			// Wait for the BACKEND before querying the proxy: if the proxy answers first,
+			// its fetch fails and it serves the non-empty body "proxied nil nil", which
+			// would end the poll loop with the wrong output (a startup race, not a bug).
+			return wasmtime.execInContainer("bash", "-c", "wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:"
+					+ backendPort + " " + path("serve-backend.wasm") + " >" + path("serve-backend.log") + " 2>&1 &"
+					+ " pid1=$!;" + " wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:0 "
+					+ path("serve-proxy.wasm") + " >" + path("serve-proxy.log") + " 2>&1 &"
+					+ " pid2=$!; trap 'kill $pid1 $pid2 2>/dev/null' EXIT;" + " sleep 0.3;"
+					+ " kill -0 $pid1 2>/dev/null || { echo 'backend wasmtime serve exited immediately; log:' 1>&2;"
+					+ " cat " + path("serve-backend.log") + " 1>&2; exit 1; };"
+					+ " kill -0 $pid2 2>/dev/null || { echo 'proxy wasmtime serve exited immediately; log:' 1>&2;"
+					+ " cat " + path("serve-proxy.log") + " 1>&2; exit 1; };"
+					+ awaitServePort("proxy", path("serve-proxy.log"))
+					+ " for i in $(seq 1 60); do curl -sf http://127.0.0.1:" + backendPort
+					+ "/up >/dev/null && break; sleep 0.25; done;" + " curl -sf http://127.0.0.1:" + backendPort
+					+ "/up >/dev/null" + " || { echo 'backend never came up' 1>&2; cat " + path("serve-backend.log")
+					+ " 1>&2; exit 1; };"
+					+ " for i in $(seq 1 60); do out=$(curl -s http://127.0.0.1:$proxy/) && [ -n \"$out\" ]"
+					+ " && { echo \"$out\"; exit 0; }; sleep 0.25; done;" + " cat " + path("serve-backend.log") + " "
+					+ path("serve-proxy.log") + " 1>&2; exit 1");
+		});
 		assertThat(result.getExitCode()).as("wasmtime serve fetch-inside-serve round trip; log: %s", result.getStderr())
 			.isZero();
 		assertThat(result.getStdout().trim()).isEqualTo("proxied backend /up 200");
@@ -5507,49 +5618,58 @@ class WasmLispCompilerIntegrationTest {
 		// octets. The stream<u8> read lifts each chunk as a packed octet vector,
 		// %http-drain joins them without decoding, and stream<u8>.write stages the
 		// vector raw. read-all on the same kind of reply still answers the decoded text.
-		byte[] backendBytes = compileServeComponent("""
-				(defun handle (env)
-				  (if (string= (getf env :path-info) "/text")
-				      (list 200 (list :content-type "text/plain") (list "こんにちは"))
-				      (let ((v (make-array 9 :element-type '(unsigned-byte 8))))
-				        (setf (aref v 0) 255) (setf (aref v 1) 216) (setf (aref v 2) 255)
-				        (setf (aref v 3) 0) (setf (aref v 4) 65) (setf (aref v 5) 254)
-				        (setf (aref v 6) 128) (setf (aref v 7) 195) (setf (aref v 8) 191)
-				        (list 200 (list :content-type "image/jpeg") v))))
-				(rontolisp:http-handler 'handle)
-				""", null);
-		byte[] proxyBytes = compileServeComponent("""
-				(rontolisp:async-defun handle (env)
-				  (if (string= (getf env :path-info) "/text")
-				      (let ((res (rontolisp:await (rontolisp:fetch "http://127.0.0.1:8095/text"))))
-				        (list 200 (list :content-type "text/plain")
-				              (list (rontolisp:await (rontolisp:read-all (getf res :body))))))
-				      (let ((res (rontolisp:await (rontolisp:fetch "http://127.0.0.1:8095/jpeg"))))
-				        (list (getf res :status)
-				              (list :content-type
-				                    (cdr (assoc "content-type" (getf res :headers) :test #'string-equal)))
-				              (getf res :body)))))
-				(rontolisp:http-handler 'handle)
-				""", null);
-		wasmtime.copyFileToContainer(Transferable.of(backendBytes), "/tmp/relay-backend.wasm");
-		wasmtime.copyFileToContainer(Transferable.of(proxyBytes), "/tmp/relay-proxy.wasm");
-		ExecResult result = wasmtime.execInContainer("bash", "-c",
-				"wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:8095 /tmp/relay-backend.wasm >/tmp/relay-backend.log 2>&1 &"
-						+ " pid1=$!;"
-						+ " wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:8096 /tmp/relay-proxy.wasm >/tmp/relay-proxy.log 2>&1 &"
-						+ " pid2=$!; trap 'kill $pid1 $pid2 2>/dev/null' EXIT;" + " sleep 0.3;"
-						+ " kill -0 $pid1 2>/dev/null || { echo 'backend wasmtime serve exited immediately; log:' 1>&2;"
-						+ " cat /tmp/relay-backend.log 1>&2; exit 1; };"
-						+ " kill -0 $pid2 2>/dev/null || { echo 'proxy wasmtime serve exited immediately; log:' 1>&2;"
-						+ " cat /tmp/relay-proxy.log 1>&2; exit 1; };"
-						+ " for i in $(seq 1 60); do curl -sf http://127.0.0.1:8095/text >/dev/null && break; sleep 0.25; done;"
-						+ " curl -sf http://127.0.0.1:8095/text >/dev/null"
-						+ " || { echo 'backend never came up' 1>&2; cat /tmp/relay-backend.log 1>&2; exit 1; };"
-						+ " for i in $(seq 1 60); do code=$(curl -s -m 20 -o /tmp/relay.out -D /tmp/relay.hdr -w '%{http_code}'"
-						+ " http://127.0.0.1:8096/relay) && [ \"$code\" != 000 ]"
-						+ " && { echo \"$code $(grep -i '^content-type:' /tmp/relay.hdr | tr -d '\\r' | cut -d' ' -f2)"
-						+ " $(od -An -tx1 /tmp/relay.out | tr -d ' \\n')\"; curl -s http://127.0.0.1:8096/text; echo; exit 0; };"
-						+ " sleep 0.25; done; cat /tmp/relay-backend.log /tmp/relay-proxy.log 1>&2; exit 1");
+		// The BACKEND's port has to exist before the proxy is compiled -- its address
+		// is inside the proxy program -- so it is reserved and retried; the proxy's
+		// own is the kernel's to pick.
+		ExecResult result = overAReservedPort(backendPort -> {
+			byte[] backendBytes = compileServeComponent("""
+					(defun handle (env)
+					  (if (string= (getf env :path-info) "/text")
+					      (list 200 (list :content-type "text/plain") (list "こんにちは"))
+					      (let ((v (make-array 9 :element-type '(unsigned-byte 8))))
+					        (setf (aref v 0) 255) (setf (aref v 1) 216) (setf (aref v 2) 255)
+					        (setf (aref v 3) 0) (setf (aref v 4) 65) (setf (aref v 5) 254)
+					        (setf (aref v 6) 128) (setf (aref v 7) 195) (setf (aref v 8) 191)
+					        (list 200 (list :content-type "image/jpeg") v))))
+					(rontolisp:http-handler 'handle)
+					""", null);
+			byte[] proxyBytes = compileServeComponent("""
+					(rontolisp:async-defun handle (env)
+					  (if (string= (getf env :path-info) "/text")
+					      (let ((res (rontolisp:await (rontolisp:fetch "http://127.0.0.1:%d/text"))))
+					        (list 200 (list :content-type "text/plain")
+					              (list (rontolisp:await (rontolisp:read-all (getf res :body))))))
+					      (let ((res (rontolisp:await (rontolisp:fetch "http://127.0.0.1:%d/jpeg"))))
+					        (list (getf res :status)
+					              (list :content-type
+					                    (cdr (assoc "content-type" (getf res :headers) :test #'string-equal)))
+					              (getf res :body)))))
+					(rontolisp:http-handler 'handle)
+					""".formatted(backendPort, backendPort), null);
+			wasmtime.copyFileToContainer(Transferable.of(backendBytes), path("relay-backend.wasm"));
+			wasmtime.copyFileToContainer(Transferable.of(proxyBytes), path("relay-proxy.wasm"));
+			return wasmtime.execInContainer("bash", "-c", "wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:"
+					+ backendPort + " " + path("relay-backend.wasm") + " >" + path("relay-backend.log") + " 2>&1 &"
+					+ " pid1=$!;" + " wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:0 "
+					+ path("relay-proxy.wasm") + " >" + path("relay-proxy.log") + " 2>&1 &"
+					+ " pid2=$!; trap 'kill $pid1 $pid2 2>/dev/null' EXIT;" + " sleep 0.3;"
+					+ " kill -0 $pid1 2>/dev/null || { echo 'backend wasmtime serve exited immediately; log:' 1>&2;"
+					+ " cat " + path("relay-backend.log") + " 1>&2; exit 1; };"
+					+ " kill -0 $pid2 2>/dev/null || { echo 'proxy wasmtime serve exited immediately; log:' 1>&2;"
+					+ " cat " + path("relay-proxy.log") + " 1>&2; exit 1; };"
+					+ awaitServePort("proxy", path("relay-proxy.log"))
+					+ " for i in $(seq 1 60); do curl -sf http://127.0.0.1:" + backendPort
+					+ "/text >/dev/null && break; sleep 0.25; done;" + " curl -sf http://127.0.0.1:" + backendPort
+					+ "/text >/dev/null" + " || { echo 'backend never came up' 1>&2; cat " + path("relay-backend.log")
+					+ " 1>&2; exit 1; };" + " for i in $(seq 1 60); do code=$(curl -s -m 20 -o " + path("relay.out")
+					+ " -D " + path("relay.hdr") + " -w '%{http_code}'"
+					+ " http://127.0.0.1:$proxy/relay) && [ \"$code\" != 000 ]"
+					+ " && { echo \"$code $(grep -i '^content-type:' " + path("relay.hdr")
+					+ " | tr -d '\\r' | cut -d' ' -f2)" + " $(od -An -tx1 " + path("relay.out")
+					+ " | tr -d ' \\n')\"; curl -s http://127.0.0.1:$proxy/text; echo; exit 0; };"
+					+ " sleep 0.25; done; cat " + path("relay-backend.log") + " " + path("relay-proxy.log")
+					+ " 1>&2; exit 1");
+		});
 		assertThat(result.getExitCode()).as("wasmtime serve relayed body; log: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim().lines().toList()).containsExactly("200 image/jpeg ffd8ff0041fe80c3bf",
 				"こんにちは");
@@ -5600,15 +5720,16 @@ class WasmLispCompilerIntegrationTest {
 				          (list page " " (kv:bucket-get bucket page)))))
 				(rontolisp:http-handler 'handle)
 				""", dir.toString());
-		wasmtime.copyFileToContainer(Transferable.of(component), "/tmp/serve-kv.wasm");
+		wasmtime.copyFileToContainer(Transferable.of(component), path("serve-kv.wasm"));
 		ExecResult result = wasmtime.execInContainer("bash", "-c",
 				"wasmtime serve -W gc=y -W exceptions=y -S keyvalue=y -S keyvalue-in-memory-data=/hits=41"
-						+ " --addr 127.0.0.1:8085 /tmp/serve-kv.wasm >/tmp/serve-kv.log 2>&1 &"
+						+ " --addr 127.0.0.1:0 " + path("serve-kv.wasm") + " >" + path("serve-kv.log") + " 2>&1 &"
 						+ " pid=$!; trap 'kill $pid 2>/dev/null' EXIT;"
 						+ " sleep 0.3; kill -0 $pid 2>/dev/null || { echo 'wasmtime serve exited immediately; log:' 1>&2;"
-						+ " cat /tmp/serve-kv.log 1>&2; exit 1; };"
-						+ " for i in $(seq 1 60); do out=$(curl -s http://127.0.0.1:8085/hits) && [ -n \"$out\" ]"
-						+ " && { echo \"$out\"; exit 0; }; sleep 0.25; done; cat /tmp/serve-kv.log; exit 1");
+						+ " cat " + path("serve-kv.log") + " 1>&2; exit 1; };"
+						+ awaitServePort("port", path("serve-kv.log"))
+						+ " for i in $(seq 1 60); do out=$(curl -s http://127.0.0.1:$port/hits) && [ -n \"$out\" ]"
+						+ " && { echo \"$out\"; exit 0; }; sleep 0.25; done; cat " + path("serve-kv.log") + "; exit 1");
 		assertThat(result.getExitCode()).as("wasmtime serve keyvalue round trip; log: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim()).isEqualTo("/hits 42");
 	}
@@ -5631,15 +5752,17 @@ class WasmLispCompilerIntegrationTest {
 				              (if (uiop:getenv "RL_UNSET") "leaked" "nil"))))
 				(rontolisp:http-handler 'handle)
 				""", null);
-		wasmtime.copyFileToContainer(Transferable.of(componentBytes), "/tmp/serve-env.wasm");
+		wasmtime.copyFileToContainer(Transferable.of(componentBytes), path("serve-env.wasm"));
 		ExecResult result = wasmtime
 			.execInContainer("bash", "-c", "wasmtime serve -W gc=y -W exceptions=y --env RLENV=hello"
-					+ " --addr 127.0.0.1:8092 /tmp/serve-env.wasm >/tmp/serve-env.log 2>&1 &"
+					+ " --addr 127.0.0.1:0 " + path("serve-env.wasm") + " >" + path("serve-env.log") + " 2>&1 &"
 					+ " pid=$!; trap 'kill $pid 2>/dev/null' EXIT;"
 					+ " sleep 0.3; kill -0 $pid 2>/dev/null || { echo 'wasmtime serve exited immediately; log:' 1>&2;"
-					+ " cat /tmp/serve-env.log 1>&2; exit 1; };"
-					+ " for i in $(seq 1 60); do out=$(curl -sf http://127.0.0.1:8092/) && [ -n \"$out\" ]"
-					+ " && { echo \"$out\"; exit 0; }; sleep 0.25; done; cat /tmp/serve-env.log 1>&2; exit 1");
+					+ " cat " + path("serve-env.log") + " 1>&2; exit 1; };"
+					+ awaitServePort("port", path("serve-env.log"))
+					+ " for i in $(seq 1 60); do out=$(curl -sf http://127.0.0.1:$port/) && [ -n \"$out\" ]"
+					+ " && { echo \"$out\"; exit 0; }; sleep 0.25; done; cat " + path("serve-env.log")
+					+ " 1>&2; exit 1");
 		assertThat(result.getExitCode()).as("wasmtime serve getenv; log: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim()).isEqualTo("hello nil");
 	}
@@ -5656,14 +5779,17 @@ class WasmLispCompilerIntegrationTest {
 				  (list 200 nil (list (princ-to-string (+ *base* 1)))))
 				(rontolisp:http-handler 'handle)
 				""", null);
-		wasmtime.copyFileToContainer(Transferable.of(componentBytes), "/tmp/serve-global.wasm");
-		ExecResult result = wasmtime.execInContainer("bash", "-c",
-				"wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:8090 /tmp/serve-global.wasm >/tmp/serve-global.log 2>&1 &"
-						+ " pid=$!; trap 'kill $pid 2>/dev/null' EXIT;"
-						+ " sleep 0.3; kill -0 $pid 2>/dev/null || { echo 'wasmtime serve exited immediately; log:' 1>&2;"
-						+ " cat /tmp/serve-global.log 1>&2; exit 1; };"
-						+ " for i in $(seq 1 60); do out=$(curl -sf http://127.0.0.1:8090/) && [ -n \"$out\" ]"
-						+ " && { echo \"$out\"; exit 0; }; sleep 0.25; done; cat /tmp/serve-global.log 1>&2; exit 1");
+		wasmtime.copyFileToContainer(Transferable.of(componentBytes), path("serve-global.wasm"));
+		ExecResult result = wasmtime
+			.execInContainer("bash", "-c", "wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:0 "
+					+ path("serve-global.wasm") + " >" + path("serve-global.log") + " 2>&1 &"
+					+ " pid=$!; trap 'kill $pid 2>/dev/null' EXIT;"
+					+ " sleep 0.3; kill -0 $pid 2>/dev/null || { echo 'wasmtime serve exited immediately; log:' 1>&2;"
+					+ " cat " + path("serve-global.log") + " 1>&2; exit 1; };"
+					+ awaitServePort("port", path("serve-global.log"))
+					+ " for i in $(seq 1 60); do out=$(curl -sf http://127.0.0.1:$port/) && [ -n \"$out\" ]"
+					+ " && { echo \"$out\"; exit 0; }; sleep 0.25; done; cat " + path("serve-global.log")
+					+ " 1>&2; exit 1");
 		assertThat(result.getExitCode()).as("wasmtime serve top-level global; log: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim()).isEqualTo("42");
 	}
@@ -5679,25 +5805,30 @@ class WasmLispCompilerIntegrationTest {
 		// this test exists because serve+tcp once compiled fine and trapped on every
 		// request. Needs -S cli=y: without it wasmtime serve's linker reports the
 		// tcp-socket resource as missing at instantiation.
-		byte[] componentBytes = compileServeComponent("""
-				(defun handle (env)
-				  (let ((sock (rontolisp:tcp-connect "127.0.0.1" 8091)))
-				    (if sock
-				        (progn
-				          (close sock)
-				          (list 200 nil (list "connected")))
-				        (list 200 nil (list "no-listener")))))
-				(rontolisp:http-handler 'handle)
-				""", null);
-		wasmtime.copyFileToContainer(Transferable.of(componentBytes), "/tmp/serve-tcp.wasm");
-		ExecResult result = wasmtime.execInContainer("bash", "-c",
-				"wasmtime serve -W gc=y -W exceptions=y -S cli=y -S tcp=y -S inherit-network=y"
-						+ " --addr 127.0.0.1:8091 /tmp/serve-tcp.wasm >/tmp/serve-tcp.log 2>&1 &"
-						+ " pid=$!; trap 'kill $pid 2>/dev/null' EXIT;"
-						+ " sleep 0.3; kill -0 $pid 2>/dev/null || { echo 'wasmtime serve exited immediately; log:' 1>&2;"
-						+ " cat /tmp/serve-tcp.log 1>&2; exit 1; };"
-						+ " for i in $(seq 1 60); do out=$(curl -sf http://127.0.0.1:8091/) && [ -n \"$out\" ]"
-						+ " && { echo \"$out\"; exit 0; }; sleep 0.25; done; cat /tmp/serve-tcp.log 1>&2; exit 1");
+		// The handler dials the server's OWN port, so the number has to be in the program
+		// before the server binds it: reserved, and retried if it was taken meanwhile.
+		ExecResult result = overAReservedPort(port -> {
+			byte[] componentBytes = compileServeComponent("""
+					(defun handle (env)
+					  (let ((sock (rontolisp:tcp-connect "127.0.0.1" %d)))
+					    (if sock
+					        (progn
+					          (close sock)
+					          (list 200 nil (list "connected")))
+					        (list 200 nil (list "no-listener")))))
+					(rontolisp:http-handler 'handle)
+					""".formatted(port), null);
+			wasmtime.copyFileToContainer(Transferable.of(componentBytes), path("serve-tcp.wasm"));
+			return wasmtime.execInContainer("bash", "-c",
+					"wasmtime serve -W gc=y -W exceptions=y -S cli=y -S tcp=y -S inherit-network=y"
+							+ " --addr 127.0.0.1:" + port + " " + path("serve-tcp.wasm") + " >" + path("serve-tcp.log")
+							+ " 2>&1 &" + " pid=$!; trap 'kill $pid 2>/dev/null' EXIT;"
+							+ " sleep 0.3; kill -0 $pid 2>/dev/null || { echo 'wasmtime serve exited immediately; log:' 1>&2;"
+							+ " cat " + path("serve-tcp.log") + " 1>&2; exit 1; };"
+							+ " for i in $(seq 1 60); do out=$(curl -sf http://127.0.0.1:" + port
+							+ "/) && [ -n \"$out\" ]" + " && { echo \"$out\"; exit 0; }; sleep 0.25; done; cat "
+							+ path("serve-tcp.log") + " 1>&2; exit 1");
+		});
 		assertThat(result.getExitCode()).as("wasmtime serve tcp-connect; log: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim()).isEqualTo("connected");
 	}
@@ -5717,21 +5848,29 @@ class WasmLispCompilerIntegrationTest {
 				  (list 200 nil (list "GET" " " (getf env :path-info))))
 				(rontolisp:http-handler 'handle)
 				""", null);
-		wasmtime.copyFileToContainer(Transferable.of(componentBytes), "/tmp/serve-leak.wasm");
-		ExecResult result = wasmtime.execInContainer("bash", "-c",
-				"wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:8089 /tmp/serve-leak.wasm"
-						+ " >/tmp/serve-leak.log 2>&1 & pid=$!; trap 'kill $pid 2>/dev/null' EXIT;"
-						+ " sleep 0.3; kill -0 $pid 2>/dev/null || { echo 'wasmtime serve exited immediately; log:' 1>&2;"
-						+ " cat /tmp/serve-leak.log 1>&2; exit 1; };"
-						+ " for i in $(seq 1 60); do out=$(curl -s http://127.0.0.1:8089/hello) && [ -n \"$out\" ]"
-						+ " && { echo \"$out\"; exit 0; }; sleep 0.25; done; cat /tmp/serve-leak.log; exit 1");
+		wasmtime.copyFileToContainer(Transferable.of(componentBytes), path("serve-leak.wasm"));
+		// This is the one case that has to know the number rather than let the kernel
+		// pick one and read it back: the probe below runs after the script has exited,
+		// when nothing is left to ask.
+		java.util.concurrent.atomic.AtomicInteger bound = new java.util.concurrent.atomic.AtomicInteger();
+		ExecResult result = overAReservedPort(port -> {
+			bound.set(port);
+			return wasmtime.execInContainer("bash", "-c", "wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:"
+					+ port + " " + path("serve-leak.wasm") + " >" + path("serve-leak.log")
+					+ " 2>&1 & pid=$!; trap 'kill $pid 2>/dev/null' EXIT;"
+					+ " sleep 0.3; kill -0 $pid 2>/dev/null || { echo 'wasmtime serve exited immediately; log:' 1>&2;"
+					+ " cat " + path("serve-leak.log") + " 1>&2; exit 1; };"
+					+ " for i in $(seq 1 60); do out=$(curl -s http://127.0.0.1:" + port + "/hello) && [ -n \"$out\" ]"
+					+ " && { echo \"$out\"; exit 0; }; sleep 0.25; done; cat " + path("serve-leak.log") + "; exit 1");
+		});
 		assertThat(result.getExitCode()).as("wasmtime serve round trip; log: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim()).isEqualTo("GET /hello");
 		// Give a killed process a moment to release the socket, then confirm the port
 		// was actually freed rather than still answering.
 		ExecResult probe = wasmtime.execInContainer("bash", "-c",
-				"sleep 0.5; curl -s -o /dev/null --max-time 1 http://127.0.0.1:8089/hello; echo $?");
-		assertThat(probe.getStdout().trim()).as("wasmtime serve must not outlive its test; port 8089 still answers")
+				"sleep 0.5; curl -s -o /dev/null --max-time 1 http://127.0.0.1:" + bound.get() + "/hello; echo $?");
+		assertThat(probe.getStdout().trim())
+			.as("wasmtime serve must not outlive its test; port %d still answers", bound.get())
 			.isEqualTo("7");
 	}
 
@@ -15636,9 +15775,9 @@ class WasmLispCompilerIntegrationTest {
 		String program = "(print (handler-case (rontolisp:await (rontolisp:fetch \"http://127.0.0.1:1/nope\"))"
 				+ " (rontolisp:wit-error () :refused)))";
 		byte[] componentBytes = compileFetchComponent(program);
-		wasmtime.copyFileToContainer(Transferable.of(componentBytes), "/tmp/fetch-err.component.wasm");
+		wasmtime.copyFileToContainer(Transferable.of(componentBytes), path("fetch-err.component.wasm"));
 		ExecResult result = wasmtime.execInContainer("wasmtime", "run", "-W", "gc=y", "-W", "exceptions=y", "-S",
-				"http=y", "/tmp/fetch-err.component.wasm");
+				"http=y", path("fetch-err.component.wasm"));
 		assertThat(result.getExitCode()).as("stderr: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim()).isEqualTo(":REFUSED");
 	}
@@ -15650,9 +15789,9 @@ class WasmLispCompilerIntegrationTest {
 		// wasi:http) keep running without the flag.
 		String program = "(print (rontolisp:fetch \"http://127.0.0.1:1/nope\"))";
 		byte[] componentBytes = compileFetchComponent(program);
-		wasmtime.copyFileToContainer(Transferable.of(componentBytes), "/tmp/fetch-noflag.component.wasm");
+		wasmtime.copyFileToContainer(Transferable.of(componentBytes), path("fetch-noflag.component.wasm"));
 		ExecResult result = wasmtime.execInContainer("wasmtime", "run", "-W", "gc=y", "-W", "exceptions=y",
-				"/tmp/fetch-noflag.component.wasm");
+				path("fetch-noflag.component.wasm"));
 		assertThat(result.getExitCode()).isNotZero();
 	}
 
@@ -15680,9 +15819,9 @@ class WasmLispCompilerIntegrationTest {
 				    (close listener)))
 				""";
 		byte[] componentBytes = compileFetchComponent(program);
-		wasmtime.copyFileToContainer(Transferable.of(componentBytes), "/tmp/tcp-echo.component.wasm");
+		wasmtime.copyFileToContainer(Transferable.of(componentBytes), path("tcp-echo.component.wasm"));
 		ExecResult result = wasmtime.execInContainer("wasmtime", "run", "-W", "gc=y", "-W", "exceptions=y", "-S",
-				"tcp=y", "-S", "inherit-network=y", "/tmp/tcp-echo.component.wasm");
+				"tcp=y", "-S", "inherit-network=y", path("tcp-echo.component.wasm"));
 		assertThat(result.getExitCode()).as("stderr: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim()).isEqualTo("\"hello\"\n65\nNIL");
 	}
@@ -15746,9 +15885,9 @@ class WasmLispCompilerIntegrationTest {
 				  (close listener))
 				""";
 		byte[] componentBytes = compileFetchComponent(program);
-		wasmtime.copyFileToContainer(Transferable.of(componentBytes), "/tmp/tcp-binary.component.wasm");
+		wasmtime.copyFileToContainer(Transferable.of(componentBytes), path("tcp-binary.component.wasm"));
 		ExecResult result = wasmtime.execInContainer("wasmtime", "run", "-W", "gc=y", "-W", "exceptions=y", "-S",
-				"tcp=y", "-S", "inherit-network=y", "/tmp/tcp-binary.component.wasm");
+				"tcp=y", "-S", "inherit-network=y", path("tcp-binary.component.wasm"));
 		assertThat(result.getExitCode()).as("stderr: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim()).isEqualTo("(65 195 135 66)\n504");
 	}
@@ -15792,9 +15931,9 @@ class WasmLispCompilerIntegrationTest {
 				  (close l2))
 				""";
 		byte[] componentBytes = compileFetchComponent(program);
-		wasmtime.copyFileToContainer(Transferable.of(componentBytes), "/tmp/tcp-seq.component.wasm");
+		wasmtime.copyFileToContainer(Transferable.of(componentBytes), path("tcp-seq.component.wasm"));
 		ExecResult result = wasmtime.execInContainer("wasmtime", "run", "-W", "gc=y", "-W", "exceptions=y", "-S",
-				"tcp=y", "-S", "inherit-network=y", "/tmp/tcp-seq.component.wasm");
+				"tcp=y", "-S", "inherit-network=y", path("tcp-seq.component.wasm"));
 		assertThat(result.getExitCode()).as("stderr: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim()).isEqualTo("(1 2 250 4)\n65\n:EOF\n(7 200)\n:EOF");
 	}
@@ -15847,9 +15986,9 @@ class WasmLispCompilerIntegrationTest {
 				  (close l2))
 				""";
 		byte[] componentBytes = compileFetchComponent(program);
-		wasmtime.copyFileToContainer(Transferable.of(componentBytes), "/tmp/tcp-readchar-eof.component.wasm");
+		wasmtime.copyFileToContainer(Transferable.of(componentBytes), path("tcp-readchar-eof.component.wasm"));
 		ExecResult result = wasmtime.execInContainer("wasmtime", "run", "-W", "gc=y", "-W", "exceptions=y", "-S",
-				"tcp=y", "-S", "inherit-network=y", "/tmp/tcp-readchar-eof.component.wasm");
+				"tcp=y", "-S", "inherit-network=y", path("tcp-readchar-eof.component.wasm"));
 		assertThat(result.getExitCode()).as("stderr: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim())
 			.isEqualTo(":EOF\n:SIGNALLED\n:SIGNALLED\nNIL\n:EOF\n:SIGNALLED\n:SIGNALLED\nNIL");
@@ -15898,9 +16037,9 @@ class WasmLispCompilerIntegrationTest {
 				  (close listener))
 				""";
 		byte[] componentBytes = compileGrayFetchComponent(program);
-		wasmtime.copyFileToContainer(Transferable.of(componentBytes), "/tmp/tcp-gray.component.wasm");
+		wasmtime.copyFileToContainer(Transferable.of(componentBytes), path("tcp-gray.component.wasm"));
 		ExecResult result = wasmtime.execInContainer("wasmtime", "run", "-W", "gc=y", "-W", "exceptions=y", "-S",
-				"tcp=y", "-S", "inherit-network=y", "/tmp/tcp-gray.component.wasm");
+				"tcp=y", "-S", "inherit-network=y", path("tcp-gray.component.wasm"));
 		assertThat(result.getExitCode()).as("stderr: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim())
 			.isEqualTo("(1 2 250 4)\n(0 8 7 0)\n#\\Z\n\"234\"\n\"instance\"\n:EOF\n:EOF");
@@ -15964,9 +16103,9 @@ class WasmLispCompilerIntegrationTest {
 								am.ik.rontolisp.compiler.WitExportDirective.Backend.WASM_COMPONENT),
 						am.ik.rontolisp.compiler.WitExportDirective.Backend.WASM_COMPONENT, false));
 		byte[] componentBytes = new WasmLispCompiler(false, true).compile(spliced);
-		wasmtime.copyFileToContainer(Transferable.of(componentBytes), "/tmp/usocket-echo.component.wasm");
+		wasmtime.copyFileToContainer(Transferable.of(componentBytes), path("usocket-echo.component.wasm"));
 		ExecResult result = wasmtime.execInContainer("wasmtime", "run", "-W", "gc=y", "-W", "exceptions=y", "-S",
-				"tcp=y", "-S", "inherit-network=y", "/tmp/usocket-echo.component.wasm");
+				"tcp=y", "-S", "inherit-network=y", path("usocket-echo.component.wasm"));
 		assertThat(result.getExitCode()).as("stderr: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim()).isEqualTo("\"hello\"\n\"127.0.0.1\"");
 	}
@@ -16008,9 +16147,9 @@ class WasmLispCompilerIntegrationTest {
 								am.ik.rontolisp.compiler.WitExportDirective.Backend.WASM_COMPONENT),
 						am.ik.rontolisp.compiler.WitExportDirective.Backend.WASM_COMPONENT, false));
 		byte[] componentBytes = new WasmLispCompiler(false, true).compile(spliced);
-		wasmtime.copyFileToContainer(Transferable.of(componentBytes), "/tmp/usocket-option.component.wasm");
+		wasmtime.copyFileToContainer(Transferable.of(componentBytes), path("usocket-option.component.wasm"));
 		ExecResult result = wasmtime.execInContainer("wasmtime", "run", "-W", "gc=y", "-W", "exceptions=y", "-S",
-				"tcp=y", "-S", "inherit-network=y", "/tmp/usocket-option.component.wasm");
+				"tcp=y", "-S", "inherit-network=y", path("usocket-option.component.wasm"));
 		assertThat(result.getExitCode()).as("stderr: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim()).isEqualTo(":REFUSED\nNIL\n:CLAIMED\nT\n\"ping\"");
 	}
@@ -16084,9 +16223,10 @@ class WasmLispCompilerIntegrationTest {
 				(rontolisp:await (main))
 				""";
 		byte[] componentBytes = compileFetchComponent(program);
-		wasmtime.copyFileToContainer(Transferable.of(componentBytes), "/tmp/stdin-echo.component.wasm");
+		wasmtime.copyFileToContainer(Transferable.of(componentBytes), path("stdin-echo.component.wasm"));
 		ExecResult result = wasmtime.execInContainer("sh", "-c",
-				"printf 'alpha\\nbeta\\ngamma\\n' | wasmtime run -W gc=y -W exceptions=y /tmp/stdin-echo.component.wasm");
+				"printf 'alpha\\nbeta\\ngamma\\n' | wasmtime run -W gc=y -W exceptions=y "
+						+ path("stdin-echo.component.wasm"));
 		assertThat(result.getExitCode()).as("stderr: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim()).isEqualTo("\"alpha\"\n\"beta\"\n\"gamma\"");
 	}
@@ -16106,9 +16246,9 @@ class WasmLispCompilerIntegrationTest {
 				(rontolisp:await (main))
 				""";
 		byte[] componentBytes = compileFetchComponent(program);
-		wasmtime.copyFileToContainer(Transferable.of(componentBytes), "/tmp/stdin-readchar-eof.component.wasm");
+		wasmtime.copyFileToContainer(Transferable.of(componentBytes), path("stdin-readchar-eof.component.wasm"));
 		ExecResult result = wasmtime.execInContainer("sh", "-c",
-				"printf 'A' | wasmtime run -W gc=y -W exceptions=y /tmp/stdin-readchar-eof.component.wasm");
+				"printf 'A' | wasmtime run -W gc=y -W exceptions=y " + path("stdin-readchar-eof.component.wasm"));
 		assertThat(result.getExitCode()).as("stderr: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim()).isEqualTo("#\\A\n:SIGNALLED");
 	}
@@ -16120,9 +16260,9 @@ class WasmLispCompilerIntegrationTest {
 		// compile in EH mode.
 		String program = "(print (read-line))";
 		byte[] componentBytes = compileFetchComponent(program);
-		wasmtime.copyFileToContainer(Transferable.of(componentBytes), "/tmp/stdin-sync.component.wasm");
+		wasmtime.copyFileToContainer(Transferable.of(componentBytes), path("stdin-sync.component.wasm"));
 		ExecResult result = wasmtime.execInContainer("sh", "-c",
-				"echo plain | wasmtime run -W gc=y /tmp/stdin-sync.component.wasm");
+				"echo plain | wasmtime run -W gc=y " + path("stdin-sync.component.wasm"));
 		assertThat(result.getExitCode()).as("stderr: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim()).isEqualTo("\"plain\"");
 	}
@@ -16147,9 +16287,9 @@ class WasmLispCompilerIntegrationTest {
 				(rontolisp:await (main))
 				""";
 		byte[] componentBytes = compileFetchComponent(program);
-		wasmtime.copyFileToContainer(Transferable.of(componentBytes), "/tmp/tcp-stdin.component.wasm");
+		wasmtime.copyFileToContainer(Transferable.of(componentBytes), path("tcp-stdin.component.wasm"));
 		ExecResult result = wasmtime.execInContainer("sh", "-c", "echo from-stdin | wasmtime run -W gc=y "
-				+ "-W exceptions=y -S tcp=y -S inherit-network=y /tmp/tcp-stdin.component.wasm");
+				+ "-W exceptions=y -S tcp=y -S inherit-network=y " + path("tcp-stdin.component.wasm"));
 		assertThat(result.getExitCode()).as("stderr: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim()).isEqualTo("\"from-socket\"\n\"from-stdin\"");
 	}
@@ -16160,9 +16300,9 @@ class WasmLispCompilerIntegrationTest {
 		// convention). Deterministic, no server.
 		String program = "(print (rontolisp:tcp-connect \"127.0.0.1\" 1))";
 		byte[] componentBytes = compileFetchComponent(program);
-		wasmtime.copyFileToContainer(Transferable.of(componentBytes), "/tmp/tcp-refused.component.wasm");
+		wasmtime.copyFileToContainer(Transferable.of(componentBytes), path("tcp-refused.component.wasm"));
 		ExecResult result = wasmtime.execInContainer("wasmtime", "run", "-W", "gc=y", "-W", "exceptions=y", "-S",
-				"tcp=y", "-S", "inherit-network=y", "/tmp/tcp-refused.component.wasm");
+				"tcp=y", "-S", "inherit-network=y", path("tcp-refused.component.wasm"));
 		assertThat(result.getExitCode()).as("stderr: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim()).isEqualTo("NIL");
 	}
@@ -16175,9 +16315,9 @@ class WasmLispCompilerIntegrationTest {
 		// socket operations fail, so the built-ins yield nil.
 		String program = "(print (rontolisp:tcp-listen 0 \"127.0.0.1\"))";
 		byte[] componentBytes = compileFetchComponent(program);
-		wasmtime.copyFileToContainer(Transferable.of(componentBytes), "/tmp/tcp-noflag.component.wasm");
+		wasmtime.copyFileToContainer(Transferable.of(componentBytes), path("tcp-noflag.component.wasm"));
 		ExecResult result = wasmtime.execInContainer("wasmtime", "run", "-W", "gc=y", "-W", "exceptions=y",
-				"/tmp/tcp-noflag.component.wasm");
+				path("tcp-noflag.component.wasm"));
 		assertThat(result.getExitCode()).as("stderr: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim()).isEqualTo("NIL");
 	}
@@ -16195,31 +16335,46 @@ class WasmLispCompilerIntegrationTest {
 		// resource. A trusted-path success E2E cannot be run against a local
 		// fixture (the host trust store is compiled in); that leg is the opt-in
 		// componentTlsFetchesARealHostOverHttps below.
-		String program = """
-				(let ((s (rontolisp:tcp-connect "127.0.0.1" 14443)))
-				  (print (rontolisp:tls-upgrade s "localhost"))
-				  (close s))
-				(print (rontolisp:tls-connect "127.0.0.1" 14443))
-				(print (handler-case (rontolisp:tls-upgrade 999 "h" :insecure t)
-				         (error () :insecure-signals)))
-				(print (rontolisp:tls-upgrade 999 "h"))
-				""";
-		byte[] componentBytes = compileFetchComponent(program);
-		wasmtime.copyFileToContainer(Transferable.of(componentBytes), "/tmp/tls-reject.component.wasm");
-		ExecResult result = wasmtime.execInContainer("sh", "-c", """
-				cd /tmp || exit 1
-				openssl req -x509 -newkey rsa:2048 -nodes -keyout tls-reject-key.pem \
-				  -out tls-reject-cert.pem -days 1 -subj "/CN=localhost" 2>/dev/null || exit 1
-				openssl s_server -accept 14443 -cert tls-reject-cert.pem -key tls-reject-key.pem \
-				  -quiet > /dev/null 2>&1 &
-				server=$!
-				sleep 0.5
-				wasmtime run -W gc=y -W exceptions=y -S tcp=y -S inherit-network=y -S tls=y \
-				  tls-reject.component.wasm
-				status=$?
-				kill $server 2>/dev/null
-				exit $status
-				""");
+		// The certificate, the key and the server port are all per-test. The port is in
+		// the guest program, so it has to be reserved rather than picked by the kernel
+		// (hence the retry); the pem files go in the thread's scratch directory, because
+		// a second build on this machine runs this same case and a shared /tmp name would
+		// have one run's openssl overwrite the certificate the other's s_server is
+		// presenting -- which is how this case came back as a wasm cast failure.
+		// s_server's own log is read back: a bind it lost must be visible as such, not
+		// as a connection refused inside the guest.
+		ExecResult result = overAReservedPort(port -> {
+			String program = """
+					(let ((s (rontolisp:tcp-connect "127.0.0.1" %d)))
+					  (print (rontolisp:tls-upgrade s "localhost"))
+					  (close s))
+					(print (rontolisp:tls-connect "127.0.0.1" %d))
+					(print (handler-case (rontolisp:tls-upgrade 999 "h" :insecure t)
+					         (error () :insecure-signals)))
+					(print (rontolisp:tls-upgrade 999 "h"))
+					""".formatted(port, port);
+			byte[] componentBytes = compileFetchComponent(program);
+			wasmtime.copyFileToContainer(Transferable.of(componentBytes), path("tls-reject.component.wasm"));
+			return wasmtime.execInContainer("sh", "-c", """
+					cd %s || exit 1
+					openssl req -x509 -newkey rsa:2048 -nodes -keyout tls-reject-key.pem \
+					  -out tls-reject-cert.pem -days 1 -subj "/CN=localhost" 2>/dev/null || exit 1
+					openssl s_server -accept %d -cert tls-reject-cert.pem -key tls-reject-key.pem \
+					  -quiet > s_server.log 2>&1 &
+					server=$!
+					sleep 0.5
+					if ! kill -0 $server 2>/dev/null || grep -q 'unable to bind' s_server.log; then
+					  echo 'openssl s_server never came up; log:' 1>&2
+					  cat s_server.log 1>&2
+					  exit 1
+					fi
+					wasmtime run -W gc=y -W exceptions=y -S tcp=y -S inherit-network=y -S tls=y \
+					  tls-reject.component.wasm
+					status=$?
+					kill $server 2>/dev/null
+					exit $status
+					""".formatted(workDir(), port));
+		});
 		assertThat(result.getExitCode()).as("stdout: %s stderr: %s", result.getStdout(), result.getStderr()).isZero();
 		// Line 1: the handshake against the untrusted cert fails -> nil. Line 2:
 		// tls-connect (tcp-connect + tls-upgrade) fails the same way. Line 3: a
@@ -16247,9 +16402,9 @@ class WasmLispCompilerIntegrationTest {
 				    (close tls)))
 				""";
 		byte[] componentBytes = compileFetchComponent(program);
-		wasmtime.copyFileToContainer(Transferable.of(componentBytes), "/tmp/tls-real.component.wasm");
+		wasmtime.copyFileToContainer(Transferable.of(componentBytes), path("tls-real.component.wasm"));
 		ExecResult result = wasmtime.execInContainer("wasmtime", "run", "-W", "gc=y", "-W", "exceptions=y", "-S",
-				"tcp=y", "-S", "inherit-network=y", "-S", "tls=y", "/tmp/tls-real.component.wasm");
+				"tcp=y", "-S", "inherit-network=y", "-S", "tls=y", path("tls-real.component.wasm"));
 		assertThat(result.getExitCode()).as("stdout: %s stderr: %s", result.getStdout(), result.getStderr()).isZero();
 		assertThat(result.getStdout()).contains("HTTP/1.1");
 	}
@@ -22003,9 +22158,9 @@ class WasmLispCompilerIntegrationTest {
 				  (handler-case (http:outgoing-request-set-method req '(:other . "bad method"))
 				    (rontolisp:wit-error (e) (print :rejected))))
 				""");
-		wasmtime.copyFileToContainer(Transferable.of(component), "/tmp/wit-variant.component.wasm");
+		wasmtime.copyFileToContainer(Transferable.of(component), path("wit-variant.component.wasm"));
 		ExecResult result = wasmtime.execInContainer("wasmtime", "run", "-W", "gc=y", "-W", "exceptions=y", "-S",
-				"http=y", "/tmp/wit-variant.component.wasm");
+				"http=y", path("wit-variant.component.wasm"));
 		assertThat(result.getExitCode()).as("stderr: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim()).isEqualTo(":GET\n:POST\n(:OTHER . \"PATCH\")\n:REJECTED");
 	}
@@ -22086,9 +22241,9 @@ class WasmLispCompilerIntegrationTest {
 				    (print (list (car addr) (getf (cdr addr) :address)))
 				    (print (> (getf (cdr addr) :port) 0))))
 				""");
-		wasmtime.copyFileToContainer(Transferable.of(component), "/tmp/wit-record.component.wasm");
+		wasmtime.copyFileToContainer(Transferable.of(component), path("wit-record.component.wasm"));
 		ExecResult result = wasmtime.execInContainer("wasmtime", "run", "-W", "gc=y", "-W", "exceptions=y", "-S",
-				"inherit-network=y", "/tmp/wit-record.component.wasm");
+				"inherit-network=y", path("wit-record.component.wasm"));
 		assertThat(result.getExitCode()).as("stderr: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim()).isEqualTo("(:IPV4 (127 0 0 1))\nT");
 	}
@@ -22112,9 +22267,9 @@ class WasmLispCompilerIntegrationTest {
 				(cli:exit :ok)
 				(print :unreachable)
 				""");
-		wasmtime.copyFileToContainer(Transferable.of(ok), "/tmp/wit-exit-ok.component.wasm");
+		wasmtime.copyFileToContainer(Transferable.of(ok), path("wit-exit-ok.component.wasm"));
 		ExecResult okResult = wasmtime.execInContainer("wasmtime", "run", "-W", "gc=y", "-W", "exceptions=y",
-				"/tmp/wit-exit-ok.component.wasm");
+				path("wit-exit-ok.component.wasm"));
 		assertThat(okResult.getExitCode()).as("stderr: %s", okResult.getStderr()).isZero();
 		assertThat(okResult.getStdout().trim()).isEqualTo(":BYE");
 
@@ -22124,9 +22279,9 @@ class WasmLispCompilerIntegrationTest {
 				(cli:exit '(:error))
 				(print :unreachable)
 				""");
-		wasmtime.copyFileToContainer(Transferable.of(err), "/tmp/wit-exit-err.component.wasm");
+		wasmtime.copyFileToContainer(Transferable.of(err), path("wit-exit-err.component.wasm"));
 		ExecResult errResult = wasmtime.execInContainer("wasmtime", "run", "-W", "gc=y", "-W", "exceptions=y",
-				"/tmp/wit-exit-err.component.wasm");
+				path("wit-exit-err.component.wasm"));
 		assertThat(errResult.getExitCode()).isEqualTo(1);
 		assertThat(errResult.getStdout().trim()).isEqualTo(":BYE");
 	}
@@ -22233,9 +22388,9 @@ class WasmLispCompilerIntegrationTest {
 				  (p:thing-take-many th 1 2 3 4 5)
 				  (p:thing-get-single th))
 				""");
-		wasmtime.copyFileToContainer(Transferable.of(component), "/tmp/wit-exotic.component.wasm");
+		wasmtime.copyFileToContainer(Transferable.of(component), path("wit-exotic.component.wasm"));
 		ExecResult result = wasmtime.execInContainer("wasmtime", "run", "-W", "gc=y", "-W", "exceptions=y",
-				"/tmp/wit-exotic.component.wasm");
+				path("wit-exotic.component.wasm"));
 		assertThat(result.getExitCode()).isNotZero();
 		assertThat(result.getStderr()).as("the bytes must reach the LINKER, i.e. validate")
 			.contains("was not found in the linker")
@@ -22295,77 +22450,86 @@ class WasmLispCompilerIntegrationTest {
 		// otherwise the component fails the subtype check at instantiation (or reads the
 		// stream out of the wrong handle table).
 		// The backend is a plain rontolisp serve component, so the test stays offline.
-		byte[] backendBytes = compileServeComponent("""
-				(defun handle (env)
-				  (list 200 nil (list "backend " (getf env :path-info))))
-				(rontolisp:http-handler 'handle)
-				""", null);
-		// blocking-read signals rontolisp:wit-error on the `closed` arm (a WIT result's
-		// error arm), so reading to EOF needs handler-case, which puts the module in EH
-		// mode.
-		byte[] fetchBytes = compileWitImportComponent(vendoredWasiHttpWit(), """
-				(rontolisp:wit-import "iface.wit" :interface "wasi:http/types@0.3.0" :package http)
-				(rontolisp:wit-import "iface.wit" :interface "wasi:http/client@0.3.0" :package client)
+		// The backend's address is compiled INTO the fetching program, so the port has
+		// to exist before either component does: reserved, and retried if taken.
+		ExecResult result = overAReservedPort(port -> {
+			byte[] backendBytes = compileServeComponent("""
+					(defun handle (env)
+					  (list 200 nil (list "backend " (getf env :path-info))))
+					(rontolisp:http-handler 'handle)
+					""", null);
+			// blocking-read signals rontolisp:wit-error on the `closed` arm (a WIT
+			// result's
+			// error arm), so reading to EOF needs handler-case, which puts the module in
+			// EH
+			// mode.
+			byte[] fetchBytes = compileWitImportComponent(vendoredWasiHttpWit(),
+					"""
+							(rontolisp:wit-import "iface.wit" :interface "wasi:http/types@0.3.0" :package http)
+							(rontolisp:wit-import "iface.wit" :interface "wasi:http/client@0.3.0" :package client)
 
-				;; body-stream-read answers the chunk -- a packed (unsigned-byte 8)
-				;; vector, the octets as read -- immediately, or -- when the host
-				;; reports the read in flight -- a PENDING future the scheduler settles;
-				;; await passes an immediate chunk through and suspends on the pending
-				;; one, so stream reads belong in an async function.
-				(rontolisp:async-defun read-all (stream acc)
-				  (let ((chunk (rontolisp:await (http:body-stream-read stream))))
-				    (if (or (null chunk) (= (length chunk) 0))
-				        acc
-				        (rontolisp:await (read-all stream (concatenate 'string acc (map 'string #'code-char chunk)))))))
+							;; body-stream-read answers the chunk -- a packed (unsigned-byte 8)
+							;; vector, the octets as read -- immediately, or -- when the host
+							;; reports the read in flight -- a PENDING future the scheduler settles;
+							;; await passes an immediate chunk through and suspends on the pending
+							;; one, so stream reads belong in an async function.
+							(rontolisp:async-defun read-all (stream acc)
+							  (let ((chunk (rontolisp:await (http:body-stream-read stream))))
+							    (if (or (null chunk) (= (length chunk) 0))
+							        acc
+							        (rontolisp:await (read-all stream (concatenate 'string acc (map 'string #'code-char chunk)))))))
 
-				(rontolisp:async-defun get-url (authority path)
-				  (let* ((trailers (http:trailers-future-new))
-				         (reqpair (http:request-new (http:fields-new) nil (car trailers) nil))
-				         (req (car reqpair)))
-				    (http:request-set-method req :get)
-				    ;; the scheme variant's cases are HTTP / HTTPS, and keywords are
-				    ;; case-preserving.
-				    (http:request-set-scheme req :HTTP)
-				    (http:request-set-authority req authority)
-				    (http:request-set-path-with-query req path)
-				    ;; send is an `async func`: the generated binding starts the subtask and
-				    ;; returns an ordinary promise whose await drives the waitable-set.
-				    (let ((promise (client:send req)))
-				      ;; resolve the request-side trailers (ok none) so the host can finish
-				      ;; sending, and drop the transmission-result future unread.
-				      (http:trailers-future-write (cdr trailers) (cons :ok nil))
-				      (http:transmit-future-drop-readable (car (cdr reqpair)))
-				      (let* ((response (rontolisp:await promise))
-				             (status (http:response-get-status-code response))
-				             (res (http:transmit-future-new))
-				             ;; consume-body MOVES the response and takes a guest-created
-				             ;; future through which we report our side's outcome.
-				             (pair (http:response-consume-body response (car res)))
-				             (stream (car pair))
-				             (text (rontolisp:await (read-all stream ""))))
-				        (http:body-stream-drop-readable stream)
-				        (http:trailers-future-drop-readable (car (cdr pair)))
-				        (http:transmit-future-write (cdr res) :ok)
-				        (list :status status :body text)))))
+							(rontolisp:async-defun get-url (authority path)
+							  (let* ((trailers (http:trailers-future-new))
+							         (reqpair (http:request-new (http:fields-new) nil (car trailers) nil))
+							         (req (car reqpair)))
+							    (http:request-set-method req :get)
+							    ;; the scheme variant's cases are HTTP / HTTPS, and keywords are
+							    ;; case-preserving.
+							    (http:request-set-scheme req :HTTP)
+							    (http:request-set-authority req authority)
+							    (http:request-set-path-with-query req path)
+							    ;; send is an `async func`: the generated binding starts the subtask and
+							    ;; returns an ordinary promise whose await drives the waitable-set.
+							    (let ((promise (client:send req)))
+							      ;; resolve the request-side trailers (ok none) so the host can finish
+							      ;; sending, and drop the transmission-result future unread.
+							      (http:trailers-future-write (cdr trailers) (cons :ok nil))
+							      (http:transmit-future-drop-readable (car (cdr reqpair)))
+							      (let* ((response (rontolisp:await promise))
+							             (status (http:response-get-status-code response))
+							             (res (http:transmit-future-new))
+							             ;; consume-body MOVES the response and takes a guest-created
+							             ;; future through which we report our side's outcome.
+							             (pair (http:response-consume-body response (car res)))
+							             (stream (car pair))
+							             (text (rontolisp:await (read-all stream ""))))
+							        (http:body-stream-drop-readable stream)
+							        (http:trailers-future-drop-readable (car (cdr pair)))
+							        (http:transmit-future-write (cdr res) :ok)
+							        (list :status status :body text)))))
 
-				(let ((r (rontolisp:await (get-url "127.0.0.1:8086" "/hello"))))
-				  (print (getf r :status))
-				  (print (getf r :body)))
-				""");
-		wasmtime.copyFileToContainer(Transferable.of(backendBytes), "/tmp/wit-fetch-backend.wasm");
-		wasmtime.copyFileToContainer(Transferable.of(fetchBytes), "/tmp/wit-fetch.component.wasm");
-		// Wait for the backend before running the fetch: it has one shot, and a
-		// connection
-		// refused would be reported as a wit-error, not as this test's answer.
-		ExecResult result = wasmtime.execInContainer("bash", "-c",
-				"wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:8086 /tmp/wit-fetch-backend.wasm >/tmp/wit-fetch-backend.log 2>&1 &"
-						+ " pid=$!; trap 'kill $pid 2>/dev/null' EXIT;"
-						+ " sleep 0.3; kill -0 $pid 2>/dev/null || { echo 'backend wasmtime serve exited immediately; log:' 1>&2;"
-						+ " cat /tmp/wit-fetch-backend.log 1>&2; exit 1; };"
-						+ " for i in $(seq 1 60); do curl -sf http://127.0.0.1:8086/hello >/dev/null && break; sleep 0.25; done;"
-						+ " curl -sf http://127.0.0.1:8086/hello >/dev/null"
-						+ " || { echo 'backend never came up' 1>&2; cat /tmp/wit-fetch-backend.log 1>&2; exit 1; };"
-						+ " wasmtime run -W gc=y -W exceptions=y -S http=y" + " /tmp/wit-fetch.component.wasm");
+							(let ((r (rontolisp:await (get-url "127.0.0.1:%d" "/hello"))))
+							  (print (getf r :status))
+							  (print (getf r :body)))
+							"""
+						.formatted(port));
+			wasmtime.copyFileToContainer(Transferable.of(backendBytes), path("wit-fetch-backend.wasm"));
+			wasmtime.copyFileToContainer(Transferable.of(fetchBytes), path("wit-fetch.component.wasm"));
+			// Wait for the backend before running the fetch: it has one shot, and a
+			// connection
+			// refused would be reported as a wit-error, not as this test's answer.
+			return wasmtime.execInContainer("bash", "-c", "wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:"
+					+ port + " " + path("wit-fetch-backend.wasm") + " >" + path("wit-fetch-backend.log") + " 2>&1 &"
+					+ " pid=$!; trap 'kill $pid 2>/dev/null' EXIT;"
+					+ " sleep 0.3; kill -0 $pid 2>/dev/null || { echo 'backend wasmtime serve exited immediately; log:' 1>&2;"
+					+ " cat " + path("wit-fetch-backend.log") + " 1>&2; exit 1; };"
+					+ " for i in $(seq 1 60); do curl -sf http://127.0.0.1:" + port
+					+ "/hello >/dev/null && break; sleep 0.25; done;" + " curl -sf http://127.0.0.1:" + port
+					+ "/hello >/dev/null" + " || { echo 'backend never came up' 1>&2; cat "
+					+ path("wit-fetch-backend.log") + " 1>&2; exit 1; };"
+					+ " wasmtime run -W gc=y -W exceptions=y -S http=y" + " " + path("wit-fetch.component.wasm"));
+		});
 		assertThat(result.getExitCode()).as("stderr: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim()).isEqualTo("200\n\"backend /hello\"");
 	}
@@ -22382,73 +22546,80 @@ class WasmLispCompilerIntegrationTest {
 		// canonical drop built-ins.
 		// The backend echoes the request body back, so the assertion proves the body
 		// ARRIVED -- not merely that the request was accepted.
-		byte[] backendBytes = compileServeComponent("""
-				(rontolisp:async-defun handle (env)
-				  (let ((body (rontolisp:await (rontolisp:read-all (getf env :raw-body)))))
-				    (list 200 nil (list "echo " body))))
-				(rontolisp:http-handler 'handle)
-				""", null);
-		byte[] postBytes = compileWitImportComponent(vendoredWasiHttpWit(), """
-				(rontolisp:wit-import "iface.wit" :interface "wasi:http/types@0.3.0" :package http)
-				(rontolisp:wit-import "iface.wit" :interface "wasi:http/client@0.3.0" :package client)
+		// The backend's address is compiled INTO the posting program, so the port has
+		// to exist before either component does: reserved, and retried if taken.
+		ExecResult result = overAReservedPort(port -> {
+			byte[] backendBytes = compileServeComponent("""
+					(rontolisp:async-defun handle (env)
+					  (let ((body (rontolisp:await (rontolisp:read-all (getf env :raw-body)))))
+					    (list 200 nil (list "echo " body))))
+					(rontolisp:http-handler 'handle)
+					""", null);
+			byte[] postBytes = compileWitImportComponent(vendoredWasiHttpWit(),
+					"""
+							(rontolisp:wit-import "iface.wit" :interface "wasi:http/types@0.3.0" :package http)
+							(rontolisp:wit-import "iface.wit" :interface "wasi:http/client@0.3.0" :package client)
 
-				;; a read the host has in flight is a PENDING future: await it (an
-				;; immediate chunk passes through), so read-all is an async function.
-				(rontolisp:async-defun read-all (stream acc)
-				  (let ((chunk (rontolisp:await (http:body-stream-read stream))))
-				    (if (or (null chunk) (= (length chunk) 0))
-				        acc
-				        (rontolisp:await (read-all stream (concatenate 'string acc (map 'string #'code-char chunk)))))))
+							;; a read the host has in flight is a PENDING future: await it (an
+							;; immediate chunk passes through), so read-all is an async function.
+							(rontolisp:async-defun read-all (stream acc)
+							  (let ((chunk (rontolisp:await (http:body-stream-read stream))))
+							    (if (or (null chunk) (= (length chunk) 0))
+							        acc
+							        (rontolisp:await (read-all stream (concatenate 'string acc (map 'string #'code-char chunk)))))))
 
-				(rontolisp:async-defun post-url (authority path body)
-				  ;; content-length goes on with fields.append -- its value (a field-value =
-				  ;; list<u8>) crosses as a byte string -- BEFORE the fields are handed to
-				  ;; request.new.
-				  (let* ((headers (http:fields-new)))
-				    (http:fields-append headers "content-length" (princ-to-string (length body)))
-				    (let* ((contents (http:body-stream-new))
-				           (trailers (http:trailers-future-new))
-				           (reqpair (http:request-new headers (car contents) (car trailers) nil))
-				           (req (car reqpair)))
-				      (http:request-set-method req :post)
-				      (http:request-set-scheme req :HTTP)
-				      (http:request-set-authority req authority)
-				      (http:request-set-path-with-query req path)
-				      ;; start the async send FIRST: the body write below rendezvouses with
-				      ;; the host's eager read of the contents stream.
-				      (let ((promise (client:send req)))
-				        (http:body-stream-write (cdr contents) body)
-				        ;; THE lines this test exists for: close the contents stream and
-				        ;; resolve the trailers future, or the body never completes.
-				        (http:body-stream-drop-writable (cdr contents))
-				        (http:trailers-future-write (cdr trailers) (cons :ok nil))
-				        (http:transmit-future-drop-readable (car (cdr reqpair)))
-				        (let* ((response (rontolisp:await promise))
-				               (status (http:response-get-status-code response))
-				               (res (http:transmit-future-new))
-				               (pair (http:response-consume-body response (car res)))
-				               (stream (car pair))
-				               (text (rontolisp:await (read-all stream ""))))
-				          (http:body-stream-drop-readable stream)
-				          (http:trailers-future-drop-readable (car (cdr pair)))
-				          (http:transmit-future-write (cdr res) :ok)
-				          (list :status status :body text))))))
+							(rontolisp:async-defun post-url (authority path body)
+							  ;; content-length goes on with fields.append -- its value (a field-value =
+							  ;; list<u8>) crosses as a byte string -- BEFORE the fields are handed to
+							  ;; request.new.
+							  (let* ((headers (http:fields-new)))
+							    (http:fields-append headers "content-length" (princ-to-string (length body)))
+							    (let* ((contents (http:body-stream-new))
+							           (trailers (http:trailers-future-new))
+							           (reqpair (http:request-new headers (car contents) (car trailers) nil))
+							           (req (car reqpair)))
+							      (http:request-set-method req :post)
+							      (http:request-set-scheme req :HTTP)
+							      (http:request-set-authority req authority)
+							      (http:request-set-path-with-query req path)
+							      ;; start the async send FIRST: the body write below rendezvouses with
+							      ;; the host's eager read of the contents stream.
+							      (let ((promise (client:send req)))
+							        (http:body-stream-write (cdr contents) body)
+							        ;; THE lines this test exists for: close the contents stream and
+							        ;; resolve the trailers future, or the body never completes.
+							        (http:body-stream-drop-writable (cdr contents))
+							        (http:trailers-future-write (cdr trailers) (cons :ok nil))
+							        (http:transmit-future-drop-readable (car (cdr reqpair)))
+							        (let* ((response (rontolisp:await promise))
+							               (status (http:response-get-status-code response))
+							               (res (http:transmit-future-new))
+							               (pair (http:response-consume-body response (car res)))
+							               (stream (car pair))
+							               (text (rontolisp:await (read-all stream ""))))
+							          (http:body-stream-drop-readable stream)
+							          (http:trailers-future-drop-readable (car (cdr pair)))
+							          (http:transmit-future-write (cdr res) :ok)
+							          (list :status status :body text))))))
 
-				(let ((r (rontolisp:await (post-url "127.0.0.1:8087" "/echo" "hello from a lisp POST"))))
-				  (print (getf r :status))
-				  (print (getf r :body)))
-				""");
-		wasmtime.copyFileToContainer(Transferable.of(backendBytes), "/tmp/wit-post-backend.wasm");
-		wasmtime.copyFileToContainer(Transferable.of(postBytes), "/tmp/wit-post.component.wasm");
-		ExecResult result = wasmtime.execInContainer("bash", "-c",
-				"wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:8087 /tmp/wit-post-backend.wasm >/tmp/wit-post-backend.log 2>&1 &"
-						+ " pid=$!; trap 'kill $pid 2>/dev/null' EXIT;"
-						+ " sleep 0.3; kill -0 $pid 2>/dev/null || { echo 'backend wasmtime serve exited immediately; log:' 1>&2;"
-						+ " cat /tmp/wit-post-backend.log 1>&2; exit 1; };"
-						+ " for i in $(seq 1 60); do curl -sf http://127.0.0.1:8087/echo -d probe >/dev/null && break; sleep 0.25; done;"
-						+ " curl -sf http://127.0.0.1:8087/echo -d probe >/dev/null"
-						+ " || { echo 'backend never came up' 1>&2; cat /tmp/wit-post-backend.log 1>&2; exit 1; };"
-						+ " wasmtime run -W gc=y -W exceptions=y -S http=y" + " /tmp/wit-post.component.wasm");
+							(let ((r (rontolisp:await (post-url "127.0.0.1:%d" "/echo" "hello from a lisp POST"))))
+							  (print (getf r :status))
+							  (print (getf r :body)))
+							"""
+						.formatted(port));
+			wasmtime.copyFileToContainer(Transferable.of(backendBytes), path("wit-post-backend.wasm"));
+			wasmtime.copyFileToContainer(Transferable.of(postBytes), path("wit-post.component.wasm"));
+			return wasmtime.execInContainer("bash", "-c", "wasmtime serve -W gc=y -W exceptions=y --addr 127.0.0.1:"
+					+ port + " " + path("wit-post-backend.wasm") + " >" + path("wit-post-backend.log") + " 2>&1 &"
+					+ " pid=$!; trap 'kill $pid 2>/dev/null' EXIT;"
+					+ " sleep 0.3; kill -0 $pid 2>/dev/null || { echo 'backend wasmtime serve exited immediately; log:' 1>&2;"
+					+ " cat " + path("wit-post-backend.log") + " 1>&2; exit 1; };"
+					+ " for i in $(seq 1 60); do curl -sf http://127.0.0.1:" + port
+					+ "/echo -d probe >/dev/null && break; sleep 0.25; done;" + " curl -sf http://127.0.0.1:" + port
+					+ "/echo -d probe >/dev/null" + " || { echo 'backend never came up' 1>&2; cat "
+					+ path("wit-post-backend.log") + " 1>&2; exit 1; };"
+					+ " wasmtime run -W gc=y -W exceptions=y -S http=y" + " " + path("wit-post.component.wasm"));
+		});
 		assertThat(result.getExitCode()).as("stderr: %s", result.getStderr()).isZero();
 		assertThat(result.getStdout().trim()).isEqualTo("200\n\"echo hello from a lisp POST\"");
 	}
@@ -22472,9 +22643,9 @@ class WasmLispCompilerIntegrationTest {
 	@Test
 	void callbackProbeInterleavesTwoTasksInOneInstance() throws Exception {
 		byte[] component = buildCallbackProbeComponent();
-		wasmtime.copyFileToContainer(Transferable.of(component), "/tmp/cb-probe.wasm");
+		wasmtime.copyFileToContainer(Transferable.of(component), path("cb-probe.wasm"));
 		ExecResult result = wasmtime.execInContainer("wasmtime", "run", "-W", "gc=y", "-W", "exceptions=y",
-				"/tmp/cb-probe.wasm");
+				path("cb-probe.wasm"));
 		assertThat(result.getExitCode()).as("stderr: %s", result.getStderr()).isZero();
 	}
 

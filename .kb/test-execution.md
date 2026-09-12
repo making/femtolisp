@@ -20,6 +20,49 @@
   `am.ik.gpu.DeviceResidency`'s live set) is visible across forks; surefire guarantees neither
   which fork nor what order.
 
+## Two builds on one machine: every shared constant collides
+
+Several sessions build this repo at once, one worktree each, and `/tmp` and the port space
+belong to the MACHINE. A name built from a constant -- a directory, a file, a port number
+-- is therefore shared with every other build running the same test, and the failure looks
+like a broken feature rather than a broken harness.
+
+What it costs, measured:
+
+- **2026-09-11**: `WasmLispCompilerIntegrationTest`'s scratch root was
+  `/tmp/rontolisp-wasmtime/w<threadId>` -- unique inside one JVM, identical across JVMs.
+  Two full suites in two worktrees gave **39 failures in that class and nowhere else**,
+  each one a real feature answering another run's program. Fixed by qualifying with
+  `ProcessHandle.current().pid()` (`.todo/781`).
+- **2026-09-12**: with that fixed, two concurrent runs of that class's `wasmtime serve`
+  family still failed **3 and 14 of 15** cases. Every one of them named a constant the
+  method bodies held: a hardcoded port (`Address already in use`) or a hardcoded
+  `/tmp/serve-*.wasm` (one run's `wasmtime` took a **Bus error** reading a module file the
+  other run was overwriting under it). Fixed by `.todo/787`.
+
+The rules that follow, and which device to reach for:
+
+- **Every staged file goes through the per-thread, per-PID scratch directory**
+  (`WasmLispCompilerIntegrationTest#path`). A `/tmp/...` literal in a test is the bug.
+- **A listening port is the kernel's to choose, not the test's.** `wasmtime serve --addr
+  127.0.0.1:0` binds an ephemeral port and prints `Serving HTTP on http://127.0.0.1:PORT/`;
+  the script reads the port back out of the log (`#awaitServePort`) and nothing is ever
+  guessed. Use this wherever the port only has to reach a curl in the same script.
+- **Reserving a port with `new ServerSocket(0)` and closing it is the WEAKER device** and
+  belongs only where the number must exist before the server does: compiled into a guest
+  program, or probed by the Java side after the script exits. The window between the close
+  and the real bind then spans a whole compile, and it is wide enough to lose -- measured
+  2026-09-12, three concurrent runs of that serve family lost it **once in 45 cases**.
+  Such cases go through `#overAReservedPort`, which re-runs on a fresh port when the
+  output says `Address already in use`.
+- A server whose bind failure is not checked turns this into something worse than a red
+  test: the losing run connects to the WINNER's server and asserts against it. The TLS
+  case did exactly that until its `openssl s_server` log was read back.
+
+Still on the weaker device without a retry: `e2e/ServeComponentE2eSupport#freePort`, and
+the `ServerSocket(0)` helpers the Clack / Ningle / Lack E2Es each carry. They reserve much
+closer to the bind than the WASM class did, so the window is small rather than absent.
+
 ## Determinism a test assumes but the JVM does not owe it
 
 - **A test asserting an exact `residentBytes()` must KEEP ITS ARRAYS REACHABLE**

@@ -131,7 +131,7 @@ deliberate boundaries the audit must not undo: user-facing operator catalogues l
 - [default-run-path.md](default-run-path.md) -- flagless `rontolisp app.lisp` runs the interpreter by decision
 - [interpreter-stack.md](interpreter-stack.md) -- the CLI runs every program on a stack it chose, and `--stack`
 - [measurement-probes.md](measurement-probes.md) -- whether a performance number answers the question that was asked
-- [test-execution.md](test-execution.md) -- how the test suite actually runs (surefire forks, parallelism)
+- [test-execution.md](test-execution.md) -- how the test suite actually runs (surefire forks, parallelism), and the rule that no test may name a scratch path or a port from a constant: two builds share one machine
 - [running-backends.md](running-backends.md) -- running a program on all four backends by hand, the native-image E2E leg, the examples suite
 - [adding-primitives.md](adding-primitives.md) -- the per-surface checklists for a new built-in function, macro or special form, and the two silent-failure traps
 - [hot-path-method-size.md](hot-path-method-size.md) -- HotSpot's 8000-bytecode HugeMethodLimit and the splits that stay under it
