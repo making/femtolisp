@@ -72,6 +72,14 @@ class WasmLispCompilerIntegrationTest {
 	// "wof.txt" -- a working directory no concurrently running test can write into.
 	private static final ConcurrentHashMap<Long, String> WORK_DIRS = new ConcurrentHashMap<>();
 
+	// A thread id is unique inside this JVM only. Two `./mvnw test` runs on the same
+	// machine -- the normal state of this repo, one worktree per session -- otherwise
+	// hand out the SAME "w<id>" name to two different JVMs' worker threads and race each
+	// other's test.wasm underneath it (measured 2026-09-11: 39 unrelated failures in this
+	// class from a second, independent run started in another worktree). The PID makes
+	// the scratch root unique per process as well as per thread.
+	private static final long PID = ProcessHandle.current().pid();
+
 	// Workers for the second half of a two-module comparison (see
 	// assertLinalgMatchesTheScalarPath). A fixed pool rather than a virtual-thread
 	// executor: a worker pays one mkdir exec for its scratch directory on first use, so
@@ -124,7 +132,7 @@ class WasmLispCompilerIntegrationTest {
 	// choke on.
 	private static String workDir() {
 		return WORK_DIRS.computeIfAbsent(Thread.currentThread().threadId(), id -> {
-			Path dir = Path.of(System.getProperty("java.io.tmpdir"), "rontolisp-wasmtime", "w" + id);
+			Path dir = Path.of(System.getProperty("java.io.tmpdir"), "rontolisp-wasmtime", "p" + PID + "-w" + id);
 			try {
 				if (Files.isDirectory(dir)) {
 					try (Stream<Path> stale = Files.walk(dir)) {
@@ -11840,9 +11848,10 @@ class WasmLispCompilerIntegrationTest {
 	}
 
 	/**
-	 * Stages the tree the two absolute-path tests share, in its OWN per-thread directory
-	 * rather than under {@link #workDir()} -- the work dir's stale-file sweep deletes
-	 * plain files, so a directory left there would break the NEXT run's setup.
+	 * Stages the tree the two absolute-path tests share, in its OWN
+	 * per-process-and-thread directory rather than under {@link #workDir()} -- the work
+	 * dir's stale-file sweep deletes plain files, so a directory left there would break
+	 * the NEXT run's setup.
 	 *
 	 * <p>
 	 * The layout is chosen to make the prefix match the thing under test. The preopen
@@ -11856,7 +11865,7 @@ class WasmLispCompilerIntegrationTest {
 	 */
 	private static String stageAbsolutePathTree() throws Exception {
 		Path root = Path.of(System.getProperty("java.io.tmpdir"), "rontolisp-wasmtime",
-				"abs" + Thread.currentThread().threadId());
+				"p" + PID + "-abs" + Thread.currentThread().threadId());
 		try (Stream<Path> stale = Files.isDirectory(root) ? Files.walk(root) : Stream.<Path>empty()) {
 			for (Path entry : stale.sorted(java.util.Comparator.reverseOrder()).toList()) {
 				Files.deleteIfExists(entry);

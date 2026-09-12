@@ -45,7 +45,12 @@ public final class HostWasmtime {
 	// so this only ever fires on a genuine hang, and it names the command when it does.
 	private static final long TIMEOUT_SECONDS = 300;
 
-	private static final Path ROOT = Path.of(System.getProperty("java.io.tmpdir"), "rontolisp-wasmtime");
+	// PID-qualified for the same reason WasmLispCompilerIntegrationTest's per-thread
+	// scratch dirs are: a bare "rontolisp-wasmtime" is one directory for every JVM on
+	// the machine, and two concurrent `./mvnw test` runs (one worktree each, the normal
+	// state of this repo) would share the exec/err staging files and the process's cwd.
+	private static final Path ROOT = Path.of(System.getProperty("java.io.tmpdir"), "rontolisp-wasmtime",
+			"p" + ProcessHandle.current().pid());
 
 	private static final String VERSION = readVersion();
 
