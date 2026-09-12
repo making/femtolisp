@@ -56,6 +56,14 @@ it survived to be found by generating a host.
   job (results, export wrappers), so no existing module's bytes move.
 - **The host must read its memory-typed arguments before it answers**: the wrapper releases
   the whole run on return, and the serialised regions are scratch anything may reuse.
+- **The contract is READ-ONLY too, though nothing here enforces it.** A host that writes
+  through the pointer lands on transient scratch that is already dead the moment the call
+  returns -- harmless by luck, not by design. Contrast `--no-gc` (`.kb/no-gc-scalar-wasm.md`,
+  "Host imports"): there the same argument shape is durable module memory (no staging at
+  all), so the identical write persists and, because `StringTable` dedups identical
+  spellings into one block, corrupts every other use of that literal for the life of the
+  instance. Same question on both backends, different answer; both are written down
+  together in `doc/*/guides/wasm-host-boundary.md`.
 
 Pins: `WasmImportCompilerTest.twoMemoryTypedParamsStageOnDistinctRegions` (the `HEAP_PTR`
 advance, once per staged parameter, absent at one),

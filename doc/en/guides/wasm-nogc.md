@@ -361,7 +361,14 @@ already *are* the internal representation:
   only where the widths differ;
 - a `:string` argument crosses as the `(ptr, len)` of a block the module
   already holds — nothing is encoded and nothing is copied, and several
-  string arguments in one call each cross as their own region;
+  string arguments in one call each cross as their own region. That pointer
+  is borrowed and durable, not scratch: it stays valid for the life of the
+  instance, so writing through it corrupts the module's own memory
+  permanently, and because identical string literals are deduplicated into
+  one block, every call site sharing the same spelling breaks with it. See
+  [the host boundary guide](wasm-host-boundary.md#importing-host-functions)
+  for the same question on the wasm-GC backend, where the pointer is
+  short-lived scratch instead and the answer differs;
 - a `:string` **result** is bytes the host writes into this module's linear
   memory through the exported `__ronto_alloc` (see [the arena
   API](#reclaiming-memory-the-arena-api)), which the wrapper then copies

@@ -43,6 +43,11 @@ The type designators are shared with
 | `:s-expr` | `(ptr, len)` | the argument is printed to readable text; a result is parsed by the embedded reader |
 | `:bytes` | `(ptr, len)` argument / `(ptr, cap) -> len` result | an `(unsigned-byte 8)` vector as raw bytes — no UTF-8 in either direction |
 
+A `:string`/`:s-expr` **argument** is a `(ptr, len)` view into memory the call
+already holds — read it, but do not write through it. See [the boundary
+guide](../../guides/wasm-host-boundary.md#importing-host-functions) for what
+backs the pointer on each backend and why writing through it is unsafe.
+
 A `:string` result must be written into linear memory by the host (reserve the
 buffer with the exported `__ronto_alloc`) and returned as a `(ptr, len)` pair
 (a two-element array from JavaScript).

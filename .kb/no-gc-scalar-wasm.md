@@ -115,8 +115,16 @@ value model differs.
   `i32.wrap_i64` behind the guard below; `:bool` is one `i64.ne 0` out / `i32.eqz;i32.eqz` in;
   `:void` answers the i64 zero. A `:string` ARGUMENT is `(ptr+4, [ptr])` of a block the module
   already holds -- **no staging, no copy, and therefore none of the aliasing the wasm-GC
-  wrapper had to fix** (`.kb/wasm-import.md`). Only a `:string` RESULT copies: the host's
-  `(ptr,len)` into a fresh `[len][bytes]` block via `__alloc`/`__memcpy`.
+  wrapper had to fix** (`.kb/wasm-import.md`). That pointer is BORROWED and durable, not
+  scratch: it can be the module's own literal storage (`StringTable` dedups identical
+  spellings into one block) or another live block, valid for the whole life of the instance
+  -- the contract is READ-ONLY, and a host that writes through it corrupts every other use
+  of the same bytes, permanently. This is the same hazard `.todo/789`'s item 2 was rejected
+  over on the wasm-GC side, where the argument pointer is short-lived staged scratch instead
+  of durable module memory, so a write there reaches memory already dead by the time the
+  call returns -- same question, different backend, different blast radius; both halves are
+  written down together in `doc/*/guides/wasm-host-boundary.md`. Only a `:string` RESULT
+  copies: the host's `(ptr,len)` into a fresh `[len][bytes]` block via `__alloc`/`__memcpy`.
 - **The boundary carries the value exactly or traps, in BOTH directions** -- the export
   wrapper's rule with the directions swapped. An ARGUMENT leaves the house `i64`, so a narrow
   or unsigned declared type is range-guarded (the same `emitBoundaryRangeGuard`); a RESULT

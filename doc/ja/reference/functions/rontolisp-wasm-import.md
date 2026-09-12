@@ -43,6 +43,12 @@ WASM ホスト (ブラウザの JavaScript、または wasmtime にプリロー�
 | `:s-expr` | `(ptr, len)` | the argument is printed to readable text; a result is parsed by the embedded reader |
 | `:bytes` | `(ptr, len)` argument / `(ptr, cap) -> len` result | an `(unsigned-byte 8)` vector as raw bytes — no UTF-8 in either direction |
 
+`:string`/`:s-expr` の**引数**は、呼び出しがすでに保持しているメモリへの
+`(ptr, len)` ビューです — 読むのは構いませんが、そこへ書き込んではいけません。
+バックエンドごとにポインタの正体が何で、なぜ書き込みが安全でないかは
+[境界ガイド](../../guides/wasm-host-boundary.md#importing-host-functions)を
+参照してください。
+
 `:string` の戻り値は、ホストがリニアメモリに書き込み (バッファはエクスポート
 された `__ronto_alloc` で確保)、`(ptr, len)` のペア (JavaScript からは要素数 2 の
 配列) として返す必要があります。
