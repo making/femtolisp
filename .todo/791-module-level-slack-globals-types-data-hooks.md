@@ -6,7 +6,8 @@ the spike this item was written against. What is left is item 3 alone, and the m
 below RESIZES it.
 
 Difficulty: High (what is left is a post-emit code-section pass over a 19-33% residue, not
-the "~114 bytes of ordinary tidying" the original text estimated)
+the "~114 bytes of ordinary tidying" the original text estimated). High for SCALE, not for
+uncertainty: the ranking below says the shape is known.
 
 Third of the four items on the measurement in
 [`789`](789-string-boundary-drags-in-the-charvec-normalizer.md); the program and flags are
@@ -73,25 +74,63 @@ and 18.5 KB on `zlib` -- so the line the item drew is in the wrong place: this i
 opportunity, not a cleanup, and it is worth its own design rather than a list of local
 rewrites.
 
+### WHICH passes: measured 2026-09-13, so this step is done
+
+`-Oz` is a pipeline of dozens of passes and the table above says how much, not which. Each
+pass run ALONE over the shaken output (binaryen 130, `--enable-gc --enable-reference-types
+--enable-exception-handling`), against the same module's own size:
+
+| Program | residue | `inlining-optimizing` alone | share |
+| --- | ---: | ---: | ---: |
+| `zlib` `--no-wasi` | 18,788 | **13,333** | **71%** |
+| `pi_approx` `--no-wasi` | 511 | **461** | **90%** |
+| the measurement program | 163 | **124** | **76%** |
+| `hello_world` `--no-wasi` | 148 | **132** | **89%** |
+
+Everything else on `zlib`, in order: `coalesce-locals` 2,178, `simplify-locals` 2,146,
+`merge-similar-functions` 213, `remove-unused-brs` 141. That is 18,011 of the 18,788 --
+**96% of the residue is five passes, and one of them is three quarters of it.**
+
+**The trap, and it is the first thing a reader of the old text would hit**: `inlining`
+alone makes `zlib` 15,211 bytes BIGGER. Inlining leaves debris that only the following
+optimization and DCE clear, which is why the entry above is `inlining-optimizing` and not
+`inlining` -- the deliverable is ONE transform, "inline and then clean up after it", not an
+inliner. The same shape rules out starting anywhere else: run alone, every other pass grows
+the module (`code-folding` +1,260, `dce` +1,445, `duplicate-function-elimination` +1,449,
+`remove-unused-module-elements` +1,449, `merge-blocks` +1,450, `heap2local` +1,468).
+
+So the target list is three long -- inlining-with-cleanup, then local coalescing, then
+local simplification -- and the first is where the bytes are. `WasmBodyFolder` already
+merges identical bodies, and `merge-similar-functions`' 213 bytes says there is little left
+there.
+
 **What to do next, in order.**
 
-1. **Find out WHAT the 18.5 KB on `zlib` is before writing a pass.** `-Oz` is a pipeline of
-   dozens of passes; the number above says how much, not which. Run binaryen's passes
-   individually (`--metrics`, and `-O` with single `--pass` runs) over `zlib.wasm` and
-   `pi_approx.wasm` and rank them. The deliverable of that step is a table in
-   `.kb/optimize-dead-code-elimination.md`: pass name, bytes, and whether the same win is
-   already available at the AST level (where rontolisp has types and names) rather than
-   post-emit. **Do not start with the local rewrites the original text listed** -- inline a
-   one-call-site body, merge identical bodies, drop unused locals, fold `local.set`/`get`
-   pairs -- until the ranking says they are where the bytes are. `WasmBodyFolder` already
-   merges identical bodies, so at least one of them is spent.
-2. Only then decide the shape: a post-emit pass beside the shaker in `am.ik.wasm`
+1. Decide the shape: a post-emit pass beside the shaker in `am.ik.wasm`
    (language-independent by construction, and the module already parses there), an AST-level
-   pass in `compiler`, or emitter changes at the sites the ranking names.
-3. Whatever lands, measure it on `size-report/programs/` -- `zlib` is what decides whether
+   pass in `compiler` -- where rontolisp still has types and names, and where an inliner may
+   be a great deal easier than over bytes -- or emitter changes at the sites that produce
+   the one-call-site bodies in the first place. The ranking does not decide this; it only
+   says what the pass has to do.
+2. Whatever lands, measure it on `size-report/programs/` -- `zlib` is what decides whether
    it earns its maintenance -- and on `WasmTreeShakerCorpusTest`'s `wasm-tools validate`
    sweep, which is the only cheap guard against a rewrite that validates on the toy and not
    on the corpus.
+
+### How the original estimate went wrong, so the next measurement does not
+
+The "~114 bytes" came from running `-Oz` on a **hand-spiked** module -- the charvec call
+cut out unconditionally and arithmetic forced to i31-only, to measure what `789` and `790`
+were worth before either existed. That module was 567 bytes of code in 17 functions: there
+was almost nothing left for an inliner to work on, so the residue measured small. The spike
+was shrinking the module and shrinking the RESIDUE at the same time, and only the first was
+the thing being measured.
+
+**A residue is a property of the real output, never of a spike.** A spike answers "what is
+this change worth"; it cannot answer "what is left afterwards", because it is not the
+artifact that will be left. The other half of the same mistake was putting a number
+measured on one micro program in this item's title while the body said to scope it against
+the corpus -- the body was right.
 
 ## Also seen, not size
 
