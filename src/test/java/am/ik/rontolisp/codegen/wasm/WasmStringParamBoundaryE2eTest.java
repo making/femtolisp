@@ -33,8 +33,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <li>the staged run is released afterwards: a loop over the same call keeps linear
  * memory flat (the wrapper pops back to its mark; {@code --reentrant} frees park blocks
  * instead);</li>
- * <li>a runtime-built string (not a literal in the data segment) crosses the same way.
+ * <li>a runtime-built string (not a literal in the data segment) crosses the same way;
  * </li>
+ * <li>the advance between regions counts BYTES: two multi-byte arguments in a row do not
+ * overlap, a zero-length argument does not collapse the region after it, and the same
+ * VALUE passed twice still crosses as two regions;</li>
+ * <li>a MUTABLE CHARACTER VECTOR argument crosses as its own region too -- it is rendered
+ * by {@code _charvec_to_str} into the same scratch the staging bumps, so it is the one
+ * argument kind that writes there twice;</li>
+ * <li>none of it depends on the optimize level.</li>
  * </ul>
  */
 @EnabledIf("am.ik.rontolisp.codegen.wasm.WasmStringParamBoundaryE2eTest#nodeIsAvailable")
@@ -98,6 +105,43 @@ class WasmStringParamBoundaryE2eTest {
 			(rontolisp:wasm-export 'pump :params '(:int) :returns :int)
 			""";
 
+	// Shapes that say something about the ADVANCE between regions rather than about
+	// their existence: a byte length that is not a character count, a zero-length
+	// region, the same value twice, more of them than any wrapper had before, and the
+	// one argument kind that writes into the staging scratch twice.
+	private static final String EDGE_MODULE = """
+			(rontolisp:wasm-import 'two :from "env" :as "two" :params '(:string :string) :returns :int)
+			(rontolisp:wasm-import 'five :from "env" :as "five"
+			                       :params '(:string :string :string :string :string) :returns :int)
+
+			;; a length in BYTES, not characters
+			(defun go-utf8 () (two "日本語テキスト" "αβγδ"))
+			(rontolisp:wasm-export 'go-utf8 :as "goUtf8" :params '() :returns :int)
+
+			;; a zero-length region in front of a live one
+			(defun go-empty () (two "" "x"))
+			(rontolisp:wasm-export 'go-empty :as "goEmpty" :params '() :returns :int)
+
+			;; the same VALUE twice -- sharing the bytes would give one region two lengths
+			(defun go-same () (two "same" "same"))
+			(rontolisp:wasm-export 'go-same :as "goSame" :params '() :returns :int)
+
+			;; five of them
+			(defun go-five () (five "a" "bb" "ccc" "dddd" "eeeee"))
+			(rontolisp:wasm-export 'go-five :as "goFive" :params '() :returns :int)
+
+			;; a mutable character vector: _str_to_mem renders it through _charvec_to_str
+			;; into the scratch the staging bumps, so this argument writes there twice
+			(defun as-charvec (s)
+			  (let ((v (make-array 0 :element-type 'character :fill-pointer 0 :adjustable t)))
+			    (dotimes (i (length s)) (vector-push-extend (char s i) v))
+			    v))
+			(defun go-charvec () (two (as-charvec "CHARVECTOR") "plainliteral"))
+			(rontolisp:wasm-export 'go-charvec :as "goCharvec" :params '() :returns :int)
+			(defun go-two-charvecs () (two (as-charvec "firstCV") (as-charvec "secondCVCV")))
+			(rontolisp:wasm-export 'go-two-charvecs :as "goTwoCharvecs" :params '() :returns :int)
+			""";
+
 	private static final String HOST = """
 			const fs = require('fs');
 			const dec = new TextDecoder();
@@ -134,6 +178,34 @@ class WasmStringParamBoundaryE2eTest {
 			console.log(inst.exports.memory.buffer.byteLength === before);
 			""";
 
+	private static final String EDGE_HOST = """
+			const fs = require('fs');
+			const dec = new TextDecoder();
+			let inst;
+			let seen = null;
+			const str = (p, n) => dec.decode(new Uint8Array(inst.exports.memory.buffer, p, n));
+			// Every host below reads its LAST argument first, then walks back.
+			const back = (...a) => {
+			  const out = [];
+			  for (let i = a.length - 2; i >= 0; i -= 2) out.unshift(str(a[i], a[i + 1]));
+			  return out;
+			};
+			const env = {
+			  two: (...a) => { seen = back(...a); return 0; },
+			  five: (...a) => { seen = back(...a); return 0; },
+			};
+			const mod = new WebAssembly.Module(fs.readFileSync(process.argv[2]));
+			inst = new WebAssembly.Instance(mod, { env });
+			inst.exports._initialize();
+			const call = (name) => { seen = null; inst.exports[name](); return JSON.stringify(seen); };
+			console.log(call('goUtf8'));
+			console.log(call('goEmpty'));
+			console.log(call('goSame'));
+			console.log(call('goFive'));
+			console.log(call('goCharvec'));
+			console.log(call('goTwoCharvecs'));
+			""";
+
 	private static final String REENTRANT_DRIVER = HOST + """
 			console.log(call('goTwo'));
 			inst.exports.pump(1);
@@ -155,14 +227,44 @@ class WasmStringParamBoundaryE2eTest {
 		assertThat(stdout.lines().toList()).containsExactly("[\"AAAAAAAAAAAA\",\"(1 2 3)\"]", "true");
 	}
 
+	@Test
+	void theAdvanceBetweenRegionsCountsBytesAndSurvivesEveryArgumentKind() throws Exception {
+		String stdout = run(EDGE_MODULE, EDGE_HOST, false, OptimizeLevel.NONE, "edge");
+		assertThat(stdout.lines().toList()).containsExactly("[\"日本語テキスト\",\"αβγδ\"]", "[\"\",\"x\"]",
+				"[\"same\",\"same\"]", "[\"a\",\"bb\",\"ccc\",\"dddd\",\"eeeee\"]", "[\"CHARVECTOR\",\"plainliteral\"]",
+				"[\"firstCV\",\"secondCVCV\"]");
+	}
+
+	/**
+	 * The staging lives in the import wrapper, which no optimize level rewrites -- but
+	 * the levels do change what surrounds it (the tree shaker at
+	 * {@link OptimizeLevel#DEFAULT}, the speed-for-size trades at
+	 * {@link OptimizeLevel#SIZE}), and the defect this class exists for was invisible in
+	 * the module's shape.
+	 */
+	@Test
+	void noOptimizeLevelChangesWhatTheHostSees() throws Exception {
+		for (OptimizeLevel level : List.of(OptimizeLevel.DEFAULT, OptimizeLevel.SIZE)) {
+			String stdout = run(MODULE, DRIVER, false, level, "strings-" + level.spelling());
+			assertThat(stdout.lines().toList()).as("optimize=%s", level.spelling())
+				.containsExactly("[\"AAAAAAAAAAAA\",\"BBBB\"]", "[\"abcde\",\"3456\"]",
+						"[7,\"hello\",\"(1 2 3)\",1.5,\"world\"]", "[\"solo\"]", "[\"left\",[255,254,65],\"(1 2)\"]",
+						"true");
+		}
+	}
+
 	private String run(String module, String driverJs, boolean reentrant) throws Exception {
+		return run(module, driverJs, reentrant, OptimizeLevel.NONE, reentrant ? "reentrant" : "strings");
+	}
+
+	private String run(String module, String driverJs, boolean reentrant, OptimizeLevel level, String name)
+			throws Exception {
 		List<LispVal> program = LispReader.readAllFromString(module);
-		byte[] wasm = new WasmLispCompiler(false, false, true, OptimizeLevel.NONE, false, false, false, false,
-				reentrant)
+		byte[] wasm = new WasmLispCompiler(false, false, true, level, false, false, false, false, reentrant)
 			.compile(program);
-		Path wasmFile = this.tempDir.resolve((reentrant ? "reentrant" : "strings") + ".wasm");
+		Path wasmFile = this.tempDir.resolve(name + ".wasm");
 		Files.write(wasmFile, wasm);
-		Path driver = this.tempDir.resolve((reentrant ? "reentrant" : "strings") + ".js");
+		Path driver = this.tempDir.resolve(name + ".js");
 		Files.writeString(driver, driverJs, StandardCharsets.UTF_8);
 		return runNode(driver, wasmFile);
 	}
